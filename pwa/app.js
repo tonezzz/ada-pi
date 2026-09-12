@@ -1,0 +1,299 @@
+const INPUT_RATE = 16000;
+const OUTPUT_RATE = 24000;
+
+const connectButton = document.querySelector("#connect");
+const disconnectButton = document.querySelector("#disconnect");
+const statusElement = document.querySelector("#pwa-status");
+const logElement = document.querySelector("#pwa-log");
+
+let socket = null;
+let stream = null;
+let captureContext = null;
+let playbackContext = null;
+let captureNode = null;
+let playbackNode = null;
+let playbackAnalyser = null;
+let playbackMeterFrame = null;
+let assistantEntry = null;
+let assistantPlaybackActive = false;
+let localSpeechActive = false;
+let speechAboveFrames = 0;
+let speechBelowFrames = 0;
+let microphoneNoiseFloor = .004;
+let connectionInProgress = false;
+
+function setStatus(text) {
+  if (statusElement) statusElement.textContent = text;
+}
+
+function setConnected(connected) {
+  if (connectButton) connectButton.disabled = connected;
+  if (disconnectButton) disconnectButton.disabled = !connected;
+}
+
+function logLine(text, className = "") {
+  if (!logElement) return;
+  const line = document.createElement("div");
+  line.className = `entry ${className}`;
+  line.textContent = text;
+  logElement.append(line);
+  logElement.scrollTop = logElement.scrollHeight;
+}
+
+function downsampleToPCM16(input, inputRate, outputRate) {
+  const ratio = inputRate / outputRate;
+  const length = Math.floor(input.length / ratio);
+  const output = new Int16Array(length);
+  for (let i = 0; i < length; i++) {
+    const start = Math.floor(i * ratio);
+    const end = Math.max(start + 1, Math.floor((i + 1) * ratio));
+    let sum = 0;
+    for (let j = start; j < end && j < input.length; j++) sum += input[j];
+    const sample = Math.max(-1, Math.min(1, sum / (end - start)));
+    output[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  return output.buffer;
+}
+
+async function createPlayback() {
+  playbackContext = new AudioContext({ sampleRate: OUTPUT_RATE, latencyHint: "interactive" });
+  const workletSource = `
+    class PCMPlayer extends AudioWorkletProcessor {
+      constructor() {
+        super();
+        this.queue = [];
+        this.offset = 0.0;
+        this.step = 24000 / sampleRate;
+        this.inputRate = 24000;
+        this.bufferedSamples = 0;
+        this.playing = false;
+        this.forceStart = false;
+        this.startThreshold = 1440;
+        this.port.onmessage = e => {
+          if (e.data.type === 'clear') {
+            this.queue = []; this.offset = 0; this.bufferedSamples = 0;
+            this.playing = false; this.forceStart = false;
+          } else if (e.data.type === 'flush') {
+            this.forceStart = true;
+          } else {
+            const chunk = new Int16Array(e.data);
+            this.queue.push(chunk); this.bufferedSamples += chunk.length;
+          }
+        };
+      }
+      process(inputs, outputs) {
+        const out = outputs[0][0]; out.fill(0); let n = 0;
+        if (!this.playing) {
+          if (this.bufferedSamples < this.startThreshold && !(this.forceStart && this.bufferedSamples)) return true;
+          this.playing = true;
+        }
+        while (n < out.length && this.queue.length) {
+          const chunk = this.queue[0];
+          while (n < out.length && this.offset < chunk.length - 1) {
+            const i = Math.floor(this.offset);
+            const frac = this.offset - i;
+            const s0 = chunk[i] / 32768;
+            const s1 = chunk[i + 1] / 32768;
+            out[n++] = s0 + (s1 - s0) * frac;
+            this.bufferedSamples -= this.step;
+            this.offset += this.step;
+          }
+          if (this.offset >= chunk.length - 1) {
+            this.queue.shift();
+            this.offset = Math.max(0, this.offset - (chunk.length - 1));
+          }
+        }
+        if (!this.queue.length) { this.playing = false; this.forceStart = false; }
+        return true;
+      }
+    }
+    registerProcessor('pcm-player', PCMPlayer);`;
+  const url = URL.createObjectURL(new Blob([workletSource], { type: "text/javascript" }));
+  await playbackContext.audioWorklet.addModule(url);
+  URL.revokeObjectURL(url);
+  playbackNode = new AudioWorkletNode(playbackContext, "pcm-player", { outputChannelCount: [1] });
+  playbackAnalyser = playbackContext.createAnalyser();
+  playbackAnalyser.fftSize = 256;
+  playbackAnalyser.smoothingTimeConstant = .68;
+  playbackNode.connect(playbackAnalyser);
+  playbackAnalyser.connect(playbackContext.destination);
+  await playbackContext.resume();
+  console.info("playback context", playbackContext.sampleRate, playbackContext.state);
+  playbackContext.onstatechange = () => console.info("playback state", playbackContext.state);
+  document.body.addEventListener("touchstart", () => playbackContext?.resume().catch(() => {}), { passive: true });
+  document.body.addEventListener("click", () => playbackContext?.resume().catch(() => {}));
+  startPlaybackMeter();
+}
+
+function startPlaybackMeter() {
+  const samples = new Float32Array(playbackAnalyser.fftSize);
+  let smoothed = 0;
+  let lastUpdate = 0;
+
+  const measure = (now) => {
+    if (!playbackAnalyser) return;
+    playbackAnalyser.getFloatTimeDomainData(samples);
+    let power = 0;
+    for (const sample of samples) power += sample * sample;
+    const rms = Math.sqrt(power / samples.length);
+    const level = Math.min(1, Math.max(0, (rms - .006) * 8.5));
+    smoothed = level > smoothed ? smoothed * .48 + level * .52 : smoothed * .76 + level * .24;
+
+    if (now - lastUpdate >= 33) {
+      window.idleFace?.setSpeechLevel(smoothed);
+      lastUpdate = now;
+    }
+    playbackMeterFrame = requestAnimationFrame(measure);
+  };
+  playbackMeterFrame = requestAnimationFrame(measure);
+}
+
+async function startMicrophone() {
+  stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+  });
+  const track = stream.getAudioTracks()[0];
+  const settings = track.getSettings();
+  setStatus(`Mic on (EC:${settings.echoCancellation}, AGC:${settings.autoGainControl}, ${settings.sampleRate} Hz)`);
+
+  captureContext = new AudioContext({ latencyHint: "interactive" });
+  const source = captureContext.createMediaStreamSource(stream);
+  captureNode = captureContext.createScriptProcessor(2048, 1, 1);
+  const silent = captureContext.createGain();
+  silent.gain.value = 0;
+  captureNode.onaudioprocess = (event) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const samples = event.inputBuffer.getChannelData(0);
+    let power = 0;
+    for (const sample of samples) power += sample * sample;
+    const rms = Math.sqrt(power / samples.length);
+    if (!localSpeechActive) microphoneNoiseFloor = microphoneNoiseFloor * .98 + rms * .02;
+    const startThreshold = Math.max(.012, microphoneNoiseFloor * 2.8);
+    const stopThreshold = Math.max(.008, microphoneNoiseFloor * 1.7);
+    if (!localSpeechActive) {
+      speechAboveFrames = rms > startThreshold ? speechAboveFrames + 1 : 0;
+      if (speechAboveFrames >= 3) {
+        localSpeechActive = true;
+        speechBelowFrames = 0;
+        socket.send(JSON.stringify({ type: "local_speech_started", rms, threshold: startThreshold }));
+      }
+    } else {
+      speechBelowFrames = rms < stopThreshold ? speechBelowFrames + 1 : 0;
+      if (speechBelowFrames >= 12) {
+        localSpeechActive = false;
+        speechAboveFrames = 0;
+        socket.send(JSON.stringify({ type: "local_speech_stopped", rms, threshold: stopThreshold }));
+      }
+    }
+    const pcm = downsampleToPCM16(samples, captureContext.sampleRate, INPUT_RATE);
+    socket.send(pcm);
+  };
+  source.connect(captureNode);
+  captureNode.connect(silent);
+  silent.connect(captureContext.destination);
+  await captureContext.resume();
+}
+
+function handleControl(event) {
+  switch (event.type) {
+    case "ready":
+      window.idleFace?.setConnecting(false);
+      setConnected(true);
+      setStatus("Connected — listening");
+      break;
+    case "speech_started":
+      setStatus("Speech detected");
+      break;
+    case "speech_stopped":
+      setStatus("On — listening");
+      break;
+    case "clear_audio":
+      assistantPlaybackActive = false;
+      playbackNode?.port.postMessage({ type: "clear" });
+      window.idleFace?.setSpeechLevel(0, true);
+      assistantEntry = null;
+      break;
+    case "user_transcript":
+      logLine(`You: ${event.text}`);
+      break;
+    case "assistant_transcript_delta":
+      if (!assistantEntry) assistantEntry = event.text;
+      else assistantEntry += event.text;
+      break;
+    case "response_started":
+      assistantPlaybackActive = true;
+      if (assistantEntry) logLine(`Ada: ${assistantEntry}`);
+      assistantEntry = "";
+      if (playbackContext?.state === "suspended") playbackContext.resume().catch(() => {});
+      break;
+    case "response_completed":
+      assistantPlaybackActive = false;
+      if (assistantEntry) logLine(`Ada: ${assistantEntry}`);
+      assistantEntry = null;
+      playbackNode?.port.postMessage({ type: "flush" });
+      break;
+    case "response_interrupted":
+      assistantPlaybackActive = false;
+      window.idleFace?.setSpeechLevel(0, true);
+      assistantEntry = null;
+      break;
+    case "expression":
+      window.idleFace?.setExpression(event.name);
+      break;
+    case "error":
+      logLine(`Error: ${event.message}`, "system");
+      break;
+  }
+}
+
+async function connect() {
+  if (connectionInProgress || socket) return;
+  connectionInProgress = true;
+  window.idleFace?.setConnecting(true);
+  setStatus("Requesting microphone…");
+  try {
+    await createPlayback();
+    await startMicrophone();
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    socket = new WebSocket(`${scheme}://${location.host}/ws`);
+    socket.binaryType = "arraybuffer";
+    socket.onopen = () => setStatus("Connecting to AI…");
+    socket.onmessage = (message) => {
+      if (typeof message.data === "string") handleControl(JSON.parse(message.data));
+      else playbackNode?.port.postMessage(message.data, [message.data]);
+    };
+    socket.onerror = () => logLine("WebSocket error", "system");
+    socket.onclose = () => disconnect(false);
+  } catch (error) {
+    window.idleFace?.setConnecting(false, true);
+    console.error(error);
+    setStatus(error.message);
+    await disconnect(false);
+  } finally {
+    connectionInProgress = false;
+  }
+}
+
+async function disconnect(closeSocket = true) {
+  window.idleFace?.setConnecting(false, true);
+  if (closeSocket && socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "user disconnect");
+  socket = null;
+  if (captureNode) captureNode.disconnect();
+  if (playbackMeterFrame) cancelAnimationFrame(playbackMeterFrame);
+  playbackMeterFrame = null;
+  playbackAnalyser = null;
+  if (stream) stream.getTracks().forEach(track => track.stop());
+  if (captureContext) await captureContext.close().catch(() => {});
+  if (playbackContext) await playbackContext.close().catch(() => {});
+  stream = captureContext = playbackContext = captureNode = playbackNode = null;
+  localSpeechActive = false;
+  speechAboveFrames = speechBelowFrames = 0;
+  microphoneNoiseFloor = .004;
+  assistantEntry = null;
+  setStatus("Disconnected");
+  setConnected(false);
+  window.idleFace?.setSpeechLevel(0, true);
+}
+
+connectButton?.addEventListener("click", connect);
+disconnectButton?.addEventListener("click", () => disconnect(true));
