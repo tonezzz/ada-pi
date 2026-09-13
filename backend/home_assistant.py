@@ -17,7 +17,13 @@ DEFAULT_HOME_PLUGS = (
     "light.office_desk_rbg_light",
 )
 CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "input_boolean"}
-DOMAIN_PRIORITY = {"light": 0, "fan": 1, "switch": 2, "input_boolean": 3}
+DISCOVERABLE_DOMAINS = CONTROLLABLE_DOMAINS | {"cover", "button", "media_player"}
+DOMAIN_PRIORITY = {"light": 0, "fan": 1, "switch": 2, "input_boolean": 3, "media_player": 4, "cover": 5, "button": 6}
+COVER_ACTIONS = {"open": "open_cover", "close": "close_cover", "stop": "stop_cover"}
+MEDIA_PLAYER_ACTIONS = {
+    "turn_on", "turn_off", "media_play", "media_pause", "media_stop",
+    "volume_up", "volume_down", "volume_mute", "select_source",
+}
 
 
 @dataclass(slots=True)
@@ -79,7 +85,7 @@ class HomeAssistantClient:
         for item in states:
             entity_id = str(item.get("entity_id", ""))
             domain, separator, object_id = entity_id.partition(".")
-            if domain not in CONTROLLABLE_DOMAINS:
+            if domain not in DISCOVERABLE_DOMAINS:
                 continue
             attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
             entity = {
@@ -130,6 +136,53 @@ class HomeAssistantClient:
         response = await client.post(f"/api/services/{domain}/{service}", json={"entity_id": entity_id})
         response.raise_for_status()
         return {"entity_id": entity_id, "state": "on" if turn_on else "off"}
+
+    async def control_cover(self, entity_id: str, action: str) -> dict[str, Any]:
+        """Open, close, or stop a cover (gate, shutter, curtain)."""
+        domain, separator, _ = entity_id.partition(".")
+        if domain != "cover":
+            raise ValueError("control_cover only accepts cover.* entity_ids")
+        if action not in COVER_ACTIONS:
+            raise ValueError(f"action must be one of: {', '.join(COVER_ACTIONS)}")
+        client = await self._http_client()
+        service = COVER_ACTIONS[action]
+        response = await client.post(f"/api/services/cover/{service}", json={"entity_id": entity_id})
+        response.raise_for_status()
+        return {"entity_id": entity_id, "action": action, "service": service}
+
+    async def press_button(self, entity_id: str) -> dict[str, Any]:
+        """Press a Home Assistant button entity."""
+        domain, separator, _ = entity_id.partition(".")
+        if domain != "button":
+            raise ValueError("press_button only accepts button.* entity_ids")
+        client = await self._http_client()
+        response = await client.post("/api/services/button/press", json={"entity_id": entity_id})
+        response.raise_for_status()
+        return {"entity_id": entity_id, "pressed": True}
+
+    async def control_media_player(self, entity_id: str, action: str, source: str | None = None) -> dict[str, Any]:
+        """Turn on/off, play, pause, or select a source on a media player."""
+        domain, separator, _ = entity_id.partition(".")
+        if domain != "media_player":
+            raise ValueError("control_media_player only accepts media_player.* entity_ids")
+        if action not in MEDIA_PLAYER_ACTIONS:
+            raise ValueError(f"action must be one of: {', '.join(sorted(MEDIA_PLAYER_ACTIONS))}")
+        client = await self._http_client()
+        if action == "select_source":
+            if not source:
+                raise ValueError("select_source requires a source value")
+            response = await client.post("/api/services/media_player/select_source", json={"entity_id": entity_id, "source": source})
+        else:
+            response = await client.post(f"/api/services/media_player/{action}", json={"entity_id": entity_id})
+        response.raise_for_status()
+        return {"entity_id": entity_id, "action": action, "source": source}
+
+    async def tv_action(self, cmd: str, text: str = "") -> dict[str, Any]:
+        """Call the Home Assistant rest_command.tv_action service."""
+        client = await self._http_client()
+        response = await client.post("/api/services/rest_command/tv_action", json={"cmd": cmd, "text": text})
+        response.raise_for_status()
+        return {"cmd": cmd, "text": text}
 
     async def _http_client(self) -> Any:
         if not self.token:

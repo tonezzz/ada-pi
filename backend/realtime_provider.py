@@ -102,13 +102,18 @@ class GeminiLiveProvider(RealtimeProvider):
             "ask the user to hold it steady or move it closer instead. When the user "
             "asks what habits are tracked, their habit status, or their progress, always "
             "call get_habit_status and ground the answer in its current result."
-            " You have Home Assistant device control through three tools: "
+            " You have Home Assistant device control through several tools: "
             "get_home_state to check occupancy and the state of the configured home plugs, "
-            "list_home_devices to list all controllable devices with their friendly name, entity_id, state, and domain, "
-            "and control_entity to turn a device on or off. When the user asks about devices, plugs, lights, switches, "
-            "occupancy, or what is on or off, call get_home_state or list_home_devices first. "
-            "When the user asks to turn a device on or off, use search_home_devices if the exact entity_id is unknown, "
-            "then call control_entity with the exact entity_id from list_home_devices or search_home_devices."
+            "list_home_devices to list all devices including lights, switches, covers, buttons, and media players, "
+            "search_home_devices to find a device by name, "
+            "control_entity to turn a light/switch/fan on or off, "
+            "control_cover to open, close, or stop a gate or shutter, "
+            "press_button to press a button entity, "
+            "control_media_player to turn on/off, play, pause, or change source on a TV or speaker, "
+            "and tv_action to send a command to the LG TV via rest_command.tv_action. "
+            "When the user asks about devices, occupancy, or what is on/off, call get_home_state or list_home_devices first. "
+            "When the user asks to turn something on/off, control a gate, or operate the TV, "
+            "use search_home_devices to find the exact entity_id or use tv_action with the right cmd/text, then call the matching control tool."
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -257,6 +262,99 @@ class GeminiLiveProvider(RealtimeProvider):
                             }
                         },
                         "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "control_cover",
+                    "description": (
+                        "Open, close, or stop a Home Assistant cover such as a gate or roller shutter. "
+                        "Use this when the user asks to open/close the gate, garage, or shutter."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "The cover.* entity_id, e.g. cover.gate_motor.",
+                            },
+                            "action": {
+                                "type": "string",
+                                "enum": ["open", "close", "stop"],
+                                "description": "The cover action: open, close, or stop.",
+                            },
+                        },
+                        "required": ["entity_id", "action"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "press_button",
+                    "description": (
+                        "Press a Home Assistant button entity. "
+                        "Use this for 'my position' buttons or one-shot commands."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "The button.* entity_id, e.g. button.gate_motor_my_position.",
+                            },
+                        },
+                        "required": ["entity_id"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "control_media_player",
+                    "description": (
+                        "Control a Home Assistant media player (TV, speaker). "
+                        "Supports turn_on, turn_off, media_play, media_pause, media_stop, "
+                        "volume_up, volume_down, volume_mute, and select_source. "
+                        "Use this to turn the TV on or off or change playback."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "The media_player.* entity_id, e.g. media_player.lg_webos_tv_nano81tsa.",
+                            },
+                            "action": {
+                                "type": "string",
+                                "enum": ["turn_on", "turn_off", "media_play", "media_pause", "media_stop", "volume_up", "volume_down", "volume_mute", "select_source"],
+                                "description": "The media_player action.",
+                            },
+                            "source": {
+                                "type": "string",
+                                "description": "Required for select_source; the input/source name to select.",
+                            },
+                        },
+                        "required": ["entity_id", "action"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "tv_action",
+                    "description": (
+                        "Send a command to the LG TV through the Home Assistant rest_command.tv_action service. "
+                        "Use this for casting or navigation commands such as cmd='nav' with text='screenlive:workspace:1' or 'tony-omen:workspace:1'. "
+                        "The cmd and text values are passed straight to the TV action REST command."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "cmd": {
+                                "type": "string",
+                                "description": "Command key, e.g. 'nav' or 'power'.",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Command text/payload, e.g. 'screenlive:workspace:1' or 'tony-omen:workspace:1'.",
+                            },
+                        },
+                        "required": ["cmd"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -424,6 +522,54 @@ class GeminiLiveProvider(RealtimeProvider):
                                     result = {"output": f"Turned {'on' if on else 'off'} {entity_id}: {outcome}"}
                             except Exception as exc:
                                 result = {"error": f"control_entity failed: {exc}"}
+                        elif call.name == "control_cover" and self.home_assistant_client is not None:
+                            try:
+                                args = dict(call.args or {})
+                                entity_id = args.get("entity_id")
+                                action = args.get("action")
+                                if not entity_id or not action:
+                                    result = {"error": "entity_id and action are required"}
+                                else:
+                                    outcome = await self.home_assistant_client.control_cover(entity_id, action)
+                                    result = {"output": outcome}
+                            except Exception as exc:
+                                result = {"error": f"control_cover failed: {exc}"}
+                        elif call.name == "press_button" and self.home_assistant_client is not None:
+                            try:
+                                args = dict(call.args or {})
+                                entity_id = args.get("entity_id")
+                                if not entity_id:
+                                    result = {"error": "entity_id is required"}
+                                else:
+                                    outcome = await self.home_assistant_client.press_button(entity_id)
+                                    result = {"output": outcome}
+                            except Exception as exc:
+                                result = {"error": f"press_button failed: {exc}"}
+                        elif call.name == "control_media_player" and self.home_assistant_client is not None:
+                            try:
+                                args = dict(call.args or {})
+                                entity_id = args.get("entity_id")
+                                action = args.get("action")
+                                source = args.get("source")
+                                if not entity_id or not action:
+                                    result = {"error": "entity_id and action are required"}
+                                else:
+                                    outcome = await self.home_assistant_client.control_media_player(entity_id, action, source)
+                                    result = {"output": outcome}
+                            except Exception as exc:
+                                result = {"error": f"control_media_player failed: {exc}"}
+                        elif call.name == "tv_action" and self.home_assistant_client is not None:
+                            try:
+                                args = dict(call.args or {})
+                                cmd = args.get("cmd")
+                                text = args.get("text", "")
+                                if not cmd:
+                                    result = {"error": "cmd is required"}
+                                else:
+                                    outcome = await self.home_assistant_client.tv_action(cmd, text)
+                                    result = {"output": outcome}
+                            except Exception as exc:
+                                result = {"error": f"tv_action failed: {exc}"}
                         elif call.name == "report_habit_observation":
                             args = dict(call.args or {})
                             yield ProviderEvent("habit_observation", args)
