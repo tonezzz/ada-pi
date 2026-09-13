@@ -44,7 +44,7 @@ Ada's capabilities:
 - You have a camera for current visual context. Describe only what is clearly visible and ask for a better view when uncertain.
 - Your animated face can express neutral, sassy, amused, skeptical, annoyed, mad, concerned, surprised, mischievous, serious, or alert.
 - You monitor habits such as seated posture. Local pose estimation proposes events, Gemini vision verifies ambiguous ones, and confirmed occurrences can become possible, emerging, or established habits over time.
-- You also track office lights left on while the user is away from home or the office has remained empty. Home Assistant supplies authoritative person and light states; local vision supplies office presence while the user is home.
+- You also track home plugs left on while the user is away or the home has remained empty. Home Assistant supplies authoritative person and plug states; local vision supplies home presence while the user is home.
 - Habit alerts may arrive with a current image and structured context. Give a brief, dry observation and one practical correction. Distinguish a first possible habit, another occurrence, and an established habit that now clearly needs attention.
 - You can discuss current habit status and help the user choose small, realistic corrective actions.
 
@@ -80,7 +80,7 @@ class RealtimeProvider(abc.ABC):
 class GeminiLiveProvider(RealtimeProvider):
     """Gemini 3.1 Flash Live over Google's asynchronous Live API SDK."""
 
-    def __init__(self, instructions: str | None = None, office_state_getter: Any = None,
+    def __init__(self, instructions: str | None = None, home_assistant_client: Any = None,
                  habit_state_getter: Any = None) -> None:
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
@@ -102,6 +102,13 @@ class GeminiLiveProvider(RealtimeProvider):
             "ask the user to hold it steady or move it closer instead. When the user "
             "asks what habits are tracked, their habit status, or their progress, always "
             "call get_habit_status and ground the answer in its current result."
+            " You have Home Assistant device control through three tools: "
+            "get_home_state to check occupancy and the state of the configured home plugs, "
+            "list_home_devices to list all controllable devices with their friendly name, entity_id, state, and domain, "
+            "and control_entity to turn a device on or off. When the user asks about devices, plugs, lights, switches, "
+            "occupancy, or what is on or off, call get_home_state or list_home_devices first. "
+            "When the user asks to turn a device on or off, use search_home_devices if the exact entity_id is unknown, "
+            "then call control_entity with the exact entity_id from list_home_devices or search_home_devices."
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -111,7 +118,7 @@ class GeminiLiveProvider(RealtimeProvider):
         self.session_id = "-"
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
-        self.office_state_getter = office_state_getter
+        self.home_assistant_client = home_assistant_client
         self.habit_state_getter = habit_state_getter
 
     async def connect(self, resumption_handle: str | None = None) -> None:
@@ -183,17 +190,73 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "get_office_state",
+                    "name": "get_home_state",
                     "description": (
-                        "Returns current read-only Home Assistant office-light state, "
-                        "whether the user is home, recent local office occupancy, and any "
+                        "Returns current read-only Home Assistant home-plug state, "
+                        "whether the user is home, recent local home occupancy, and any "
                         "active five-minute or latched habit condition. Use this when asked "
-                        "about office lights, occupancy, or whether lights were left on."
+                        "about home plugs, occupancy, or whether plugs were left on."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "control_entity",
+                    "description": (
+                        "Turn on or off a Home Assistant light, switch, fan, or input_boolean. "
+                        "Use this when the user asks to turn something on or off."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "The Home Assistant entity_id to control, e.g. light.living_room.",
+                            },
+                            "on": {
+                                "type": "boolean",
+                                "description": "True to turn the entity on, false to turn it off.",
+                            },
+                        },
+                        "required": ["entity_id", "on"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "list_home_devices",
+                    "description": (
+                        "Lists every controllable Home Assistant device (lights, switches, fans, input_booleans) "
+                        "with its entity_id, friendly name, current state, domain, and availability. "
+                        "Use this to answer 'what devices are available', 'what can I control', or to find "
+                        "the exact entity_id before calling control_entity."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "search_home_devices",
+                    "description": (
+                        "Searches controllable Home Assistant devices by name or entity_id. "
+                        "Returns the best matching devices with entity_id, friendly name, state, domain, and availability. "
+                        "Use this when the user asks to control a device by name (e.g. 'turn on kitchen table') "
+                        "and you need to find the exact entity_id."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "A device name or keyword to search, e.g. 'kitchen table', 'front gate', or 'outlet'.",
+                            }
+                        },
+                        "required": ["query"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -316,8 +379,51 @@ class GeminiLiveProvider(RealtimeProvider):
                         if call.name == "set_facial_expression" and requested in EXPRESSION_NAMES:
                             yield ProviderEvent("expression", {"name": requested})
                             result = {"output": f"Ada is now {requested}"}
-                        elif call.name == "get_office_state" and self.office_state_getter is not None:
-                            result = {"output": self.office_state_getter()}
+                        elif call.name == "get_home_state" and self.home_assistant_client is not None:
+                            try:
+                                snapshot = await self.home_assistant_client.snapshot()
+                                plugs_on_named = [
+                                    {"entity_id": e, "name": snapshot.plug_names.get(e, e)}
+                                    for e in snapshot.plugs_on
+                                ]
+                                all_plugs = {
+                                    e: {"name": snapshot.plug_names.get(e, e), "state": state}
+                                    for e, state in snapshot.plug_states.items()
+                                }
+                                result = {
+                                    "output": {
+                                        "person": snapshot.person_state,
+                                        "plugs_on": plugs_on_named,
+                                        "all_plugs": all_plugs,
+                                    }
+                                }
+                            except Exception as exc:
+                                result = {"error": f"home state failed: {exc}"}
+                        elif call.name == "list_home_devices" and self.home_assistant_client is not None:
+                            try:
+                                devices = await self.home_assistant_client.entities()
+                                result = {"output": devices}
+                            except Exception as exc:
+                                result = {"error": f"list_home_devices failed: {exc}"}
+                        elif call.name == "search_home_devices" and self.home_assistant_client is not None:
+                            try:
+                                query = (call.args or {}).get("query", "")
+                                devices = await self.home_assistant_client.search_entities(str(query))
+                                result = {"output": devices}
+                            except Exception as exc:
+                                result = {"error": f"search_home_devices failed: {exc}"}
+                        elif call.name == "control_entity" and self.home_assistant_client is not None:
+                            try:
+                                args = dict(call.args or {})
+                                entity_id = args.get("entity_id")
+                                on = args.get("on")
+                                if not entity_id or not isinstance(on, bool):
+                                    result = {"error": "entity_id and on are required"}
+                                else:
+                                    outcome = await self.home_assistant_client.set_power(entity_id, on)
+                                    result = {"output": f"Turned {'on' if on else 'off'} {entity_id}: {outcome}"}
+                            except Exception as exc:
+                                result = {"error": f"control_entity failed: {exc}"}
                         elif call.name == "report_habit_observation":
                             args = dict(call.args or {})
                             yield ProviderEvent("habit_observation", args)
@@ -431,10 +537,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 logger.debug("Gemini client close did not complete cleanly", exc_info=True)
 
 
-def create_provider(instructions: str | None = None, office_state_getter: Any = None,
+def create_provider(instructions: str | None = None, home_assistant_client: Any = None,
                     habit_state_getter: Any = None) -> RealtimeProvider:
     return GeminiLiveProvider(
         instructions=instructions,
-        office_state_getter=office_state_getter,
+        home_assistant_client=home_assistant_client,
         habit_state_getter=habit_state_getter,
     )

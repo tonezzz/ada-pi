@@ -33,7 +33,7 @@ async def voice_socket(ws: WebSocket) -> None:
     await ws.accept()
     session_id = uuid.uuid4().hex[:10]
     logger.info("session=%s client connected", session_id)
-    provider = create_provider()
+    provider = create_provider(home_assistant_client=ha_client)
     closed = asyncio.Event()
 
     try:

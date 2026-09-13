@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 
 
-DEFAULT_OFFICE_LIGHTS = (
+DEFAULT_HOME_PLUGS = (
     "light.left_office_light",
     "light.right_office_light",
     "light.office_chest_overhead_light",
@@ -23,8 +23,9 @@ DOMAIN_PRIORITY = {"light": 0, "fan": 1, "switch": 2, "input_boolean": 3}
 @dataclass(slots=True)
 class HomeAssistantSnapshot:
     person_state: str
-    lights_on: tuple[str, ...]
-    light_states: dict[str, str]
+    plugs_on: tuple[str, ...]
+    plug_states: dict[str, str]
+    plug_names: dict[str, str]
 
 
 class HomeAssistantClient:
@@ -32,10 +33,10 @@ class HomeAssistantClient:
         self.base_url = os.environ.get("HOME_ASSISTANT_URL", "http://127.0.0.1:8123").rstrip("/")
         self.token = os.environ.get("HOME_ASSISTANT_TOKEN", "").strip()
         self.person_entity = os.environ.get("HOME_ASSISTANT_PERSON", "person.naz").strip()
-        configured = os.environ.get("HOME_ASSISTANT_OFFICE_LIGHTS", "")
-        self.light_entities = tuple(
+        configured = os.environ.get("HOME_ASSISTANT_HOME_PLUGS", "")
+        self.home_plug_entities = tuple(
             item.strip() for item in configured.split(",") if item.strip()
-        ) or DEFAULT_OFFICE_LIGHTS
+        ) or DEFAULT_HOME_PLUGS
         self._client = client
         self._owns_client = client is None
 
@@ -54,16 +55,21 @@ class HomeAssistantClient:
             )
         response = await self._client.get("/api/states")
         response.raise_for_status()
-        states = {
-            str(item.get("entity_id")): str(item.get("state", "unknown"))
-            for item in response.json()
-            if isinstance(item, dict) and item.get("entity_id")
-        }
-        light_states = {entity: states.get(entity, "unavailable") for entity in self.light_entities}
+        states = {}
+        names = {}
+        for item in response.json():
+            if isinstance(item, dict) and item.get("entity_id"):
+                entity_id = str(item.get("entity_id"))
+                states[entity_id] = str(item.get("state", "unknown"))
+                attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+                names[entity_id] = str(attributes.get("friendly_name") or entity_id)
+        plug_states = {entity: states.get(entity, "unavailable") for entity in self.home_plug_entities}
+        plug_names = {entity: names.get(entity, entity) for entity in self.home_plug_entities}
         return HomeAssistantSnapshot(
             person_state=states.get(self.person_entity, "unavailable"),
-            lights_on=tuple(entity for entity, state in light_states.items() if state == "on"),
-            light_states=light_states,
+            plugs_on=tuple(entity for entity, state in plug_states.items() if state == "on"),
+            plug_states=plug_states,
+            plug_names=plug_names,
         )
 
     async def entities(self) -> list[dict[str, Any]]:
@@ -91,6 +97,29 @@ class HomeAssistantClient:
                 entities_by_object_id[object_id] = entity
         entities = list(entities_by_object_id.values())
         return sorted(entities, key=lambda entity: (entity["domain"], entity["name"].lower()))
+
+    async def search_entities(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Return controllable entities whose name or entity_id best matches the query."""
+        q = query.strip().lower()
+        if not q:
+            return []
+        all_entities = await self.entities()
+
+        def score(entity: dict[str, Any]) -> int:
+            name = entity.get("name", "").lower()
+            eid = entity.get("entity_id", "").lower()
+            object_id = eid.split(".", 1)[-1]
+            if q == name or q == eid or q == object_id:
+                return 100
+            if q in name or q in eid:
+                return 50
+            tokens = q.split()
+            return sum(15 for token in tokens if token in name or token in object_id)
+
+        scored = [(score(entity), entity) for entity in all_entities]
+        scored = [pair for pair in scored if pair[0] > 0]
+        scored.sort(key=lambda pair: (-pair[0], pair[1]["name"].lower()))
+        return [entity for _, entity in scored[:limit]]
 
     async def set_power(self, entity_id: str, turn_on: bool) -> dict[str, Any]:
         domain, separator, _ = entity_id.partition(".")
