@@ -113,7 +113,10 @@ class GeminiLiveProvider(RealtimeProvider):
             "and tv_action to send a command to the LG TV via rest_command.tv_action. "
             "When the user asks about devices, occupancy, or what is on/off, call get_home_state or list_home_devices first. "
             "When the user asks to turn something on/off, control a gate, or operate the TV, "
-            "use search_home_devices to find the exact entity_id or use tv_action with the right cmd/text, then call the matching control tool."
+            "use search_home_devices to find the exact entity_id or use tv_action with the right cmd/text, then call the matching control tool. "
+            "For safety, before using control_cover to open or close the gate or any shutter, "
+            "always warn that something could be blocking it and ask the user to confirm explicitly. "
+            "Only call control_cover for the gate or a shutter after the user has given a clear second confirmation."
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -268,7 +271,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "control_cover",
                     "description": (
                         "Open, close, or stop a Home Assistant cover such as a gate or roller shutter. "
-                        "Use this when the user asks to open/close the gate, garage, or shutter."
+                        "Use this when the user asks to open/close the gate, garage, or shutter. "
+                        "Only call this tool after the user has explicitly confirmed there is nothing blocking the gate or shutter."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
