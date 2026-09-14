@@ -405,6 +405,26 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "get_battery_detail",
+                    "description": (
+                        "Returns detailed readings for a single battery (1, 2, or 3). "
+                        "Use this when the user asks for 'battery 1 details', 'battery 2 status', or 'tell me about each battery'."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "battery_index": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 3,
+                                "description": "The battery number to detail: 1, 2, or 3.",
+                            }
+                        },
+                        "required": ["battery_index"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "get_inverter_status",
                     "description": (
                         "Returns current inverter details: PV power, load power, grid power, battery power, AC output, voltage, frequency, and operating mode. "
@@ -426,6 +446,39 @@ class GeminiLiveProvider(RealtimeProvider):
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "get_rk600_weather",
+                    "description": (
+                        "Returns the local RK600 weather station readings: wind speed, wind direction, temperature, humidity, pressure, rainfall, and device status. "
+                        "Use this when the user asks about the weather station, wind, or the RK600 card. "
+                        "Do NOT use this for forecast/Met.no weather; use search_sensors('weather') for that."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "get_dashboard_tab",
+                    "description": (
+                        "Reads the named tab from the michael-ha tony-test dashboard and returns "
+                        "the entities it displays with their current states. "
+                        "Use this when the user asks 'what is on the TPL tab', 'what devices are on V1', "
+                        "or 'what does the TPL tab show'."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "tab": {
+                                "type": "string",
+                                "description": "The dashboard tab title, e.g. 'TPL', 'V0', 'V1', 'SK'.",
+                            }
+                        },
+                        "required": ["tab"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -705,6 +758,14 @@ class GeminiLiveProvider(RealtimeProvider):
                                 result = {"output": status}
                             except Exception as exc:
                                 result = {"error": f"get_battery_status failed: {exc}"}
+                        elif call.name == "get_battery_detail" and self.home_assistant_client is not None:
+                            try:
+                                args = dict(call.args or {})
+                                index = int(args.get("battery_index", 1))
+                                status = await self.home_assistant_client.battery_detail(index)
+                                result = {"output": status}
+                            except Exception as exc:
+                                result = {"error": f"get_battery_detail failed: {exc}"}
                         elif call.name == "get_inverter_status" and self.home_assistant_client is not None:
                             try:
                                 status = await self.home_assistant_client.inverter_status()
@@ -717,6 +778,23 @@ class GeminiLiveProvider(RealtimeProvider):
                                 result = {"output": status}
                             except Exception as exc:
                                 result = {"error": f"get_pool_status failed: {exc}"}
+                        elif call.name == "get_rk600_weather" and self.home_assistant_client is not None:
+                            try:
+                                weather = await self.home_assistant_client.rk600_weather()
+                                result = {"output": weather}
+                            except Exception as exc:
+                                result = {"error": f"get_rk600_weather failed: {exc}"}
+                        elif call.name == "get_dashboard_tab" and self.home_assistant_client is not None:
+                            try:
+                                args = dict(call.args or {})
+                                tab = args.get("tab")
+                                if not tab:
+                                    result = {"error": "tab is required"}
+                                else:
+                                    info = await self.home_assistant_client.dashboard_tab(str(tab))
+                                    result = {"output": info}
+                            except Exception as exc:
+                                result = {"error": f"get_dashboard_tab failed: {exc}"}
                         elif call.name == "get_power_summary" and self.home_assistant_client is not None:
                             try:
                                 args = dict(call.args or {})
