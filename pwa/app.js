@@ -186,7 +186,7 @@ async function startMicrophone() {
       }
     }
     const pcm = downsampleToPCM16(samples, captureContext.sampleRate, INPUT_RATE);
-    socket.send(pcm);
+    if (!assistantPlaybackActive) socket.send(pcm);
   };
   source.connect(captureNode);
   captureNode.connect(silent);

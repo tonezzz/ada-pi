@@ -150,9 +150,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }
             },
             "realtime_input_config": {
-                # Be explicit about barge-in and favor detecting near-end speech
-                # over the assistant audio playing through the Pi's speakers.
-                "activity_handling": types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+                # Prevent the assistant from cutting itself off on iPad/iPhone
+                # speakers whose microphone picks up the playback audio.
+                "activity_handling": types.ActivityHandling.NO_INTERRUPTION,
                 "automatic_activity_detection": {
                     "disabled": False,
                     # Speaker echo can otherwise look like a new user turn and
