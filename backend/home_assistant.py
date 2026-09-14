@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
+import statistics
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -23,6 +26,38 @@ COVER_ACTIONS = {"open": "open_cover", "close": "close_cover", "stop": "stop_cov
 MEDIA_PLAYER_ACTIONS = {
     "turn_on", "turn_off", "media_play", "media_pause", "media_stop",
     "volume_up", "volume_down", "volume_mute", "select_source",
+}
+G3_POWER_ENTITIES = [
+    "sensor.inverters_1_pv_power",
+    "sensor.inverters_1_pv_power_1",
+    "sensor.inverters_1_pv_power_2",
+    "sensor.inverters_1_pv_power_3",
+    "sensor.inverters_1_pv_power_4",
+    "sensor.inverters_1_load_power",
+    "sensor.inverters_1_load_power_essential",
+    "sensor.inverters_1_grid_power",
+    "sensor.totals_battery_power",
+    "sensor.batteries_1_power",
+    "sensor.batteries_2_power",
+    "sensor.batteries_3_power",
+    "sensor.weather_pv_power_predicted",
+    "sensor.totals_pv_power",
+]
+POWER_SUMMARY_LABELS = {
+    "sensor.inverters_1_pv_power": "pv",
+    "sensor.inverters_1_pv_power_1": "pv1",
+    "sensor.inverters_1_pv_power_2": "pv2",
+    "sensor.inverters_1_pv_power_3": "pv3",
+    "sensor.inverters_1_pv_power_4": "pv4",
+    "sensor.inverters_1_load_power": "load",
+    "sensor.inverters_1_load_power_essential": "load_essential",
+    "sensor.inverters_1_grid_power": "grid",
+    "sensor.totals_battery_power": "battery_total",
+    "sensor.batteries_1_power": "battery_1",
+    "sensor.batteries_2_power": "battery_2",
+    "sensor.batteries_3_power": "battery_3",
+    "sensor.weather_pv_power_predicted": "weather_pv",
+    "sensor.totals_pv_power": "totals_pv",
 }
 
 
@@ -183,6 +218,122 @@ class HomeAssistantClient:
         response = await client.post("/api/services/rest_command/tv_action", json={"cmd": cmd, "text": text})
         response.raise_for_status()
         return {"cmd": cmd, "text": text}
+
+    async def get_state(self, entity_id: str) -> dict[str, Any]:
+        client = await self._http_client()
+        response = await client.get(f"/api/states/{entity_id}")
+        response.raise_for_status()
+        return response.json()
+
+    async def sensors(self, search: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Return sensor entities, optionally filtered by a search term."""
+        states = await self._states()
+        q = (search or "").lower()
+        sensors = []
+        for item in states:
+            entity_id = str(item.get("entity_id", ""))
+            domain, _, _ = entity_id.partition(".")
+            if domain != "sensor":
+                continue
+            attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+            name = str(attributes.get("friendly_name") or entity_id).lower()
+            if q and q not in entity_id.lower() and q not in name:
+                continue
+            sensors.append({
+                "entity_id": entity_id,
+                "name": attributes.get("friendly_name") or entity_id,
+                "state": str(item.get("state", "unknown")),
+                "unit": attributes.get("unit_of_measurement", ""),
+            })
+        return sensors[:limit]
+
+    async def history(
+        self,
+        entity_ids: list[str] | str,
+        hours: int = 24,
+        end: datetime | None = None,
+    ) -> list[list[dict[str, Any]]]:
+        """Fetch HA history for one or more entities for the last N hours."""
+        if not self.token:
+            raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
+        if isinstance(entity_ids, str):
+            entity_ids = [entity_ids]
+        if not entity_ids:
+            return []
+        if end is None:
+            end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=hours)
+        # Home Assistant expects a URL-encoded ISO 8601 string; the "+00:00"
+        # offset is not parsed correctly if left unencoded, so use Z notation.
+        start_str = start.replace(microsecond=0).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_str = end.replace(microsecond=0).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        client = await self._http_client()
+        filters = ",".join(entity_ids)
+        url = (
+            f"/api/history/period/{start_str}"
+            f"?filter_entity_id={filters}"
+            f"&end_time={end_str}"
+            f"&minimal_response&no_attributes"
+        )
+        response = await client.get(url)
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, list) else []
+
+    async def power_summary(self, hours: int = 24) -> dict[str, Any]:
+        """Return current and historical summary for G3 power sensors."""
+        if not self.token:
+            raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
+        states = await self._states()
+        by_id = {item.get("entity_id"): item for item in states if isinstance(item, dict)}
+
+        now = {}
+        for entity_id in G3_POWER_ENTITIES:
+            item = by_id.get(entity_id)
+            attributes = item.get("attributes") if isinstance(item, dict) and isinstance(item.get("attributes"), dict) else {}
+            now[POWER_SUMMARY_LABELS.get(entity_id, entity_id)] = {
+                "entity_id": entity_id,
+                "state": str(item.get("state", "unknown")) if isinstance(item, dict) else "unknown",
+                "name": attributes.get("friendly_name") or entity_id,
+                "unit": attributes.get("unit_of_measurement", ""),
+            }
+
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=hours)
+        series_list = await self.history(G3_POWER_ENTITIES, hours=hours, end=end)
+        history: dict[str, Any] = {}
+        for series in series_list:
+            if not series:
+                continue
+            first = series[0]
+            eid = first.get("entity_id", "")
+            key = POWER_SUMMARY_LABELS.get(eid, eid)
+            values = []
+            for point in series:
+                try:
+                    ts = point.get("last_updated") or point.get("last_changed")
+                    value = float(point.get("state"))
+                    values.append({"time": ts, "value": value})
+                except (ValueError, TypeError):
+                    continue
+            if values:
+                nums = [v["value"] for v in values]
+                history[key] = {
+                    "entity_id": eid,
+                    "points": len(nums),
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "min": round(min(nums), 2),
+                    "max": round(max(nums), 2),
+                    "mean": round(statistics.mean(nums), 2),
+                }
+            else:
+                history[key] = {"entity_id": eid, "points": 0}
+
+        return {
+            "now": now,
+            f"last_{hours}h": history,
+        }
 
     async def _http_client(self) -> Any:
         if not self.token:

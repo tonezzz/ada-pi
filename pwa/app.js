@@ -255,7 +255,8 @@ async function connect() {
     await createPlayback();
     await startMicrophone();
     const scheme = location.protocol === "https:" ? "wss" : "ws";
-    socket = new WebSocket(`${scheme}://${location.host}/ws`);
+    const basePath = location.pathname.replace(/\/[^\/]*$/, "");
+    socket = new WebSocket(`${scheme}://${location.host}${basePath}/ws`);
     socket.binaryType = "arraybuffer";
     socket.onopen = () => setStatus("Connecting to AI…");
     socket.onmessage = (message) => {

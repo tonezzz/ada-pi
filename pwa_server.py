@@ -140,6 +140,40 @@ async def set_power(entity_id: str, request: Request) -> dict:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
+@app.get("/api/home-assistant/sensors")
+async def get_sensors(search: str = "", limit: int = 50) -> dict:
+    if not ha_client.configured:
+        return {"status": "unavailable", "error": "HOME_ASSISTANT_TOKEN not set", "sensors": []}
+    try:
+        return {"status": "connected", "sensors": await ha_client.sensors(search=search or None, limit=limit)}
+    except Exception as exc:
+        logger.warning("home assistant sensors failed: %s", exc)
+        return {"status": "unavailable", "error": str(exc), "sensors": []}
+
+
+@app.get("/api/home-assistant/history")
+async def get_history(entity_id: str, hours: int = 24) -> dict:
+    if not ha_client.configured:
+        return {"status": "unavailable", "error": "HOME_ASSISTANT_TOKEN not set", "history": []}
+    try:
+        history = await ha_client.history(entity_id, hours=hours)
+        return {"status": "connected", "history": history}
+    except Exception as exc:
+        logger.warning("home assistant history failed: %s", exc)
+        return {"status": "unavailable", "error": str(exc), "history": []}
+
+
+@app.get("/api/home-assistant/power-summary")
+async def get_power_summary(hours: int = 24) -> dict:
+    if not ha_client.configured:
+        return {"status": "unavailable", "error": "HOME_ASSISTANT_TOKEN not set", "summary": {}}
+    try:
+        return {"status": "connected", "summary": await ha_client.power_summary(hours=hours)}
+    except Exception as exc:
+        logger.warning("home assistant power summary failed: %s", exc)
+        return {"status": "unavailable", "error": str(exc), "summary": {}}
+
+
 static_dir = ROOT / "frontend"
 pwa_dir = ROOT / "pwa"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")

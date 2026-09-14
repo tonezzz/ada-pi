@@ -362,6 +362,51 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                }, {
+                    "name": "get_power_summary",
+                    "description": (
+                        "Returns the current G3 power summary for solar, grid, load, battery, and inverter. "
+                        "Also returns min/max/mean over the requested hours. "
+                        "Use this when the user asks about solar generation, grid usage, battery, load, or a power summary."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "hours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 168,
+                                "description": "How many hours of history to include in the summary. Defaults to 24.",
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "get_sensor_history",
+                    "description": (
+                        "Fetches the history of a single Home Assistant sensor for the requested hours. "
+                        "Use this when the user asks about a specific sensor's behavior over time."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "The exact Home Assistant entity_id, e.g. sensor.inverters_1_pv_power.",
+                            },
+                            "hours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 168,
+                                "description": "How many hours of history to include. Defaults to 24.",
+                            }
+                        },
+                        "required": ["entity_id"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "report_habit_observation",
                     "description": (
                         "Reports the structured result of a water or junk-food camera "
@@ -574,6 +619,26 @@ class GeminiLiveProvider(RealtimeProvider):
                                     result = {"output": outcome}
                             except Exception as exc:
                                 result = {"error": f"tv_action failed: {exc}"}
+                        elif call.name == "get_power_summary" and self.home_assistant_client is not None:
+                            try:
+                                args = dict(call.args or {})
+                                hours = int(args.get("hours", 24))
+                                summary = await self.home_assistant_client.power_summary(hours=hours)
+                                result = {"output": summary}
+                            except Exception as exc:
+                                result = {"error": f"get_power_summary failed: {exc}"}
+                        elif call.name == "get_sensor_history" and self.home_assistant_client is not None:
+                            try:
+                                args = dict(call.args or {})
+                                entity_id = args.get("entity_id")
+                                hours = int(args.get("hours", 24))
+                                if not entity_id:
+                                    result = {"error": "entity_id is required"}
+                                else:
+                                    history = await self.home_assistant_client.history(entity_id, hours=hours)
+                                    result = {"output": history}
+                            except Exception as exc:
+                                result = {"error": f"get_sensor_history failed: {exc}"}
                         elif call.name == "report_habit_observation":
                             args = dict(call.args or {})
                             yield ProviderEvent("habit_observation", args)
