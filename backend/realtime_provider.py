@@ -362,7 +362,6 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                }, {
                     "name": "get_power_summary",
                     "description": (
                         "Returns the current G3 power summary for solar, grid, load, battery, and inverter. "
