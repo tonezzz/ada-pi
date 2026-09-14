@@ -68,7 +68,7 @@ async function createPlayback() {
         this.bufferedSamples = 0;
         this.playing = false;
         this.forceStart = false;
-        this.startThreshold = 1440;
+        this.startThreshold = 0;
         this.port.onmessage = e => {
           if (e.data.type === 'clear') {
             this.queue = []; this.offset = 0; this.bufferedSamples = 0;
@@ -150,7 +150,7 @@ function startPlaybackMeter() {
 
 async function startMicrophone() {
   stream = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
   });
   const track = stream.getAudioTracks()[0];
   const settings = track.getSettings();
@@ -186,7 +186,7 @@ async function startMicrophone() {
       }
     }
     const pcm = downsampleToPCM16(samples, captureContext.sampleRate, INPUT_RATE);
-    if (!assistantPlaybackActive) socket.send(pcm);
+    socket.send(pcm);
   };
   source.connect(captureNode);
   captureNode.connect(silent);

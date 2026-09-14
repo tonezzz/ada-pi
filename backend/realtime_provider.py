@@ -150,9 +150,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }
             },
             "realtime_input_config": {
-                # Prevent the assistant from cutting itself off on iPad/iPhone
-                # speakers whose microphone picks up the playback audio.
-                "activity_handling": types.ActivityHandling.NO_INTERRUPTION,
+                # Be explicit about barge-in and favor detecting near-end speech
+                # over the assistant audio playing through the iPad/iPhone speakers.
+                "activity_handling": types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
                 "automatic_activity_detection": {
                     "disabled": False,
                     # Speaker echo can otherwise look like a new user turn and
@@ -390,6 +390,42 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["cmd"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "get_battery_status",
+                    "description": (
+                        "Returns current battery details: total and per-battery SOC, voltage, current, power, temperature, and state of health. "
+                        "Use this when the user asks about battery levels, battery health, or battery status."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "get_inverter_status",
+                    "description": (
+                        "Returns current inverter details: PV power, load power, grid power, battery power, AC output, voltage, frequency, and operating mode. "
+                        "Use this when the user asks about the inverter, solar, grid, or load status."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "get_pool_status",
+                    "description": (
+                        "Returns the current pool sensor and switch states, separating available and unavailable/unknown entities. "
+                        "Use this when the user asks about the pool, pool pump, or pool energy."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
                         "additionalProperties": False,
                     },
                 }, {
@@ -663,6 +699,24 @@ class GeminiLiveProvider(RealtimeProvider):
                                     result = {"output": outcome}
                             except Exception as exc:
                                 result = {"error": f"tv_action failed: {exc}"}
+                        elif call.name == "get_battery_status" and self.home_assistant_client is not None:
+                            try:
+                                status = await self.home_assistant_client.battery_status()
+                                result = {"output": status}
+                            except Exception as exc:
+                                result = {"error": f"get_battery_status failed: {exc}"}
+                        elif call.name == "get_inverter_status" and self.home_assistant_client is not None:
+                            try:
+                                status = await self.home_assistant_client.inverter_status()
+                                result = {"output": status}
+                            except Exception as exc:
+                                result = {"error": f"get_inverter_status failed: {exc}"}
+                        elif call.name == "get_pool_status" and self.home_assistant_client is not None:
+                            try:
+                                status = await self.home_assistant_client.pool_status()
+                                result = {"output": status}
+                            except Exception as exc:
+                                result = {"error": f"get_pool_status failed: {exc}"}
                         elif call.name == "get_power_summary" and self.home_assistant_client is not None:
                             try:
                                 args = dict(call.args or {})
