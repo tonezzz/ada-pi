@@ -268,6 +268,37 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "list_sensors",
+                    "description": (
+                        "Lists available Home Assistant sensor entities with their current state, unit, and friendly name. "
+                        "Use this when the user asks 'what sensors do we have', 'what can we monitor', or about environmental/power/energy information."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "search_sensors",
+                    "description": (
+                        "Searches Home Assistant sensor entities by name or entity_id. "
+                        "Returns matching sensors with current state, unit, and friendly name. "
+                        "Use this when the user asks about a specific reading like 'what is the pool temperature' or 'what is the pool energy'."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "A sensor name or keyword to search, e.g. 'pool', 'temperature', 'pv power'.",
+                            }
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "control_cover",
                     "description": (
                         "Open, close, or stop a Home Assistant cover such as a gate or roller shutter. "
@@ -570,6 +601,20 @@ class GeminiLiveProvider(RealtimeProvider):
                                     result = {"output": f"Turned {'on' if on else 'off'} {entity_id}: {outcome}"}
                             except Exception as exc:
                                 result = {"error": f"control_entity failed: {exc}"}
+                        elif call.name == "list_sensors" and self.home_assistant_client is not None:
+                            try:
+                                sensors = await self.home_assistant_client.sensors(limit=50)
+                                result = {"output": sensors}
+                            except Exception as exc:
+                                result = {"error": f"list_sensors failed: {exc}"}
+                        elif call.name == "search_sensors" and self.home_assistant_client is not None:
+                            try:
+                                args = dict(call.args or {})
+                                query = args.get("query", "")
+                                sensors = await self.home_assistant_client.sensors(search=str(query), limit=10)
+                                result = {"output": sensors}
+                            except Exception as exc:
+                                result = {"error": f"search_sensors failed: {exc}"}
                         elif call.name == "control_cover" and self.home_assistant_client is not None:
                             try:
                                 args = dict(call.args or {})
