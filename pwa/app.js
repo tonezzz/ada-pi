@@ -21,6 +21,12 @@ let speechAboveFrames = 0;
 let speechBelowFrames = 0;
 let microphoneNoiseFloor = .004;
 let connectionInProgress = false;
+let micMuted = false;
+const micToggleButton = document.querySelector("#mic-toggle");
+
+function setMicButton(muted) {
+  if (micToggleButton) micToggleButton.textContent = muted ? "Mic: Off" : "Mic: On";
+}
 
 function setStatus(text) {
   if (statusElement) statusElement.textContent = text;
@@ -153,8 +159,10 @@ async function startMicrophone() {
     audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false }
   });
   const track = stream.getAudioTracks()[0];
+  track.enabled = !micMuted;
+  if (micToggleButton) micToggleButton.disabled = false;
   const settings = track.getSettings();
-  setStatus(`Mic on (EC:${settings.echoCancellation}, AGC:${settings.autoGainControl}, ${settings.sampleRate} Hz)`);
+  setStatus(`Mic ${micMuted ? "muted" : "on"} (EC:${settings.echoCancellation}, AGC:${settings.autoGainControl}, ${settings.sampleRate} Hz)`);
 
   captureContext = new AudioContext({ latencyHint: "interactive" });
   const source = captureContext.createMediaStreamSource(stream);
@@ -164,6 +172,7 @@ async function startMicrophone() {
   captureNode.onaudioprocess = (event) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     const samples = event.inputBuffer.getChannelData(0);
+    if (micMuted) return;
     let power = 0;
     for (const sample of samples) power += sample * sample;
     const rms = Math.sqrt(power / samples.length);
@@ -293,8 +302,17 @@ async function disconnect(closeSocket = true) {
   assistantEntry = null;
   setStatus("Disconnected");
   setConnected(false);
+  if (micToggleButton) micToggleButton.disabled = true;
   window.idleFace?.setSpeechLevel(0, true);
 }
 
 connectButton?.addEventListener("click", connect);
 disconnectButton?.addEventListener("click", () => disconnect(true));
+
+micToggleButton?.addEventListener("click", () => {
+  micMuted = !micMuted;
+  setMicButton(micMuted);
+  const track = stream?.getAudioTracks()[0];
+  if (track) track.enabled = !micMuted;
+  setStatus(micMuted ? "Mic muted" : "Mic on");
+});

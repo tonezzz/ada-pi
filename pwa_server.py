@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from backend.realtime_provider import create_provider
 from backend.home_assistant import HomeAssistantClient
+from backend.tool_runner import ToolRunner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -26,6 +27,7 @@ logger = logging.getLogger("pwa_server")
 
 app = FastAPI(title="Ada iPad PWA backend")
 ha_client = HomeAssistantClient()
+tool_runner = ToolRunner(ha_client)
 
 
 @app.websocket("/ws")
@@ -33,7 +35,7 @@ async def voice_socket(ws: WebSocket) -> None:
     await ws.accept()
     session_id = uuid.uuid4().hex[:10]
     logger.info("session=%s client connected", session_id)
-    provider = create_provider(home_assistant_client=ha_client)
+    provider = create_provider(tool_runner=tool_runner)
     closed = asyncio.Event()
 
     try:
@@ -184,6 +186,38 @@ async def get_power_summary(hours: int = 24) -> dict:
     except Exception as exc:
         logger.warning("home assistant power summary failed: %s", exc)
         return {"status": "unavailable", "error": str(exc), "summary": {}}
+
+
+@app.get("/api/tools")
+async def list_tools() -> dict:
+    """List the tool names available via /api/tools/call."""
+    return {
+        "tools": [
+            name for name in dir(tool_runner)
+            if not name.startswith("_") and name != "execute" and callable(getattr(tool_runner, name, None))
+        ]
+    }
+
+
+@app.post("/api/tools/call")
+async def call_tool(request: Request) -> dict:
+    """Execute a tool by name. Body: {tool: str, args: dict}."""
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid JSON: {exc}") from exc
+    name = payload.get("tool") or payload.get("name")
+    if not name or not isinstance(name, str):
+        raise HTTPException(status_code=422, detail="tool/name is required")
+    args = payload.get("args", {})
+    if not isinstance(args, dict):
+        raise HTTPException(status_code=422, detail="args must be an object")
+    try:
+        output = await tool_runner.execute(name, args)
+        return {"tool": name, "status": "ok", "output": output}
+    except Exception as exc:
+        logger.warning("tool %s failed: %s", name, exc)
+        return {"tool": name, "status": "error", "error": str(exc)}
 
 
 static_dir = ROOT / "frontend"

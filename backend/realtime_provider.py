@@ -14,6 +14,8 @@ from typing import Any
 from google import genai
 from google.genai import types
 
+from backend.tool_runner import ToolRunner
+
 logger = logging.getLogger("voice.provider")
 
 EXPRESSION_NAMES = (
@@ -80,8 +82,11 @@ class RealtimeProvider(abc.ABC):
 class GeminiLiveProvider(RealtimeProvider):
     """Gemini 3.1 Flash Live over Google's asynchronous Live API SDK."""
 
-    def __init__(self, instructions: str | None = None, home_assistant_client: Any = None,
-                 habit_state_getter: Any = None) -> None:
+    def __init__(self, instructions: str | None = None, tool_runner: Any = None,
+                 home_assistant_client: Any = None, habit_state_getter: Any = None) -> None:
+        if tool_runner is None and home_assistant_client is not None:
+            tool_runner = ToolRunner(home_assistant_client, habit_state_getter)
+        self.tool_runner = tool_runner
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
         self.voice = os.environ.get("GEMINI_LIVE_VOICE", "Kore")
@@ -116,7 +121,10 @@ class GeminiLiveProvider(RealtimeProvider):
             "use search_home_devices to find the exact entity_id or use tv_action with the right cmd/text, then call the matching control tool. "
             "For safety, before using control_cover to open or close the gate or any shutter, "
             "always warn that something could be blocking it and ask the user to confirm explicitly. "
-            "Only call control_cover for the gate or a shutter after the user has given a clear second confirmation."
+            "Only call control_cover for the gate or a shutter after the user has given a clear second confirmation. "
+            "You also have tony-ha memory tools: tony_ha_get_state for the stored home snapshot, "
+            "tony_ha_search_devices to find a tony device by name, and tony_ha_recall for free-form recall "
+            "across the stored tony-ha devices and sensors. Use these when the user asks about 'tony' or the stored tony home."
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -126,7 +134,6 @@ class GeminiLiveProvider(RealtimeProvider):
         self.session_id = "-"
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
-        self.home_assistant_client = home_assistant_client
         self.habit_state_getter = habit_state_getter
 
     async def connect(self, resumption_handle: str | None = None) -> None:
@@ -559,6 +566,51 @@ class GeminiLiveProvider(RealtimeProvider):
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+                }, {
+                    "name": "tony_ha_get_state",
+                    "description": (
+                        "Returns the preloaded memory snapshot of tony-ha: person, home plugs, "
+                        "and counts of controllable devices and sensors. Use this when the user "
+                        "asks about tony-ha memory, the tony home, or what is stored."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+                }, {
+                    "name": "tony_ha_search_devices",
+                    "description": (
+                        "Search the tony-ha memory for controllable devices by name or entity_id. "
+                        "Use this when the user asks 'what tony devices do we have' or 'find the tony kitchen light'."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "A device name or keyword, e.g. 'kitchen table'.",
+                            }
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "tony_ha_recall",
+                    "description": (
+                        "Free-form recall across the tony-ha memory for devices and sensors. "
+                        "Use this for broad questions like 'what tony sensors are about power' or 'tony pool devices'."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The question or keyword to recall.",
+                            }
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
                 }]
             }],
         }
@@ -822,7 +874,14 @@ class GeminiLiveProvider(RealtimeProvider):
                         elif call.name == "get_habit_status" and self.habit_state_getter is not None:
                             result = {"output": self.habit_state_getter()}
                         else:
-                            result = {"error": "Unsupported or unavailable function"}
+                            if self.tool_runner is not None:
+                                try:
+                                    output = await self.tool_runner.execute(str(call.name), dict(call.args or {}))
+                                    result = {"output": output}
+                                except Exception as exc:
+                                    result = {"error": f"{call.name} failed: {exc}"}
+                            else:
+                                result = {"error": "Unsupported or unavailable function"}
                         function_responses.append(types.FunctionResponse(
                             id=call.id,
                             name=call.name or "set_facial_expression",
@@ -928,10 +987,11 @@ class GeminiLiveProvider(RealtimeProvider):
                 logger.debug("Gemini client close did not complete cleanly", exc_info=True)
 
 
-def create_provider(instructions: str | None = None, home_assistant_client: Any = None,
-                    habit_state_getter: Any = None) -> RealtimeProvider:
+def create_provider(instructions: str | None = None, tool_runner: Any = None,
+                    home_assistant_client: Any = None, habit_state_getter: Any = None) -> RealtimeProvider:
     return GeminiLiveProvider(
         instructions=instructions,
+        tool_runner=tool_runner,
         home_assistant_client=home_assistant_client,
         habit_state_getter=habit_state_getter,
     )
