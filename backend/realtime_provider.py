@@ -87,6 +87,8 @@ class GeminiLiveProvider(RealtimeProvider):
         if tool_runner is None and home_assistant_client is not None:
             tool_runner = ToolRunner(home_assistant_client, habit_state_getter)
         self.tool_runner = tool_runner
+        self.home_assistant_client = home_assistant_client
+        self.habit_state_getter = habit_state_getter
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
         self.voice = os.environ.get("GEMINI_LIVE_VOICE", "Kore")
@@ -134,7 +136,6 @@ class GeminiLiveProvider(RealtimeProvider):
         self.session_id = "-"
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
-        self.habit_state_getter = habit_state_getter
 
     async def connect(self, resumption_handle: str | None = None) -> None:
         if not self.api_key:
