@@ -163,6 +163,18 @@ async def get_history(entity_id: str, hours: int = 24) -> dict:
         return {"status": "unavailable", "error": str(exc), "history": []}
 
 
+@app.get("/api/home-assistant/dashboard-tab")
+async def get_dashboard_tab(tab: str, url_path: str = "tony-test") -> dict:
+    if not ha_client.configured:
+        return {"status": "unavailable", "error": "HOME_ASSISTANT_TOKEN not set", "tab": tab}
+    try:
+        result = await ha_client.dashboard_tab(tab=tab, url_path=url_path)
+        return {"status": "ok" if "error" not in result else "not_found", **result}
+    except Exception as exc:
+        logger.warning("home assistant dashboard tab failed: %s", exc)
+        return {"status": "unavailable", "error": str(exc), "tab": tab}
+
+
 @app.get("/api/home-assistant/power-summary")
 async def get_power_summary(hours: int = 24) -> dict:
     if not ha_client.configured:

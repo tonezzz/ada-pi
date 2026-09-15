@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import statistics
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
+import websockets
 
 
 DEFAULT_HOME_PLUGS = (
@@ -333,6 +335,262 @@ class HomeAssistantClient:
         return {
             "now": now,
             f"last_{hours}h": history,
+        }
+
+    def _battery_bucket(self, eid: str) -> str:
+        lower = eid.lower()
+        if "battery_1" in lower or "batteries_1" in lower or lower.endswith("_1") and "battery" in lower:
+            return "battery_1"
+        if "battery_2" in lower or "batteries_2" in lower:
+            return "battery_2"
+        if "battery_3" in lower or "batteries_3" in lower:
+            return "battery_3"
+        if "totals_battery" in lower:
+            return "totals"
+        if "inverters_1_battery" in lower:
+            return "inverter_1"
+        if "solis" in lower and "battery" in lower:
+            return "solis_bms"
+        return "other"
+
+    async def battery_status(self) -> dict[str, Any]:
+        states = await self._states()
+        out = {
+            "summary": {
+                "total_battery_entities": 0,
+                "batteries_tracked": ["battery_1", "battery_2", "battery_3"],
+                "note": (
+                    "Use get_battery_detail with battery_index=1, 2, or 3 for per-battery readings. "
+                    "battery_status gives a grouped overview."
+                ),
+            },
+            "groups": {},
+        }
+        for item in states:
+            eid = str(item.get("entity_id", ""))
+            if not eid or "battery" not in eid.lower():
+                continue
+            bucket = self._battery_bucket(eid)
+            if bucket not in out["groups"]:
+                out["groups"][bucket] = {}
+            attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+            out["groups"][bucket][eid] = {
+                "state": str(item.get("state", "unknown")),
+                "name": attributes.get("friendly_name") or eid,
+                "unit": attributes.get("unit_of_measurement", ""),
+            }
+            out["summary"]["total_battery_entities"] += 1
+        return out
+
+    async def battery_detail(self, battery_index: int) -> dict[str, Any]:
+        if battery_index not in (1, 2, 3):
+            return {"error": "battery_index must be 1, 2, or 3"}
+        states = await self._states()
+        key = f"battery_{battery_index}"
+        out = {"battery_index": battery_index, "entities": {}}
+        for item in states:
+            eid = str(item.get("entity_id", ""))
+            if not eid or "battery" not in eid.lower():
+                continue
+            if self._battery_bucket(eid) != key:
+                continue
+            attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+            out["entities"][eid] = {
+                "state": str(item.get("state", "unknown")),
+                "name": attributes.get("friendly_name") or eid,
+                "unit": attributes.get("unit_of_measurement", ""),
+            }
+        return out
+
+    def _inverter_bucket(self, eid: str) -> str:
+        lower = eid.lower()
+        if "pv" in lower:
+            return "pv"
+        if "load" in lower:
+            return "load"
+        if "grid" in lower:
+            return "grid"
+        if "ac_output" in lower:
+            return "ac_output"
+        if "battery" in lower:
+            return "battery"
+        if any(k in lower for k in ("mode", "temperature", "fault", "status")):
+            return "status"
+        return "other"
+
+    async def inverter_status(self) -> dict[str, Any]:
+        states = await self._states()
+        out = {
+            "summary": {
+                "total_inverter_entities": 0,
+                "note": (
+                    "Grouped inverter and power sensor readings. "
+                    "Use this for solar generation, home load, grid, battery, and inverter health."
+                ),
+            },
+            "groups": {},
+        }
+        for item in states:
+            eid = str(item.get("entity_id", ""))
+            if not eid or "inverters_1" not in eid and "totals_" not in eid:
+                continue
+            bucket = self._inverter_bucket(eid)
+            if bucket not in out["groups"]:
+                out["groups"][bucket] = {}
+            attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+            out["groups"][bucket][eid] = {
+                "state": str(item.get("state", "unknown")),
+                "name": attributes.get("friendly_name") or eid,
+                "unit": attributes.get("unit_of_measurement", ""),
+            }
+            out["summary"]["total_inverter_entities"] += 1
+        return out
+
+    async def pool_status(self) -> dict[str, Any]:
+        states = await self._states()
+        out = {
+            "available": {},
+            "unavailable_or_unknown": {},
+            "note": (
+                "Pool pump switches that show 'unavailable' are not currently connected or powered. "
+                "The active smart meter switch is 'switch.pool_wifi_smart_meter_switch_switch'."
+            ),
+        }
+        for item in states:
+            eid = str(item.get("entity_id", ""))
+            if not eid or not any(k in eid.lower() for k in ("pool", "tze200_cirvgep4")):
+                continue
+            attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+            state = str(item.get("state", "unknown"))
+            entry = {
+                "state": state,
+                "name": attributes.get("friendly_name") or eid,
+                "unit": attributes.get("unit_of_measurement", ""),
+            }
+            if state in ("unavailable", "unknown"):
+                out["unavailable_or_unknown"][eid] = entry
+            else:
+                out["available"][eid] = entry
+        return out
+
+    async def rk600_weather(self) -> dict[str, Any]:
+        states = await self._states()
+        out = {
+            "source": "Rika RK600-07B weather station",
+            "note": (
+                "This is the local RK600 weather station data. "
+                "For the forecast/compare view, use search_sensors with 'weather' or ask about the HA weather entities."
+            ),
+            "sensors": {},
+        }
+        for item in states:
+            eid = str(item.get("entity_id", ""))
+            if not eid or not eid.startswith("sensor.rk600"):
+                continue
+            attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+            out["sensors"][eid] = {
+                "state": str(item.get("state", "unknown")),
+                "name": attributes.get("friendly_name") or eid,
+                "unit": attributes.get("unit_of_measurement", ""),
+            }
+        return out
+
+    async def lovelace_config(self, url_path: str = "tony-test") -> dict[str, Any]:
+        """Fetch a Lovelace dashboard config over the Home Assistant websocket."""
+        if not self.token:
+            raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
+        base = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{base.rstrip('/')}/api/websocket"
+        async with websockets.connect(ws_url) as ws:
+            # Wait for the auth_required hello.
+            hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+            if hello.get("type") != "auth_required":
+                raise RuntimeError(f"unexpected websocket hello: {hello}")
+            await ws.send(json.dumps({"type": "auth", "access_token": self.token}))
+            ack = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+            if ack.get("type") != "auth_ok":
+                raise RuntimeError(f"websocket auth failed: {ack}")
+            msg_id = 1
+            await ws.send(json.dumps({"id": msg_id, "type": "lovelace/config", "url_path": url_path}))
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                payload = json.loads(raw)
+                if payload.get("id") == msg_id:
+                    if payload.get("type") == "result" and payload.get("success"):
+                        return payload.get("result", {})
+                    raise RuntimeError(f"lovelace/config failed: {payload}")
+
+    async def dashboard_tab(
+        self,
+        tab: str,
+        url_path: str = "tony-test",
+    ) -> dict[str, Any]:
+        """Return the entities and their current states for a named dashboard tab."""
+        if not self.token:
+            raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
+        config = await self.lovelace_config(url_path=url_path)
+        views = config.get("views", []) if isinstance(config, dict) else []
+        target = next((v for v in views if isinstance(v, dict) and v.get("title", "").lower() == tab.lower()), None)
+        if target is None:
+            view_titles = [v.get("title") for v in views if isinstance(v, dict)]
+            return {"error": f"tab not found: {tab!r}", "available_tabs": view_titles}
+
+        entity_ids = set()
+        card_info = []
+
+        def _collect(obj: Any, path: str = "") -> None:
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    if key in ("entity", "entity_id") and isinstance(value, str) and value:
+                        if "." in value:
+                            entity_ids.add(value)
+                            card_info.append({"field": key, "entity_id": value, "path": path})
+                    elif key in ("id", "source", "target") and isinstance(value, str) and value and "." in value:
+                        entity_ids.add(value)
+                        card_info.append({"field": key, "entity_id": value, "path": path})
+                    elif key == "entity_input" and isinstance(value, str) and value:
+                        entity_ids.add(value)
+                        card_info.append({"field": key, "entity_id": value, "path": path})
+                    elif key == "entities" and isinstance(value, dict):
+                        for eid in value.values():
+                            if isinstance(eid, str) and "." in eid:
+                                entity_ids.add(eid)
+                                card_info.append({"field": "entities", "entity_id": eid, "path": path})
+                    elif key in ("series", "pfg_charts", "cards"):
+                        _collect(value, f"{path}/{key}")
+                    elif isinstance(value, (dict, list)):
+                        _collect(value, f"{path}/{key}")
+            elif isinstance(obj, list):
+                for i, item in enumerate(obj):
+                    _collect(item, f"{path}/[{i}]")
+
+        for card in target.get("cards", []) if isinstance(target.get("cards"), list) else []:
+            _collect(card, "card")
+
+        states = await self._states()
+        by_id = {s.get("entity_id"): s for s in states if isinstance(s, dict) and s.get("entity_id")}
+        entities = []
+        for eid in sorted(entity_ids):
+            item = by_id.get(eid)
+            if not item:
+                continue
+            attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+            entities.append({
+                "entity_id": eid,
+                "name": attrs.get("friendly_name") or eid,
+                "state": str(item.get("state", "unknown")),
+                "unit": attrs.get("unit_of_measurement", ""),
+                "domain": eid.split(".")[0],
+            })
+
+        return {
+            "tab": tab,
+            "path": target.get("path"),
+            "title": target.get("title"),
+            "badges": [b for b in target.get("badges", []) if isinstance(b, str) and "." in b],
+            "entity_count": len(entities),
+            "entities": entities,
+            "card_snippets": card_info[:25],
         }
 
     async def _http_client(self) -> Any:
