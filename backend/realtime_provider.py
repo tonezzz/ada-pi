@@ -141,6 +141,10 @@ class GeminiLiveProvider(RealtimeProvider):
             "ada_ha_set_device_confidence to change a device's trust level, and "
             "ada_session_recall to ask NotebookLM about previous conversations. "
             "Use ada_ha_get_device_confidence when the user asks what is broken, new, needs setup, or trusted. "
+            "For event history: get_logbook gives the friendly Home Assistant event log, "
+            "get_recent_events answers what opened, closed, or changed recently across the home, "
+            "get_entity_events gives one entity's open/close timeline with durations, and "
+            "ada_ha_search_events searches recorded events from memory. "
             "Use these when the user asks about the stored home state, past state, or how it has changed. "
             "When the user asks 'what did we talk about' or 'do you remember', call ada_session_recall."
         )
@@ -560,6 +564,120 @@ class GeminiLiveProvider(RealtimeProvider):
                             }
                         },
                         "required": ["entity_id"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "get_logbook",
+                    "description": (
+                        "Fetches the Home Assistant logbook: friendly event entries like "
+                        "'Front door was opened', 'Kitchen light turned on', or automation runs. "
+                        "Use this when the user asks about the event log or what happened recently."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "Optional entity_id to limit the logbook to one entity.",
+                            },
+                            "hours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 168,
+                                "description": "How many hours of logbook to include. Defaults to 24.",
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "get_recent_events",
+                    "description": (
+                        "Returns recent state-change events across the whole home: doors/windows "
+                        "opening and closing, covers moving, locks, presence changes, and "
+                        "lights/switches turning on or off. "
+                        "Use this when the user asks 'what opened or closed', 'what changed recently', "
+                        "or 'did anything happen while I was away'."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "hours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 168,
+                                "description": "How many hours back to scan. Defaults to 24.",
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "Optional keyword to limit events, e.g. 'door', 'gate', 'kitchen'.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 200,
+                                "description": "Maximum events to return. Defaults to 50.",
+                            }
+                        },
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "get_entity_events",
+                    "description": (
+                        "Returns the event timeline for one entity: every state change with a "
+                        "timestamp and how long it stayed in that state. For a door or window "
+                        "sensor this yields open/close times and durations. "
+                        "Use this when the user asks 'when was the door last opened' or "
+                        "'how long was the gate open'."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "The exact Home Assistant entity_id, e.g. binary_sensor.front_door or cover.gate_motor.",
+                            },
+                            "hours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 168,
+                                "description": "How many hours back to include. Defaults to 24.",
+                            }
+                        },
+                        "required": ["entity_id"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_ha_search_events",
+                    "description": (
+                        "Searches the recorded Home Assistant event memory: transitions captured "
+                        "by the event recorder plus persisted event batches. "
+                        "Use this when the user asks about events from before the current window, "
+                        "e.g. 'when did the gate open earlier' or 'any door events this week'."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Keyword to search, e.g. 'door', 'gate', 'opened'.",
+                            },
+                            "hours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 720,
+                                "description": "How many hours of recorded events to search. Defaults to 24.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 100,
+                                "description": "Maximum events to return. Defaults to 20.",
+                            }
+                        },
                         "additionalProperties": False,
                     },
                 }, {

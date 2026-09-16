@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from backend.event_recorder import HaEventRecorder
 from backend.home_assistant import HomeAssistantClient
 
 logger = logging.getLogger("tools")
@@ -445,6 +446,7 @@ class ToolRunner:
         self.context = ToolContext(ha_client=ha_client, habit_state_getter=habit_state_getter)
         self.mddb = MddbClient()
         self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb)
+        self.events = HaEventRecorder(ha_client, mddb_client=self.mddb)
 
     async def execute(self, name: str, args: dict[str, Any] | None = None) -> Any:
         method = getattr(self, name, None)
@@ -536,6 +538,25 @@ class ToolRunner:
             raise ValueError("entity_id is required")
         return await self.context.ha_client.history(str(entity_id), hours=int(hours))
 
+    async def get_logbook(self, hours: int = 24, entity_id: str | None = None) -> dict[str, Any]:
+        entries = await self.context.ha_client.logbook(
+            entity_id=str(entity_id) if entity_id else None,
+            hours=int(hours),
+        )
+        return {"hours": int(hours), "count": len(entries), "entries": entries[:100]}
+
+    async def get_entity_events(self, entity_id: str, hours: int = 24) -> dict[str, Any]:
+        if not entity_id:
+            raise ValueError("entity_id is required")
+        return await self.context.ha_client.state_transitions(str(entity_id), hours=int(hours))
+
+    async def get_recent_events(self, hours: int = 24, query: str | None = None, limit: int = 50) -> dict[str, Any]:
+        return await self.context.ha_client.recent_events(
+            hours=int(hours),
+            query=str(query) if query else None,
+            limit=int(limit),
+        )
+
     # -- Habit tools --
 
     async def get_habit_status(self) -> Any:
@@ -555,7 +576,38 @@ class ToolRunner:
         return await self.memory.search_sensors(str(query), int(limit))
 
     async def ada_ha_recall(self, query: str, limit: int = 10) -> dict[str, Any]:
-        return await self.memory.search_all(str(query), int(limit))
+        results = await self.memory.search_all(str(query), int(limit))
+        results["events"] = self.events.recent(hours=24, query=str(query), limit=int(limit))
+        return results
+
+    async def ada_ha_search_events(self, query: str = "", hours: int = 24, limit: int = 20) -> dict[str, Any]:
+        """Search recorded HA transitions in memory plus persisted MDDB batches."""
+        q = str(query).strip().lower()
+        persisted = []
+        docs = await self.mddb.search_documents(
+            collection=self.events.collection,
+            query=str(query) or "*",
+            filter_meta={"kind": ["events"]},
+            limit=10,
+        )
+        for doc in docs:
+            meta = doc.get("meta", {})
+            lines = str(doc.get("contentMd") or doc.get("content_md") or "").splitlines()
+            matched = [l for l in lines if l.startswith("-") and (not q or q in l.lower())]
+            persisted.append({
+                "key": doc.get("key"),
+                "count": _int_or_none(_first(meta.get("count"))),
+                "period_start": _first(meta.get("period_start")),
+                "period_end": _first(meta.get("period_end")),
+                "matching_lines": matched[:int(limit)],
+            })
+        return {
+            "query": str(query),
+            "hours": int(hours),
+            "recorder": self.events.status(),
+            "events": self.events.recent(hours=int(hours), query=str(query), limit=int(limit)),
+            "persisted": persisted,
+        }
 
     async def ada_ha_history(self, hours: int = 24, limit: int = 10) -> list[dict[str, Any]]:
         """Return recent persisted snapshots from MDDB for this HA instance."""

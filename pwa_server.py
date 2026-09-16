@@ -38,6 +38,14 @@ async def warm_cache() -> None:
         logger.info("cache warm complete")
     except Exception as exc:
         logger.warning("cache warm failed, will retry on first request: %s", exc)
+    if ha_client.configured:
+        await tool_runner.events.start()
+        logger.info("ha event recorder running=%s", tool_runner.events.running)
+
+
+@app.on_event("shutdown")
+async def stop_event_recorder() -> None:
+    await tool_runner.events.stop()
 
 
 @app.websocket("/ws")
@@ -173,6 +181,52 @@ async def get_history(entity_id: str, hours: int = 24) -> dict:
     except Exception as exc:
         logger.warning("home assistant history failed: %s", exc)
         return {"status": "unavailable", "error": str(exc), "history": []}
+
+
+@app.get("/api/home-assistant/logbook")
+async def get_logbook(entity_id: str = "", hours: int = 24) -> dict:
+    if not ha_client.configured:
+        return {"status": "unavailable", "error": "HOME_ASSISTANT_TOKEN not set", "entries": []}
+    try:
+        entries = await ha_client.logbook(entity_id=entity_id or None, hours=hours)
+        return {"status": "connected", "hours": hours, "count": len(entries), "entries": entries[:100]}
+    except Exception as exc:
+        logger.warning("home assistant logbook failed: %s", exc)
+        return {"status": "unavailable", "error": str(exc), "entries": []}
+
+
+@app.get("/api/home-assistant/events")
+async def get_recent_events(hours: int = 24, query: str = "", limit: int = 50) -> dict:
+    if not ha_client.configured:
+        return {"status": "unavailable", "error": "HOME_ASSISTANT_TOKEN not set", "events": []}
+    try:
+        result = await ha_client.recent_events(hours=hours, query=query or None, limit=limit)
+        return {"status": "connected", **result}
+    except Exception as exc:
+        logger.warning("home assistant recent events failed: %s", exc)
+        return {"status": "unavailable", "error": str(exc), "events": []}
+
+
+@app.get("/api/home-assistant/entity-events")
+async def get_entity_events(entity_id: str, hours: int = 24) -> dict:
+    if not ha_client.configured:
+        return {"status": "unavailable", "error": "HOME_ASSISTANT_TOKEN not set", "entities": []}
+    try:
+        result = await ha_client.state_transitions(entity_id, hours=hours)
+        return {"status": "connected", **result}
+    except Exception as exc:
+        logger.warning("home assistant entity events failed: %s", exc)
+        return {"status": "unavailable", "error": str(exc), "entities": []}
+
+
+@app.get("/api/home-assistant/event-recorder")
+async def get_event_recorder(hours: float = 24, query: str = "", limit: int = 50) -> dict:
+    """Recorder status plus its in-memory transition buffer."""
+    return {
+        "status": "ok",
+        "recorder": tool_runner.events.status(),
+        "events": tool_runner.events.recent(hours=hours, query=query or None, limit=limit),
+    }
 
 
 @app.get("/api/home-assistant/dashboard-tab")

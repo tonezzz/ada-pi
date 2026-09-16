@@ -30,6 +30,21 @@ MEDIA_PLAYER_ACTIONS = {
     "turn_on", "turn_off", "media_play", "media_pause", "media_stop",
     "volume_up", "volume_down", "volume_mute", "select_source",
 }
+# Domains whose state changes are meaningful "events" a user asks about
+# (opened/closed, locked/unlocked, arrived/left, turned on/off).
+EVENT_DOMAINS = {
+    "binary_sensor", "cover", "lock", "person", "device_tracker",
+    "alarm_control_panel", "light", "switch", "fan", "input_boolean",
+    "media_player",
+}
+# Ordered so the most event-worthy domains survive the entity cap.
+EVENT_DOMAIN_PRIORITY = {
+    "binary_sensor": 0, "cover": 1, "lock": 2, "person": 3,
+    "device_tracker": 4, "alarm_control_panel": 5, "light": 6,
+    "switch": 7, "fan": 8, "input_boolean": 9, "media_player": 10,
+}
+MAX_EVENT_ENTITIES = 100
+
 G3_POWER_ENTITIES = [
     "sensor.inverters_1_pv_power",
     "sensor.inverters_1_pv_power_1",
@@ -318,6 +333,208 @@ class HomeAssistantClient:
         response.raise_for_status()
         payload = response.json()
         return payload if isinstance(payload, list) else []
+
+    async def logbook(
+        self,
+        entity_id: str | None = None,
+        hours: int = 24,
+        end: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Fetch the HA logbook: friendly event entries (opens, closes, automations)."""
+        if not self.token:
+            raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
+        if end is None:
+            end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=hours)
+        start_str = start.replace(microsecond=0).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_str = end.replace(microsecond=0).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        url = f"/api/logbook/period/{start_str}?end_time={end_str}"
+        if entity_id:
+            url += f"&entity={entity_id}"
+        client = await self._http_client()
+        response = await client.get(url)
+        if response.status_code == 404:
+            raise ValueError(
+                "The logbook integration is not enabled on this Home Assistant "
+                "instance; use get_recent_events or get_entity_events instead."
+            )
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, list) else []
+
+    @staticmethod
+    def _point_state(point: dict[str, Any]) -> str | None:
+        state = point.get("state", point.get("s"))
+        return None if state is None else str(state)
+
+    @staticmethod
+    def _parse_ts(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, timezone.utc)
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    @classmethod
+    def _point_at(cls, point: dict[str, Any]) -> datetime | None:
+        return cls._parse_ts(
+            point.get("last_changed") or point.get("lc")
+            or point.get("last_updated") or point.get("lu")
+        )
+
+    async def _entity_info(self) -> dict[str, dict[str, str]]:
+        """Map entity_id -> {name, device_class} from the current state list."""
+        states = await self._states()
+        info: dict[str, dict[str, str]] = {}
+        for item in states:
+            eid = str(item.get("entity_id", ""))
+            if not eid:
+                continue
+            attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+            info[eid] = {
+                "name": str(attributes.get("friendly_name") or eid),
+                "device_class": str(attributes.get("device_class") or ""),
+            }
+        return info
+
+    @staticmethod
+    def _transitions_from_series(
+        series_list: list[list[dict[str, Any]]],
+        info: dict[str, dict[str, str]],
+    ) -> list[dict[str, Any]]:
+        """Collapse raw HA history rows into state-change transitions."""
+        transitions: list[dict[str, Any]] = []
+        for series in series_list:
+            eid: str | None = None
+            prev_state: str | None = None
+            for point in series:
+                if not isinstance(point, dict):
+                    continue
+                eid = point.get("entity_id") or eid
+                state = HomeAssistantClient._point_state(point)
+                at = HomeAssistantClient._point_at(point)
+                if state is None or at is None or eid is None:
+                    continue
+                if state == prev_state:
+                    continue
+                entry = info.get(eid, {})
+                transitions.append({
+                    "entity_id": eid,
+                    "name": entry.get("name", eid),
+                    "device_class": entry.get("device_class", ""),
+                    "state": state,
+                    "at": at.isoformat(),
+                    "at_dt": at,
+                })
+                prev_state = state
+        transitions.sort(key=lambda t: t["at_dt"], reverse=True)
+        for t in transitions:
+            del t["at_dt"]
+        return transitions
+
+    async def state_transitions(
+        self,
+        entity_ids: list[str] | str,
+        hours: int = 24,
+        end: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Formatted per-entity event timeline with state durations."""
+        if isinstance(entity_ids, str):
+            entity_ids = [entity_ids]
+        if end is None:
+            end = datetime.now(timezone.utc)
+        info, series_list = await asyncio.gather(
+            self._entity_info(),
+            self.history(entity_ids, hours=hours, end=end),
+        )
+        by_entity: dict[str, list[dict[str, Any]]] = {}
+        for series in series_list:
+            eid: str | None = None
+            points: list[tuple[datetime, str]] = []
+            prev_state: str | None = None
+            for point in series:
+                if not isinstance(point, dict):
+                    continue
+                eid = point.get("entity_id") or eid
+                state = self._point_state(point)
+                at = self._point_at(point)
+                if state is None or at is None or eid is None:
+                    continue
+                if state == prev_state:
+                    continue
+                points.append((at, state))
+                prev_state = state
+            if eid is None:
+                continue
+            transitions = []
+            for index, (at, state) in enumerate(points):
+                next_at = points[index + 1][0] if index + 1 < len(points) else end
+                transitions.append({
+                    "state": state,
+                    "at": at.isoformat(),
+                    "duration_seconds": max(0, int((next_at - at).total_seconds())),
+                })
+            entry = info.get(eid, {})
+            by_entity[eid] = {
+                "entity_id": eid,
+                "name": entry.get("name", eid),
+                "device_class": entry.get("device_class", ""),
+                "changes": len(transitions),
+                "transitions": transitions,
+            }
+        return {
+            "hours": hours,
+            "entities": list(by_entity.values()),
+        }
+
+    async def recent_events(
+        self,
+        hours: int = 24,
+        query: str | None = None,
+        limit: int = 100,
+        end: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Cross-entity 'what changed' query across event-worthy domains."""
+        if end is None:
+            end = datetime.now(timezone.utc)
+        states = await self._states()
+        q = (query or "").strip().lower()
+        info: dict[str, dict[str, str]] = {}
+        candidates: list[tuple[int, str]] = []
+        for item in states:
+            eid = str(item.get("entity_id", ""))
+            domain, _, _ = eid.partition(".")
+            if not eid or domain not in EVENT_DOMAINS:
+                continue
+            attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+            name = str(attributes.get("friendly_name") or eid)
+            info[eid] = {
+                "name": name,
+                "device_class": str(attributes.get("device_class") or ""),
+            }
+            if q and q not in eid.lower() and q not in name.lower():
+                continue
+            candidates.append((EVENT_DOMAIN_PRIORITY.get(domain, 99), eid))
+        candidates.sort()
+        entity_ids = [eid for _, eid in candidates[:MAX_EVENT_ENTITIES]]
+        truncated = len(candidates) > len(entity_ids)
+        if not entity_ids:
+            return {"hours": hours, "count": 0, "events": [], "entities_scanned": 0}
+        series_list = await self.history(entity_ids, hours=hours, end=end)
+        events = self._transitions_from_series(series_list, info)[:limit]
+        return {
+            "hours": hours,
+            "count": len(events),
+            "entities_scanned": len(entity_ids),
+            "entities_truncated": truncated,
+            "events": events,
+        }
 
     async def power_summary(self, hours: int = 24) -> dict[str, Any]:
         """Return current and historical summary for G3 power sensors."""
