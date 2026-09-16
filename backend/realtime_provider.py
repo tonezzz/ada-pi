@@ -124,9 +124,9 @@ class GeminiLiveProvider(RealtimeProvider):
             "For safety, before using control_cover to open or close the gate or any shutter, "
             "always warn that something could be blocking it and ask the user to confirm explicitly. "
             "Only call control_cover for the gate or a shutter after the user has given a clear second confirmation. "
-            "You also have tony-ha memory tools: tony_ha_get_state for the stored home snapshot, "
-            "tony_ha_search_devices to find a tony device by name, and tony_ha_recall for free-form recall "
-            "across the stored tony-ha devices and sensors. Use these when the user asks about 'tony' or the stored tony home."
+            "You also have Ada HA memory tools: ada_ha_get_state for the stored home snapshot, "
+            "ada_ha_search_devices to find a device by name, and ada_ha_recall for free-form recall "
+            "across the stored devices and sensors. Use these when the user asks about the stored home state."
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -568,19 +568,19 @@ class GeminiLiveProvider(RealtimeProvider):
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {"type": "object", "properties": {}, "additionalProperties": False},
                 }, {
-                    "name": "tony_ha_get_state",
+                    "name": "ada_ha_get_state",
                     "description": (
-                        "Returns the preloaded memory snapshot of tony-ha: person, home plugs, "
+                        "Returns the preloaded memory snapshot of the configured Home Assistant: person, home plugs, "
                         "and counts of controllable devices and sensors. Use this when the user "
-                        "asks about tony-ha memory, the tony home, or what is stored."
+                        "asks about the stored home state or what is in memory."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {"type": "object", "properties": {}, "additionalProperties": False},
                 }, {
-                    "name": "tony_ha_search_devices",
+                    "name": "ada_ha_search_devices",
                     "description": (
-                        "Search the tony-ha memory for controllable devices by name or entity_id. "
-                        "Use this when the user asks 'what tony devices do we have' or 'find the tony kitchen light'."
+                        "Search the stored Home Assistant memory for controllable devices by name or entity_id. "
+                        "Use this when the user asks 'what devices do we have' or 'find the kitchen light'."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -595,10 +595,28 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "tony_ha_recall",
+                    "name": "ada_ha_search_sensors",
                     "description": (
-                        "Free-form recall across the tony-ha memory for devices and sensors. "
-                        "Use this for broad questions like 'what tony sensors are about power' or 'tony pool devices'."
+                        "Search the stored Home Assistant memory for sensor entities by name or entity_id. "
+                        "Use this when the user asks 'what sensors do we have about power' or 'find the pool temperature sensor'."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "A sensor name or keyword, e.g. 'pool temperature'.",
+                            }
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_ha_recall",
+                    "description": (
+                        "Free-form recall across the stored Home Assistant memory for devices and sensors. "
+                        "Use this for broad questions like 'what sensors are about power' or 'pool devices'."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
