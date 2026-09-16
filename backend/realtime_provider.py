@@ -14,6 +14,7 @@ from typing import Any
 from google import genai
 from google.genai import types
 
+from backend.conversation_memory import ConversationMemory
 from backend.tool_runner import ToolRunner
 
 logger = logging.getLogger("voice.provider")
@@ -83,12 +84,14 @@ class GeminiLiveProvider(RealtimeProvider):
     """Gemini 3.1 Flash Live over Google's asynchronous Live API SDK."""
 
     def __init__(self, instructions: str | None = None, tool_runner: Any = None,
-                 home_assistant_client: Any = None, habit_state_getter: Any = None) -> None:
+                 home_assistant_client: Any = None, habit_state_getter: Any = None,
+                 session_id: str | None = None) -> None:
         if tool_runner is None and home_assistant_client is not None:
             tool_runner = ToolRunner(home_assistant_client, habit_state_getter)
         self.tool_runner = tool_runner
         self.home_assistant_client = home_assistant_client
         self.habit_state_getter = habit_state_getter
+        self.conversation = ConversationMemory(session_id or "unknown")
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
         self.voice = os.environ.get("GEMINI_LIVE_VOICE", "Kore")
@@ -126,18 +129,33 @@ class GeminiLiveProvider(RealtimeProvider):
             "Only call control_cover for the gate or a shutter after the user has given a clear second confirmation. "
             "You also have Ada HA memory tools: ada_ha_get_state for the stored home snapshot, "
             "ada_ha_search_devices to find a device by name, ada_ha_search_sensors to find a sensor, "
-            "ada_ha_recall for free-form recall across the stored devices and sensors, and "
-            "ada_ha_history to list recent home snapshots from memory. "
-            "Use these when the user asks about the stored home state, past state, or how it has changed."
+            "ada_ha_recall for free-form recall across the stored devices and sensors, "
+            "ada_ha_history to list recent home snapshots from memory, and "
+            "ada_session_recall to ask NotebookLM about previous conversations. "
+            "Use these when the user asks about the stored home state, past state, or how it has changed. "
+            "When the user asks 'what did we talk about' or 'do you remember', call ada_session_recall."
         )
         self._client: Any = None
         self._session_context: Any = None
         self._session: Any = None
         self._closed = False
         self._send_lock = asyncio.Lock()
-        self.session_id = "-"
+        self.session_id = session_id or "-"
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
+
+    async def _on_recall_complete(self, answer: str | None) -> None:
+        if not answer:
+            return
+        # Push the recall result back into Gemini as a user turn so it speaks it.
+        prompt = (
+            f"According to my notes: {answer}\n\n"
+            "Please briefly tell the user what this means in one sentence."
+        )
+        try:
+            await self.send_text_turn(prompt)
+        except Exception as exc:
+            logger.warning("session=%s recall send_text_turn failed: %s", self.session_id, exc)
 
     async def connect(self, resumption_handle: str | None = None) -> None:
         if not self.api_key:
@@ -657,6 +675,26 @@ class GeminiLiveProvider(RealtimeProvider):
                         },
                         "additionalProperties": False,
                     },
+                }, {
+                    "name": "ada_session_recall",
+                    "description": (
+                        "Ask NotebookLM about previous voice sessions. "
+                        "Use this when the user asks 'what did we talk about', 'do you remember', "
+                        "or wants to recall something from an earlier conversation. "
+                        "The recall runs in the background; the result will be spoken when ready."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "The recall question, e.g. 'what did we discuss in the previous session?'.",
+                            }
+                        },
+                        "required": ["question"],
+                        "additionalProperties": False,
+                    },
                 }]
             }],
         }
@@ -718,6 +756,7 @@ class GeminiLiveProvider(RealtimeProvider):
 
         response_active = False
         input_transcript = ""
+        assistant_turn_text = ""
         response_started_at = 0.0
         response_audio_chunks = 0
         response_audio_bytes = 0
@@ -919,6 +958,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             result = {"output": "Observation delivered to the habit monitor"}
                         elif call.name == "get_habit_status" and self.habit_state_getter is not None:
                             result = {"output": self.habit_state_getter()}
+                        elif call.name == "ada_session_recall":
+                            question = (call.args or {}).get("question", "What did we discuss in the previous session?")
+                            recall_status = self.conversation.start_recall(str(question), self._on_recall_complete)
+                            result = {"output": recall_status}
                         else:
                             if self.tool_runner is not None:
                                 try:
@@ -981,6 +1024,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         response_audio_chunks = 0
                         response_audio_bytes = 0
                         yield ProviderEvent("response_started", {})
+                    assistant_turn_text += output_transcription.text
                     yield ProviderEvent(
                         "assistant_transcript_delta",
                         {"text": output_transcription.text},
@@ -1004,8 +1048,12 @@ class GeminiLiveProvider(RealtimeProvider):
                 if content.turn_complete:
                     transcript = input_transcript.strip()
                     if transcript:
+                        self.conversation.add_user(transcript)
                         yield ProviderEvent("user_transcript", {"text": transcript})
                     input_transcript = ""
+                    if assistant_turn_text.strip():
+                        self.conversation.add_assistant(assistant_turn_text)
+                        assistant_turn_text = ""
                     if response_active:
                         elapsed = time.monotonic() - response_started_at if response_started_at else 0.0
                         logger.info(
@@ -1019,6 +1067,9 @@ class GeminiLiveProvider(RealtimeProvider):
         if self._closed:
             return
         self._closed = True
+        # Persist conversation to NotebookLM in the background so we don't block disconnect.
+        if self.conversation:
+            _ = asyncio.create_task(self.conversation.persist())
         if self._session_context is not None:
             try:
                 await asyncio.wait_for(
@@ -1034,10 +1085,12 @@ class GeminiLiveProvider(RealtimeProvider):
 
 
 def create_provider(instructions: str | None = None, tool_runner: Any = None,
-                    home_assistant_client: Any = None, habit_state_getter: Any = None) -> RealtimeProvider:
+                    home_assistant_client: Any = None, habit_state_getter: Any = None,
+                    session_id: str | None = None) -> RealtimeProvider:
     return GeminiLiveProvider(
         instructions=instructions,
         tool_runner=tool_runner,
         home_assistant_client=home_assistant_client,
         habit_state_getter=habit_state_getter,
+        session_id=session_id,
     )
