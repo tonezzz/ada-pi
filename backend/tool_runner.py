@@ -2,14 +2,90 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
+
 from backend.home_assistant import HomeAssistantClient
 
 logger = logging.getLogger("tools")
+
+MDDB_BASE_URL = os.environ.get("MDDB_BASE_URL", "http://127.0.0.1:11023/v1")
+
+
+def _first(value: list[str] | None) -> str | None:
+    if not value:
+        return None
+    return str(value[0]) if value[0] else None
+
+
+def _int_or_none(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+class MddbClient:
+    """Thin async client for the MDDB v1 HTTP API."""
+
+    def __init__(self, base_url: str | None = None) -> None:
+        self.base_url = (base_url or MDDB_BASE_URL).rstrip("/")
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(20.0))
+
+    async def add_document(
+        self,
+        collection: str,
+        key: str,
+        lang: str,
+        content_md: str,
+        meta: dict[str, list[str]] | None = None,
+    ) -> dict[str, Any] | None:
+        payload: dict[str, Any] = {
+            "collection": collection,
+            "key": key,
+            "lang": lang,
+            "contentMd": content_md,
+        }
+        if meta:
+            payload["meta"] = meta
+        try:
+            resp = await self._client.post(f"{self.base_url}/add", json=payload)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.warning("mddb add_document failed: %s", exc)
+            return None
+
+    async def search_documents(
+        self,
+        collection: str,
+        query: str,
+        filter_meta: dict[str, list[str]] | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        payload: dict[str, Any] = {
+            "collection": collection,
+            "query": query,
+            "limit": limit,
+        }
+        if filter_meta:
+            payload["filter_meta"] = filter_meta
+        try:
+            resp = await self._client.post(f"{self.base_url}/search", json=payload)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.warning("mddb search failed: %s", exc)
+            return []
 
 
 @dataclass
@@ -19,10 +95,21 @@ class ToolContext:
 
 
 class AdaMemoryStore:
-    """Lightweight in-memory Home Assistant snapshot for fast recall."""
+    """Lightweight in-memory Home Assistant snapshot for fast recall.
 
-    def __init__(self, ha_client: HomeAssistantClient) -> None:
+    Optionally persists snapshots to MDDB so they survive restarts and can be
+    queried for history.
+    """
+
+    COLLECTION = "ada-ha-snapshots"
+
+    def __init__(
+        self,
+        ha_client: HomeAssistantClient,
+        mddb_client: MddbClient | None = None,
+    ) -> None:
         self.ha_client = ha_client
+        self.mddb = mddb_client
         self._devices: list[dict[str, Any]] | None = None
         self._sensors: list[dict[str, Any]] | None = None
         self._overview: dict[str, Any] | None = None
@@ -49,6 +136,54 @@ class AdaMemoryStore:
             "refreshed_at": datetime.now(timezone.utc).isoformat(),
         }
         self._last_refresh = datetime.now(timezone.utc)
+        if self.mddb is not None:
+            await self._persist(states, controllable, sensors)
+
+    def _build_content_md(self, states: list, controllable: list, sensors: list) -> str:
+        overview = self._overview or {}
+        lines = [
+            f"# Home Assistant snapshot — {overview.get('source', 'unknown')}",
+            "",
+            "## Overview",
+            f"- Person entity: `{overview.get('person_entity', 'unknown')}`",
+            f"- Total entities: {overview.get('total_entities', 0)}",
+            f"- Controllable devices: {overview.get('controllable_count', 0)}",
+            f"- Sensors: {overview.get('sensor_count', 0)}",
+            f"- Refreshed at: {overview.get('refreshed_at', '')}",
+            "",
+            "## Controllable devices",
+        ]
+        for dev in controllable[:50]:
+            name = dev.get("name") or dev.get("entity_id", "unknown")
+            lines.append(f"- {name} (`{dev.get('entity_id', 'unknown')}`): {dev.get('state', '')}")
+        lines.extend(["", "## Sensors"])
+        for s in sensors[:50]:
+            name = s.get("name") or s.get("entity_id", "unknown")
+            lines.append(f"- {name} (`{s.get('entity_id', 'unknown')}`): {s.get('state', '')} {s.get('unit', '')}")
+        return "\n".join(lines)
+
+    async def _persist(self, states: list, controllable: list, sensors: list) -> None:
+        if self._last_refresh is None:
+            return
+        ts = self._last_refresh.strftime("%Y%m%d%H%M%S%f")
+        source = str(self.ha_client.base_url).rstrip("/").replace("://", "-").replace("/", "-")
+        key = f"snapshot-{source}-{ts}"
+        content_md = self._build_content_md(states, controllable, sensors)
+        await self.mddb.add_document(
+            collection=self.COLLECTION,
+            key=key,
+            lang="en",
+            content_md=content_md,
+            meta={
+                "source": [str(self.ha_client.base_url)],
+                "kind": ["snapshot"],
+                "person_entity": [self.ha_client.person_entity],
+                "total_entities": [str(len(states))],
+                "controllable_count": [str(len(controllable))],
+                "sensor_count": [str(len(sensors))],
+                "refreshed_at": [self._last_refresh.isoformat()],
+            },
+        )
 
     def _match(self, query: str, items: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
         q = str(query).lower()
@@ -87,7 +222,8 @@ class ToolRunner:
 
     def __init__(self, ha_client: HomeAssistantClient, habit_state_getter: Any | None = None) -> None:
         self.context = ToolContext(ha_client=ha_client, habit_state_getter=habit_state_getter)
-        self.memory = AdaMemoryStore(ha_client)
+        self.mddb = MddbClient()
+        self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb)
 
     async def execute(self, name: str, args: dict[str, Any] | None = None) -> Any:
         method = getattr(self, name, None)
@@ -199,3 +335,29 @@ class ToolRunner:
 
     async def ada_ha_recall(self, query: str, limit: int = 10) -> dict[str, Any]:
         return await self.memory.search_all(str(query), int(limit))
+
+    async def ada_ha_history(self, hours: int = 24, limit: int = 10) -> list[dict[str, Any]]:
+        """Return recent persisted snapshots from MDDB for this HA instance."""
+        cutoff = time.time() - (int(hours) * 3600)
+        docs = await self.mddb.search_documents(
+            collection=AdaMemoryStore.COLLECTION,
+            query="*",
+            filter_meta={"source": [str(self.context.ha_client.base_url)]},
+            limit=limit,
+        )
+        results = []
+        for doc in sorted(docs, key=lambda d: d.get("addedAt", 0), reverse=True):
+            if doc.get("addedAt", 0) < cutoff:
+                continue
+            meta = doc.get("meta", {})
+            results.append({
+                "key": doc.get("key"),
+                "added_at": doc.get("addedAt"),
+                "source": _first(meta.get("source")),
+                "person_entity": _first(meta.get("person_entity")),
+                "total_entities": _int_or_none(_first(meta.get("total_entities"))),
+                "controllable_count": _int_or_none(_first(meta.get("controllable_count"))),
+                "sensor_count": _int_or_none(_first(meta.get("sensor_count"))),
+                "refreshed_at": _first(meta.get("refreshed_at")),
+            })
+        return results
