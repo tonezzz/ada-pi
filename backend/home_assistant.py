@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import statistics
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -75,6 +76,7 @@ class HomeAssistantClient:
     def __init__(self, client: Any = None) -> None:
         self.base_url = os.environ.get("HOME_ASSISTANT_URL", "http://127.0.0.1:8123").rstrip("/")
         self.token = os.environ.get("HOME_ASSISTANT_TOKEN", "").strip()
+        self.client_id = os.environ.get("HOME_ASSISTANT_CLIENT_ID", "").strip()
         self.person_entity = os.environ.get("HOME_ASSISTANT_PERSON", "person.naz").strip()
         configured = os.environ.get("HOME_ASSISTANT_HOME_PLUGS", "")
         self.home_plug_entities = tuple(
@@ -82,21 +84,54 @@ class HomeAssistantClient:
         ) or DEFAULT_HOME_PLUGS
         self._client = client
         self._owns_client = client is None
+        self._access_token: str | None = self.token if not self.client_id else None
+        self._token_expires: float = 0.0
 
     @property
     def configured(self) -> bool:
         return bool(self.token)
 
-    async def snapshot(self) -> HomeAssistantSnapshot:
+    async def _ensure_access_token(self) -> None:
+        """Refresh HA access token when using a refresh token + client_id."""
+        if not self.client_id:
+            self._access_token = self.token
+            return
+        now = time.time()
+        if self._access_token and now < self._token_expires - 120:
+            return
+        async with httpx.AsyncClient(base_url=self.base_url, timeout=10.0) as client:
+            data = {
+                "grant_type": "refresh_token",
+                "client_id": self.client_id,
+                "refresh_token": self.token,
+            }
+            resp = await client.post(
+                "/auth/token",
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            self._access_token = payload["access_token"]
+            self._token_expires = now + payload.get("expires_in", 1800)
+
+    async def _http_client(self) -> Any:
         if not self.token:
             raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
+        await self._ensure_access_token()
         if self._client is None:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
-                headers={"Authorization": f"Bearer {self.token}"},
+                headers={"Authorization": f"Bearer {self._access_token}"},
                 timeout=5.0,
             )
-        response = await self._client.get("/api/states")
+        return self._client
+
+    async def snapshot(self) -> HomeAssistantSnapshot:
+        if not self.token:
+            raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
+        client = await self._http_client()
+        response = await client.get("/api/states")
         response.raise_for_status()
         states = {}
         names = {}
@@ -592,17 +627,6 @@ class HomeAssistantClient:
             "entities": entities,
             "card_snippets": card_info[:25],
         }
-
-    async def _http_client(self) -> Any:
-        if not self.token:
-            raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
-        if self._client is None:
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url,
-                headers={"Authorization": f"Bearer {self.token}"},
-                timeout=5.0,
-            )
-        return self._client
 
     async def _states(self) -> list[dict[str, Any]]:
         client = await self._http_client()
