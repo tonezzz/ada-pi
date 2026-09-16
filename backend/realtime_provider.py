@@ -125,8 +125,10 @@ class GeminiLiveProvider(RealtimeProvider):
             "always warn that something could be blocking it and ask the user to confirm explicitly. "
             "Only call control_cover for the gate or a shutter after the user has given a clear second confirmation. "
             "You also have Ada HA memory tools: ada_ha_get_state for the stored home snapshot, "
-            "ada_ha_search_devices to find a device by name, and ada_ha_recall for free-form recall "
-            "across the stored devices and sensors. Use these when the user asks about the stored home state."
+            "ada_ha_search_devices to find a device by name, ada_ha_search_sensors to find a sensor, "
+            "ada_ha_recall for free-form recall across the stored devices and sensors, and "
+            "ada_ha_history to list recent home snapshots from memory. "
+            "Use these when the user asks about the stored home state, past state, or how it has changed."
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -628,6 +630,31 @@ class GeminiLiveProvider(RealtimeProvider):
                             }
                         },
                         "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_ha_history",
+                    "description": (
+                        "Returns recent persisted snapshots of the Home Assistant state from memory. "
+                        "Use this when the user asks what changed, what the state was earlier, or for a history of the home."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "hours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 168,
+                                "description": "How many hours back to include. Defaults to 24.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 50,
+                                "description": "Maximum snapshots to return. Defaults to 10.",
+                            }
+                        },
                         "additionalProperties": False,
                     },
                 }]
