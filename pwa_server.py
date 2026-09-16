@@ -35,7 +35,7 @@ async def voice_socket(ws: WebSocket) -> None:
     await ws.accept()
     session_id = uuid.uuid4().hex[:10]
     logger.info("session=%s client connected", session_id)
-    provider = create_provider(tool_runner=tool_runner)
+    provider = create_provider(tool_runner=tool_runner, session_id=session_id)
     closed = asyncio.Event()
 
     try:
