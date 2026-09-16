@@ -18,8 +18,8 @@ class ToolContext:
     habit_state_getter: Any | None = None
 
 
-class TonyMemoryStore:
-    """Lightweight in-memory tony-ha snapshot for fast recall."""
+class AdaMemoryStore:
+    """Lightweight in-memory Home Assistant snapshot for fast recall."""
 
     def __init__(self, ha_client: HomeAssistantClient) -> None:
         self.ha_client = ha_client
@@ -45,7 +45,7 @@ class TonyMemoryStore:
             "total_entities": len(states),
             "controllable_count": len(controllable),
             "sensor_count": len(sensors),
-            "source": "tony-ha",
+            "source": self.ha_client.base_url,
             "refreshed_at": datetime.now(timezone.utc).isoformat(),
         }
         self._last_refresh = datetime.now(timezone.utc)
@@ -87,7 +87,7 @@ class ToolRunner:
 
     def __init__(self, ha_client: HomeAssistantClient, habit_state_getter: Any | None = None) -> None:
         self.context = ToolContext(ha_client=ha_client, habit_state_getter=habit_state_getter)
-        self.memory = TonyMemoryStore(ha_client)
+        self.memory = AdaMemoryStore(ha_client)
 
     async def execute(self, name: str, args: dict[str, Any] | None = None) -> Any:
         method = getattr(self, name, None)
@@ -186,16 +186,16 @@ class ToolRunner:
             raise RuntimeError("habit tracking not available")
         return self.context.habit_state_getter()
 
-    # -- tony-ha memory tools --
+    # -- Ada HA memory tools --
 
-    async def tony_ha_get_state(self) -> dict[str, Any]:
+    async def ada_ha_get_state(self) -> dict[str, Any]:
         return await self.memory.overview()
 
-    async def tony_ha_search_devices(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+    async def ada_ha_search_devices(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         return await self.memory.search_devices(str(query), int(limit))
 
-    async def tony_ha_search_sensors(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+    async def ada_ha_search_sensors(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         return await self.memory.search_sensors(str(query), int(limit))
 
-    async def tony_ha_recall(self, query: str, limit: int = 10) -> dict[str, Any]:
+    async def ada_ha_recall(self, query: str, limit: int = 10) -> dict[str, Any]:
         return await self.memory.search_all(str(query), int(limit))
