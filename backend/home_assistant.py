@@ -114,6 +114,8 @@ class HomeAssistantClient:
             payload = resp.json()
             self._access_token = payload["access_token"]
             self._token_expires = now + payload.get("expires_in", 1800)
+            if self._client is not None:
+                self._client.headers["Authorization"] = f"Bearer {self._access_token}"
 
     async def _http_client(self) -> Any:
         if not self.token:
