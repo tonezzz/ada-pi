@@ -746,6 +746,22 @@ class GeminiLiveProvider(RealtimeProvider):
                 }]
             }],
         }
+        if os.environ.get("DISABLE_GET_HOME_STATE") == "true":
+            config["tools"][0]["function_declarations"] = [
+                fd for fd in config["tools"][0]["function_declarations"]
+                if fd.get("name") != "get_home_state"
+            ]
+            config["system_instruction"] = (
+                config["system_instruction"]
+                .replace(
+                    "get_home_state to check occupancy and the state of the configured home plugs, ",
+                    "",
+                )
+                .replace(
+                    "When the user asks about devices, occupancy, or what is on/off, call get_home_state or list_home_devices first. ",
+                    "When the user asks about devices, occupancy, or what is on/off, call list_home_devices or ada_ha_get_state first. ",
+                )
+            )
         self._session_context = self._client.aio.live.connect(
             model=self.model,
             config=config,
