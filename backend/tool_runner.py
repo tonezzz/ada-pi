@@ -381,6 +381,7 @@ class AdaMemoryStore:
         parts = [f"confidence: {status}"]
         if safety is not None:
             parts.append(f"safety: {safety}")
+        self._controllable_fetched_at = 0.0  # force next confidence call to reclassify
         return f"{entity_id} is now {', '.join(parts)}"
 
     def confidence_groups(self) -> dict[str, list[dict[str, Any]]]:
@@ -413,6 +414,7 @@ class AdaMemoryStore:
 
     async def overview(self) -> dict[str, Any]:
         await self._ensure()
+        await self._ensure_confidence()
         if self._overview is not None and self._confidence_groups is not None:
             self._overview["confidence_summary"] = self._build_confidence_summary()
         return self._overview or {}
