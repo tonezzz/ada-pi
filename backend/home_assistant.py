@@ -536,6 +536,7 @@ class HomeAssistantClient:
         """Fetch a Lovelace dashboard config over the Home Assistant websocket."""
         if not self.token:
             raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
+        await self._ensure_access_token()
         base = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
         ws_url = f"{base.rstrip('/')}/api/websocket"
         async with websockets.connect(ws_url) as ws:
@@ -543,7 +544,7 @@ class HomeAssistantClient:
             hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
             if hello.get("type") != "auth_required":
                 raise RuntimeError(f"unexpected websocket hello: {hello}")
-            await ws.send(json.dumps({"type": "auth", "access_token": self.token}))
+            await ws.send(json.dumps({"type": "auth", "access_token": self._access_token}))
             ack = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
             if ack.get("type") != "auth_ok":
                 raise RuntimeError(f"websocket auth failed: {ack}")
