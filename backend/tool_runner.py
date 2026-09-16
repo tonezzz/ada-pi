@@ -116,9 +116,19 @@ class AdaMemoryStore:
             .replace(":", "-")
             .replace(".", "-")
         )
+        self._confidence_collection = (
+            "ada-ha-device-confidence-"
+            + str(ha_client.base_url).rstrip("/")
+            .replace("://", "-")
+            .replace("/", "-")
+            .replace(":", "-")
+            .replace(".", "-")
+        )
         self._devices: list[dict[str, Any]] | None = None
         self._sensors: list[dict[str, Any]] | None = None
         self._overview: dict[str, Any] | None = None
+        self._confidence: dict[str, str] = {}
+        self._confidence_groups: dict[str, list[dict[str, Any]]] | None = None
         self._last_refresh: datetime | None = None
 
     async def _ensure(self) -> None:
@@ -132,6 +142,8 @@ class AdaMemoryStore:
         sensors = await self.ha_client.sensors(limit=200)
         self._devices = controllable
         self._sensors = sensors
+        known = await self._load_confidence()
+        self._classify_and_sync(controllable, known)
         self._overview = {
             "person_entity": self.ha_client.person_entity,
             "home_plugs": list(self.ha_client.home_plug_entities),
@@ -190,6 +202,93 @@ class AdaMemoryStore:
                 "refreshed_at": [self._last_refresh.isoformat()],
             },
         )
+
+    # -- Device confidence --
+
+    async def _load_confidence(self) -> dict[str, str]:
+        if self.mddb is None:
+            return {}
+        docs = await self.mddb.search_documents(
+            collection=self._confidence_collection,
+            query="*",
+            limit=1000,
+        )
+        known = {}
+        for doc in docs:
+            meta = doc.get("meta", {})
+            eid = _first(meta.get("entity_id"))
+            status = _first(meta.get("confidence"))
+            if eid and status:
+                known[eid] = status
+        return known
+
+    def _classify_and_sync(self, devices: list[dict[str, Any]], known: dict[str, str]) -> None:
+        groups: dict[str, list[dict[str, Any]]] = {
+            "trusted_working": [],
+            "trusted_broken": [],
+            "learning": [],
+            "needs_integration": [],
+        }
+        for dev in devices:
+            eid = dev.get("entity_id")
+            state = str(dev.get("state", "unknown"))
+            available = bool(dev.get("available"))
+            status = known.get(eid) if eid else None
+            if status not in groups:
+                status = None
+            if not available or state in {"unavailable", "unknown"}:
+                status = "trusted_broken"
+            elif status is None:
+                status = "needs_integration"
+            dev["confidence"] = status
+            groups.setdefault(status, []).append(dev)
+        self._confidence = {d.get("entity_id", ""): d.get("confidence", "needs_integration") for d in devices if d.get("entity_id")}
+        self._confidence_groups = groups
+
+    async def _save_confidence(self, entity_id: str, status: str) -> None:
+        if self.mddb is None:
+            return
+        key = entity_id.replace(".", "-").replace("/", "-")
+        await self.mddb.add_document(
+            collection=self._confidence_collection,
+            key=key,
+            lang="en",
+            content_md=f"# {entity_id}\n\nconfidence: {status}",
+            meta={
+                "entity_id": [entity_id],
+                "confidence": [status],
+                "source": [str(self.ha_client.base_url)],
+            },
+        )
+
+    async def set_confidence(self, entity_id: str, status: str) -> str:
+        if status not in {"trusted_working", "trusted_broken", "learning", "needs_integration"}:
+            raise ValueError(f"Invalid confidence status: {status}")
+        if self._devices is None:
+            await self.refresh()
+        for dev in self._devices or []:
+            if dev.get("entity_id") == entity_id:
+                dev["confidence"] = status
+                break
+        if self._confidence_groups is not None:
+            # Rebuild groups quickly
+            for group in self._confidence_groups.values():
+                for dev in group:
+                    if dev.get("entity_id") == entity_id:
+                        dev["confidence"] = status
+                        break
+        self._confidence[entity_id] = status
+        if self.mddb is not None:
+            await self._save_confidence(entity_id, status)
+        return f"{entity_id} is now {status}"
+
+    def confidence_groups(self) -> dict[str, list[dict[str, Any]]]:
+        return self._confidence_groups or {
+            "trusted_working": [],
+            "trusted_broken": [],
+            "learning": [],
+            "needs_integration": [],
+        }
 
     def _match(self, query: str, items: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
         q = str(query).lower()
@@ -367,3 +466,12 @@ class ToolRunner:
                 "refreshed_at": _first(meta.get("refreshed_at")),
             })
         return results
+
+    async def ada_ha_get_device_confidence(self) -> dict[str, list[dict[str, Any]]]:
+        """Return controllable devices grouped by user confidence."""
+        await self.memory._ensure()
+        return self.memory.confidence_groups()
+
+    async def ada_ha_set_device_confidence(self, entity_id: str, status: str) -> str:
+        """Set a device's confidence status."""
+        return await self.memory.set_confidence(str(entity_id), str(status))

@@ -130,8 +130,11 @@ class GeminiLiveProvider(RealtimeProvider):
             "You also have Ada HA memory tools: ada_ha_get_state for the stored home snapshot, "
             "ada_ha_search_devices to find a device by name, ada_ha_search_sensors to find a sensor, "
             "ada_ha_recall for free-form recall across the stored devices and sensors, "
-            "ada_ha_history to list recent home snapshots from memory, and "
+            "ada_ha_history to list recent home snapshots from memory, "
+            "ada_ha_get_device_confidence to list devices by trust level, "
+            "ada_ha_set_device_confidence to change a device's trust level, and "
             "ada_session_recall to ask NotebookLM about previous conversations. "
+            "Use ada_ha_get_device_confidence when the user asks what is broken, new, needs setup, or trusted. "
             "Use these when the user asks about the stored home state, past state, or how it has changed. "
             "When the user asks 'what did we talk about' or 'do you remember', call ada_session_recall."
         )
@@ -673,6 +676,39 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "description": "Maximum snapshots to return. Defaults to 10.",
                             }
                         },
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_ha_get_device_confidence",
+                    "description": (
+                        "Returns controllable devices grouped by user confidence: trusted_working, "
+                        "trusted_broken, learning, or needs_integration. "
+                        "Use this when the user asks what is broken, what needs setup, what is new, "
+                        "or what is trusted."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+                }, {
+                    "name": "ada_ha_set_device_confidence",
+                    "description": (
+                        "Set a controllable device's confidence status. "
+                        "Use this when the user says a device is broken, new, or trusted."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "The exact Home Assistant entity_id.",
+                            },
+                            "status": {
+                                "type": "string",
+                                "enum": ["trusted_working", "trusted_broken", "learning", "needs_integration"],
+                                "description": "The confidence level to assign.",
+                            }
+                        },
+                        "required": ["entity_id", "status"],
                         "additionalProperties": False,
                     },
                 }, {
