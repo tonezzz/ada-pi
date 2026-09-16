@@ -124,11 +124,23 @@ class AdaMemoryStore:
             .replace(":", "-")
             .replace(".", "-")
         )
+        self._safety_collection = (
+            "ada-ha-device-safety-"
+            + str(ha_client.base_url).rstrip("/")
+            .replace("://", "-")
+            .replace("/", "-")
+            .replace(":", "-")
+            .replace(".", "-")
+        )
         self._devices: list[dict[str, Any]] | None = None
         self._sensors: list[dict[str, Any]] | None = None
         self._overview: dict[str, Any] | None = None
         self._confidence: dict[str, str] = {}
         self._confidence_groups: dict[str, list[dict[str, Any]]] | None = None
+        self._safety: dict[str, str] = {}
+        self._safety_groups: dict[str, list[dict[str, Any]]] | None = None
+        self._controllable_fetched_at = 0.0
+        self._controllable_ttl = 60.0
         self._last_refresh: datetime | None = None
 
     async def _ensure(self) -> None:
@@ -136,14 +148,30 @@ class AdaMemoryStore:
             return
         await self.refresh()
 
+    async def _ensure_confidence(self) -> None:
+        """Ensure controllable devices and confidence groups are fresh within TTL."""
+        if self._devices is not None and (time.monotonic() - self._controllable_fetched_at) < self._controllable_ttl:
+            return
+        await self._refresh_controllable()
+
+    async def _refresh_controllable(self) -> None:
+        """Fetch only controllable devices and recompute confidence groups."""
+        controllable = await self.ha_client.entities()
+        known_confidence = await self._load_confidence()
+        known_safety = await self._load_safety()
+        self._devices = controllable
+        self._classify_and_sync(controllable, known_confidence, known_safety)
+        self._controllable_fetched_at = time.monotonic()
+
     async def refresh(self) -> None:
         states = await self.ha_client._states()
         controllable = await self.ha_client.entities()
         sensors = await self.ha_client.sensors(limit=200)
         self._devices = controllable
         self._sensors = sensors
-        known = await self._load_confidence()
-        self._classify_and_sync(controllable, known)
+        known_confidence = await self._load_confidence()
+        known_safety = await self._load_safety()
+        self._classify_and_sync(controllable, known_confidence, known_safety)
         self._overview = {
             "person_entity": self.ha_client.person_entity,
             "home_plugs": list(self.ha_client.home_plug_entities),
@@ -152,8 +180,10 @@ class AdaMemoryStore:
             "sensor_count": len(sensors),
             "source": self.ha_client.base_url,
             "refreshed_at": datetime.now(timezone.utc).isoformat(),
+            "confidence_summary": self._build_confidence_summary(),
         }
         self._last_refresh = datetime.now(timezone.utc)
+        self._controllable_fetched_at = time.monotonic()
         if self.mddb is not None:
             await self._persist(states, controllable, sensors)
 
@@ -222,28 +252,64 @@ class AdaMemoryStore:
                 known[eid] = status
         return known
 
-    def _classify_and_sync(self, devices: list[dict[str, Any]], known: dict[str, str]) -> None:
-        groups: dict[str, list[dict[str, Any]]] = {
+    async def _load_safety(self) -> dict[str, str]:
+        if self.mddb is None:
+            return {}
+        docs = await self.mddb.search_documents(
+            collection=self._safety_collection,
+            query="*",
+            limit=1000,
+        )
+        known = {}
+        for doc in docs:
+            meta = doc.get("meta", {})
+            eid = _first(meta.get("entity_id"))
+            safety = _first(meta.get("safety"))
+            if eid and safety:
+                known[eid] = safety
+        return known
+
+    def _classify_and_sync(self, devices: list[dict[str, Any]], known_confidence: dict[str, str], known_safety: dict[str, str]) -> None:
+        confidence_groups: dict[str, list[dict[str, Any]]] = {
             "trusted_working": [],
             "trusted_broken": [],
             "learning": [],
             "needs_integration": [],
         }
+        safety_groups: dict[str, list[dict[str, Any]]] = {
+            "safe": [],
+            "caution": [],
+            "dangerous": [],
+        }
         for dev in devices:
             eid = dev.get("entity_id")
             state = str(dev.get("state", "unknown"))
             available = bool(dev.get("available"))
-            status = known.get(eid) if eid else None
-            if status not in groups:
+            status = known_confidence.get(eid) if eid else None
+            if status not in confidence_groups:
                 status = None
             if not available or state in {"unavailable", "unknown"}:
                 status = "trusted_broken"
             elif status is None:
                 status = "needs_integration"
             dev["confidence"] = status
-            groups.setdefault(status, []).append(dev)
+            confidence_groups.setdefault(status, []).append(dev)
+
+            # Default safety: covers and shutters are dangerous; everything else cautious until marked safe.
+            raw_safety = known_safety.get(eid) if eid else None
+            if raw_safety not in safety_groups:
+                raw_safety = None
+            if raw_safety is None:
+                if isinstance(eid, str) and eid.startswith("cover."):
+                    raw_safety = "dangerous"
+                else:
+                    raw_safety = "caution"
+            dev["safety"] = raw_safety
+            safety_groups.setdefault(raw_safety, []).append(dev)
         self._confidence = {d.get("entity_id", ""): d.get("confidence", "needs_integration") for d in devices if d.get("entity_id")}
-        self._confidence_groups = groups
+        self._confidence_groups = confidence_groups
+        self._safety = {d.get("entity_id", ""): d.get("safety", "caution") for d in devices if d.get("entity_id")}
+        self._safety_groups = safety_groups
 
     async def _save_confidence(self, entity_id: str, status: str) -> None:
         if self.mddb is None:
@@ -261,14 +327,34 @@ class AdaMemoryStore:
             },
         )
 
-    async def set_confidence(self, entity_id: str, status: str) -> str:
+    async def _save_safety(self, entity_id: str, safety: str) -> None:
+        if self.mddb is None:
+            return
+        key = entity_id.replace(".", "-").replace("/", "-")
+        await self.mddb.add_document(
+            collection=self._safety_collection,
+            key=key,
+            lang="en",
+            content_md=f"# {entity_id}\n\nsafety: {safety}",
+            meta={
+                "entity_id": [entity_id],
+                "safety": [safety],
+                "source": [str(self.ha_client.base_url)],
+            },
+        )
+
+    async def set_confidence(self, entity_id: str, status: str, safety: str | None = None) -> str:
         if status not in {"trusted_working", "trusted_broken", "learning", "needs_integration"}:
             raise ValueError(f"Invalid confidence status: {status}")
+        if safety is not None and safety not in {"safe", "caution", "dangerous"}:
+            raise ValueError(f"Invalid safety level: {safety}")
         if self._devices is None:
-            await self.refresh()
+            await self._ensure_confidence()
         for dev in self._devices or []:
             if dev.get("entity_id") == entity_id:
                 dev["confidence"] = status
+                if safety is not None:
+                    dev["safety"] = safety
                 break
         if self._confidence_groups is not None:
             # Rebuild groups quickly
@@ -276,11 +362,26 @@ class AdaMemoryStore:
                 for dev in group:
                     if dev.get("entity_id") == entity_id:
                         dev["confidence"] = status
+                        if safety is not None:
+                            dev["safety"] = safety
+                        break
+        if self._safety_groups is not None and safety is not None:
+            for group in self._safety_groups.values():
+                for dev in group:
+                    if dev.get("entity_id") == entity_id:
+                        dev["safety"] = safety
                         break
         self._confidence[entity_id] = status
+        if safety is not None:
+            self._safety[entity_id] = safety
         if self.mddb is not None:
             await self._save_confidence(entity_id, status)
-        return f"{entity_id} is now {status}"
+            if safety is not None:
+                await self._save_safety(entity_id, safety)
+        parts = [f"confidence: {status}"]
+        if safety is not None:
+            parts.append(f"safety: {safety}")
+        return f"{entity_id} is now {', '.join(parts)}"
 
     def confidence_groups(self) -> dict[str, list[dict[str, Any]]]:
         return self._confidence_groups or {
@@ -289,6 +390,17 @@ class AdaMemoryStore:
             "learning": [],
             "needs_integration": [],
         }
+
+    def _build_confidence_summary(self) -> str:
+        groups = self.confidence_groups()
+        counts = {k: len(v) for k, v in groups.items()}
+        parts = [
+            f"{counts['trusted_working']} trusted",
+            f"{counts['trusted_broken']} broken",
+            f"{counts['learning']} learning",
+            f"{counts['needs_integration']} need setup",
+        ]
+        return f"{sum(counts.values())} devices: {', '.join(parts)}"
 
     def _match(self, query: str, items: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
         q = str(query).lower()
@@ -301,6 +413,8 @@ class AdaMemoryStore:
 
     async def overview(self) -> dict[str, Any]:
         await self._ensure()
+        if self._overview is not None and self._confidence_groups is not None:
+            self._overview["confidence_summary"] = self._build_confidence_summary()
         return self._overview or {}
 
     async def search_devices(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
@@ -469,9 +583,9 @@ class ToolRunner:
 
     async def ada_ha_get_device_confidence(self) -> dict[str, list[dict[str, Any]]]:
         """Return controllable devices grouped by user confidence."""
-        await self.memory._ensure()
+        await self.memory._ensure_confidence()
         return self.memory.confidence_groups()
 
-    async def ada_ha_set_device_confidence(self, entity_id: str, status: str) -> str:
-        """Set a device's confidence status."""
-        return await self.memory.set_confidence(str(entity_id), str(status))
+    async def ada_ha_set_device_confidence(self, entity_id: str, status: str, safety: str | None = None) -> str:
+        """Set a device's confidence and/or safety status."""
+        return await self.memory.set_confidence(str(entity_id), str(status), str(safety) if safety is not None else None)

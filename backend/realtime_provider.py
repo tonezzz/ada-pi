@@ -127,6 +127,12 @@ class GeminiLiveProvider(RealtimeProvider):
             "For safety, before using control_cover to open or close the gate or any shutter, "
             "always warn that something could be blocking it and ask the user to confirm explicitly. "
             "Only call control_cover for the gate or a shutter after the user has given a clear second confirmation. "
+            "Every controllable device has a safety level: safe, caution, or dangerous. "
+            "Use ada_ha_get_device_confidence to check a device's safety before acting. "
+            "For safety: dangerous, warn the user, explain the risk, and get explicit confirmation before calling any control tool. "
+            "For safety: caution, confirm once before acting. "
+            "For safety: safe, proceed directly. "
+            "You can update a device's safety level with ada_ha_set_device_confidence. "
             "You also have Ada HA memory tools: ada_ha_get_state for the stored home snapshot, "
             "ada_ha_search_devices to find a device by name, ada_ha_search_sensors to find a sensor, "
             "ada_ha_recall for free-form recall across the stored devices and sensors, "
@@ -683,16 +689,17 @@ class GeminiLiveProvider(RealtimeProvider):
                     "description": (
                         "Returns controllable devices grouped by user confidence: trusted_working, "
                         "trusted_broken, learning, or needs_integration. "
+                        "Each device also includes a safety level: safe, caution, or dangerous. "
                         "Use this when the user asks what is broken, what needs setup, what is new, "
-                        "or what is trusted."
+                        "what is trusted, or what is dangerous."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {"type": "object", "properties": {}, "additionalProperties": False},
                 }, {
                     "name": "ada_ha_set_device_confidence",
                     "description": (
-                        "Set a controllable device's confidence status. "
-                        "Use this when the user says a device is broken, new, or trusted."
+                        "Set a controllable device's confidence and/or safety status. "
+                        "Use this when the user says a device is broken, new, trusted, dangerous, safe, or needs caution."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -706,6 +713,11 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "string",
                                 "enum": ["trusted_working", "trusted_broken", "learning", "needs_integration"],
                                 "description": "The confidence level to assign.",
+                            },
+                            "safety": {
+                                "type": "string",
+                                "enum": ["safe", "caution", "dangerous"],
+                                "description": "The safety level to assign. Use this to mark devices that are dangerous or safe.",
                             }
                         },
                         "required": ["entity_id", "status"],

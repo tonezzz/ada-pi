@@ -30,6 +30,16 @@ ha_client = HomeAssistantClient()
 tool_runner = ToolRunner(ha_client)
 
 
+@app.on_event("startup")
+async def warm_cache() -> None:
+    logger.info("warming HA and confidence cache")
+    try:
+        await tool_runner.memory.refresh()
+        logger.info("cache warm complete")
+    except Exception as exc:
+        logger.warning("cache warm failed, will retry on first request: %s", exc)
+
+
 @app.websocket("/ws")
 async def voice_socket(ws: WebSocket) -> None:
     await ws.accept()
