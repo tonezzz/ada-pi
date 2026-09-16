@@ -101,8 +101,6 @@ class AdaMemoryStore:
     queried for history.
     """
 
-    COLLECTION = "ada-ha-snapshots"
-
     def __init__(
         self,
         ha_client: HomeAssistantClient,
@@ -110,6 +108,14 @@ class AdaMemoryStore:
     ) -> None:
         self.ha_client = ha_client
         self.mddb = mddb_client
+        self._collection = (
+            "ada-ha-snapshots-"
+            + str(ha_client.base_url).rstrip("/")
+            .replace("://", "-")
+            .replace("/", "-")
+            .replace(":", "-")
+            .replace(".", "-")
+        )
         self._devices: list[dict[str, Any]] | None = None
         self._sensors: list[dict[str, Any]] | None = None
         self._overview: dict[str, Any] | None = None
@@ -170,7 +176,7 @@ class AdaMemoryStore:
         key = f"snapshot-{source}-{ts}"
         content_md = self._build_content_md(states, controllable, sensors)
         await self.mddb.add_document(
-            collection=self.COLLECTION,
+            collection=self._collection,
             key=key,
             lang="en",
             content_md=content_md,
@@ -340,7 +346,7 @@ class ToolRunner:
         """Return recent persisted snapshots from MDDB for this HA instance."""
         cutoff = time.time() - (int(hours) * 3600)
         docs = await self.mddb.search_documents(
-            collection=AdaMemoryStore.COLLECTION,
+            collection=self.memory._collection,
             query="*",
             filter_meta={"source": [str(self.context.ha_client.base_url)]},
             limit=limit,
