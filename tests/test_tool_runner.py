@@ -24,7 +24,7 @@ class ToolRunnerSafetyTests(unittest.IsolatedAsyncioTestCase):
             {"entity_id": "cover.gate", "state": "closed", "available": True, "name": "Gate"},
             {"entity_id": "light.office", "state": "on", "available": True, "name": "Office"},
         )
-        store = AdaMemoryStore(self.ha_client, mddb_client=self.mddb_client)
+        store = AdaMemoryStore(self.ha_client, mddb_client=self.mddb_client, instance_id="test")
         await store.refresh()
 
         groups = store.confidence_groups()
@@ -36,7 +36,7 @@ class ToolRunnerSafetyTests(unittest.IsolatedAsyncioTestCase):
         self._controllable(
             {"entity_id": "cover.gate", "state": "closed", "available": True, "name": "Gate"},
         )
-        store = AdaMemoryStore(self.ha_client, mddb_client=self.mddb_client)
+        store = AdaMemoryStore(self.ha_client, mddb_client=self.mddb_client, instance_id="test")
         await store.refresh()
 
         await store.set_confidence("cover.gate", "trusted_working", "safe")
@@ -54,7 +54,7 @@ class ToolRunnerSafetyTests(unittest.IsolatedAsyncioTestCase):
         self._controllable(
             {"entity_id": "cover.gate", "state": "closed", "available": True, "name": "Gate"},
         )
-        store = AdaMemoryStore(self.ha_client, mddb_client=self.mddb_client)
+        store = AdaMemoryStore(self.ha_client, mddb_client=self.mddb_client, instance_id="test")
         await store.refresh()
 
         # Default safety for cover is dangerous
@@ -80,7 +80,7 @@ class ControlGateTests(unittest.IsolatedAsyncioTestCase):
         self.ha_client.control_cover.return_value = {"ok": True}
         self.ha_client.press_button.return_value = {"pressed": True}
         self.ha_client.set_power.return_value = {"state": "off"}
-        self.runner = ToolRunner(self.ha_client)
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner.mddb = AsyncMock()
         self.runner.mddb.search_documents.return_value = []
         self.runner.memory.mddb = self.runner.mddb

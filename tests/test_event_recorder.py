@@ -27,7 +27,7 @@ class HaEventRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.ha_client.base_url = "http://test:8123"
         self.mddb_client = AsyncMock()
         self.mddb_client.add_document.return_value = {}
-        self.recorder = HaEventRecorder(self.ha_client, mddb_client=self.mddb_client)
+        self.recorder = HaEventRecorder(self.ha_client, mddb_client=self.mddb_client, instance_id="test")
 
     async def test_record_keeps_real_state_changes(self):
         entry = self.recorder.record(_changed(

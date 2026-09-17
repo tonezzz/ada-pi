@@ -19,6 +19,8 @@ from typing import Any
 
 import websockets
 
+from backend.instance import ada_instance_id
+
 logger = logging.getLogger("ha.events")
 
 DEFAULT_WATCHED_DOMAINS = {
@@ -26,16 +28,6 @@ DEFAULT_WATCHED_DOMAINS = {
     "alarm_control_panel", "light", "switch", "fan", "input_boolean",
     "media_player",
 }
-
-
-def _source_slug(base_url: str) -> str:
-    return (
-        str(base_url).rstrip("/")
-        .replace("://", "-")
-        .replace("/", "-")
-        .replace(":", "-")
-        .replace(".", "-")
-    )
 
 
 class HaEventRecorder:
@@ -49,11 +41,13 @@ class HaEventRecorder:
         max_events: int = 2000,
         flush_interval: float = 30.0,
         flush_batch: int = 20,
+        instance_id: str | None = None,
     ) -> None:
         self.ha_client = ha_client
         self.mddb = mddb_client
         self.watched_domains = watched_domains or DEFAULT_WATCHED_DOMAINS
-        self.collection = "ada-ha-events-" + _source_slug(ha_client.base_url)
+        self.instance = instance_id or ada_instance_id()
+        self.collection = f"ada-ha-events-{self.instance}"
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self._pending: list[dict[str, Any]] = []
         self.flush_interval = flush_interval
@@ -240,13 +234,14 @@ class HaEventRecorder:
                 f"- {entry['at']} — {entry['name']} (`{entry['entity_id']}`): "
                 f"{entry['from']} → {entry['to']}"
             )
-        key = f"events-{_source_slug(self.ha_client.base_url)}-{now.strftime('%Y%m%d%H%M%S%f')}"
+        key = f"events-{self.instance}-{now.strftime('%Y%m%d%H%M%S%f')}"
         await self.mddb.add_document(
             collection=self.collection,
             key=key,
             lang="en",
             content_md="\n".join(lines),
             meta={
+                "instance": [self.instance],
                 "source": [str(self.ha_client.base_url)],
                 "kind": ["events"],
                 "count": [str(len(batch))],

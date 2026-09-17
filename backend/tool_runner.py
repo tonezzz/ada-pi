@@ -14,6 +14,7 @@ import httpx
 
 from backend.event_recorder import HaEventRecorder
 from backend.home_assistant import HomeAssistantClient
+from backend.instance import ada_instance_id
 
 logger = logging.getLogger("tools")
 
@@ -117,33 +118,14 @@ class AdaMemoryStore:
         self,
         ha_client: HomeAssistantClient,
         mddb_client: MddbClient | None = None,
+        instance_id: str | None = None,
     ) -> None:
         self.ha_client = ha_client
         self.mddb = mddb_client
-        self._collection = (
-            "ada-ha-snapshots-"
-            + str(ha_client.base_url).rstrip("/")
-            .replace("://", "-")
-            .replace("/", "-")
-            .replace(":", "-")
-            .replace(".", "-")
-        )
-        self._confidence_collection = (
-            "ada-ha-device-confidence-"
-            + str(ha_client.base_url).rstrip("/")
-            .replace("://", "-")
-            .replace("/", "-")
-            .replace(":", "-")
-            .replace(".", "-")
-        )
-        self._safety_collection = (
-            "ada-ha-device-safety-"
-            + str(ha_client.base_url).rstrip("/")
-            .replace("://", "-")
-            .replace("/", "-")
-            .replace(":", "-")
-            .replace(".", "-")
-        )
+        self.instance = instance_id or ada_instance_id()
+        self._collection = f"ada-ha-snapshots-{self.instance}"
+        self._confidence_collection = f"ada-ha-device-confidence-{self.instance}"
+        self._safety_collection = f"ada-ha-device-safety-{self.instance}"
         self._devices: list[dict[str, Any]] | None = None
         self._sensors: list[dict[str, Any]] | None = None
         self._overview: dict[str, Any] | None = None
@@ -226,8 +208,7 @@ class AdaMemoryStore:
         if self._last_refresh is None:
             return
         ts = self._last_refresh.strftime("%Y%m%d%H%M%S%f")
-        source = str(self.ha_client.base_url).rstrip("/").replace("://", "-").replace("/", "-")
-        key = f"snapshot-{source}-{ts}"
+        key = f"snapshot-{self.instance}-{ts}"
         content_md = self._build_content_md(states, controllable, sensors)
         await self.mddb.add_document(
             collection=self._collection,
@@ -235,6 +216,7 @@ class AdaMemoryStore:
             lang="en",
             content_md=content_md,
             meta={
+                "instance": [self.instance],
                 "source": [str(self.ha_client.base_url)],
                 "kind": ["snapshot"],
                 "person_entity": [self.ha_client.person_entity],
@@ -335,6 +317,7 @@ class AdaMemoryStore:
             meta={
                 "entity_id": [entity_id],
                 "confidence": [status],
+                "instance": [self.instance],
                 "source": [str(self.ha_client.base_url)],
             },
         )
@@ -351,6 +334,7 @@ class AdaMemoryStore:
             meta={
                 "entity_id": [entity_id],
                 "safety": [safety],
+                "instance": [self.instance],
                 "source": [str(self.ha_client.base_url)],
             },
         )
@@ -453,11 +437,11 @@ class AdaMemoryStore:
 class ToolRunner:
     """Execute Ada tools for FastAPI and the voice provider."""
 
-    def __init__(self, ha_client: HomeAssistantClient, habit_state_getter: Any | None = None) -> None:
+    def __init__(self, ha_client: HomeAssistantClient, habit_state_getter: Any | None = None, instance_id: str | None = None) -> None:
         self.context = ToolContext(ha_client=ha_client, habit_state_getter=habit_state_getter)
         self.mddb = MddbClient()
-        self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb)
-        self.events = HaEventRecorder(ha_client, mddb_client=self.mddb)
+        self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb, instance_id=instance_id)
+        self.events = HaEventRecorder(ha_client, mddb_client=self.mddb, instance_id=instance_id)
         self._control_calls: list[float] = []
         self._control_entity_calls: dict[str, list[float]] = {}
 
