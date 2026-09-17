@@ -19,6 +19,9 @@ NOTEBOOKLM_BASE_URL = os.environ.get(
 NOTEBOOKLM_API_KEY = os.environ.get("NOTEBOOKLM_REST_API_KEY")
 NOTEBOOKLM_NOTEBOOK_ID = os.environ.get("NOTEBOOKLM_NOTEBOOK_ID")
 
+# Speak a second filler line if recall exceeds this many seconds.
+RECALL_SLOW_AFTER_S = float(os.environ.get("ADA_RECALL_SLOW_AFTER_S", "10"))
+
 # Optional per-group routing: {"memory": "<nb-id>", "infra": "<nb-id>", ...}
 # Falls back to NOTEBOOKLM_NOTEBOOK_ID for any group not in the map.
 try:
@@ -138,10 +141,11 @@ class ConversationMemory:
         question: str,
         on_complete: Callable[[str | None], Awaitable[None]],
         group: str | None = None,
+        on_slow: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         if not self.client.configured:
             return "My notes are not connected."
-        asyncio.create_task(self._recall(question, on_complete, group))
+        asyncio.create_task(self._recall(question, on_complete, group, on_slow))
         return "One moment, I'm checking my notes."
 
     async def _recall(
@@ -149,8 +153,17 @@ class ConversationMemory:
         question: str,
         on_complete: Callable[[str | None], Awaitable[None]],
         group: str | None = None,
+        on_slow: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
-        answer = await self.client.ask(question, group=group)
+        ask = asyncio.create_task(self.client.ask(question, group=group))
+        if on_slow is not None:
+            done, _ = await asyncio.wait({ask}, timeout=RECALL_SLOW_AFTER_S)
+            if not done:
+                try:
+                    await on_slow()
+                except Exception as exc:
+                    logger.warning("recall slow filler failed: %s", exc)
+        answer = await ask
         if answer:
             await on_complete(answer)
         else:

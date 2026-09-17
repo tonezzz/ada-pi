@@ -142,6 +142,9 @@ class GeminiLiveProvider(RealtimeProvider):
             "ada_ha_get_device_confidence to list devices by trust level, "
             "ada_ha_set_device_confidence to change a device's trust level, and "
             "ada_session_recall to ask NotebookLM about previous conversations or stored knowledge by topic group. "
+            "Prefer the ada_ha_* memory tools for home, device, sensor, or event questions — they answer instantly. "
+            "Reserve ada_session_recall for previous conversations or stored knowledge; it can take up to 20 seconds, "
+            "so keep the user informed while it runs. "
             "Use ada_ha_get_device_confidence when the user asks what is broken, new, needs setup, or trusted. "
             "For event history: get_logbook gives the friendly Home Assistant event log, "
             "get_recent_events answers what opened, closed, or changed recently across the home, "
@@ -158,6 +161,16 @@ class GeminiLiveProvider(RealtimeProvider):
         self.session_id = session_id or "-"
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
+
+    async def _on_recall_slow(self) -> None:
+        # NotebookLM ask is still running; have Gemini keep the user informed.
+        try:
+            await self.send_text_turn(
+                "(system) The notes search is still running. "
+                "Briefly tell the user you are still checking your notes."
+            )
+        except Exception as exc:
+            logger.warning("session=%s recall slow filler failed: %s", self.session_id, exc)
 
     async def _on_recall_complete(self, answer: str | None) -> None:
         if not answer:
@@ -866,7 +879,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         "Use this when the user asks 'what did we talk about', 'do you remember', "
                         "or wants to recall something from an earlier conversation. "
                         "Pick the group that best matches the topic. "
-                        "The recall runs in the background; the result will be spoken when ready."
+                        "The recall runs in the background and can take up to ~20 seconds; "
+                        "the result will be spoken when ready."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -1123,6 +1137,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             recall_status = self.conversation.start_recall(
                                 str(question), self._on_recall_complete,
                                 group=str(group) if group else None,
+                                on_slow=self._on_recall_slow,
                             )
                             result = {"output": recall_status}
                         else:
