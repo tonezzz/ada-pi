@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
+import re
 import secrets
 import time
 from typing import Any
@@ -21,8 +23,27 @@ SESSION_TTL_S = int(os.environ.get("ADA_SESSION_TTL_S", str(12 * 3600)))
 REDEEM_TTL_S = int(os.environ.get("ADA_REDEEM_TTL_S", "600"))
 
 
+def _keys_file() -> str:
+    inst = os.environ.get("ADA_INSTANCE_ID", "default")
+    return os.environ.get(
+        "ADA_KEYS_FILE",
+        os.path.expanduser(f"~/.config/secrets/ada-ha-{inst}-keys.json"),
+    )
+
+
+def _file_keys() -> dict[str, str]:
+    """Dynamically issued keys from the keys file: {key: name}."""
+    try:
+        data = json.loads(open(_keys_file()).read())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(n) for n, k in data.items() if k and n}
+
+
 def _parse_keys() -> dict[str, str]:
-    """Return {key: name} for every configured key."""
+    """Return {key: name} for every configured key (env + issued file keys)."""
     keys: dict[str, str] = {}
     single = os.environ.get("ADA_API_KEY", "").strip()
     if single:
@@ -35,7 +56,57 @@ def _parse_keys() -> dict[str, str]:
         name, key = name.strip(), key.strip()
         if name and key:
             keys[key] = name
+    keys.update(_file_keys())
     return keys
+
+
+_KEY_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+
+
+def _save_file_keys(data: dict[str, str]) -> None:
+    path = _keys_file()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(data, f, indent=1)
+
+
+def create_key(name: str) -> str | None:
+    """Issue a new named device key, persisted to the keys file. None if taken."""
+    if not _KEY_NAME_RE.match(name):
+        return None
+    try:
+        data = json.loads(open(_keys_file()).read())
+    except (OSError, ValueError):
+        data = {}
+    env_names = {n for n in _parse_keys().values()}
+    if name in data or name in env_names:
+        return None
+    key = f"ada-{secrets.token_urlsafe(24)}"
+    data[name] = key
+    _save_file_keys(data)
+    return key
+
+
+def revoke_key(name: str) -> bool:
+    """Remove a file-issued key. Existing sessions for that name die too."""
+    try:
+        data = json.loads(open(_keys_file()).read())
+    except (OSError, ValueError):
+        return False
+    if name not in data:
+        return False
+    del data[name]
+    _save_file_keys(data)
+    return True
+
+
+def issued_key_names() -> list[str]:
+    try:
+        data = json.loads(open(_keys_file()).read())
+    except (OSError, ValueError):
+        return []
+    return sorted(k for k in data if isinstance(k, str))
 
 
 def configured() -> bool:

@@ -80,13 +80,25 @@ async def auth_logout(request: Request, response: Response) -> dict:
     return {"ok": True}
 
 
-@app.post("/api/auth/redeem-token")
-async def mint_redeem(request: Request) -> dict:
-    """Mint a one-time redeem URL bound to the caller's key.
+def _redeem_response(name: str, payload: dict) -> dict:
+    """Mint a redeem URL for a caller name and shape the JSON response."""
+    base = str(payload.get("path") or "/")
+    if not base.startswith("/") or "//" in base:
+        base = "/"
+    base = base.rstrip("/") or "/"
+    token = auth.mint_redeem_token(name, base)
+    url = f"{base}/redeem/{token}" if base != "/" else f"/redeem/{token}"
+    logger.info("redeem token minted for name=%s path=%s", name, base)
+    result = {"redeem_url": url, "expires_in": auth.REDEEM_TTL_S}
+    if payload.get("qr"):
+        origin = str(payload.get("origin") or "").rstrip("/")
+        if origin.startswith("http"):
+            result["qr_svg"] = _qr_svg(origin + url)
+    return result
 
-    Opening {base}/redeem/{token} hands the device the real API key plus a
-    session cookie — designed for QR-code onboarding of phones/tablets.
-    """
+
+async def _auth_payload(request: Request) -> tuple[str, dict]:
+    """Require auth; return (caller_name, json_body_or_empty)."""
     if not auth.configured():
         raise HTTPException(status_code=400, detail="auth not configured")
     name = auth.caller_name(request)
@@ -96,19 +108,51 @@ async def mint_redeem(request: Request) -> dict:
         payload = await request.json()
     except Exception:
         payload = {}
-    base = str(payload.get("path") or "/") if isinstance(payload, dict) else "/"
-    if not base.startswith("/") or "//" in base:
-        base = "/"
-    base = base.rstrip("/") or "/"
-    token = auth.mint_redeem_token(name, base)
-    url = f"{base}/redeem/{token}" if base != "/" else f"/redeem/{token}"
-    logger.info("redeem token minted by name=%s path=%s", name, base)
-    result = {"redeem_url": url, "expires_in": auth.REDEEM_TTL_S}
-    if isinstance(payload, dict) and payload.get("qr"):
-        origin = str(payload.get("origin") or "").rstrip("/")
-        if origin.startswith("http"):
-            result["qr_svg"] = _qr_svg(origin + url)
-    return result
+    return name, payload if isinstance(payload, dict) else {}
+
+
+@app.post("/api/auth/redeem-token")
+async def mint_redeem(request: Request) -> dict:
+    """Mint a one-time redeem URL bound to the caller's key.
+
+    Opening {base}/redeem/{token} hands the device the real API key plus a
+    session cookie — designed for QR-code onboarding of phones/tablets.
+    """
+    name, payload = await _auth_payload(request)
+    return _redeem_response(name, payload)
+
+
+@app.get("/api/auth/keys")
+async def list_keys(request: Request) -> dict:
+    """List issued (file-backed) device key names."""
+    name, _ = await _auth_payload(request)
+    return {"caller": name, "issued": auth.issued_key_names()}
+
+
+@app.post("/api/auth/keys")
+async def create_key(request: Request) -> dict:
+    """Issue a new named device key and return a one-time redeem URL for it.
+
+    The raw key is never returned to the admin — it is only delivered inside
+    the single-use redeem link. Revoke with DELETE /api/auth/keys/{name}.
+    """
+    _, payload = await _auth_payload(request)
+    key_name = str(payload.get("name") or "").strip()
+    key = auth.create_key(key_name)
+    if key is None:
+        raise HTTPException(status_code=409, detail="invalid or taken name")
+    logger.info("issued device key name=%s", key_name)
+    return {"name": key_name, **_redeem_response(key_name, payload)}
+
+
+@app.delete("/api/auth/keys/{name}")
+async def revoke_key(name: str, request: Request) -> dict:
+    """Revoke an issued device key (kills its sessions too)."""
+    await _auth_payload(request)
+    if not auth.revoke_key(name):
+        raise HTTPException(status_code=404, detail="no such issued key")
+    logger.info("revoked device key name=%s", name)
+    return {"ok": True}
 
 
 def _qr_svg(data: str) -> str | None:
