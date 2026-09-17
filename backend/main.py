@@ -111,7 +111,6 @@ def habit_tool_snapshot() -> dict[str, object]:
 
 live_manager = LiveSessionManager(
     lambda: posture_store.system_prompt(DEFAULT_ADA_INSTRUCTIONS),
-    office_state_getter=lambda: office_light_monitor.snapshot(),
     habit_state_getter=habit_tool_snapshot,
 )
 pose_service = PoseService(camera, pose_estimator, posture_monitor, posture_verifier, live_manager)

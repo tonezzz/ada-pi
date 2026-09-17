@@ -111,7 +111,7 @@ class OfficeLightMonitor:
         candidate_since = self._parse_stamp(state.get("candidate_since"))
         reset_at = self._parse_stamp(state.get("reset_at"))
         latched = bool(state.get("latched", False))
-        lights_on = list(snapshot.lights_on)
+        lights_on = list(snapshot.plugs_on)
 
         if not lights_on:
             state = {"latched": False, "candidate_since": None, "reset_at": None}

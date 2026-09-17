@@ -222,7 +222,7 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn('id="home-toggle"', html)
         self.assertIn('id="home-panel"', html)
         self.assertIn('id="home-devices"', html)
-        self.assertIn('fetch("/api/home-assistant/entities"', app)
+        self.assertIn('fetchWithApiKey("/api/home-assistant/entities"', app)
         self.assertIn('@app.get("/api/home-assistant/entities")', backend)
         self.assertIn('@app.post("/api/home-assistant/entities/{entity_id}/power")', backend)
         self.assertIn('Device control is available only from this device', backend)

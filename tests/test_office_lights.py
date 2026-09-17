@@ -18,8 +18,9 @@ class FakeHomeAssistant:
 def snapshot(*, person="not_home", lights=("light.left_office_light",)):
     return HomeAssistantSnapshot(
         person_state=person,
-        lights_on=tuple(lights),
-        light_states={entity: "on" for entity in lights},
+        plugs_on=tuple(lights),
+        plug_states={entity: "on" for entity in lights},
+        plug_names={},
     )
 
 
