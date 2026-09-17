@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
 import os
@@ -10,7 +9,7 @@ import uuid
 from contextlib import suppress
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent
@@ -20,6 +19,7 @@ if str(ROOT) not in sys.path:
 from backend.realtime_provider import create_provider
 from backend.home_assistant import HomeAssistantClient
 from backend.tool_runner import ToolRunner
+from backend import auth
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,16 +31,52 @@ app = FastAPI(title="Ada iPad PWA backend")
 ha_client = HomeAssistantClient()
 tool_runner = ToolRunner(ha_client)
 
-ADA_API_KEY = os.environ.get("ADA_API_KEY", "").strip()
-
-
 def _require_api_key(request: Request) -> None:
-    """Require X-Api-Key (or ?api_key=) when ADA_API_KEY is configured."""
-    if not ADA_API_KEY:
+    """Require a configured API key or valid session cookie when auth is on."""
+    if not auth.configured():
         return
-    provided = request.headers.get("x-api-key") or request.query_params.get("api_key") or ""
-    if not hmac.compare_digest(provided, ADA_API_KEY):
+    if auth.caller_name(request) is None:
         raise HTTPException(status_code=401, detail="invalid or missing api key")
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request) -> dict:
+    name = auth.caller_name(request)
+    return {
+        "auth_configured": auth.configured(),
+        "authenticated": name is not None,
+        "name": name,
+    }
+
+
+@app.post("/api/auth/session")
+async def auth_session(request: Request, response: Response) -> dict:
+    """Trade an API key for a short-lived HttpOnly session cookie."""
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid JSON: {exc}") from exc
+    issued = auth.issue_session(str(payload.get("api_key", "")))
+    if issued is None:
+        raise HTTPException(status_code=401, detail="invalid api key")
+    name, token = issued
+    cookie_path = str(payload.get("path") or "/")
+    if not cookie_path.startswith("/"):
+        cookie_path = "/"
+    secure = (request.headers.get("x-forwarded-proto") or request.url.scheme) == "https"
+    response.set_cookie(
+        auth.SESSION_COOKIE, token,
+        max_age=auth.SESSION_TTL_S, httponly=True, samesite="lax",
+        secure=secure, path=cookie_path,
+    )
+    return {"ok": True, "name": name, "expires_in": auth.SESSION_TTL_S}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request, response: Response) -> dict:
+    cookie_path = request.query_params.get("path") or "/"
+    response.delete_cookie(auth.SESSION_COOKIE, path=cookie_path)
+    return {"ok": True}
 
 
 @app.on_event("startup")
@@ -54,9 +90,9 @@ async def warm_cache() -> None:
     if ha_client.configured:
         await tool_runner.events.start()
         logger.info("ha event recorder running=%s", tool_runner.events.running)
-    if not ADA_API_KEY:
+    if not auth.configured():
         logger.warning(
-            "ADA_API_KEY is not set — /api/tools/call and power endpoints are UNAUTHENTICATED. "
+            "ADA_API_KEY is not set — /api/tools/call, power endpoints, and /ws are UNAUTHENTICATED. "
             "Dangerous devices are still gated by confirmed=true and rate limits."
         )
     if os.environ.get("ADA_READ_ONLY") == "true":
@@ -70,6 +106,11 @@ async def stop_event_recorder() -> None:
 
 @app.websocket("/ws")
 async def voice_socket(ws: WebSocket) -> None:
+    if not auth.websocket_authorized(ws):
+        client = ws.client.host if ws.client else "unknown"
+        logger.warning("ws connect denied (auth) client=%s", client)
+        await ws.close(code=4401)
+        return
     await ws.accept()
     session_id = uuid.uuid4().hex[:10]
     logger.info("session=%s client connected", session_id)
@@ -307,7 +348,8 @@ async def call_tool(request: Request) -> dict:
         raise HTTPException(status_code=422, detail="args must be an object")
     _require_api_key(request)
     client_ip = request.client.host if request.client else "unknown"
-    logger.info("tool call: %s args=%r client=%s", name, args, client_ip)
+    caller = auth.caller_name(request) or "anonymous"
+    logger.info("tool call: %s args=%r client=%s caller=%s", name, args, client_ip, caller)
     try:
         output = await tool_runner.execute(name, args)
         return {"tool": name, "status": "ok", "output": output}

@@ -18,6 +18,16 @@
       #pwa-log { max-height: 25vh; overflow-y: auto; padding: 10px; border-radius: 10px; background: rgba(0,12,19,.85); color: #c9fbff; font: 13px/1.4 system-ui, sans-serif; }
       .pwa-button { min-height: 44px; padding: 10px 18px; border: 1px solid #087ef2; border-radius: 9px; color: #aef8ff; background: rgba(5,35,48,.9); font: 600 16px system-ui, sans-serif; }
       .pwa-button:disabled { opacity: .4; }
+      #lock-toggle { border-color: #2a6a55; }
+      #lock-toggle.locked { border-color: #f2a008; color: #ffd97a; }
+      #unlock-overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,8,12,.92); z-index: 200; }
+      #unlock-overlay[hidden] { display: none; }
+      #unlock-card { width: min(340px, 88vw); padding: 28px 24px; border: 1px solid #0d4a63; border-radius: 14px; background: #04141c; text-align: center; }
+      #unlock-card h1 { margin: 0 0 6px; color: #aef8ff; font: 700 28px system-ui, sans-serif; }
+      #unlock-hint { margin: 0 0 18px; color: #75bdc5; font: 14px/1.45 system-ui, sans-serif; }
+      #unlock-key { width: 100%; box-sizing: border-box; padding: 12px 14px; border: 1px solid #087ef2; border-radius: 9px; background: rgba(5,35,48,.9); color: #c9fbff; font: 16px system-ui, sans-serif; }
+      #unlock-error { min-height: 20px; margin: 8px 0; color: #ff9a8a; font: 13px system-ui, sans-serif; }
+      #unlock-submit { width: 100%; }
     </style>
   </head>
   <body>
@@ -57,6 +67,7 @@
       </svg>
       <div id="pwa-ui">
         <div id="pwa-toolbar">
+          <button id="lock-toggle" class="pwa-button" hidden>Locked</button>
           <button id="mic-toggle" class="pwa-button" disabled>Mic: On</button>
           <button id="connect" class="pwa-button">Connect</button>
           <button id="disconnect" class="pwa-button" disabled>Disconnect</button>
@@ -65,7 +76,16 @@
         <div id="pwa-log"></div>
       </div>
     </main>
+    <div id="unlock-overlay" hidden>
+      <div id="unlock-card">
+        <h1>Ada</h1>
+        <p id="unlock-hint">Enter the API key to unlock voice and control.</p>
+        <input id="unlock-key" type="password" autocomplete="off" placeholder="API key">
+        <div id="unlock-error" role="alert"></div>
+        <button id="unlock-submit" class="pwa-button">Unlock</button>
+      </div>
+    </div>
     <script src="static/idle-face.js"></script>
-    <script src="app.js?v=5"></script>
+    <script src="app.js?v=6"></script>
   </body>
 </html>
