@@ -278,6 +278,7 @@ async function connect() {
     socket.onerror = () => logLine("WebSocket error", "system");
     socket.onclose = (event) => {
       if (event.code === 4401) {
+        authRequired = true;
         localStorage.removeItem(AUTH_STORAGE_KEY);
         setLocked(true, "This device isn't authorized — enter the API key.");
       }
