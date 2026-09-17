@@ -130,6 +130,8 @@ class GeminiLiveProvider(RealtimeProvider):
             "Every controllable device has a safety level: safe, caution, or dangerous. "
             "Use ada_ha_get_device_confidence to check a device's safety before acting. "
             "For safety: dangerous, warn the user, explain the risk, and get explicit confirmation before calling any control tool. "
+            "Dangerous devices are enforced server-side: the control call is rejected unless you pass confirmed=true. "
+            "Only set confirmed=true after the user has explicitly confirmed the action. "
             "For safety: caution, confirm once before acting. "
             "For safety: safe, proceed directly. "
             "You can update a device's safety level with ada_ha_set_device_confidence. "
@@ -270,6 +272,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "boolean",
                                 "description": "True to turn the entity on, false to turn it off.",
                             },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required for dangerous-safety entities; set true only after explicit user confirmation.",
+                            },
                         },
                         "required": ["entity_id", "on"],
                         "additionalProperties": False,
@@ -359,6 +365,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "enum": ["open", "close", "stop"],
                                 "description": "The cover action: open, close, or stop.",
                             },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required for dangerous-safety covers; set true only after explicit user confirmation.",
+                            },
                         },
                         "required": ["entity_id", "action"],
                         "additionalProperties": False,
@@ -376,6 +386,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "entity_id": {
                                 "type": "string",
                                 "description": "The button.* entity_id, e.g. button.gate_motor_my_position.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required for buttons attached to dangerous devices; set true only after explicit user confirmation.",
                             },
                         },
                         "required": ["entity_id"],
@@ -405,6 +419,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "source": {
                                 "type": "string",
                                 "description": "Required for select_source; the input/source name to select.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required for dangerous-safety entities; set true only after explicit user confirmation.",
                             },
                         },
                         "required": ["entity_id", "action"],
@@ -997,18 +1015,6 @@ class GeminiLiveProvider(RealtimeProvider):
                                 result = {"output": devices}
                             except Exception as exc:
                                 result = {"error": f"search_home_devices failed: {exc}"}
-                        elif call.name == "control_entity" and self.home_assistant_client is not None:
-                            try:
-                                args = dict(call.args or {})
-                                entity_id = args.get("entity_id")
-                                on = args.get("on")
-                                if not entity_id or not isinstance(on, bool):
-                                    result = {"error": "entity_id and on are required"}
-                                else:
-                                    outcome = await self.home_assistant_client.set_power(entity_id, on)
-                                    result = {"output": f"Turned {'on' if on else 'off'} {entity_id}: {outcome}"}
-                            except Exception as exc:
-                                result = {"error": f"control_entity failed: {exc}"}
                         elif call.name == "list_sensors" and self.home_assistant_client is not None:
                             try:
                                 sensors = await self.home_assistant_client.sensors(limit=50)
@@ -1023,54 +1029,6 @@ class GeminiLiveProvider(RealtimeProvider):
                                 result = {"output": sensors}
                             except Exception as exc:
                                 result = {"error": f"search_sensors failed: {exc}"}
-                        elif call.name == "control_cover" and self.home_assistant_client is not None:
-                            try:
-                                args = dict(call.args or {})
-                                entity_id = args.get("entity_id")
-                                action = args.get("action")
-                                if not entity_id or not action:
-                                    result = {"error": "entity_id and action are required"}
-                                else:
-                                    outcome = await self.home_assistant_client.control_cover(entity_id, action)
-                                    result = {"output": outcome}
-                            except Exception as exc:
-                                result = {"error": f"control_cover failed: {exc}"}
-                        elif call.name == "press_button" and self.home_assistant_client is not None:
-                            try:
-                                args = dict(call.args or {})
-                                entity_id = args.get("entity_id")
-                                if not entity_id:
-                                    result = {"error": "entity_id is required"}
-                                else:
-                                    outcome = await self.home_assistant_client.press_button(entity_id)
-                                    result = {"output": outcome}
-                            except Exception as exc:
-                                result = {"error": f"press_button failed: {exc}"}
-                        elif call.name == "control_media_player" and self.home_assistant_client is not None:
-                            try:
-                                args = dict(call.args or {})
-                                entity_id = args.get("entity_id")
-                                action = args.get("action")
-                                source = args.get("source")
-                                if not entity_id or not action:
-                                    result = {"error": "entity_id and action are required"}
-                                else:
-                                    outcome = await self.home_assistant_client.control_media_player(entity_id, action, source)
-                                    result = {"output": outcome}
-                            except Exception as exc:
-                                result = {"error": f"control_media_player failed: {exc}"}
-                        elif call.name == "tv_action" and self.home_assistant_client is not None:
-                            try:
-                                args = dict(call.args or {})
-                                cmd = args.get("cmd")
-                                text = args.get("text", "")
-                                if not cmd:
-                                    result = {"error": "cmd is required"}
-                                else:
-                                    outcome = await self.home_assistant_client.tv_action(cmd, text)
-                                    result = {"output": outcome}
-                            except Exception as exc:
-                                result = {"error": f"tv_action failed: {exc}"}
                         elif call.name == "get_battery_status" and self.home_assistant_client is not None:
                             try:
                                 status = await self.home_assistant_client.battery_status()

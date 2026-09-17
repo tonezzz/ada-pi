@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
+import os
 import sys
 import uuid
 from contextlib import suppress
@@ -29,6 +31,17 @@ app = FastAPI(title="Ada iPad PWA backend")
 ha_client = HomeAssistantClient()
 tool_runner = ToolRunner(ha_client)
 
+ADA_API_KEY = os.environ.get("ADA_API_KEY", "").strip()
+
+
+def _require_api_key(request: Request) -> None:
+    """Require X-Api-Key (or ?api_key=) when ADA_API_KEY is configured."""
+    if not ADA_API_KEY:
+        return
+    provided = request.headers.get("x-api-key") or request.query_params.get("api_key") or ""
+    if not hmac.compare_digest(provided, ADA_API_KEY):
+        raise HTTPException(status_code=401, detail="invalid or missing api key")
+
 
 @app.on_event("startup")
 async def warm_cache() -> None:
@@ -41,6 +54,13 @@ async def warm_cache() -> None:
     if ha_client.configured:
         await tool_runner.events.start()
         logger.info("ha event recorder running=%s", tool_runner.events.running)
+    if not ADA_API_KEY:
+        logger.warning(
+            "ADA_API_KEY is not set — /api/tools/call and power endpoints are UNAUTHENTICATED. "
+            "Dangerous devices are still gated by confirmed=true and rate limits."
+        )
+    if os.environ.get("ADA_READ_ONLY") == "true":
+        logger.warning("ADA_READ_ONLY=true — all control tools are disabled")
 
 
 @app.on_event("shutdown")
@@ -148,13 +168,21 @@ async def get_entities() -> dict:
 
 @app.post("/api/home-assistant/entities/{entity_id}/power")
 async def set_power(entity_id: str, request: Request) -> dict:
+    _require_api_key(request)
     try:
         payload = await request.json()
         if not isinstance(payload, dict) or not isinstance(payload.get("on"), bool):
             raise ValueError("on must be true or false")
+        await tool_runner._check_control_allowed(
+            "control_entity",
+            {"entity_id": entity_id, "on": payload["on"]},
+            payload.get("confirmed"),
+        )
         return await ha_client.set_power(entity_id, payload["on"])
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except Exception as exc:
         logger.warning("home assistant set_power failed: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -253,8 +281,9 @@ async def get_power_summary(hours: int = 24) -> dict:
 
 
 @app.get("/api/tools")
-async def list_tools() -> dict:
+async def list_tools(request: Request) -> dict:
     """List the tool names available via /api/tools/call."""
+    _require_api_key(request)
     return {
         "tools": [
             name for name in dir(tool_runner)
@@ -276,9 +305,15 @@ async def call_tool(request: Request) -> dict:
     args = payload.get("args", {})
     if not isinstance(args, dict):
         raise HTTPException(status_code=422, detail="args must be an object")
+    _require_api_key(request)
+    client_ip = request.client.host if request.client else "unknown"
+    logger.info("tool call: %s args=%r client=%s", name, args, client_ip)
     try:
         output = await tool_runner.execute(name, args)
         return {"tool": name, "status": "ok", "output": output}
+    except PermissionError as exc:
+        logger.warning("tool %s denied client=%s: %s", name, client_ip, exc)
+        return {"tool": name, "status": "denied", "error": str(exc)}
     except Exception as exc:
         logger.warning("tool %s failed: %s", name, exc)
         return {"tool": name, "status": "error", "error": str(exc)}

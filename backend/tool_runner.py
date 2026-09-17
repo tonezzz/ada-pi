@@ -19,6 +19,17 @@ logger = logging.getLogger("tools")
 
 MDDB_BASE_URL = os.environ.get("MDDB_BASE_URL", "http://127.0.0.1:11023/v1")
 
+# Tools that physically actuate a device. These are gated server-side:
+# dangerous devices require confirmed=true, all are rate-limited, and all
+# are blocked entirely when ADA_READ_ONLY=true.
+CONTROL_TOOLS = {
+    "control_entity", "control_cover", "press_button",
+    "control_media_player", "tv_action",
+}
+CONTROL_RATE_WINDOW_S = float(os.environ.get("ADA_CONTROL_RATE_WINDOW_S", "60"))
+CONTROL_MAX_PER_ENTITY = int(os.environ.get("ADA_CONTROL_MAX_PER_ENTITY", "5"))
+CONTROL_MAX_GLOBAL = int(os.environ.get("ADA_CONTROL_MAX_GLOBAL", "30"))
+
 
 def _first(value: list[str] | None) -> str | None:
     if not value:
@@ -447,12 +458,62 @@ class ToolRunner:
         self.mddb = MddbClient()
         self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb)
         self.events = HaEventRecorder(ha_client, mddb_client=self.mddb)
+        self._control_calls: list[float] = []
+        self._control_entity_calls: dict[str, list[float]] = {}
 
     async def execute(self, name: str, args: dict[str, Any] | None = None) -> Any:
         method = getattr(self, name, None)
         if not method:
             raise KeyError(f"Unknown tool: {name}")
-        return await method(**(args or {}))
+        call_args = dict(args or {})
+        if name in CONTROL_TOOLS:
+            confirmed = call_args.pop("confirmed", None)
+            await self._check_control_allowed(name, call_args, confirmed)
+        logger.info("tool %s args=%r", name, call_args)
+        return await method(**call_args)
+
+    async def _check_control_allowed(
+        self, name: str, args: dict[str, Any], confirmed: Any,
+    ) -> None:
+        """Server-side gate for actuating tools. Raises PermissionError on denial."""
+        if os.environ.get("ADA_READ_ONLY") == "true":
+            logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
+            raise PermissionError("control tools are disabled (ADA_READ_ONLY=true)")
+        now = time.monotonic()
+        self._control_calls = [t for t in self._control_calls if now - t < CONTROL_RATE_WINDOW_S]
+        if len(self._control_calls) >= CONTROL_MAX_GLOBAL:
+            logger.warning("denied %s %r: global rate limit", name, args)
+            raise PermissionError(
+                f"rate limit exceeded: more than {CONTROL_MAX_GLOBAL} control calls in {int(CONTROL_RATE_WINDOW_S)}s"
+            )
+        entity_id = str(args.get("entity_id") or "")
+        if entity_id:
+            calls = self._control_entity_calls.setdefault(entity_id, [])
+            calls[:] = [t for t in calls if now - t < CONTROL_RATE_WINDOW_S]
+            if len(calls) >= CONTROL_MAX_PER_ENTITY:
+                logger.warning("denied %s %r: per-entity rate limit", name, args)
+                raise PermissionError(
+                    f"rate limit exceeded for {entity_id}: more than {CONTROL_MAX_PER_ENTITY} "
+                    f"control calls in {int(CONTROL_RATE_WINDOW_S)}s"
+                )
+            await self.memory._ensure_confidence()
+            safety = self.memory._safety.get(entity_id)
+            if safety != "dangerous":
+                # A related entity can inherit danger: button.gate_motor_my_position
+                # physically jogs the dangerous cover.gate_motor.
+                object_id = entity_id.split(".", 1)[-1]
+                for eid, level in self.memory._safety.items():
+                    if level == "dangerous" and object_id.startswith(eid.split(".", 1)[-1] + "_"):
+                        safety = "dangerous"
+                        break
+            if safety == "dangerous" and confirmed is not True:
+                logger.warning("denied %s %r: dangerous device without confirmed=true", name, args)
+                raise PermissionError(
+                    f"{entity_id} is marked dangerous. Call again with confirmed=true "
+                    "only after explicit user confirmation."
+                )
+            calls.append(now)
+        self._control_calls.append(now)
 
     # -- Home Assistant tools --
 
