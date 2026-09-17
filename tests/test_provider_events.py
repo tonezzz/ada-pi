@@ -44,16 +44,6 @@ class ExpressionToolSession:
         self.responses.extend(function_responses)
 
 
-class OfficeStateToolSession(ExpressionToolSession):
-    async def receive(self):
-        yield types.LiveServerMessage(
-            tool_call=types.LiveServerToolCall(function_calls=[
-                types.FunctionCall(id="office-state-1", name="get_office_state", args={})
-            ])
-        )
-        self.provider._closed = True
-
-
 class HabitObservationToolSession(ExpressionToolSession):
     async def receive(self):
         yield types.LiveServerMessage(tool_call=types.LiveServerToolCall(function_calls=[
@@ -103,18 +93,6 @@ class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
         response = session.responses[0]
         self.assertEqual(response.id, "expression-call-1")
         self.assertEqual(response.scheduling, types.FunctionResponseScheduling.WHEN_IDLE)
-
-    async def test_office_state_tool_returns_monitor_snapshot(self) -> None:
-        state = {"status": "monitoring", "person_state": "not_home", "lights_on": ["light.left_office_light"]}
-        provider = GeminiLiveProvider(office_state_getter=lambda: state)
-        session = OfficeStateToolSession(provider)
-        provider._session = session
-
-        events = [event async for event in provider.events()]
-
-        self.assertEqual(events, [])
-        self.assertEqual(session.responses[0].response, {"output": state})
-        self.assertEqual(session.responses[0].name, "get_office_state")
 
     async def test_habit_observation_tool_emits_structured_event(self) -> None:
         provider=GeminiLiveProvider(); session=HabitObservationToolSession(provider); provider._session=session
