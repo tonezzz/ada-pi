@@ -74,6 +74,21 @@ class HomeAssistantClientTests(unittest.IsolatedAsyncioTestCase):
         entries = await home.logbook(entity_id="binary_sensor.front_door", hours=2)
         self.assertEqual(len(entries), 1)
         url = client.get.await_args.args[0]
+        self.assertIn("/api/logbook?", url)
+        self.assertIn("entity=binary_sensor.front_door", url)
+        self.assertIn("period=", url)
+        self.assertIn("end_time=", url)
+
+    async def test_logbook_falls_back_to_period_endpoint_on_404(self):
+        client = AsyncMock()
+        client.get.side_effect = [
+            FakeResponse([], status_code=404),
+            FakeResponse([{"name": "Front door", "message": "was opened"}]),
+        ]
+        home = HomeAssistantClient(client=client)
+        entries = await home.logbook(entity_id="binary_sensor.front_door", hours=2)
+        self.assertEqual(len(entries), 1)
+        url = client.get.await_args_list[1].args[0]
         self.assertIn("/api/logbook/period/", url)
         self.assertIn("entity=binary_sensor.front_door", url)
 

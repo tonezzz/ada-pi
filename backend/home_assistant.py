@@ -348,11 +348,19 @@ class HomeAssistantClient:
         start = end - timedelta(hours=hours)
         start_str = start.replace(microsecond=0).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         end_str = end.replace(microsecond=0).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        url = f"/api/logbook/period/{start_str}?end_time={end_str}"
+        client = await self._http_client()
+        # HA 2026.x: GET /api/logbook?end_time=<iso>&period=<days>&entity=<id>
+        # Older HA:  GET /api/logbook/period/<start-iso>?end_time=<iso>&entity=<id>
+        days = max(1, round(hours / 24))
+        url = f"/api/logbook?end_time={end_str}&period={days}"
         if entity_id:
             url += f"&entity={entity_id}"
-        client = await self._http_client()
         response = await client.get(url)
+        if response.status_code == 404:
+            url = f"/api/logbook/period/{start_str}?end_time={end_str}"
+            if entity_id:
+                url += f"&entity={entity_id}"
+            response = await client.get(url)
         if response.status_code == 404:
             raise ValueError(
                 "The logbook integration is not enabled on this Home Assistant "
@@ -360,7 +368,13 @@ class HomeAssistantClient:
             )
         response.raise_for_status()
         payload = response.json()
-        return payload if isinstance(payload, list) else []
+        if not isinstance(payload, list):
+            return []
+        # The query API rounds the window up to whole days; trim to `start`.
+        return [
+            entry for entry in payload
+            if (when := self._parse_ts(entry.get("when"))) is None or when >= start
+        ]
 
     @staticmethod
     def _point_state(point: dict[str, Any]) -> str | None:
