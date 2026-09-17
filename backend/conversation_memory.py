@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
@@ -21,6 +22,27 @@ NOTEBOOKLM_NOTEBOOK_ID = os.environ.get("NOTEBOOKLM_NOTEBOOK_ID")
 
 # Speak a second filler line if recall exceeds this many seconds.
 RECALL_SLOW_AFTER_S = float(os.environ.get("ADA_RECALL_SLOW_AFTER_S", "10"))
+
+# Cached "recent sessions" summary: refreshed in the background after each
+# persisted transcript and lazily when stale, so recalls can answer
+# immediately with a general overview while NotebookLM handles the detail.
+_SUMMARY_TTL_S = float(os.environ.get("ADA_RECALL_SUMMARY_TTL_S", "3600"))
+_SUMMARY_QUESTION = (
+    "Briefly summarize what we discussed in our recent sessions, "
+    "in two or three sentences."
+)
+_summary_cache: dict[str, Any] = {"text": None, "ts": 0.0, "task": None}
+
+
+async def _refresh_summary(client: "NotebooklmClient") -> None:
+    try:
+        answer = await client.ask(_SUMMARY_QUESTION, group="memory")
+    except Exception as exc:
+        logger.warning("summary refresh failed: %s", exc)
+        return
+    if answer:
+        _summary_cache["text"] = answer
+        _summary_cache["ts"] = time.time()
 
 # Optional per-group routing: {"memory": "<nb-id>", "infra": "<nb-id>", ...}
 # Falls back to NOTEBOOKLM_NOTEBOOK_ID for any group not in the map.
@@ -135,7 +157,20 @@ class ConversationMemory:
         if not self._turns or not self.client.configured:
             return
         title = f"Ada session {self.session_id} {datetime.now(timezone.utc).isoformat()}"
-        await self.client.add_text_source(title, self.transcript())
+        result = await self.client.add_text_source(title, self.transcript())
+        if result is not None:
+            # New history exists — force the cached summary to refresh.
+            _summary_cache["ts"] = 0.0
+            self._ensure_summary_refresh()
+
+    def _ensure_summary_refresh(self) -> None:
+        task = _summary_cache.get("task")
+        running = task is not None and not task.done()
+        stale = time.time() - _summary_cache["ts"] > _SUMMARY_TTL_S
+        if stale and not running and self.client.configured:
+            _summary_cache["task"] = asyncio.create_task(
+                _refresh_summary(self.client)
+            )
 
     def start_recall(
         self,
@@ -148,9 +183,18 @@ class ConversationMemory:
             return "My notes are not connected."
         if self._recall_task is not None and not self._recall_task.done():
             return "I'm still checking my notes."
+        self._ensure_summary_refresh()
         self._recall_task = asyncio.create_task(
             self._recall(question, on_complete, group, on_slow)
         )
+        summary = _summary_cache["text"]
+        if summary and group in (None, "memory"):
+            return (
+                "The detailed notes search is running in the background and "
+                "the result will be spoken when ready. Meanwhile, tell the "
+                "user this summary of recent sessions: "
+                f"{summary}"
+            )
         return "One moment, I'm checking my notes."
 
     async def _recall(
