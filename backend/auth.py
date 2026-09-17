@@ -12,11 +12,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import secrets
 import time
 from typing import Any
 
 SESSION_COOKIE = "ada_session"
 SESSION_TTL_S = int(os.environ.get("ADA_SESSION_TTL_S", str(12 * 3600)))
+REDEEM_TTL_S = int(os.environ.get("ADA_REDEEM_TTL_S", "600"))
 
 
 def _parse_keys() -> dict[str, str]:
@@ -73,6 +75,47 @@ def issue_session(key: str) -> tuple[str, str] | None:
         return None
     expires = int(time.time()) + SESSION_TTL_S
     return name, f"{name}.{expires}.{_sign(name, expires, key)}"
+
+
+def issue_session_for_name(name: str) -> str | None:
+    """Mint a session token for a known caller name without re-checking the key."""
+    keys = _parse_keys()
+    key = next((k for k, n in keys.items() if n == name), None)
+    if key is None:
+        return None
+    expires = int(time.time()) + SESSION_TTL_S
+    return f"{name}.{expires}.{_sign(name, expires, key)}"
+
+
+# One-time redeem tokens: an authenticated caller mints a URL that hands the
+# real key + a session cookie to whatever device opens it (e.g. a scanned QR).
+# token -> (caller name, app base path, expiry)
+_REDEEM_TOKENS: dict[str, tuple[str, str, float]] = {}
+
+
+def _prune_redeem() -> None:
+    now = time.time()
+    for token in [t for t, (_, _, exp) in _REDEEM_TOKENS.items() if exp < now]:
+        _REDEEM_TOKENS.pop(token, None)
+
+
+def mint_redeem_token(name: str, base_path: str = "/") -> str:
+    _prune_redeem()
+    token = secrets.token_urlsafe(24)
+    _REDEEM_TOKENS[token] = (name, base_path, time.time() + REDEEM_TTL_S)
+    return token
+
+
+def redeem_token(token: str) -> tuple[str, str, str] | None:
+    """Burn a one-time redeem token. Returns (name, real_key, base_path)."""
+    entry = _REDEEM_TOKENS.pop(token, None)
+    if entry is None or entry[2] < time.time():
+        return None
+    name, base_path, _ = entry
+    key = next((k for k, n in _parse_keys().items() if n == name), None)
+    if key is None:
+        return None
+    return name, key, base_path
 
 
 def websocket_authorized(ws: Any) -> bool:

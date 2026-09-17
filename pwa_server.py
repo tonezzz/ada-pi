@@ -10,6 +10,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent
@@ -77,6 +78,53 @@ async def auth_logout(request: Request, response: Response) -> dict:
     cookie_path = request.query_params.get("path") or "/"
     response.delete_cookie(auth.SESSION_COOKIE, path=cookie_path)
     return {"ok": True}
+
+
+@app.post("/api/auth/redeem-token")
+async def mint_redeem(request: Request) -> dict:
+    """Mint a one-time redeem URL bound to the caller's key.
+
+    Opening {base}/redeem/{token} hands the device the real API key plus a
+    session cookie — designed for QR-code onboarding of phones/tablets.
+    """
+    if not auth.configured():
+        raise HTTPException(status_code=400, detail="auth not configured")
+    name = auth.caller_name(request)
+    if name is None:
+        raise HTTPException(status_code=401, detail="invalid or missing api key")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    base = str(payload.get("path") or "/") if isinstance(payload, dict) else "/"
+    if not base.startswith("/") or "//" in base:
+        base = "/"
+    base = base.rstrip("/") or "/"
+    token = auth.mint_redeem_token(name, base)
+    url = f"{base}/redeem/{token}" if base != "/" else f"/redeem/{token}"
+    logger.info("redeem token minted by name=%s path=%s", name, base)
+    return {"redeem_url": url, "expires_in": auth.REDEEM_TTL_S}
+
+
+@app.get("/redeem/{token}")
+async def redeem(token: str, request: Request):
+    """One-time redeem: set the session cookie and hand the key to the PWA."""
+    entry = auth.redeem_token(token)
+    if entry is None:
+        raise HTTPException(status_code=403, detail="redeem link is expired or already used")
+    name, key, base = entry
+    session = auth.issue_session_for_name(name)
+    target = f"{base}/?api_key={key}" if base != "/" else f"/?api_key={key}"
+    response = RedirectResponse(target, status_code=302)
+    if session:
+        secure = (request.headers.get("x-forwarded-proto") or request.url.scheme) == "https"
+        response.set_cookie(
+            auth.SESSION_COOKIE, session,
+            max_age=auth.SESSION_TTL_S, httponly=True, samesite="lax",
+            secure=secure, path=base,
+        )
+    logger.info("redeem token used: name=%s path=%s", name, base)
+    return response
 
 
 @app.on_event("startup")
