@@ -1,10 +1,13 @@
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 from backend.event_recorder import HaEventRecorder
 
 
-def _changed(entity_id, new_state, old_state, friendly_name=None, device_class=None, at="2026-09-16T10:00:00+00:00"):
+def _changed(entity_id, new_state, old_state, friendly_name=None, device_class=None, at=None):
+    if at is None:
+        at = datetime.now(timezone.utc).isoformat()
     return {
         "time_fired": at,
         "data": {
