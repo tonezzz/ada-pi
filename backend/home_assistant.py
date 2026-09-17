@@ -749,7 +749,9 @@ class HomeAssistantClient:
             }
         return out
 
-    async def lovelace_config(self, url_path: str = "tony-test") -> dict[str, Any]:
+    async def lovelace_config(self, url_path: str | None = None) -> dict[str, Any]:
+        if url_path is None:
+            url_path = os.environ.get("ADA_DASHBOARD_URL_PATH", "tony-test")
         """Fetch a Lovelace dashboard config over the Home Assistant websocket."""
         if not self.token:
             raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
@@ -778,7 +780,7 @@ class HomeAssistantClient:
     async def dashboard_tab(
         self,
         tab: str,
-        url_path: str = "tony-test",
+        url_path: str | None = None,
     ) -> dict[str, Any]:
         """Return the entities and their current states for a named dashboard tab."""
         if not self.token:

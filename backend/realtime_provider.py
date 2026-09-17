@@ -898,6 +898,12 @@ class GeminiLiveProvider(RealtimeProvider):
                     "When the user asks about devices, occupancy, or what is on/off, call list_home_devices or ada_ha_get_state first. ",
                 )
             )
+        excluded = {s.strip() for s in os.environ.get("ADA_EXCLUDED_TOOLS", "").split(",") if s.strip()}
+        if excluded:
+            config["tools"][0]["function_declarations"] = [
+                fd for fd in config["tools"][0]["function_declarations"]
+                if fd.get("name") not in excluded
+            ]
         self._session_context = self._client.aio.live.connect(
             model=self.model,
             config=config,
