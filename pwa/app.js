@@ -33,7 +33,7 @@ function setStatus(text) {
 }
 
 function setConnected(connected) {
-  if (connectButton) connectButton.disabled = connected;
+  if (connectButton) connectButton.disabled = connected || (authRequired && !authed);
   if (disconnectButton) disconnectButton.disabled = !connected;
 }
 
@@ -261,11 +261,14 @@ async function connect() {
   window.idleFace?.setConnecting(true);
   setStatus("Requesting microphone…");
   try {
+    await ensureSession();
     await createPlayback();
     await startMicrophone();
     const scheme = location.protocol === "https:" ? "wss" : "ws";
-    const basePath = location.pathname.replace(/\/[^\/]*$/, "");
-    socket = new WebSocket(`${scheme}://${location.host}${basePath}/ws`);
+    const basePath = appBasePath();
+    const key = getApiKey();
+    const wsUrl = `${scheme}://${location.host}${basePath}/ws` + (key ? `?api_key=${encodeURIComponent(key)}` : "");
+    socket = new WebSocket(wsUrl);
     socket.binaryType = "arraybuffer";
     socket.onopen = () => setStatus("Connecting to AI…");
     socket.onmessage = (message) => {
@@ -273,7 +276,13 @@ async function connect() {
       else playbackNode?.port.postMessage(message.data, [message.data]);
     };
     socket.onerror = () => logLine("WebSocket error", "system");
-    socket.onclose = () => disconnect(false);
+    socket.onclose = (event) => {
+      if (event.code === 4401) {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+        setLocked(true, "This device isn't authorized — enter the API key.");
+      }
+      disconnect(false);
+    };
   } catch (error) {
     window.idleFace?.setConnecting(false, true);
     console.error(error);
@@ -316,3 +325,127 @@ micToggleButton?.addEventListener("click", () => {
   if (track) track.enabled = !micMuted;
   setStatus(micMuted ? "Mic muted" : "Mic on");
 });
+
+// --- Auth: API key storage, session cookie, lock UI ---
+
+const AUTH_STORAGE_KEY = "ada_api_key";
+const lockButton = document.querySelector("#lock-toggle");
+const unlockOverlay = document.querySelector("#unlock-overlay");
+const unlockInput = document.querySelector("#unlock-key");
+const unlockError = document.querySelector("#unlock-error");
+const unlockHint = document.querySelector("#unlock-hint");
+const unlockSubmit = document.querySelector("#unlock-submit");
+let authRequired = false;
+let authed = true;
+
+function appBasePath() {
+  return location.pathname.replace(/\/[^\/]*$/, "") || "/";
+}
+
+function getApiKey() {
+  const params = new URLSearchParams(location.search);
+  const fromUrl = params.get("api_key");
+  if (fromUrl) {
+    localStorage.setItem(AUTH_STORAGE_KEY, fromUrl);
+    params.delete("api_key");
+    const clean = params.toString();
+    history.replaceState(null, "", location.pathname + (clean ? `?${clean}` : "") + location.hash);
+  }
+  return localStorage.getItem(AUTH_STORAGE_KEY) || "";
+}
+
+function showUnlock(hint) {
+  if (!unlockOverlay) return;
+  if (unlockHint) unlockHint.textContent = hint || "Enter the API key to unlock voice and control.";
+  if (unlockError) unlockError.textContent = "";
+  if (unlockInput) unlockInput.value = "";
+  unlockOverlay.hidden = false;
+  unlockInput?.focus();
+}
+
+function hideUnlock() {
+  if (unlockOverlay) unlockOverlay.hidden = true;
+}
+
+function setLocked(locked, hint) {
+  authed = !locked;
+  if (lockButton) {
+    lockButton.hidden = !authRequired;
+    lockButton.textContent = locked ? "Unlock" : "Lock";
+    lockButton.classList.toggle("locked", locked);
+  }
+  if (locked) showUnlock(hint);
+  else hideUnlock();
+  setConnected(Boolean(socket));
+}
+
+async function ensureSession() {
+  const key = getApiKey();
+  if (!key) return false;
+  try {
+    const resp = await fetch(`${appBasePath()}/api/auth/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: key, path: appBasePath() }),
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function submitUnlock() {
+  const key = unlockInput?.value.trim();
+  if (!key) return;
+  localStorage.setItem(AUTH_STORAGE_KEY, key);
+  if (unlockSubmit) unlockSubmit.disabled = true;
+  if (unlockError) unlockError.textContent = "";
+  try {
+    if (await ensureSession()) {
+      setLocked(false);
+      setStatus("Unlocked — tap Connect");
+    } else {
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+      if (unlockError) unlockError.textContent = "That key was rejected.";
+    }
+  } finally {
+    if (unlockSubmit) unlockSubmit.disabled = false;
+  }
+}
+
+async function initAuth() {
+  let status = null;
+  try {
+    const resp = await fetch(`${appBasePath()}/api/auth/status`);
+    status = await resp.json();
+  } catch {
+    return;
+  }
+  authRequired = !!status.auth_configured;
+  if (!authRequired) return;
+  if (status.authenticated) { setLocked(false); return; }
+  if (getApiKey()) {
+    if (await ensureSession()) { setLocked(false); return; }
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    setLocked(true, "Saved key was rejected — enter a new one.");
+    return;
+  }
+  setLocked(true);
+}
+
+unlockSubmit?.addEventListener("click", submitUnlock);
+unlockInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") submitUnlock();
+});
+
+lockButton?.addEventListener("click", async () => {
+  if (!authed) { showUnlock(); return; }
+  if (socket) await disconnect(true);
+  try {
+    await fetch(`${appBasePath()}/api/auth/logout?path=${encodeURIComponent(appBasePath())}`, { method: "POST" });
+  } catch {}
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+  setLocked(true, "Locked.");
+});
+
+initAuth();

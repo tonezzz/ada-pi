@@ -1,5 +1,36 @@
 const INPUT_RATE = 16000;
 const OUTPUT_RATE = 24000;
+
+// Optional API key for backends that require ADA_API_KEY on mutating/tool
+// endpoints. Read once from ?api_key= or localStorage; on a 401 we prompt
+// once, store it, and retry.
+function getApiKey() {
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get("api_key");
+  if (fromUrl) {
+    localStorage.setItem("ada_api_key", fromUrl);
+    return fromUrl;
+  }
+  return localStorage.getItem("ada_api_key") || "";
+}
+
+function authHeaders(base = {}) {
+  const key = getApiKey();
+  return key ? { ...base, "X-Api-Key": key } : base;
+}
+
+async function fetchWithApiKey(url, options = {}, retried = false) {
+  const opts = { ...options, headers: authHeaders(options.headers || {}) };
+  const response = await fetch(url, opts);
+  if (response.status === 401 && !retried) {
+    const key = window.prompt("This Ada backend requires an API key. Paste it here:");
+    if (key) {
+      localStorage.setItem("ada_api_key", key.trim());
+      return fetchWithApiKey(url, options, true);
+    }
+  }
+  return response;
+}
 const disconnectButton = document.querySelector("#disconnect");
 const exitButton = document.querySelector("#exit");
 const connectionStatus = document.querySelector("#connection-status");
@@ -339,7 +370,7 @@ async function refreshHomeDevices() {
   homeStatus.textContent = "Loading devices…";
   homeStatus.classList.remove("error");
   try {
-    const response = await fetch("/api/home-assistant/entities", { cache: "no-store" });
+    const response = await fetchWithApiKey("/api/home-assistant/entities", { cache: "no-store" });
     const result = await response.json();
     if (result.status !== "connected") throw new Error(result.error || "Home Assistant unavailable");
     renderHomeDevices(result.entities || []);
@@ -355,7 +386,7 @@ async function setHomeDevicePower(entity, card, detail, button) {
   const turnOn = entity.state !== "on";
   button.disabled = true;
   try {
-    const response = await fetch(`/api/home-assistant/entities/${encodeURIComponent(entity.entity_id)}/power`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: turnOn }) });
+    const response = await fetchWithApiKey(`/api/home-assistant/entities/${encodeURIComponent(entity.entity_id)}/power`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: turnOn }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "Device command failed");
     entity.state = result.state;

@@ -12,11 +12,24 @@ from typing import Any
 
 import httpx
 
+from backend.event_recorder import HaEventRecorder
 from backend.home_assistant import HomeAssistantClient
+from backend.instance import ada_instance_id
 
 logger = logging.getLogger("tools")
 
 MDDB_BASE_URL = os.environ.get("MDDB_BASE_URL", "http://127.0.0.1:11023/v1")
+
+# Tools that physically actuate a device. These are gated server-side:
+# dangerous devices require confirmed=true, all are rate-limited, and all
+# are blocked entirely when ADA_READ_ONLY=true.
+CONTROL_TOOLS = {
+    "control_entity", "control_cover", "press_button",
+    "control_media_player", "tv_action",
+}
+CONTROL_RATE_WINDOW_S = float(os.environ.get("ADA_CONTROL_RATE_WINDOW_S", "60"))
+CONTROL_MAX_PER_ENTITY = int(os.environ.get("ADA_CONTROL_MAX_PER_ENTITY", "5"))
+CONTROL_MAX_GLOBAL = int(os.environ.get("ADA_CONTROL_MAX_GLOBAL", "30"))
 
 
 def _first(value: list[str] | None) -> str | None:
@@ -105,33 +118,14 @@ class AdaMemoryStore:
         self,
         ha_client: HomeAssistantClient,
         mddb_client: MddbClient | None = None,
+        instance_id: str | None = None,
     ) -> None:
         self.ha_client = ha_client
         self.mddb = mddb_client
-        self._collection = (
-            "ada-ha-snapshots-"
-            + str(ha_client.base_url).rstrip("/")
-            .replace("://", "-")
-            .replace("/", "-")
-            .replace(":", "-")
-            .replace(".", "-")
-        )
-        self._confidence_collection = (
-            "ada-ha-device-confidence-"
-            + str(ha_client.base_url).rstrip("/")
-            .replace("://", "-")
-            .replace("/", "-")
-            .replace(":", "-")
-            .replace(".", "-")
-        )
-        self._safety_collection = (
-            "ada-ha-device-safety-"
-            + str(ha_client.base_url).rstrip("/")
-            .replace("://", "-")
-            .replace("/", "-")
-            .replace(":", "-")
-            .replace(".", "-")
-        )
+        self.instance = instance_id or ada_instance_id()
+        self._collection = f"ada-ha-snapshots-{self.instance}"
+        self._confidence_collection = f"ada-ha-device-confidence-{self.instance}"
+        self._safety_collection = f"ada-ha-device-safety-{self.instance}"
         self._devices: list[dict[str, Any]] | None = None
         self._sensors: list[dict[str, Any]] | None = None
         self._overview: dict[str, Any] | None = None
@@ -214,8 +208,7 @@ class AdaMemoryStore:
         if self._last_refresh is None:
             return
         ts = self._last_refresh.strftime("%Y%m%d%H%M%S%f")
-        source = str(self.ha_client.base_url).rstrip("/").replace("://", "-").replace("/", "-")
-        key = f"snapshot-{source}-{ts}"
+        key = f"snapshot-{self.instance}-{ts}"
         content_md = self._build_content_md(states, controllable, sensors)
         await self.mddb.add_document(
             collection=self._collection,
@@ -223,6 +216,7 @@ class AdaMemoryStore:
             lang="en",
             content_md=content_md,
             meta={
+                "instance": [self.instance],
                 "source": [str(self.ha_client.base_url)],
                 "kind": ["snapshot"],
                 "person_entity": [self.ha_client.person_entity],
@@ -323,6 +317,7 @@ class AdaMemoryStore:
             meta={
                 "entity_id": [entity_id],
                 "confidence": [status],
+                "instance": [self.instance],
                 "source": [str(self.ha_client.base_url)],
             },
         )
@@ -339,6 +334,7 @@ class AdaMemoryStore:
             meta={
                 "entity_id": [entity_id],
                 "safety": [safety],
+                "instance": [self.instance],
                 "source": [str(self.ha_client.base_url)],
             },
         )
@@ -441,16 +437,67 @@ class AdaMemoryStore:
 class ToolRunner:
     """Execute Ada tools for FastAPI and the voice provider."""
 
-    def __init__(self, ha_client: HomeAssistantClient, habit_state_getter: Any | None = None) -> None:
+    def __init__(self, ha_client: HomeAssistantClient, habit_state_getter: Any | None = None, instance_id: str | None = None) -> None:
         self.context = ToolContext(ha_client=ha_client, habit_state_getter=habit_state_getter)
         self.mddb = MddbClient()
-        self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb)
+        self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb, instance_id=instance_id)
+        self.events = HaEventRecorder(ha_client, mddb_client=self.mddb, instance_id=instance_id)
+        self._control_calls: list[float] = []
+        self._control_entity_calls: dict[str, list[float]] = {}
 
     async def execute(self, name: str, args: dict[str, Any] | None = None) -> Any:
         method = getattr(self, name, None)
         if not method:
             raise KeyError(f"Unknown tool: {name}")
-        return await method(**(args or {}))
+        call_args = dict(args or {})
+        if name in CONTROL_TOOLS:
+            confirmed = call_args.pop("confirmed", None)
+            await self._check_control_allowed(name, call_args, confirmed)
+        logger.info("tool %s args=%r", name, call_args)
+        return await method(**call_args)
+
+    async def _check_control_allowed(
+        self, name: str, args: dict[str, Any], confirmed: Any,
+    ) -> None:
+        """Server-side gate for actuating tools. Raises PermissionError on denial."""
+        if os.environ.get("ADA_READ_ONLY") == "true":
+            logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
+            raise PermissionError("control tools are disabled (ADA_READ_ONLY=true)")
+        now = time.monotonic()
+        self._control_calls = [t for t in self._control_calls if now - t < CONTROL_RATE_WINDOW_S]
+        if len(self._control_calls) >= CONTROL_MAX_GLOBAL:
+            logger.warning("denied %s %r: global rate limit", name, args)
+            raise PermissionError(
+                f"rate limit exceeded: more than {CONTROL_MAX_GLOBAL} control calls in {int(CONTROL_RATE_WINDOW_S)}s"
+            )
+        entity_id = str(args.get("entity_id") or "")
+        if entity_id:
+            calls = self._control_entity_calls.setdefault(entity_id, [])
+            calls[:] = [t for t in calls if now - t < CONTROL_RATE_WINDOW_S]
+            if len(calls) >= CONTROL_MAX_PER_ENTITY:
+                logger.warning("denied %s %r: per-entity rate limit", name, args)
+                raise PermissionError(
+                    f"rate limit exceeded for {entity_id}: more than {CONTROL_MAX_PER_ENTITY} "
+                    f"control calls in {int(CONTROL_RATE_WINDOW_S)}s"
+                )
+            await self.memory._ensure_confidence()
+            safety = self.memory._safety.get(entity_id)
+            if safety != "dangerous":
+                # A related entity can inherit danger: button.gate_motor_my_position
+                # physically jogs the dangerous cover.gate_motor.
+                object_id = entity_id.split(".", 1)[-1]
+                for eid, level in self.memory._safety.items():
+                    if level == "dangerous" and object_id.startswith(eid.split(".", 1)[-1] + "_"):
+                        safety = "dangerous"
+                        break
+            if safety == "dangerous" and confirmed is not True:
+                logger.warning("denied %s %r: dangerous device without confirmed=true", name, args)
+                raise PermissionError(
+                    f"{entity_id} is marked dangerous. Call again with confirmed=true "
+                    "only after explicit user confirmation."
+                )
+            calls.append(now)
+        self._control_calls.append(now)
 
     # -- Home Assistant tools --
 
@@ -536,6 +583,25 @@ class ToolRunner:
             raise ValueError("entity_id is required")
         return await self.context.ha_client.history(str(entity_id), hours=int(hours))
 
+    async def get_logbook(self, hours: int = 24, entity_id: str | None = None) -> dict[str, Any]:
+        entries = await self.context.ha_client.logbook(
+            entity_id=str(entity_id) if entity_id else None,
+            hours=int(hours),
+        )
+        return {"hours": int(hours), "count": len(entries), "entries": entries[:100]}
+
+    async def get_entity_events(self, entity_id: str, hours: int = 24) -> dict[str, Any]:
+        if not entity_id:
+            raise ValueError("entity_id is required")
+        return await self.context.ha_client.state_transitions(str(entity_id), hours=int(hours))
+
+    async def get_recent_events(self, hours: int = 24, query: str | None = None, limit: int = 50) -> dict[str, Any]:
+        return await self.context.ha_client.recent_events(
+            hours=int(hours),
+            query=str(query) if query else None,
+            limit=int(limit),
+        )
+
     # -- Habit tools --
 
     async def get_habit_status(self) -> Any:
@@ -555,7 +621,38 @@ class ToolRunner:
         return await self.memory.search_sensors(str(query), int(limit))
 
     async def ada_ha_recall(self, query: str, limit: int = 10) -> dict[str, Any]:
-        return await self.memory.search_all(str(query), int(limit))
+        results = await self.memory.search_all(str(query), int(limit))
+        results["events"] = self.events.recent(hours=24, query=str(query), limit=int(limit))
+        return results
+
+    async def ada_ha_search_events(self, query: str = "", hours: int = 24, limit: int = 20) -> dict[str, Any]:
+        """Search recorded HA transitions in memory plus persisted MDDB batches."""
+        q = str(query).strip().lower()
+        persisted = []
+        docs = await self.mddb.search_documents(
+            collection=self.events.collection,
+            query=str(query) or "*",
+            filter_meta={"kind": ["events"]},
+            limit=10,
+        )
+        for doc in docs:
+            meta = doc.get("meta", {})
+            lines = str(doc.get("contentMd") or doc.get("content_md") or "").splitlines()
+            matched = [l for l in lines if l.startswith("-") and (not q or q in l.lower())]
+            persisted.append({
+                "key": doc.get("key"),
+                "count": _int_or_none(_first(meta.get("count"))),
+                "period_start": _first(meta.get("period_start")),
+                "period_end": _first(meta.get("period_end")),
+                "matching_lines": matched[:int(limit)],
+            })
+        return {
+            "query": str(query),
+            "hours": int(hours),
+            "recorder": self.events.status(),
+            "events": self.events.recent(hours=int(hours), query=str(query), limit=int(limit)),
+            "persisted": persisted,
+        }
 
     async def ada_ha_history(self, hours: int = 24, limit: int = 10) -> list[dict[str, Any]]:
         """Return recent persisted snapshots from MDDB for this HA instance."""
