@@ -103,7 +103,22 @@ async def mint_redeem(request: Request) -> dict:
     token = auth.mint_redeem_token(name, base)
     url = f"{base}/redeem/{token}" if base != "/" else f"/redeem/{token}"
     logger.info("redeem token minted by name=%s path=%s", name, base)
-    return {"redeem_url": url, "expires_in": auth.REDEEM_TTL_S}
+    result = {"redeem_url": url, "expires_in": auth.REDEEM_TTL_S}
+    if isinstance(payload, dict) and payload.get("qr"):
+        origin = str(payload.get("origin") or "").rstrip("/")
+        if origin.startswith("http"):
+            result["qr_svg"] = _qr_svg(origin + url)
+    return result
+
+
+def _qr_svg(data: str) -> str | None:
+    try:
+        import qrcode
+        import qrcode.image.svg
+    except ImportError:
+        return None
+    img = qrcode.make(data, image_factory=qrcode.image.svg.SvgPathImage, box_size=8)
+    return img.to_string(encoding="unicode")
 
 
 @app.get("/redeem/{token}")
