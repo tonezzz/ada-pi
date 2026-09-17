@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -18,6 +19,15 @@ NOTEBOOKLM_BASE_URL = os.environ.get(
 NOTEBOOKLM_API_KEY = os.environ.get("NOTEBOOKLM_REST_API_KEY")
 NOTEBOOKLM_NOTEBOOK_ID = os.environ.get("NOTEBOOKLM_NOTEBOOK_ID")
 
+# Optional per-group routing: {"memory": "<nb-id>", "infra": "<nb-id>", ...}
+# Falls back to NOTEBOOKLM_NOTEBOOK_ID for any group not in the map.
+try:
+    NOTEBOOKLM_NOTEBOOK_IDS: dict[str, str] = json.loads(
+        os.environ.get("NOTEBOOKLM_NOTEBOOK_IDS_JSON", "") or "{}"
+    )
+except json.JSONDecodeError:
+    NOTEBOOKLM_NOTEBOOK_IDS = {}
+
 
 class NotebooklmClient:
     """Async client for the tony-dell NotebookLM REST API."""
@@ -31,21 +41,29 @@ class NotebooklmClient:
         self.base_url = (base_url or NOTEBOOKLM_BASE_URL).rstrip("/")
         self.api_key = api_key or NOTEBOOKLM_API_KEY
         self.notebook_id = notebook_id or NOTEBOOKLM_NOTEBOOK_ID
+        self.notebooks = dict(NOTEBOOKLM_NOTEBOOK_IDS)
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(180.0))
         self._headers: dict[str, str] = {}
         if self.api_key:
             self._headers["X-API-Key"] = self.api_key
 
+    def notebook_for(self, group: str | None) -> str | None:
+        """Resolve a recall group to a notebook id; default is the memory group."""
+        if group and group in self.notebooks:
+            return self.notebooks[group]
+        return self.notebooks.get("memory") or self.notebook_id
+
     @property
     def configured(self) -> bool:
-        return bool(self.api_key and self.notebook_id)
+        return bool(self.api_key and (self.notebook_id or self.notebooks))
 
     async def add_text_source(self, title: str, content: str) -> dict[str, Any] | None:
-        if not self.configured:
+        notebook = self.notebook_for("memory")
+        if not self.configured or not notebook:
             return None
         try:
             resp = await self._client.post(
-                f"{self.base_url}/notebooks/{self.notebook_id}/sources/text",
+                f"{self.base_url}/notebooks/{notebook}/sources/text",
                 headers=self._headers,
                 json={"title": title, "content": content},
             )
@@ -55,12 +73,13 @@ class NotebooklmClient:
             logger.warning("notebooklm add source failed: %s", exc)
             return None
 
-    async def ask(self, question: str) -> str | None:
-        if not self.configured:
+    async def ask(self, question: str, group: str | None = None) -> str | None:
+        notebook = self.notebook_for(group)
+        if not self.configured or not notebook:
             return None
         try:
             resp = await self._client.post(
-                f"{self.base_url}/notebooks/{self.notebook_id}/chat/ask",
+                f"{self.base_url}/notebooks/{notebook}/chat/ask",
                 headers=self._headers,
                 json={"question": question},
             )
@@ -118,18 +137,20 @@ class ConversationMemory:
         self,
         question: str,
         on_complete: Callable[[str | None], Awaitable[None]],
+        group: str | None = None,
     ) -> str:
         if not self.client.configured:
             return "My notes are not connected."
-        asyncio.create_task(self._recall(question, on_complete))
+        asyncio.create_task(self._recall(question, on_complete, group))
         return "One moment, I'm checking my notes."
 
     async def _recall(
         self,
         question: str,
         on_complete: Callable[[str | None], Awaitable[None]],
+        group: str | None = None,
     ) -> None:
-        answer = await self.client.ask(question)
+        answer = await self.client.ask(question, group=group)
         if answer:
             await on_complete(answer)
         else:

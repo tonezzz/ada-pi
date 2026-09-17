@@ -141,7 +141,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "ada_ha_history to list recent home snapshots from memory, "
             "ada_ha_get_device_confidence to list devices by trust level, "
             "ada_ha_set_device_confidence to change a device's trust level, and "
-            "ada_session_recall to ask NotebookLM about previous conversations. "
+            "ada_session_recall to ask NotebookLM about previous conversations or stored knowledge by topic group. "
             "Use ada_ha_get_device_confidence when the user asks what is broken, new, needs setup, or trusted. "
             "For event history: get_logbook gives the friendly Home Assistant event log, "
             "get_recent_events answers what opened, closed, or changed recently across the home, "
@@ -862,9 +862,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_session_recall",
                     "description": (
-                        "Ask NotebookLM about previous voice sessions. "
+                        "Ask NotebookLM about previous voice sessions or stored knowledge. "
                         "Use this when the user asks 'what did we talk about', 'do you remember', "
                         "or wants to recall something from an earlier conversation. "
+                        "Pick the group that best matches the topic. "
                         "The recall runs in the background; the result will be spoken when ready."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
@@ -874,7 +875,19 @@ class GeminiLiveProvider(RealtimeProvider):
                             "question": {
                                 "type": "string",
                                 "description": "The recall question, e.g. 'what did we discuss in the previous session?'.",
-                            }
+                            },
+                            "group": {
+                                "type": "string",
+                                "enum": ["memory", "infra", "apps", "kb", "ops"],
+                                "description": (
+                                    "Which notebook to search. "
+                                    "memory: past voice conversations (default). "
+                                    "infra: hosts, services, ports, tailscale, hardware, MCP. "
+                                    "apps: Ada/PWA, Home Assistant dashboards, playlive. "
+                                    "kb: mddb, yomi, SSOT, documentation, source maps. "
+                                    "ops: workflows, tasks, experiments, project state."
+                                ),
+                            },
                         },
                         "required": ["question"],
                         "additionalProperties": False,
@@ -1106,7 +1119,11 @@ class GeminiLiveProvider(RealtimeProvider):
                             result = {"output": self.habit_state_getter()}
                         elif call.name == "ada_session_recall":
                             question = (call.args or {}).get("question", "What did we discuss in the previous session?")
-                            recall_status = self.conversation.start_recall(str(question), self._on_recall_complete)
+                            group = (call.args or {}).get("group")
+                            recall_status = self.conversation.start_recall(
+                                str(question), self._on_recall_complete,
+                                group=str(group) if group else None,
+                            )
                             result = {"output": recall_status}
                         else:
                             if self.tool_runner is not None:
