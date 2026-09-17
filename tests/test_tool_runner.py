@@ -127,6 +127,19 @@ class ControlGateTests(unittest.IsolatedAsyncioTestCase):
         result = await self.runner.execute("get_home_state", {})
         self.assertEqual(result["person"], "home")
 
+    async def test_question_alias_maps_to_query(self):
+        self.runner.memory.search_all = AsyncMock(return_value={})
+        self.runner.events.recent = lambda *a, **kw: []
+        result = await self.runner.execute("ada_ha_recall", {"question": "what did we discuss?"})
+        self.runner.memory.search_all.assert_awaited_once_with("what did we discuss?", 10)
+        self.assertIn("events", result)
+
+    async def test_unexpected_args_are_ignored(self):
+        self.runner.memory.search_all = AsyncMock(return_value={})
+        self.runner.events.recent = lambda *a, **kw: []
+        await self.runner.execute("ada_ha_recall", {"query": "power", "session_id": "abc"})
+        self.runner.memory.search_all.assert_awaited_once_with("power", 10)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -30,6 +31,11 @@ CONTROL_TOOLS = {
 CONTROL_RATE_WINDOW_S = float(os.environ.get("ADA_CONTROL_RATE_WINDOW_S", "60"))
 CONTROL_MAX_PER_ENTITY = int(os.environ.get("ADA_CONTROL_MAX_PER_ENTITY", "5"))
 CONTROL_MAX_GLOBAL = int(os.environ.get("ADA_CONTROL_MAX_GLOBAL", "30"))
+
+# LLM callers occasionally use a synonym for a declared parameter. Map the
+# alias to the real name only when the method declares it and the caller did
+# not already pass the canonical name.
+_ARG_ALIASES = {"question": "query"}
 
 
 def _first(value: list[str] | None) -> str | None:
@@ -453,8 +459,24 @@ class ToolRunner:
         if name in CONTROL_TOOLS:
             confirmed = call_args.pop("confirmed", None)
             await self._check_control_allowed(name, call_args, confirmed)
+        call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
         return await method(**call_args)
+
+    @staticmethod
+    def _normalize_args(name: str, method: Any, call_args: dict[str, Any]) -> dict[str, Any]:
+        params = inspect.signature(method).parameters
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            return call_args
+        for alias, canonical in _ARG_ALIASES.items():
+            if alias in call_args and canonical in params and canonical not in call_args:
+                call_args[canonical] = call_args.pop(alias)
+        extra = [k for k in call_args if k not in params]
+        if extra:
+            logger.warning("tool %s: ignoring unexpected args %r", name, extra)
+            for key in extra:
+                call_args.pop(key, None)
+        return call_args
 
     async def _check_control_allowed(
         self, name: str, args: dict[str, Any], confirmed: Any,
