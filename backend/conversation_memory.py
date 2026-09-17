@@ -112,6 +112,7 @@ class ConversationMemory:
         self.session_id = session_id
         self.client = client or NotebooklmClient()
         self._turns: list[dict[str, str]] = []
+        self._recall_task: asyncio.Task | None = None
 
     def add_user(self, text: str) -> None:
         if text.strip():
@@ -145,7 +146,11 @@ class ConversationMemory:
     ) -> str:
         if not self.client.configured:
             return "My notes are not connected."
-        asyncio.create_task(self._recall(question, on_complete, group, on_slow))
+        if self._recall_task is not None and not self._recall_task.done():
+            return "I'm still checking my notes."
+        self._recall_task = asyncio.create_task(
+            self._recall(question, on_complete, group, on_slow)
+        )
         return "One moment, I'm checking my notes."
 
     async def _recall(

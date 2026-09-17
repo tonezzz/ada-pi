@@ -161,9 +161,21 @@ class GeminiLiveProvider(RealtimeProvider):
         self.session_id = session_id or "-"
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
+        self._response_active = False
+
+    async def _wait_for_idle(self, timeout: float = 8.0) -> None:
+        """Wait until the model is not mid-response, so injected text turns
+        don't cut off speech. Bounded — returns even if still active."""
+        deadline = time.monotonic() + timeout
+        while self._response_active and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
 
     async def _on_recall_slow(self) -> None:
         # NotebookLM ask is still running; have Gemini keep the user informed.
+        # Skip the filler entirely if the model is already talking.
+        await self._wait_for_idle(timeout=4.0)
+        if self._response_active:
+            return
         try:
             await self.send_text_turn(
                 "(system) The notes search is still running. "
@@ -175,7 +187,10 @@ class GeminiLiveProvider(RealtimeProvider):
     async def _on_recall_complete(self, answer: str | None) -> None:
         if not answer:
             return
-        # Push the recall result back into Gemini as a user turn so it speaks it.
+        # Push the recall result back into Gemini as a user turn so it speaks
+        # it. Wait for any in-progress speech to finish first so the injected
+        # turn does not cut it off.
+        await self._wait_for_idle()
         prompt = (
             f"According to my notes: {answer}\n\n"
             "Please briefly tell the user what this means in one sentence."
@@ -987,7 +1002,7 @@ class GeminiLiveProvider(RealtimeProvider):
         if self._session is None:
             raise RuntimeError("provider is not connected")
 
-        response_active = False
+        self._response_active = False
         input_transcript = ""
         assistant_turn_text = ""
         response_started_at = 0.0
@@ -1180,10 +1195,10 @@ class GeminiLiveProvider(RealtimeProvider):
                     logger.warning(
                         "session=%s assistant interrupted response_active=%s age_ms=%d audio_chunks=%d "
                         "audio_bytes=%d pending_input_transcript=%r",
-                        self.session_id, response_active, elapsed * 1000, response_audio_chunks,
+                        self.session_id, self._response_active, elapsed * 1000, response_audio_chunks,
                         response_audio_bytes, input_transcript.strip(),
                     )
-                    response_active = False
+                    self._response_active = False
                     yield ProviderEvent("response_interrupted", {})
                     # Gemini 3.1 can include several content parts in one event.
                     # Any audio/transcript accompanying an interruption belongs
@@ -1196,8 +1211,8 @@ class GeminiLiveProvider(RealtimeProvider):
 
                 output_transcription = content.output_transcription
                 if output_transcription and output_transcription.text:
-                    if not response_active:
-                        response_active = True
+                    if not self._response_active:
+                        self._response_active = True
                         response_started_at = time.monotonic()
                         response_audio_chunks = 0
                         response_audio_bytes = 0
@@ -1213,8 +1228,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     for part in model_turn.parts or []:
                         inline_data = part.inline_data
                         if inline_data and inline_data.data:
-                            if not response_active:
-                                response_active = True
+                            if not self._response_active:
+                                self._response_active = True
                                 response_started_at = time.monotonic()
                                 response_audio_chunks = 0
                                 response_audio_bytes = 0
@@ -1232,14 +1247,14 @@ class GeminiLiveProvider(RealtimeProvider):
                     if assistant_turn_text.strip():
                         self.conversation.add_assistant(assistant_turn_text)
                         assistant_turn_text = ""
-                    if response_active:
+                    if self._response_active:
                         elapsed = time.monotonic() - response_started_at if response_started_at else 0.0
                         logger.info(
                             "session=%s assistant response completed duration_ms=%d audio_chunks=%d audio_bytes=%d",
                             self.session_id, elapsed * 1000, response_audio_chunks, response_audio_bytes,
                         )
                         yield ProviderEvent("response_completed", {})
-                    response_active = False
+                    self._response_active = False
 
     async def close(self) -> None:
         if self._closed:
