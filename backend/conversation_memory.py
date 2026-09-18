@@ -40,14 +40,42 @@ _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 _SUMMARY_MODEL = os.environ.get("ADA_SUMMARY_MODEL", "gemini-3.5-flash-lite")
 _summary_cache: dict[str, Any] = {"text": None, "ts": 0.0, "task": None}
 
+# Failure surface: the last error per subsystem plus timestamps, exposed via
+# conversation_health(). Fail-quick policy — errors are recorded and logged at
+# ERROR level, never silently converted into "empty"/"not found" results.
+_health: dict[str, Any] = {
+    "notebooklm_error": None,
+    "summary_error": None,
+    "summary_mddb_error": None,
+    "ts": None,
+}
+
+
+def _report_failure(area: str, exc: Any) -> None:
+    _health[f"{area}_error"] = str(exc)[:300]
+    _health["ts"] = time.time()
+    logger.error("%s failed: %s", area, exc)
+
+
+def conversation_health() -> dict[str, Any]:
+    """Snapshot of recall/memory subsystem health for status endpoints."""
+    return {
+        "summary_cached": _summary_cache["text"] is not None,
+        "summary_ts": _summary_cache["ts"],
+        "recall_running": bool(
+            _summary_cache.get("task") and not _summary_cache["task"].done()
+        ),
+        "errors": {
+            k: v for k, v in _health.items() if v is not None
+        },
+    }
+
 
 def _summary_collection() -> str:
-    try:
-        from backend.instance import ada_instance_id
-        instance = ada_instance_id()
-    except RuntimeError:
-        instance = os.environ.get("ADA_INSTANCE_ID", "unknown")
-    return f"ada-ha-recall-summary-{instance}"
+    # Fail fast on identity: no "unknown" collection — a misnamed write would
+    # silently orphan the summary (same rule as ADA_INSTANCE_ID).
+    from backend.instance import ada_instance_id
+    return f"ada-ha-recall-summary-{ada_instance_id()}"
 
 
 def _mddb():
@@ -65,7 +93,7 @@ async def _save_summary_to_mddb(text: str) -> None:
             meta={"kind": ["recall-summary"], "source": ["conversation_memory"]},
         )
     except Exception as exc:
-        logger.warning("summary mddb save failed: %s", exc)
+        _report_failure("summary_mddb", exc)
 
 
 async def _load_summary_from_mddb() -> str | None:
@@ -77,7 +105,7 @@ async def _load_summary_from_mddb() -> str | None:
             limit=1,
         )
     except Exception as exc:
-        logger.warning("summary mddb load failed: %s", exc)
+        _report_failure("summary_mddb", exc)
         return None
     if not docs:
         return None
@@ -88,6 +116,7 @@ async def _load_summary_from_mddb() -> str | None:
 async def _summarize(prev: str | None, transcript: str) -> str | None:
     """Update the rolling summary with one new session via Gemini REST."""
     if not _GEMINI_API_KEY:
+        _report_failure("summary", "GEMINI_API_KEY not set — rolling summary disabled")
         return None
     try:
         from google import genai
@@ -104,7 +133,7 @@ async def _summarize(prev: str | None, transcript: str) -> str | None:
         )
         return (resp.text or "").strip() or None
     except Exception as exc:
-        logger.warning("summary update failed: %s", exc)
+        _report_failure("summary", exc)
         return None
 
 
@@ -113,7 +142,7 @@ async def _refresh_summary(client: "NotebooklmClient") -> None:
     try:
         answer = await client.ask(_SUMMARY_QUESTION, group="memory")
     except Exception as exc:
-        logger.warning("summary refresh failed: %s", exc)
+        _report_failure("notebooklm", exc)
         return
     if answer:
         _summary_cache["text"] = answer
@@ -171,32 +200,30 @@ class NotebooklmClient:
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
-            logger.warning("notebooklm add source failed: %s", exc)
+            _report_failure("notebooklm", exc)
             return None
 
     async def ask(self, question: str, group: str | None = None) -> str | None:
+        """Ask a notebook. Raises on transport/API errors — callers must not
+        mistake a failure for "nothing found"."""
         notebook = self.notebook_for(group)
         if not self.configured or not notebook:
             return None
-        try:
-            resp = await self._client.post(
-                f"{self.base_url}/notebooks/{notebook}/chat/ask",
-                headers=self._headers,
-                json={"question": question},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            if not data.get("ok"):
-                return None
-            result = data.get("result", {})
-            if isinstance(result, dict):
-                return result.get("answer") or result.get("response")
-            if isinstance(result, str):
-                return result
+        resp = await self._client.post(
+            f"{self.base_url}/notebooks/{notebook}/chat/ask",
+            headers=self._headers,
+            json={"question": question},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("ok"):
             return None
-        except Exception as exc:
-            logger.warning("notebooklm ask failed: %s", exc)
-            return None
+        result = data.get("result", {})
+        if isinstance(result, dict):
+            return result.get("answer") or result.get("response")
+        if isinstance(result, str):
+            return result
+        return None
 
 
 class ConversationMemory:
@@ -308,7 +335,15 @@ class ConversationMemory:
                     await on_slow()
                 except Exception as exc:
                     logger.warning("recall slow filler failed: %s", exc)
-        answer = await ask
+        try:
+            answer = await ask
+        except Exception as exc:
+            _report_failure("notebooklm", exc)
+            await on_complete(
+                "My notes search just failed — please ask me to try again "
+                "in a moment."
+            )
+            return
         if answer:
             await on_complete(answer)
         else:

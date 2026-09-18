@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 from backend.realtime_provider import create_provider
 from backend.home_assistant import HomeAssistantClient
 from backend.tool_runner import ToolRunner
+from backend.conversation_memory import conversation_health
 from backend import auth
 
 logging.basicConfig(
@@ -38,6 +39,19 @@ def _require_api_key(request: Request) -> None:
         return
     if auth.caller_name(request) is None:
         raise HTTPException(status_code=401, detail="invalid or missing api key")
+
+
+@app.get("/api/health")
+async def api_health() -> dict:
+    """Liveness + subsystem failure surface. Unauthenticated on purpose —
+    reports only ok/error strings, no data. Non-null errors mean something
+    failed recently (fail-quick reporting, not silent decay)."""
+    mem = conversation_health()
+    return {
+        "ok": True,
+        "conversation_memory": mem,
+        "degraded": bool(mem["errors"]),
+    }
 
 
 @app.get("/api/auth/status")

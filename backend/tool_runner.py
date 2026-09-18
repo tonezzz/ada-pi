@@ -81,7 +81,7 @@ class MddbClient:
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
-            logger.warning("mddb add_document failed: %s", exc)
+            logger.error("mddb add_document failed: %s", exc)
             return None
 
     async def search_documents(
@@ -103,7 +103,7 @@ class MddbClient:
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
-            logger.warning("mddb search failed: %s", exc)
+            logger.error("mddb search failed: %s", exc)
             return []
 
 
