@@ -23,18 +23,93 @@ NOTEBOOKLM_NOTEBOOK_ID = os.environ.get("NOTEBOOKLM_NOTEBOOK_ID")
 # Speak a second filler line if recall exceeds this many seconds.
 RECALL_SLOW_AFTER_S = float(os.environ.get("ADA_RECALL_SLOW_AFTER_S", "10"))
 
-# Cached "recent sessions" summary: refreshed in the background after each
-# persisted transcript and lazily when stale, so recalls can answer
-# immediately with a general overview while NotebookLM handles the detail.
-_SUMMARY_TTL_S = float(os.environ.get("ADA_RECALL_SUMMARY_TTL_S", "3600"))
+# Rolling "recent sessions" summary, persisted to MDDB so it survives
+# restarts. Updated locally after each persisted transcript (fast Gemini
+# text call, ~3s); seeded once from NotebookLM on first use so history
+# predating this feature is covered. Recalls answer with the cached
+# summary immediately while NotebookLM handles the detail query.
 _SUMMARY_QUESTION = (
     "Briefly summarize what we discussed in our recent sessions, "
     "in two or three sentences."
 )
+_SUMMARY_KEY = "recent-sessions"
+_SUMMARY_MAX_TRANSCRIPT_CHARS = int(
+    os.environ.get("ADA_SUMMARY_MAX_TRANSCRIPT_CHARS", "8000")
+)
+_GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+_SUMMARY_MODEL = os.environ.get("ADA_SUMMARY_MODEL", "gemini-2.5-flash-lite")
 _summary_cache: dict[str, Any] = {"text": None, "ts": 0.0, "task": None}
 
 
+def _summary_collection() -> str:
+    try:
+        from backend.instance import ada_instance_id
+        instance = ada_instance_id()
+    except RuntimeError:
+        instance = os.environ.get("ADA_INSTANCE_ID", "unknown")
+    return f"ada-ha-recall-summary-{instance}"
+
+
+def _mddb():
+    from backend.tool_runner import MddbClient  # lazy: avoid import cycle
+    return MddbClient()
+
+
+async def _save_summary_to_mddb(text: str) -> None:
+    try:
+        await _mddb().add_document(
+            collection=_summary_collection(),
+            key=_SUMMARY_KEY,
+            lang="en",
+            content_md=text,
+            meta={"kind": ["recall-summary"], "source": ["conversation_memory"]},
+        )
+    except Exception as exc:
+        logger.warning("summary mddb save failed: %s", exc)
+
+
+async def _load_summary_from_mddb() -> str | None:
+    try:
+        docs = await _mddb().search_documents(
+            collection=_summary_collection(),
+            query="*",
+            filter_meta={"kind": ["recall-summary"]},
+            limit=1,
+        )
+    except Exception as exc:
+        logger.warning("summary mddb load failed: %s", exc)
+        return None
+    if not docs:
+        return None
+    text = docs[0].get("contentMd") or docs[0].get("content_md") or ""
+    return str(text).strip() or None
+
+
+async def _summarize(prev: str | None, transcript: str) -> str | None:
+    """Update the rolling summary with one new session via Gemini REST."""
+    if not _GEMINI_API_KEY:
+        return None
+    try:
+        from google import genai
+        prompt = (
+            "Existing summary of our recent voice sessions:\n"
+            f"{prev or '(none yet)'}\n\n"
+            "Transcript of the latest session:\n"
+            f"{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}\n\n"
+            "Update the summary to cover the recent sessions in two or three "
+            "sentences. Keep it concise and factual."
+        )
+        resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
+            model=_SUMMARY_MODEL, contents=prompt
+        )
+        return (resp.text or "").strip() or None
+    except Exception as exc:
+        logger.warning("summary update failed: %s", exc)
+        return None
+
+
 async def _refresh_summary(client: "NotebooklmClient") -> None:
+    """One-time seed from NotebookLM; rolling updates take over afterwards."""
     try:
         answer = await client.ask(_SUMMARY_QUESTION, group="memory")
     except Exception as exc:
@@ -43,6 +118,7 @@ async def _refresh_summary(client: "NotebooklmClient") -> None:
     if answer:
         _summary_cache["text"] = answer
         _summary_cache["ts"] = time.time()
+        await _save_summary_to_mddb(answer)
 
 # Optional per-group routing: {"memory": "<nb-id>", "infra": "<nb-id>", ...}
 # Falls back to NOTEBOOKLM_NOTEBOOK_ID for any group not in the map.
@@ -135,6 +211,7 @@ class ConversationMemory:
         self.client = client or NotebooklmClient()
         self._turns: list[dict[str, str]] = []
         self._recall_task: asyncio.Task | None = None
+        self.warm_summary()
 
     def add_user(self, text: str) -> None:
         if text.strip():
@@ -159,18 +236,37 @@ class ConversationMemory:
         title = f"Ada session {self.session_id} {datetime.now(timezone.utc).isoformat()}"
         result = await self.client.add_text_source(title, self.transcript())
         if result is not None:
-            # New history exists — force the cached summary to refresh.
-            _summary_cache["ts"] = 0.0
-            self._ensure_summary_refresh()
+            # New history exists — fold it into the rolling summary.
+            _summary_cache["task"] = asyncio.create_task(self._update_summary())
 
-    def _ensure_summary_refresh(self) -> None:
+    async def _update_summary(self) -> None:
+        prev = _summary_cache["text"] or await _load_summary_from_mddb()
+        new = await _summarize(prev, self.transcript())
+        if new:
+            _summary_cache["text"] = new
+            _summary_cache["ts"] = time.time()
+            await _save_summary_to_mddb(new)
+
+    def warm_summary(self) -> None:
+        """Kick a background warm: load the persisted summary, or seed it."""
+        if _summary_cache["text"] is not None:
+            return
         task = _summary_cache.get("task")
-        running = task is not None and not task.done()
-        stale = time.time() - _summary_cache["ts"] > _SUMMARY_TTL_S
-        if stale and not running and self.client.configured:
-            _summary_cache["task"] = asyncio.create_task(
-                _refresh_summary(self.client)
-            )
+        if task is not None and not task.done():
+            return
+        try:
+            _summary_cache["task"] = asyncio.create_task(self._warm_summary())
+        except RuntimeError:
+            pass  # no running loop (e.g. unit tests)
+
+    async def _warm_summary(self) -> None:
+        text = await _load_summary_from_mddb()
+        if text:
+            _summary_cache["text"] = text
+            _summary_cache["ts"] = time.time()
+            return
+        if self.client.configured:
+            await _refresh_summary(self.client)
 
     def start_recall(
         self,
@@ -183,7 +279,7 @@ class ConversationMemory:
             return "My notes are not connected."
         if self._recall_task is not None and not self._recall_task.done():
             return "I'm still checking my notes."
-        self._ensure_summary_refresh()
+        self.warm_summary()
         self._recall_task = asyncio.create_task(
             self._recall(question, on_complete, group, on_slow)
         )
