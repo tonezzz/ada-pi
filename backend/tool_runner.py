@@ -406,13 +406,21 @@ class AdaMemoryStore:
         return f"{sum(counts.values())} devices: {', '.join(parts)}"
 
     def _match(self, query: str, items: list[dict[str, Any]], keys: tuple[str, ...]) -> list[dict[str, Any]]:
-        q = str(query).lower()
-        matches = []
+        q = str(query).strip().lower()
+        if not q:
+            return []
+        tokens = q.split()
+        scored = []
         for item in items:
             text = " ".join(str(item.get(k, "")).lower() for k in keys)
             if q in text:
-                matches.append(item)
-        return matches
+                score = 100
+            else:
+                score = sum(10 for token in tokens if token in text)
+            if score:
+                scored.append((score, item))
+        scored.sort(key=lambda pair: -pair[0])
+        return [item for _, item in scored]
 
     async def overview(self) -> dict[str, Any]:
         await self._ensure()
