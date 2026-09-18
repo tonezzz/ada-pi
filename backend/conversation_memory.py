@@ -37,7 +37,7 @@ _SUMMARY_MAX_TRANSCRIPT_CHARS = int(
     os.environ.get("ADA_SUMMARY_MAX_TRANSCRIPT_CHARS", "8000")
 )
 _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-_SUMMARY_MODEL = os.environ.get("ADA_SUMMARY_MODEL", "gemini-2.5-flash-lite")
+_SUMMARY_MODEL = os.environ.get("ADA_SUMMARY_MODEL", "gemini-3.5-flash-lite")
 _summary_cache: dict[str, Any] = {"text": None, "ts": 0.0, "task": None}
 
 
