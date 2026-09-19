@@ -169,6 +169,20 @@ async def revoke_key(name: str, request: Request) -> dict:
     return {"ok": True}
 
 
+@app.post("/api/auth/keys/{name}/redeem")
+async def reissue_key_redeem(name: str, request: Request) -> dict:
+    """Mint a fresh one-time redeem URL for an existing issued key.
+
+    Re-pairing keeps the same key — the new link just hands it to a
+    device again (e.g. after the device cleared its browser storage).
+    """
+    _, payload = await _auth_payload(request)
+    if name not in auth.issued_key_names():
+        raise HTTPException(status_code=404, detail="no such issued key")
+    logger.info("re-pair redeem minted for name=%s", name)
+    return _redeem_response(name, payload)
+
+
 def _qr_svg(data: str) -> str | None:
     try:
         import qrcode
