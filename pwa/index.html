@@ -28,6 +28,17 @@
       #unlock-key { width: 100%; box-sizing: border-box; padding: 12px 14px; border: 1px solid #087ef2; border-radius: 9px; background: rgba(5,35,48,.9); color: #c9fbff; font: 16px system-ui, sans-serif; }
       #unlock-error { min-height: 20px; margin: 8px 0; color: #ff9a8a; font: 13px system-ui, sans-serif; }
       #unlock-submit { width: 100%; }
+      #unlock-repair { margin-top: 10px; padding: 4px 8px; border: none; background: none; color: #75bdc5; font: 13px system-ui, sans-serif; text-decoration: underline; cursor: pointer; }
+      #repair-overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,8,12,.92); z-index: 210; }
+      #repair-overlay[hidden] { display: none; }
+      #repair-card { width: min(360px, 88vw); padding: 24px; border: 1px solid #0d4a63; border-radius: 14px; background: #04141c; text-align: center; }
+      #repair-card h1 { margin: 0 0 4px; color: #aef8ff; font: 700 22px system-ui, sans-serif; }
+      #repair-system { margin: 0 0 12px; color: #f2a008; font: 600 14px system-ui, sans-serif; }
+      #repair-hint { margin: 0 0 12px; color: #75bdc5; font: 13px/1.45 system-ui, sans-serif; }
+      #repair-video { width: 100%; aspect-ratio: 4/3; border-radius: 9px; background: #000; margin-bottom: 10px; }
+      #repair-link { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid #087ef2; border-radius: 9px; background: rgba(5,35,48,.9); color: #c9fbff; font: 14px system-ui, sans-serif; }
+      #repair-error { min-height: 20px; margin: 8px 0; color: #ff9a8a; font: 13px system-ui, sans-serif; }
+      #repair-cancel { width: 100%; }
     </style>
   </head>
   <body>
@@ -68,6 +79,7 @@
       <div id="pwa-ui">
         <div id="pwa-toolbar">
           <button id="lock-toggle" class="pwa-button" hidden>Locked</button>
+          <button id="repair" class="pwa-button">Re-pair</button>
           <button id="mic-toggle" class="pwa-button" disabled>Mic: On</button>
           <button id="connect" class="pwa-button">Connect</button>
           <button id="disconnect" class="pwa-button" disabled>Disconnect</button>
@@ -83,9 +95,22 @@
         <input id="unlock-key" type="password" autocomplete="off" placeholder="API key">
         <div id="unlock-error" role="alert"></div>
         <button id="unlock-submit" class="pwa-button">Unlock</button>
+        <button id="unlock-repair">Re-pair this device →</button>
+      </div>
+    </div>
+    <div id="repair-overlay" hidden>
+      <div id="repair-card">
+        <h1 id="repair-title">Re-pair</h1>
+        <p id="repair-system"></p>
+        <p id="repair-hint"></p>
+        <video id="repair-video" playsinline muted></video>
+        <input id="repair-link" type="text" autocomplete="off" placeholder="…or paste redeem link / token">
+        <div id="repair-error" role="alert"></div>
+        <button id="repair-cancel" class="pwa-button">Cancel</button>
       </div>
     </div>
     <script src="static/idle-face.js"></script>
-    <script src="app.js?v=6"></script>
+    <script src="static/jsQR.js"></script>
+    <script src="app.js?v=7"></script>
   </body>
 </html>

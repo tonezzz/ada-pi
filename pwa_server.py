@@ -104,7 +104,10 @@ def _redeem_response(name: str, payload: dict) -> dict:
     if not base.startswith("/") or "//" in base:
         base = "/"
     base = base.rstrip("/") or "/"
-    token = auth.mint_redeem_token(name, base)
+    redirect = str(payload.get("redirect") or "").rstrip("/")
+    if not redirect.startswith("/") or "//" in redirect:
+        redirect = ""
+    token = auth.mint_redeem_token(name, base, redirect or None)
     url = f"{base}/redeem/{token}" if base != "/" else f"/redeem/{token}"
     logger.info("redeem token minted for name=%s path=%s", name, base)
     result = {"redeem_url": url, "expires_in": auth.REDEEM_TTL_S}
@@ -198,15 +201,58 @@ def _qr_svg(data: str) -> str | None:
     return img.to_string(encoding="unicode")
 
 
+@app.post("/api/auth/redeem")
+async def api_redeem(request: Request, response: Response) -> dict:
+    """In-app redeem for PWA re-pairing: same key name only, no silent swap.
+
+    The token burns only when its bound name matches the caller's identity —
+    a valid presented key wins over the declared expect_name. Mismatch,
+    expiry, or a foreign device binding leaves the token untouched.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    token = str(payload.get("token") or "")
+    device_id = str(payload.get("device_id") or "")
+    caller = auth.caller_name(request)
+    expected = caller or str(payload.get("expect_name") or "")
+    entry = auth.peek_redeem_token(token)
+    if entry is None:
+        raise HTTPException(status_code=403, detail="redeem link is expired or already used")
+    name, base, _redirect = entry
+    if not expected or name != expected:
+        raise HTTPException(status_code=403, detail="redeem link was issued for a different device name")
+    if auth.enforce_device(name, device_id) is None:
+        raise HTTPException(status_code=403, detail="key is bound to another device — re-pair required")
+    key = auth.key_for_name(name)
+    if key is None:
+        raise HTTPException(status_code=403, detail="key no longer exists")
+    auth.burn_redeem_token(token)
+    session = auth.issue_session_for_name(name)
+    if session:
+        secure = (request.headers.get("x-forwarded-proto") or request.url.scheme) == "https"
+        response.set_cookie(
+            auth.SESSION_COOKIE, session,
+            max_age=auth.SESSION_TTL_S, httponly=True, samesite="lax",
+            secure=secure, path=base,
+        )
+    logger.info("api redeem: name=%s", name)
+    return {"ok": True, "name": name, "api_key": key}
+
+
 @app.get("/redeem/{token}")
 async def redeem(token: str, request: Request):
     """One-time redeem: set the session cookie and hand the key to the PWA."""
     entry = auth.redeem_token(token)
     if entry is None:
         raise HTTPException(status_code=403, detail="redeem link is expired or already used")
-    name, key, base = entry
+    name, key, base, redirect = entry
     session = auth.issue_session_for_name(name)
-    target = f"{base}/?api_key={key}" if base != "/" else f"/?api_key={key}"
+    dest = redirect or base
+    target = f"{dest}/?api_key={key}" if dest != "/" else f"/?api_key={key}"
     response = RedirectResponse(target, status_code=302)
     if session:
         secure = (request.headers.get("x-forwarded-proto") or request.url.scheme) == "https"

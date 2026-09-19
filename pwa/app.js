@@ -333,6 +333,14 @@ micToggleButton?.addEventListener("click", () => {
 
 const AUTH_STORAGE_KEY = "ada_api_key";
 const DEVICE_STORAGE_KEY = "ada_device_id";
+const NAME_STORAGE_KEY = "ada_key_name";
+
+function systemLabel() {
+  const path = appBasePath();
+  if (path.includes("ada-michael")) return "michael-ha";
+  if (path.includes("ada-tony")) return "tony-ha";
+  return path;
+}
 
 function getDeviceId() {
   let id = localStorage.getItem(DEVICE_STORAGE_KEY);
@@ -401,6 +409,8 @@ async function ensureSession() {
       headers: { "Content-Type": "application/json", "X-Device-Id": getDeviceId() },
       body: JSON.stringify({ api_key: key, path: appBasePath(), device_id: getDeviceId() }),
     });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.ok && data.name) localStorage.setItem(NAME_STORAGE_KEY, data.name);
     return resp.ok;
   } catch {
     return false;
@@ -436,14 +446,33 @@ async function initAuth() {
   }
   authRequired = !!status.auth_configured;
   if (!authRequired) return;
-  if (status.authenticated) { setLocked(false); return; }
+
+  let linkRejected = "";
+  const urlKey = new URLSearchParams(location.search).get("api_key");
+  if (urlKey) {
+    // A redeem link just landed — verify it names THIS device before trusting it.
+    // No X-Device-Id: reading the name must not bind an unbound key to us.
+    const who = await fetch(`${appBasePath()}/api/auth/status`, {
+      headers: { "X-Api-Key": urlKey },
+    }).then(r => r.json()).catch(() => null);
+    const storedName = localStorage.getItem(NAME_STORAGE_KEY);
+    if (who?.name && storedName && who.name !== storedName) {
+      history.replaceState(null, "", location.pathname + location.hash);
+      linkRejected = `That link was issued for "${who.name}" — this device is "${storedName}".`;
+    } else if (who?.name) {
+      localStorage.setItem(NAME_STORAGE_KEY, who.name);
+    }
+  }
+
+  if (status.name) localStorage.setItem(NAME_STORAGE_KEY, status.name);
+  if (status.authenticated) { setLocked(false); if (linkRejected) setStatus(linkRejected); return; }
   if (getApiKey()) {
-    if (await ensureSession()) { setLocked(false); return; }
+    if (await ensureSession()) { setLocked(false); if (linkRejected) setStatus(linkRejected); return; }
     localStorage.removeItem(AUTH_STORAGE_KEY);
-    setLocked(true, "Saved key was rejected — enter a new one.");
+    setLocked(true, linkRejected || "Saved key was rejected — enter a new one.");
     return;
   }
-  setLocked(true);
+  setLocked(true, linkRejected || undefined);
 }
 
 unlockSubmit?.addEventListener("click", submitUnlock);
@@ -460,5 +489,111 @@ lockButton?.addEventListener("click", async () => {
   localStorage.removeItem(AUTH_STORAGE_KEY);
   setLocked(true, "Locked.");
 });
+
+// --- Re-pair: scan a same-name redeem QR inside the PWA ---
+
+const repairButton = document.querySelector("#repair");
+const repairOpen2 = document.querySelector("#unlock-repair");
+const repairOverlay = document.querySelector("#repair-overlay");
+const repairTitle = document.querySelector("#repair-title");
+const repairSystem = document.querySelector("#repair-system");
+const repairHint = document.querySelector("#repair-hint");
+const repairVideo = document.querySelector("#repair-video");
+const repairLink = document.querySelector("#repair-link");
+const repairError = document.querySelector("#repair-error");
+const repairCancel = document.querySelector("#repair-cancel");
+let repairStream = null;
+let repairScanTimer = null;
+let repairBusy = false;
+
+async function openRepair() {
+  if (!repairOverlay) return;
+  const name = localStorage.getItem(NAME_STORAGE_KEY) || "";
+  repairTitle.textContent = `Re-pair ${name || "this device"}`;
+  repairSystem.textContent = `system: ${systemLabel()}`;
+  repairHint.textContent = name
+    ? `Only a QR/link minted for "${name}" will be accepted.`
+    : "No stored device name — paste the redeem link to pair this device.";
+  repairError.textContent = "";
+  repairLink.value = "";
+  repairOverlay.hidden = false;
+  try {
+    repairStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+    repairVideo.srcObject = repairStream;
+    await repairVideo.play();
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    repairScanTimer = setInterval(() => {
+      if (repairBusy || !repairVideo.videoWidth) return;
+      canvas.width = repairVideo.videoWidth;
+      canvas.height = repairVideo.videoHeight;
+      ctx.drawImage(repairVideo, 0, 0);
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = jsQR(img.data, img.width, img.height);
+      if (code?.data) redeemScanned(code.data);
+    }, 350);
+  } catch {
+    repairError.textContent = "Camera unavailable — paste the redeem link below.";
+  }
+}
+
+function closeRepair() {
+  if (repairScanTimer) clearInterval(repairScanTimer);
+  repairScanTimer = null;
+  repairBusy = false;
+  if (repairStream) repairStream.getTracks().forEach(t => t.stop());
+  repairStream = null;
+  if (repairVideo) repairVideo.srcObject = null;
+  if (repairOverlay) repairOverlay.hidden = true;
+}
+
+function redeemTokenFromText(text) {
+  text = (text || "").trim();
+  try {
+    const u = new URL(text, location.origin);
+    const m = u.pathname.match(/\/redeem\/([A-Za-z0-9_-]+)/);
+    if (m) return m[1];
+  } catch {}
+  return /^[A-Za-z0-9_-]{10,}$/.test(text) ? text : null;
+}
+
+async function redeemScanned(text) {
+  const token = redeemTokenFromText(text);
+  if (!token) { repairError.textContent = "Not a redeem QR/link."; return; }
+  if (repairBusy) return;
+  repairBusy = true;
+  repairError.textContent = "Redeeming…";
+  try {
+    const resp = await fetch(`${appBasePath()}/api/auth/redeem`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Api-Key": getApiKey(), "X-Device-Id": getDeviceId() },
+      body: JSON.stringify({
+        token,
+        expect_name: localStorage.getItem(NAME_STORAGE_KEY) || "",
+        device_id: getDeviceId(),
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      repairBusy = false;
+      repairError.textContent = data.detail || `Re-pair failed (${resp.status})`;
+      return;
+    }
+    localStorage.setItem(AUTH_STORAGE_KEY, data.api_key);
+    localStorage.setItem(NAME_STORAGE_KEY, data.name);
+    await ensureSession();
+    closeRepair();
+    setLocked(false);
+    setStatus(`Re-paired as ${data.name} · ${systemLabel()} — tap Connect`);
+  } catch {
+    repairBusy = false;
+    repairError.textContent = "Re-pair request failed.";
+  }
+}
+
+repairButton?.addEventListener("click", openRepair);
+repairOpen2?.addEventListener("click", openRepair);
+repairCancel?.addEventListener("click", closeRepair);
+repairLink?.addEventListener("keydown", e => { if (e.key === "Enter") redeemScanned(repairLink.value); });
 
 initAuth();

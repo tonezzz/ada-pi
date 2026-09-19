@@ -230,33 +230,49 @@ def issue_session_for_name(name: str) -> str | None:
 
 # One-time redeem tokens: an authenticated caller mints a URL that hands the
 # real key + a session cookie to whatever device opens it (e.g. a scanned QR).
-# token -> (caller name, app base path, expiry)
-_REDEEM_TOKENS: dict[str, tuple[str, str, float]] = {}
+# token -> (caller name, app base path, redirect path or None, expiry)
+_REDEEM_TOKENS: dict[str, tuple[str, str, str | None, float]] = {}
 
 
 def _prune_redeem() -> None:
     now = time.time()
-    for token in [t for t, (_, _, exp) in _REDEEM_TOKENS.items() if exp < now]:
+    for token in [t for t, e in _REDEEM_TOKENS.items() if e[3] < now]:
         _REDEEM_TOKENS.pop(token, None)
 
 
-def mint_redeem_token(name: str, base_path: str = "/") -> str:
+def mint_redeem_token(name: str, base_path: str = "/", redirect: str | None = None) -> str:
     _prune_redeem()
     token = secrets.token_urlsafe(24)
-    _REDEEM_TOKENS[token] = (name, base_path, time.time() + REDEEM_TTL_S)
+    _REDEEM_TOKENS[token] = (name, base_path, redirect, time.time() + REDEEM_TTL_S)
     return token
 
 
-def redeem_token(token: str) -> tuple[str, str, str] | None:
-    """Burn a one-time redeem token. Returns (name, real_key, base_path)."""
-    entry = _REDEEM_TOKENS.pop(token, None)
-    if entry is None or entry[2] < time.time():
+def peek_redeem_token(token: str) -> tuple[str, str, str | None] | None:
+    """Inspect a redeem token WITHOUT burning it. Returns (name, base, redirect)."""
+    entry = _REDEEM_TOKENS.get(token)
+    if entry is None or entry[3] < time.time():
         return None
-    name, base_path, _ = entry
-    key = next((k for k, n in _parse_keys().items() if n == name), None)
+    return entry[0], entry[1], entry[2]
+
+
+def burn_redeem_token(token: str) -> None:
+    _REDEEM_TOKENS.pop(token, None)
+
+
+def key_for_name(name: str) -> str | None:
+    return next((k for k, n in _parse_keys().items() if n == name), None)
+
+
+def redeem_token(token: str) -> tuple[str, str, str, str | None] | None:
+    """Burn a one-time redeem token. Returns (name, real_key, base_path, redirect)."""
+    entry = _REDEEM_TOKENS.pop(token, None)
+    if entry is None or entry[3] < time.time():
+        return None
+    name, base_path, redirect, _ = entry
+    key = key_for_name(name)
     if key is None:
         return None
-    return name, key, base_path
+    return name, key, base_path, redirect
 
 
 def websocket_authorized(ws: Any) -> bool:
