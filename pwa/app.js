@@ -267,7 +267,9 @@ async function connect() {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     const basePath = appBasePath();
     const key = getApiKey();
-    const wsUrl = `${scheme}://${location.host}${basePath}/ws` + (key ? `?api_key=${encodeURIComponent(key)}` : "");
+    const wsUrl = `${scheme}://${location.host}${basePath}/ws`
+      + `?device_id=${encodeURIComponent(getDeviceId())}`
+      + (key ? `&api_key=${encodeURIComponent(key)}` : "");
     socket = new WebSocket(wsUrl);
     socket.binaryType = "arraybuffer";
     socket.onopen = () => setStatus("Connecting to AI…");
@@ -330,6 +332,16 @@ micToggleButton?.addEventListener("click", () => {
 // --- Auth: API key storage, session cookie, lock UI ---
 
 const AUTH_STORAGE_KEY = "ada_api_key";
+const DEVICE_STORAGE_KEY = "ada_device_id";
+
+function getDeviceId() {
+  let id = localStorage.getItem(DEVICE_STORAGE_KEY);
+  if (!id) {
+    id = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`).replace(/-/g, "");
+    localStorage.setItem(DEVICE_STORAGE_KEY, id);
+  }
+  return id;
+}
 const lockButton = document.querySelector("#lock-toggle");
 const unlockOverlay = document.querySelector("#unlock-overlay");
 const unlockInput = document.querySelector("#unlock-key");
@@ -386,8 +398,8 @@ async function ensureSession() {
   try {
     const resp = await fetch(`${appBasePath()}/api/auth/session`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ api_key: key, path: appBasePath() }),
+      headers: { "Content-Type": "application/json", "X-Device-Id": getDeviceId() },
+      body: JSON.stringify({ api_key: key, path: appBasePath(), device_id: getDeviceId() }),
     });
     return resp.ok;
   } catch {
@@ -417,7 +429,7 @@ async function submitUnlock() {
 async function initAuth() {
   let status = null;
   try {
-    const resp = await fetch(`${appBasePath()}/api/auth/status`);
+    const resp = await fetch(`${appBasePath()}/api/auth/status`, { headers: { "X-Device-Id": getDeviceId() } });
     status = await resp.json();
   } catch {
     return;
@@ -443,7 +455,7 @@ lockButton?.addEventListener("click", async () => {
   if (!authed) { showUnlock(); return; }
   if (socket) await disconnect(true);
   try {
-    await fetch(`${appBasePath()}/api/auth/logout?path=${encodeURIComponent(appBasePath())}`, { method: "POST" });
+    await fetch(`${appBasePath()}/api/auth/logout?path=${encodeURIComponent(appBasePath())}`, { method: "POST", headers: { "X-Device-Id": getDeviceId() } });
   } catch {}
   localStorage.removeItem(AUTH_STORAGE_KEY);
   setLocked(true, "Locked.");

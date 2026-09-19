@@ -75,6 +75,10 @@ async def auth_session(request: Request, response: Response) -> dict:
     if issued is None:
         raise HTTPException(status_code=401, detail="invalid api key")
     name, token = issued
+    device_id = str(payload.get("device_id") or "")
+    if auth.enforce_device(name, device_id) is None:
+        raise HTTPException(status_code=401, detail="key is bound to another device — re-pair required")
+    bound = auth.bound_device(name)
     cookie_path = str(payload.get("path") or "/")
     if not cookie_path.startswith("/"):
         cookie_path = "/"
@@ -84,7 +88,7 @@ async def auth_session(request: Request, response: Response) -> dict:
         max_age=auth.SESSION_TTL_S, httponly=True, samesite="lax",
         secure=secure, path=cookie_path,
     )
-    return {"ok": True, "name": name, "expires_in": auth.SESSION_TTL_S}
+    return {"ok": True, "name": name, "device_bound": bound is not None, "expires_in": auth.SESSION_TTL_S}
 
 
 @app.post("/api/auth/logout")
@@ -140,7 +144,7 @@ async def mint_redeem(request: Request) -> dict:
 async def list_keys(request: Request) -> dict:
     """List issued (file-backed) device key names."""
     name, _ = await _auth_payload(request)
-    return {"caller": name, "issued": auth.issued_key_names()}
+    return {"caller": name, "issued": auth.issued_key_names(), "bindings": auth.issued_key_bindings()}
 
 
 @app.post("/api/auth/keys")
@@ -179,7 +183,8 @@ async def reissue_key_redeem(name: str, request: Request) -> dict:
     _, payload = await _auth_payload(request)
     if name not in auth.issued_key_names():
         raise HTTPException(status_code=404, detail="no such issued key")
-    logger.info("re-pair redeem minted for name=%s", name)
+    auth.unbind_device(name)
+    logger.info("re-pair redeem minted for name=%s (device binding reset)", name)
     return _redeem_response(name, payload)
 
 

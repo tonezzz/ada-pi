@@ -31,15 +31,28 @@ def _keys_file() -> str:
     )
 
 
-def _file_keys() -> dict[str, str]:
-    """Dynamically issued keys from the keys file: {key: name}."""
+def _key_entries() -> dict[str, dict]:
+    """File-issued keys normalized to {name: {"key": str, "device": str|None}}."""
     try:
         data = json.loads(open(_keys_file()).read())
     except (OSError, ValueError):
         return {}
     if not isinstance(data, dict):
         return {}
-    return {str(k): str(n) for n, k in data.items() if k and n}
+    entries = {}
+    for name, value in data.items():
+        if isinstance(value, dict):
+            key, device = value.get("key"), value.get("device")
+        else:
+            key, device = value, None
+        if name and key:
+            entries[str(name)] = {"key": str(key), "device": device or None}
+    return entries
+
+
+def _file_keys() -> dict[str, str]:
+    """Dynamically issued keys from the keys file: {key: name}."""
+    return {e["key"]: n for n, e in _key_entries().items()}
 
 
 def _parse_keys() -> dict[str, str]:
@@ -102,11 +115,61 @@ def revoke_key(name: str) -> bool:
 
 
 def issued_key_names() -> list[str]:
+    return sorted(_key_entries())
+
+
+def issued_key_bindings() -> dict[str, str | None]:
+    """{name: bound_device_id_or_None} for the admin pair page."""
+    return {n: e["device"] for n, e in _key_entries().items()}
+
+
+def bound_device(name: str) -> str | None:
+    entry = _key_entries().get(name)
+    return entry["device"] if entry else None
+
+
+def bind_device(name: str, device_id: str) -> bool:
+    """Lock an issued key to a device id. False if no such file-issued key."""
     try:
         data = json.loads(open(_keys_file()).read())
     except (OSError, ValueError):
-        return []
-    return sorted(k for k in data if isinstance(k, str))
+        return False
+    if name not in data:
+        return False
+    key = data[name]["key"] if isinstance(data[name], dict) else data[name]
+    data[name] = {"key": key, "device": device_id}
+    _save_file_keys(data)
+    return True
+
+
+def unbind_device(name: str) -> bool:
+    """Drop a key's device binding (re-pair resets it so a device can re-register)."""
+    try:
+        data = json.loads(open(_keys_file()).read())
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data.get(name), dict):
+        return name in data
+    data[name] = data[name]["key"]
+    _save_file_keys(data)
+    return True
+
+
+def enforce_device(name: str, device_id: str) -> str | None:
+    """Apply the device binding for file-issued keys; return name or None.
+
+    Env/admin keys are never bound. Unbound issued keys trust-on-first-use:
+    the first request carrying a device id binds it. Requests missing the
+    device id on a bound key are rejected.
+    """
+    if name not in _key_entries():
+        return name
+    bound = bound_device(name)
+    if bound is not None:
+        return name if device_id and hmac.compare_digest(device_id, bound) else None
+    if device_id:
+        bind_device(name, device_id)
+    return name
 
 
 def configured() -> bool:
@@ -128,14 +191,21 @@ def _check_session(token: str, keys: dict[str, str]) -> str | None:
         return None
 
 
+def _presented_device(headers: Any, query: Any) -> str:
+    return headers.get("x-device-id") or query.get("device_id") or ""
+
+
 def caller_name(request: Any) -> str | None:
     """Return the authenticated caller name for a request, or None."""
     keys = _parse_keys()
     provided = request.headers.get("x-api-key") or request.query_params.get("api_key") or ""
-    if provided and (name := keys.get(provided)):
-        return name
-    session = request.cookies.get(SESSION_COOKIE, "")
-    return _check_session(session, keys) if session else None
+    name = keys.get(provided) if provided else None
+    if name is None:
+        session = request.cookies.get(SESSION_COOKIE, "")
+        name = _check_session(session, keys) if session else None
+    if name is None:
+        return None
+    return enforce_device(name, _presented_device(request.headers, request.query_params))
 
 
 def issue_session(key: str) -> tuple[str, str] | None:
@@ -194,7 +264,10 @@ def websocket_authorized(ws: Any) -> bool:
     if not keys:
         return True
     provided = ws.query_params.get("api_key") or ""
-    if provided and provided in keys:
-        return True
-    session = ws.cookies.get(SESSION_COOKIE, "")
-    return bool(session and _check_session(session, keys))
+    name = keys.get(provided) if provided else None
+    if name is None:
+        session = ws.cookies.get(SESSION_COOKIE, "")
+        name = _check_session(session, keys) if session else None
+    if name is None:
+        return False
+    return enforce_device(name, _presented_device({}, ws.query_params)) is not None
