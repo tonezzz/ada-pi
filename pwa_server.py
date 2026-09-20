@@ -300,11 +300,11 @@ async def voice_socket(ws: WebSocket) -> None:
     await ws.accept()
     session_id = uuid.uuid4().hex[:10]
     logger.info("session=%s client connected", session_id)
-    provider = create_provider(tool_runner=tool_runner, session_id=session_id)
+    provider_ref = [create_provider(tool_runner=tool_runner, session_id=session_id)]
     closed = asyncio.Event()
 
     try:
-        await provider.connect()
+        await provider_ref[0].connect()
     except Exception as exc:
         logger.exception("session=%s provider connect failed", session_id)
         with suppress(Exception):
@@ -325,7 +325,8 @@ async def voice_socket(ws: WebSocket) -> None:
                     break
                 pcm16 = message.get("bytes")
                 if pcm16:
-                    await provider.send_audio(pcm16)
+                    with suppress(Exception):
+                        await provider_ref[0].send_audio(pcm16)
                     continue
                 text = message.get("text")
                 if text:
@@ -339,8 +340,8 @@ async def voice_socket(ws: WebSocket) -> None:
             closed.set()
 
     async def provider_to_browser() -> None:
-        try:
-            async for event in provider.events():
+        async def pump() -> None:
+            async for event in provider_ref[0].events():
                 if event.type == "audio":
                     await ws.send_bytes(event.data["pcm16"])
                 elif event.type in (
@@ -357,7 +358,40 @@ async def voice_socket(ws: WebSocket) -> None:
                         await ws.send_text(json.dumps({"type": "clear_audio"}))
                     await ws.send_text(json.dumps({"type": event.type, **event.data}))
                 elif event.type == "go_away":
+                    return
+
+        try:
+            while not closed.is_set():
+                try:
+                    await pump()
+                except Exception as exc:
+                    if closed.is_set():
+                        break
+                    logger.warning("session=%s provider stream ended: %s", session_id, exc)
+                if closed.is_set():
                     break
+                # Gemini Live session ended (go_away or drop) — resume with the
+                # last resumption handle instead of killing the browser socket.
+                old = provider_ref[0]
+                handle = old.resumption_handle
+                with suppress(Exception):
+                    await old.close()
+                with suppress(Exception):
+                    await ws.send_text(json.dumps({"type": "live_reconnecting"}))
+                    await ws.send_text(json.dumps({"type": "clear_audio"}))
+                delay = 1.0
+                while not closed.is_set():
+                    try:
+                        new_provider = create_provider(tool_runner=tool_runner, session_id=session_id)
+                        await new_provider.connect(resumption_handle=handle)
+                        provider_ref[0] = new_provider
+                        await ws.send_text(json.dumps({"type": "ready"}))
+                        logger.info("session=%s provider reconnected (resumed=%s)", session_id, bool(handle))
+                        break
+                    except Exception as exc:
+                        logger.warning("session=%s provider reconnect failed: %s", session_id, exc)
+                        await asyncio.sleep(delay)
+                        delay = min(15.0, delay * 2)
         except Exception:
             logger.exception("session=%s provider_to_browser", session_id)
         finally:
@@ -376,7 +410,7 @@ async def voice_socket(ws: WebSocket) -> None:
             with suppress(asyncio.CancelledError, Exception):
                 await task
         with suppress(Exception):
-            await provider.close()
+            await provider_ref[0].close()
         with suppress(Exception):
             await ws.close()
         logger.info("session=%s closed", session_id)

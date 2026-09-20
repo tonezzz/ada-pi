@@ -249,6 +249,11 @@ function handleControl(event) {
     case "expression":
       window.idleFace?.setExpression(event.name);
       break;
+    case "live_reconnecting":
+      assistantPlaybackActive = false;
+      window.idleFace?.setConnecting(true);
+      setStatus("Reconnecting…");
+      break;
     case "error":
       logLine(`Error: ${event.message}`, "system");
       break;
