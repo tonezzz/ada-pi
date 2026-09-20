@@ -89,6 +89,8 @@ class GeminiLiveProvider(RealtimeProvider):
         if tool_runner is None and home_assistant_client is not None:
             tool_runner = ToolRunner(home_assistant_client, habit_state_getter)
         self.tool_runner = tool_runner
+        if self.tool_runner is not None:
+            self.tool_runner.session_id = session_id
         self.home_assistant_client = home_assistant_client
         self.habit_state_getter = habit_state_getter
         self.conversation = ConversationMemory(session_id or "unknown")

@@ -412,6 +412,9 @@ class ToolRunner:
         self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb, instance_id=instance_id)
         self.events = HaEventRecorder(ha_client, mddb_client=self.mddb, instance_id=instance_id)
         self._instance_id = instance_id
+        # Voice session that invoked the current tool call; the realtime
+        # provider sets this so memory writes carry provenance.
+        self.session_id: str | None = None
         self._banks: MemoryBankRegistry | None = None
         self._control_calls: list[float] = []
         self._control_entity_calls: dict[str, list[float]] = {}
@@ -747,9 +750,11 @@ class ToolRunner:
         return await memory_ops.remember(
             self.mddb, self.banks, self.memory.instance,
             bank, text, key, subject, attribute, kind, valid_until, applies_to,
-            supersedes,
+            supersedes, session_id=self.session_id,
         )
 
     async def ada_forget(self, bank: str, key: str, reason: str | None = None) -> dict[str, Any]:
         """Retract a memory: status becomes retracted; the doc stays auditable."""
-        return await memory_ops.forget(self.mddb, self.banks, bank, key, reason)
+        return await memory_ops.forget(
+            self.mddb, self.banks, bank, key, reason, session_id=self.session_id
+        )

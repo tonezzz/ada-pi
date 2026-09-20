@@ -44,6 +44,7 @@ def memory_meta(
     attribute: str | None,
     valid_until: str | None,
     applies_to: list[str],
+    session_id: str | None = None,
 ) -> dict[str, list[str]]:
     meta: dict[str, list[str]] = {
         "bank": [bank.name],
@@ -63,6 +64,8 @@ def memory_meta(
         meta["valid_until"] = [str(valid_until)]
     if applies_to:
         meta["applies_to"] = [str(a) for a in applies_to]
+    if session_id and session_id != "unknown":
+        meta["session_id"] = [session_id]
     return meta
 
 
@@ -154,6 +157,7 @@ async def remember(
     valid_until: str | None = None,
     applies_to: list[str] | str | None = None,
     supersedes: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Write a memory to a bank: create, correct-in-place, or supersede."""
     b = registry.bank(str(bank))
@@ -172,7 +176,7 @@ async def remember(
                 f"cannot supersede {supersedes!r}: no such document in bank '{b.name}'"
             )
         new_key = str(key) if key else f"{b.name}/{_slug(str(subject or text))}"
-        meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies)
+        meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies, session_id)
         _warn_unknown_meta(registry, meta)
         meta["supersedes"] = [str(supersedes)]
         await mddb.add_document(b.mddb_collection, new_key, "en", str(text), meta)
@@ -226,7 +230,7 @@ async def remember(
                 str(text)[:60], target_key, sims[0].get("score") or 0,
             )
 
-    meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies)
+    meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies, session_id)
     _warn_unknown_meta(registry, meta)
     if existing is not None:
         old_meta = dict(existing.get("meta") or {})
@@ -249,6 +253,7 @@ async def forget(
     bank: str,
     key: str,
     reason: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Retract a memory: status becomes retracted; the doc stays auditable."""
     b = registry.bank(str(bank))
@@ -260,5 +265,7 @@ async def forget(
     meta["last_verified"] = [datetime.now(timezone.utc).date().isoformat()]
     if reason:
         meta["retracted_reason"] = [str(reason)]
+    if session_id and session_id != "unknown":
+        meta["retracted_by_session"] = [session_id]
     await mddb.update_document(b.mddb_collection, str(key), meta=meta)
     return {"verb": "retract", "bank": b.name, "key": str(key)}

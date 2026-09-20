@@ -317,6 +317,36 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["verb"], "create")
         self.runner.mddb.add_document.assert_called_once()
 
+    async def test_remember_stamps_session_id(self):
+        self.runner.session_id = "sess-42"
+        self.runner.mddb.vector_search.return_value = []
+        await self.runner.execute(
+            "ada_remember", {"bank": "personal", "text": "something new"}
+        )
+        meta = self.runner.mddb.add_document.call_args.args[4]
+        self.assertEqual(meta["session_id"], ["sess-42"])
+
+    async def test_remember_omits_unknown_session(self):
+        self.runner.session_id = "unknown"
+        self.runner.mddb.vector_search.return_value = []
+        await self.runner.execute(
+            "ada_remember", {"bank": "personal", "text": "something new"}
+        )
+        meta = self.runner.mddb.add_document.call_args.args[4]
+        self.assertNotIn("session_id", meta)
+
+    async def test_forget_stamps_retracted_by_session(self):
+        self.runner.session_id = "sess-9"
+        self.runner.mddb.get_document.return_value = {
+            "key": "personal/x",
+            "meta": {"status": ["active"], "kind": ["note"]},
+        }
+        await self.runner.execute(
+            "ada_forget", {"bank": "personal", "key": "personal/x"}
+        )
+        kw = self.runner.mddb.update_document.call_args.kwargs
+        self.assertEqual(kw["meta"]["retracted_by_session"], ["sess-9"])
+
     async def test_search_falls_back_when_vector_fails(self):
         self.runner.mddb.vector_search.return_value = None
         self.runner.mddb.search_documents.return_value = [
