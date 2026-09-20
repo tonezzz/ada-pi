@@ -138,6 +138,47 @@ async def _summarize(prev: str | None, transcript: str) -> str | None:
         return None
 
 
+async def _summarize_session(transcript: str) -> str | None:
+    """Standalone summary of one session — the substrate for tiered rollups."""
+    if not _GEMINI_API_KEY:
+        return None  # _summarize already reported the missing key
+    try:
+        from google import genai
+        prompt = (
+            "Transcript of one voice session:\n"
+            f"{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}\n\n"
+            "Summarize this session in two or three sentences. Include any "
+            "facts, decisions, preferences, or requests worth remembering."
+        )
+        resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
+            model=_SUMMARY_MODEL, contents=prompt
+        )
+        return (resp.text or "").strip() or None
+    except Exception as exc:
+        _report_failure("session_summary", exc)
+        return None
+
+
+async def _save_session_summary(session_id: str, text: str) -> None:
+    today = datetime.now(timezone.utc).date().isoformat()
+    key = f"session-{today}-{session_id}"
+    try:
+        await _mddb().add_document(
+            collection=_summary_collection(),
+            key=key,
+            lang="en",
+            content_md=text,
+            meta={
+                "kind": ["session-summary"],
+                "session_id": [session_id],
+                "date": [today],
+                "source": ["conversation_memory"],
+            },
+        )
+    except Exception as exc:
+        _report_failure("session_summary_mddb", exc)
+
+
 async def _refresh_summary(client: "NotebooklmClient") -> None:
     """One-time seed from NotebookLM; rolling updates take over afterwards."""
     try:
@@ -274,11 +315,17 @@ class ConversationMemory:
 
     async def _update_summary(self) -> None:
         prev = _summary_cache["text"] or await _load_summary_from_mddb()
-        new = await _summarize(prev, self.transcript())
+        transcript = self.transcript()
+        new = await _summarize(prev, transcript)
         if new:
             _summary_cache["text"] = new
             _summary_cache["ts"] = time.time()
             await _save_summary_to_mddb(new)
+        # Per-session doc: distinct recallable unit + substrate for the
+        # planned daily/weekly/monthly rollup tier.
+        session_text = await _summarize_session(transcript)
+        if session_text:
+            await _save_session_summary(self.session_id, session_text)
 
     def warm_summary(self) -> None:
         """Kick a background warm: load the persisted summary, or seed it."""
