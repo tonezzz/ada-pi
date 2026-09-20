@@ -12,6 +12,8 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
+from backend.mddb_client import MddbClient
+
 logger = logging.getLogger("voice.conversation")
 
 NOTEBOOKLM_BASE_URL = os.environ.get(
@@ -79,7 +81,6 @@ def _summary_collection() -> str:
 
 
 def _mddb():
-    from backend.tool_runner import MddbClient  # lazy: avoid import cycle
     return MddbClient()
 
 
