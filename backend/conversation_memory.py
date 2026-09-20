@@ -372,6 +372,11 @@ class ConversationMemory:
                 return
             # Low confidence: escalate to the bank's deep-tier notebook if it
             # has one, else the instance's memory notebook as a last resort.
+            scores = [round(d.get("score") or 0, 3) for d in (docs or [])]
+            logger.info(
+                "bank recall %r: miss (top scores=%s) — escalating to notebook",
+                bank.name, scores or "none",
+            )
             notebook = bank.notebook(get_registry().notebook_ids)
             if not notebook:
                 logger.info("bank %r has no notebook; falling back to memory group", bank.name)
