@@ -44,6 +44,11 @@ MEMORY_WRITE_TOOLS = {"ada_remember", "ada_forget"}
 # this, recall escalates to the NotebookLM deep tier. ~0.45-0.55 is the
 # observed "real match" band on this MDDB's embedding model.
 ADA_BANK_SEARCH_THRESHOLD = float(os.environ.get("ADA_BANK_SEARCH_THRESHOLD", "0.45"))
+
+# Higher bar for "this is the same fact restated" — when ada_remember finds
+# no exact key/subject match, a hit above this score is corrected in place
+# instead of creating a near-duplicate.
+ADA_BANK_UPDATE_THRESHOLD = float(os.environ.get("ADA_BANK_UPDATE_THRESHOLD", "0.85"))
 CONTROL_RATE_WINDOW_S = float(os.environ.get("ADA_CONTROL_RATE_WINDOW_S", "60"))
 CONTROL_MAX_PER_ENTITY = int(os.environ.get("ADA_CONTROL_MAX_PER_ENTITY", "5"))
 CONTROL_MAX_GLOBAL = int(os.environ.get("ADA_CONTROL_MAX_GLOBAL", "30"))
@@ -1011,6 +1016,24 @@ class ToolRunner:
         if not target_key:
             target_key = f"{b.name}/{_slug(str(subject or text))}"
             existing = await self.mddb.get_document(b.mddb_collection, target_key)
+
+        if existing is None:
+            # Dedupe: a near-identical active memory counts as the same fact —
+            # correct it in place rather than stacking a duplicate.
+            sims = await self.mddb.vector_search(
+                collection=b.mddb_collection,
+                query=str(text),
+                limit=1,
+                filter_meta={"status": ["active"]},
+                threshold=ADA_BANK_UPDATE_THRESHOLD,
+            )
+            if sims and doc_effective_status(sims[0]) == "active":
+                target_key = sims[0].get("key")
+                existing = sims[0]
+                logger.info(
+                    "ada_remember dedupe: %r matched %r (score %.3f)",
+                    str(text)[:60], target_key, sims[0].get("score") or 0,
+                )
 
         meta = self._memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies)
         if existing is not None:

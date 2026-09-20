@@ -356,6 +356,11 @@ class ConversationMemory:
                 if doc_effective_status(d) == "active"
             ]
             if hits:
+                logger.info(
+                    "bank recall %r: %d hit(s), scores=%s",
+                    bank.name, len(hits),
+                    [round(d.get("score") or 0, 3) for d in hits],
+                )
                 lines = [f"From the {bank.title} memory bank:"]
                 for d in hits:
                     body = str(d.get("contentMd") or d.get("content_md") or "").strip()
@@ -364,14 +369,12 @@ class ConversationMemory:
                 await on_complete("\n".join(lines) if len(lines) > 1 else
                                   f"I found a note in the {bank.title} memory bank but it was empty.")
                 return
-            # Low confidence: escalate to the bank's deep-tier notebook if any.
+            # Low confidence: escalate to the bank's deep-tier notebook if it
+            # has one, else the instance's memory notebook as a last resort.
             notebook = bank.notebook(get_registry().notebook_ids)
             if not notebook:
-                await on_complete(
-                    f"I couldn't find anything in the {bank.title} memory bank."
-                )
-                return
-            group = None
+                logger.info("bank %r has no notebook; falling back to memory group", bank.name)
+                return await self._recall_ask(question, on_complete, "memory", on_slow, None)
             return await self._recall_ask(question, on_complete, None, on_slow, notebook)
         await self._recall_ask(question, on_complete, group, on_slow, None)
 

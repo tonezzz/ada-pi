@@ -294,6 +294,29 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([h["key"] for h in out["hits"]], ["b"])
 
+    async def test_remember_dedupes_high_similarity_hit(self):
+        # No subject/attribute match, but a near-identical active doc exists
+        # -> correct it in place instead of creating a duplicate.
+        self.runner.mddb.vector_search.return_value = [
+            {"key": "personal/espresso", "score": 0.91,
+             "meta": {"status": ["active"], "kind": ["preference"], "valid_from": ["2026-09-01"]}},
+        ]
+        out = await self.runner.execute(
+            "ada_remember", {"bank": "personal", "text": "I really like espresso"}
+        )
+        self.assertEqual(out["verb"], "correct")
+        self.assertEqual(out["key"], "personal/espresso")
+        kw = self.runner.mddb.update_document.call_args.kwargs
+        self.assertEqual(kw["meta"]["kind"], ["preference"])  # preserved
+
+    async def test_remember_creates_when_similarity_below_threshold(self):
+        self.runner.mddb.vector_search.return_value = []  # no hit >= 0.85
+        out = await self.runner.execute(
+            "ada_remember", {"bank": "personal", "text": "something new entirely"}
+        )
+        self.assertEqual(out["verb"], "create")
+        self.runner.mddb.add_document.assert_called_once()
+
     async def test_search_falls_back_when_vector_fails(self):
         self.runner.mddb.vector_search.return_value = None
         self.runner.mddb.search_documents.return_value = [
