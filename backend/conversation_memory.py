@@ -395,7 +395,8 @@ class ConversationMemory:
                 collection=bank.mddb_collection,
                 query=question,
                 limit=3,
-                filter_meta={"status": ["active"]},
+                # Read-only banks lack lifecycle meta — filter would exclude all.
+                filter_meta=None if not bank.writable else {"status": ["active"]},
                 threshold=float(os.environ.get("ADA_BANK_SEARCH_THRESHOLD", "0.45")),
             )
             from backend.memory_banks import doc_effective_status, get_registry

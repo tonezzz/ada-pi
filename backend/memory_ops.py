@@ -92,7 +92,10 @@ async def memory_search(
     metadata filter. Vector search failures fall back to the listing so
     recall degrades gracefully when embeddings are down."""
     b = registry.bank(str(bank))
-    filter_meta = None if include_inactive else {"status": ["active"]}
+    # Read-only banks (kb imports, devin summaries) have no lifecycle meta —
+    # filtering on status would exclude every doc. Post-filter still runs
+    # (missing status is treated as active).
+    filter_meta = None if (include_inactive or not b.writable) else {"status": ["active"]}
     q = str(query or "").strip()
     degraded = False
     if q and q != "*":
