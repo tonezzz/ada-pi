@@ -141,8 +141,12 @@ class GeminiLiveProvider(RealtimeProvider):
             "ada_ha_history to list recent home snapshots from memory, "
             "ada_ha_get_device_confidence to list devices by trust level, "
             "ada_ha_set_device_confidence to change a device's trust level, and "
-            "ada_session_recall to ask NotebookLM about previous conversations or stored knowledge by topic group. "
+            "ada_session_recall to ask NotebookLM about previous conversations or stored knowledge by topic group, "
+            "and curated memory banks you can search and write: "
+            "ada_memory_search to find what you know, ada_remember to store or correct a memory "
+            "when the user says 'remember that', and ada_forget to retract a memory that is no longer true. "
             "Prefer the ada_ha_* memory tools for home, device, sensor, or event questions — they answer instantly. "
+            "Prefer ada_memory_search and bank recall for stored facts and preferences. "
             "Reserve ada_session_recall for previous conversations or stored knowledge; it can take up to 20 seconds, "
             "so keep the user informed while it runs. "
             "Use ada_ha_get_device_confidence when the user asks what is broken, new, needs setup, or trusted. "
@@ -893,7 +897,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "Ask NotebookLM about previous voice sessions or stored knowledge. "
                         "Use this when the user asks 'what did we talk about', 'do you remember', "
                         "or wants to recall something from an earlier conversation. "
-                        "Pick the group that best matches the topic. "
+                        "Pick the group or bank that best matches the topic. "
                         "The recall runs in the background and can take up to ~20 seconds; "
                         "the result will be spoken when ready."
                     ),
@@ -917,8 +921,139 @@ class GeminiLiveProvider(RealtimeProvider):
                                     "ops: workflows, tasks, experiments, project state."
                                 ),
                             },
+                            "bank": {
+                                "type": "string",
+                                "description": (
+                                    "Optional curated memory bank to search instead of a notebook "
+                                    "group: general, home, people, personal, tony-projects, note. "
+                                    "Bank recall checks the fast memory tier first and only "
+                                    "escalates to NotebookLM when nothing is found."
+                                ),
+                            },
                         },
                         "required": ["question"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_memory_search",
+                    "description": (
+                        "Search a curated memory bank for stored facts, preferences, people, "
+                        "procedures, and notes. Returns document keys you can pass to "
+                        "ada_remember (to correct) or ada_forget (to retract). "
+                        "Use this before updating a memory and when the user asks what you "
+                        "know about a topic."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "bank": {
+                                "type": "string",
+                                "description": "Memory bank name: general, home, people, personal, tony-projects, note.",
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "What to look for, e.g. 'gate remote' or 'coffee preferences'.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 20,
+                                "description": "Maximum memories to return. Defaults to 5.",
+                            },
+                            "include_inactive": {
+                                "type": "boolean",
+                                "description": "Also return superseded, retracted, and expired memories. Default false.",
+                            },
+                        },
+                        "required": ["bank", "query"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_remember",
+                    "description": (
+                        "Store or update a curated memory in a bank when the user says "
+                        "'remember that…' or states a fact worth keeping. "
+                        "Find-then-update: if you pass a key or a subject+attribute pair that "
+                        "matches an existing memory, it is corrected in place; otherwise a new "
+                        "memory is created. Pass supersedes=<key> to replace a misattributed "
+                        "fact with a new one. Some banks require confirmed=true — only set it "
+                        "after the user has explicitly confirmed the write."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "bank": {
+                                "type": "string",
+                                "description": "Memory bank name: general, home, people, personal, tony-projects, note.",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "The fact or note to store, phrased as a standalone sentence.",
+                            },
+                            "key": {
+                                "type": "string",
+                                "description": "Existing document key to correct in place (from ada_memory_search). Omit to find-or-create.",
+                            },
+                            "subject": {
+                                "type": "string",
+                                "description": "What the memory is about, slug-style, e.g. 'gate-remote'. Used to find existing facts about the same thing.",
+                            },
+                            "attribute": {
+                                "type": "string",
+                                "description": "Which aspect of the subject, e.g. 'location'. Combined with subject for update detection.",
+                            },
+                            "kind": {
+                                "type": "string",
+                                "enum": ["fact", "preference", "person", "procedure", "note"],
+                                "description": "Memory kind. Defaults to note.",
+                            },
+                            "valid_until": {
+                                "type": "string",
+                                "description": "Optional ISO date after which this memory expires, e.g. '2026-10-01'.",
+                            },
+                            "supersedes": {
+                                "type": "string",
+                                "description": "Key of an existing memory this one replaces. The old memory is marked superseded, not deleted.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["bank", "text"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_forget",
+                    "description": (
+                        "Retract a memory when the user says it is no longer true or asks you "
+                        "to forget it. The memory is marked retracted and stops surfacing in "
+                        "recall, but stays in the archive for audit."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "bank": {
+                                "type": "string",
+                                "description": "Memory bank name: general, home, people, personal, tony-projects, note.",
+                            },
+                            "key": {
+                                "type": "string",
+                                "description": "Document key to retract (from ada_memory_search).",
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Optional reason for the retraction.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["bank", "key"],
                         "additionalProperties": False,
                     },
                 }]
@@ -1149,9 +1284,11 @@ class GeminiLiveProvider(RealtimeProvider):
                         elif call.name == "ada_session_recall":
                             question = (call.args or {}).get("question", "What did we discuss in the previous session?")
                             group = (call.args or {}).get("group")
+                            bank = (call.args or {}).get("bank")
                             recall_status = self.conversation.start_recall(
                                 str(question), self._on_recall_complete,
                                 group=str(group) if group else None,
+                                bank=str(bank) if bank else None,
                                 on_slow=self._on_recall_slow,
                             )
                             result = {"output": recall_status}

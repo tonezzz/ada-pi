@@ -21,6 +21,7 @@ from backend.realtime_provider import create_provider
 from backend.home_assistant import HomeAssistantClient
 from backend.tool_runner import ToolRunner
 from backend.conversation_memory import conversation_health
+from backend.memory_banks import get_registry
 from backend import auth
 
 logging.basicConfig(
@@ -47,10 +48,16 @@ async def api_health() -> dict:
     reports only ok/error strings, no data. Non-null errors mean something
     failed recently (fail-quick reporting, not silent decay)."""
     mem = conversation_health()
+    banks = get_registry().health()
     return {
         "ok": True,
         "conversation_memory": mem,
-        "degraded": bool(mem["errors"]),
+        "memory_banks": {
+            "configured": banks["configured"],
+            "bank_count": banks["bank_count"],
+            "errors": banks["errors"],
+        },
+        "degraded": bool(mem["errors"] or banks["errors"]),
     }
 
 
@@ -539,6 +546,35 @@ async def get_power_summary(hours: int = 24) -> dict:
     except Exception as exc:
         logger.warning("home assistant power summary failed: %s", exc)
         return {"status": "unavailable", "error": str(exc), "summary": {}}
+
+
+@app.get("/api/memory/banks")
+async def memory_banks(request: Request) -> dict:
+    """List memory banks assigned to this instance with resolved
+    collection/notebook routing, plus registry load errors."""
+    _require_api_key(request)
+    registry = get_registry()
+    return {
+        "instance": registry.instance,
+        "registry": registry.path,
+        "errors": registry.errors,
+        "banks": {
+            name: {
+                "title": b.title,
+                "description": b.description,
+                "scope": b.scope,
+                "mddb_collection": b.mddb_collection,
+                "notebooklm_group": b.notebooklm_group,
+                "notebooklm_id": b.notebook(registry.notebook_ids),
+                "kinds": b.kinds,
+                "writable": b.writable,
+                "write_policy": b.write_policy,
+                "allowed_tools": b.allowed_tools,
+                "status": b.status,
+            }
+            for name, b in registry.banks().items()
+        },
+    }
 
 
 @app.get("/api/tools")

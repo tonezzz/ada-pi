@@ -6,6 +6,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,6 +17,12 @@ import httpx
 from backend.event_recorder import HaEventRecorder
 from backend.home_assistant import HomeAssistantClient
 from backend.instance import ada_instance_id
+from backend.memory_banks import (
+    MemoryBankRegistry,
+    _slug,
+    doc_effective_status,
+    get_registry,
+)
 
 logger = logging.getLogger("tools")
 
@@ -28,6 +35,15 @@ CONTROL_TOOLS = {
     "control_entity", "control_cover", "press_button",
     "control_media_player", "tv_action",
 }
+
+# Tools that mutate curated memory banks. Each bank's write_policy decides
+# whether confirmed=true is required (same gate pattern as CONTROL_TOOLS).
+MEMORY_WRITE_TOOLS = {"ada_remember", "ada_forget"}
+
+# Minimum vector-search score for a bank hit to count as confident. Below
+# this, recall escalates to the NotebookLM deep tier. ~0.45-0.55 is the
+# observed "real match" band on this MDDB's embedding model.
+ADA_BANK_SEARCH_THRESHOLD = float(os.environ.get("ADA_BANK_SEARCH_THRESHOLD", "0.45"))
 CONTROL_RATE_WINDOW_S = float(os.environ.get("ADA_CONTROL_RATE_WINDOW_S", "60"))
 CONTROL_MAX_PER_ENTITY = int(os.environ.get("ADA_CONTROL_MAX_PER_ENTITY", "5"))
 CONTROL_MAX_GLOBAL = int(os.environ.get("ADA_CONTROL_MAX_GLOBAL", "30"))
@@ -87,17 +103,19 @@ class MddbClient:
     async def search_documents(
         self,
         collection: str,
-        query: str,
+        query: str = "*",
         filter_meta: dict[str, list[str]] | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
+        """Meta-filtered listing. NOTE: /v1/search has no text-query support —
+        `query` is accepted for call-site compatibility but ignored by the
+        server. Use vector_search() for real text/semantic queries."""
         payload: dict[str, Any] = {
             "collection": collection,
-            "query": query,
             "limit": limit,
         }
         if filter_meta:
-            payload["filter_meta"] = filter_meta
+            payload["filterMeta"] = filter_meta
         try:
             resp = await self._client.post(f"{self.base_url}/search", json=payload)
             resp.raise_for_status()
@@ -105,6 +123,79 @@ class MddbClient:
         except Exception as exc:
             logger.error("mddb search failed: %s", exc)
             return []
+
+    async def vector_search(
+        self,
+        collection: str,
+        query: str,
+        limit: int = 5,
+        filter_meta: dict[str, list[str]] | None = None,
+        threshold: float = 0.0,
+    ) -> list[dict[str, Any]] | None:
+        """Semantic search via /v1/vector-search. Returns None on failure so
+        callers can fall back to search_documents listing."""
+        payload: dict[str, Any] = {
+            "collection": collection,
+            "query": query,
+            "topK": limit,
+            "includeContent": True,
+        }
+        if filter_meta:
+            payload["filterMeta"] = filter_meta
+        if threshold:
+            payload["threshold"] = threshold
+        try:
+            resp = await self._client.post(
+                f"{self.base_url}/vector-search", json=payload
+            )
+            resp.raise_for_status()
+            results = resp.json().get("results") or []
+            return [
+                {**(item.get("document") or {}), "score": item.get("score")}
+                for item in results
+            ]
+        except Exception as exc:
+            logger.error("mddb vector_search failed: %s", exc)
+            return None
+
+    async def get_document(
+        self, collection: str, key: str, lang: str = "en"
+    ) -> dict[str, Any] | None:
+        try:
+            resp = await self._client.post(
+                f"{self.base_url}/get",
+                json={"collection": collection, "key": key, "lang": lang},
+            )
+            if resp.status_code == 404 or (
+                resp.status_code == 400 and "not found" in resp.text.lower()
+            ):
+                return None
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.error("mddb get_document failed: %s", exc)
+            return None
+
+    async def update_document(
+        self,
+        collection: str,
+        key: str,
+        lang: str = "en",
+        content_md: str | None = None,
+        meta: dict[str, list[str]] | None = None,
+    ) -> dict[str, Any] | None:
+        payload: dict[str, Any] = {"collection": collection, "key": key, "lang": lang}
+        if content_md is not None:
+            payload["contentMd"] = content_md
+        if meta is not None:
+            payload["meta"] = meta
+        try:
+            resp = await self._client.patch(f"{self.base_url}/update", json=payload)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.error("mddb update_document failed: %s", exc)
+            return None
 
 
 @dataclass
@@ -456,8 +547,21 @@ class ToolRunner:
         self.mddb = MddbClient()
         self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb, instance_id=instance_id)
         self.events = HaEventRecorder(ha_client, mddb_client=self.mddb, instance_id=instance_id)
+        self._instance_id = instance_id
+        self._banks: MemoryBankRegistry | None = None
         self._control_calls: list[float] = []
         self._control_entity_calls: dict[str, list[float]] = {}
+
+    @property
+    def banks(self) -> MemoryBankRegistry:
+        """Memory-bank registry, loaded on first use so a missing
+        ADA_INSTANCE_ID only fails when memory tools are actually invoked."""
+        if self._banks is None:
+            if self._instance_id:
+                self._banks = MemoryBankRegistry(instance=self._instance_id)
+            else:
+                self._banks = get_registry()
+        return self._banks
 
     async def execute(self, name: str, args: dict[str, Any] | None = None) -> Any:
         method = getattr(self, name, None)
@@ -467,6 +571,9 @@ class ToolRunner:
         if name in CONTROL_TOOLS:
             confirmed = call_args.pop("confirmed", None)
             await self._check_control_allowed(name, call_args, confirmed)
+        elif name in MEMORY_WRITE_TOOLS:
+            confirmed = call_args.pop("confirmed", None)
+            self._check_memory_write_allowed(name, call_args, confirmed)
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
         return await method(**call_args)
@@ -528,6 +635,31 @@ class ToolRunner:
                 )
             calls.append(now)
         self._control_calls.append(now)
+
+    def _check_memory_write_allowed(
+        self, name: str, args: dict[str, Any], confirmed: Any,
+    ) -> None:
+        """Server-side gate for memory-bank writes. Raises PermissionError on denial."""
+        if os.environ.get("ADA_READ_ONLY") == "true":
+            logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
+            raise PermissionError("memory writes are disabled (ADA_READ_ONLY=true)")
+        bank_name = str(args.get("bank") or "")
+        try:
+            bank = self.banks.bank(bank_name)
+        except KeyError as exc:
+            raise ValueError(str(exc)) from exc
+        if not bank.writable:
+            logger.warning("denied %s on %r: bank not writable", name, bank_name)
+            raise PermissionError(f"memory bank '{bank_name}' is read-only")
+        if name not in bank.allowed_tools:
+            logger.warning("denied %s on %r: tool not in allowed_tools", name, bank_name)
+            raise PermissionError(f"tool {name} is not allowed on memory bank '{bank_name}'")
+        if bank.write_policy == "confirmed" and confirmed is not True:
+            logger.warning("denied %s on %r: write_policy=confirmed without confirmed=true", name, bank_name)
+            raise PermissionError(
+                f"memory bank '{bank_name}' requires confirmation. Call again with "
+                "confirmed=true only after explicit user confirmation."
+            )
 
     # -- Home Assistant tools --
 
@@ -718,3 +850,193 @@ class ToolRunner:
     async def ada_ha_set_device_confidence(self, entity_id: str, status: str, safety: str | None = None) -> str:
         """Set a device's confidence and/or safety status."""
         return await self.memory.set_confidence(str(entity_id), str(status), str(safety) if safety is not None else None)
+
+    # -- Memory bank tools (curated memory; see ssot.apps.ada-memory-*.yml) --
+
+    @staticmethod
+    def _memory_meta(
+        bank: Any,
+        scope: str,
+        today: str,
+        kind: str | None,
+        subject: str | None,
+        attribute: str | None,
+        valid_until: str | None,
+        applies_to: list[str],
+    ) -> dict[str, list[str]]:
+        meta: dict[str, list[str]] = {
+            "bank": [bank.name],
+            "kind": [str(kind or "note")],
+            "scope": [scope],
+            "status": ["active"],
+            "valid_from": [today],
+            "last_verified": [today],
+            "source": ["voice"],
+            "written_by": ["ada_remember"],
+        }
+        if subject:
+            meta["subject"] = [str(subject)]
+        if attribute:
+            meta["attribute"] = [str(attribute)]
+        if valid_until:
+            meta["valid_until"] = [str(valid_until)]
+        if applies_to:
+            meta["applies_to"] = [str(a) for a in applies_to]
+        return meta
+
+    async def ada_memory_search(
+        self,
+        bank: str,
+        query: str,
+        limit: int = 5,
+        include_inactive: bool = False,
+    ) -> dict[str, Any]:
+        """Search a curated memory bank's MDDB collection.
+
+        A real query uses semantic (vector) search; '*' or empty lists by
+        metadata filter. Vector search failures fall back to the listing so
+        recall degrades gracefully when embeddings are down."""
+        b = self.banks.bank(str(bank))
+        filter_meta = None if include_inactive else {"status": ["active"]}
+        q = str(query or "").strip()
+        degraded = False
+        if q and q != "*":
+            docs = await self.mddb.vector_search(
+                collection=b.mddb_collection,
+                query=q,
+                limit=int(limit) * 3,
+                filter_meta=filter_meta,
+                threshold=ADA_BANK_SEARCH_THRESHOLD,
+            )
+            if docs is None:
+                degraded = True
+                docs = await self.mddb.search_documents(
+                    collection=b.mddb_collection,
+                    filter_meta=filter_meta,
+                    limit=int(limit) * 3,
+                )
+        else:
+            docs = await self.mddb.search_documents(
+                collection=b.mddb_collection,
+                filter_meta=filter_meta,
+                limit=int(limit) * 3,
+            )
+        hits = []
+        for doc in docs or []:
+            status = doc_effective_status(doc)
+            if not include_inactive and status != "active":
+                continue
+            meta = doc.get("meta") or {}
+            hits.append({
+                "key": doc.get("key"),
+                "status": status,
+                "score": doc.get("score"),
+                "content": doc.get("contentMd") or doc.get("content_md") or "",
+                "kind": _first(meta.get("kind")),
+                "subject": _first(meta.get("subject")),
+                "attribute": _first(meta.get("attribute")),
+                "last_verified": _first(meta.get("last_verified")),
+                "valid_until": _first(meta.get("valid_until")),
+            })
+            if len(hits) >= int(limit):
+                break
+        return {
+            "bank": b.name,
+            "collection": b.mddb_collection,
+            "count": len(hits),
+            "hits": hits,
+            "degraded": degraded,
+        }
+
+    async def ada_remember(
+        self,
+        bank: str,
+        text: str,
+        key: str | None = None,
+        subject: str | None = None,
+        attribute: str | None = None,
+        kind: str | None = None,
+        valid_until: str | None = None,
+        applies_to: list[str] | str | None = None,
+        supersedes: str | None = None,
+    ) -> dict[str, Any]:
+        """Write a memory to a bank: create, correct-in-place, or supersede."""
+        b = self.banks.bank(str(bank))
+        if str(kind or "note") not in b.kinds:
+            raise ValueError(
+                f"kind {kind!r} not allowed in bank '{b.name}' (allowed: {', '.join(b.kinds)})"
+            )
+        today = datetime.now(timezone.utc).date().isoformat()
+        scope = "shared" if b.scope == "shared" else self.memory.instance
+        applies = [applies_to] if isinstance(applies_to, str) else list(applies_to or [])
+
+        if supersedes:
+            old = await self.mddb.get_document(b.mddb_collection, str(supersedes))
+            if old is None:
+                raise ValueError(
+                    f"cannot supersede {supersedes!r}: no such document in bank '{b.name}'"
+                )
+            new_key = str(key) if key else f"{b.name}/{_slug(str(subject or text))}"
+            meta = self._memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies)
+            meta["supersedes"] = [str(supersedes)]
+            await self.mddb.add_document(b.mddb_collection, new_key, "en", str(text), meta)
+            old_meta = dict(old.get("meta") or {})
+            old_meta["status"] = ["superseded"]
+            old_meta["superseded_by"] = [new_key]
+            await self.mddb.update_document(b.mddb_collection, str(supersedes), meta=old_meta)
+            return {
+                "verb": "supersede",
+                "bank": b.name,
+                "key": new_key,
+                "superseded": str(supersedes),
+            }
+
+        # Find-then-update: an existing active doc about the same
+        # subject/attribute (or at the requested key) is corrected in place.
+        target_key = str(key) if key else None
+        existing = None
+        if target_key:
+            existing = await self.mddb.get_document(b.mddb_collection, target_key)
+        elif subject:
+            filt: dict[str, list[str]] = {"subject": [str(subject)], "status": ["active"]}
+            if attribute:
+                filt["attribute"] = [str(attribute)]
+            docs = await self.mddb.search_documents(
+                b.mddb_collection, "*", filter_meta=filt, limit=1
+            )
+            docs = [d for d in docs if doc_effective_status(d) == "active"]
+            if docs:
+                target_key = docs[0].get("key")
+                existing = docs[0]
+        if not target_key:
+            target_key = f"{b.name}/{_slug(str(subject or text))}"
+            existing = await self.mddb.get_document(b.mddb_collection, target_key)
+
+        meta = self._memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies)
+        if existing is not None:
+            old_meta = dict(existing.get("meta") or {})
+            for keep in ("valid_from", "supersedes", "superseded_by"):
+                if keep in old_meta:
+                    meta[keep] = old_meta[keep]
+            if kind is None and "kind" in old_meta:
+                meta["kind"] = old_meta["kind"]
+            await self.mddb.update_document(
+                b.mddb_collection, target_key, content_md=str(text), meta=meta
+            )
+            return {"verb": "correct", "bank": b.name, "key": target_key}
+        await self.mddb.add_document(b.mddb_collection, target_key, "en", str(text), meta)
+        return {"verb": "create", "bank": b.name, "key": target_key}
+
+    async def ada_forget(self, bank: str, key: str, reason: str | None = None) -> dict[str, Any]:
+        """Retract a memory: status becomes retracted; the doc stays auditable."""
+        b = self.banks.bank(str(bank))
+        doc = await self.mddb.get_document(b.mddb_collection, str(key))
+        if doc is None:
+            raise ValueError(f"no such document {key!r} in bank '{b.name}'")
+        meta = dict(doc.get("meta") or {})
+        meta["status"] = ["retracted"]
+        meta["last_verified"] = [datetime.now(timezone.utc).date().isoformat()]
+        if reason:
+            meta["retracted_reason"] = [str(reason)]
+        await self.mddb.update_document(b.mddb_collection, str(key), meta=meta)
+        return {"verb": "retract", "bank": b.name, "key": str(key)}

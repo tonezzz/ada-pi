@@ -203,10 +203,15 @@ class NotebooklmClient:
             _report_failure("notebooklm", exc)
             return None
 
-    async def ask(self, question: str, group: str | None = None) -> str | None:
+    async def ask(
+        self,
+        question: str,
+        group: str | None = None,
+        notebook: str | None = None,
+    ) -> str | None:
         """Ask a notebook. Raises on transport/API errors — callers must not
         mistake a failure for "nothing found"."""
-        notebook = self.notebook_for(group)
+        notebook = notebook or self.notebook_for(group)
         if not self.configured or not notebook:
             return None
         resp = await self._client.post(
@@ -300,18 +305,26 @@ class ConversationMemory:
         question: str,
         on_complete: Callable[[str | None], Awaitable[None]],
         group: str | None = None,
+        bank: str | None = None,
         on_slow: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
-        if not self.client.configured:
+        if not self.client.configured and not bank:
             return "My notes are not connected."
         if self._recall_task is not None and not self._recall_task.done():
             return "I'm still checking my notes."
+        bank_obj = None
+        if bank:
+            from backend.memory_banks import get_registry
+            try:
+                bank_obj = get_registry().bank(str(bank))
+            except KeyError as exc:
+                return str(exc)
         self.warm_summary()
         self._recall_task = asyncio.create_task(
-            self._recall(question, on_complete, group, on_slow)
+            self._recall(question, on_complete, group, on_slow, bank=bank_obj)
         )
         summary = _summary_cache["text"]
-        if summary and group in (None, "memory"):
+        if summary and group in (None, "memory") and bank is None:
             return (
                 "The detailed notes search is running in the background and "
                 "the result will be spoken when ready. Meanwhile, tell the "
@@ -326,8 +339,51 @@ class ConversationMemory:
         on_complete: Callable[[str | None], Awaitable[None]],
         group: str | None = None,
         on_slow: Callable[[], Awaitable[None]] | None = None,
+        bank: Any | None = None,
     ) -> None:
-        ask = asyncio.create_task(self.client.ask(question, group=group))
+        if bank is not None:
+            # Fast tier: semantic search on the bank's MDDB collection.
+            docs = await _mddb().vector_search(
+                collection=bank.mddb_collection,
+                query=question,
+                limit=3,
+                filter_meta={"status": ["active"]},
+                threshold=float(os.environ.get("ADA_BANK_SEARCH_THRESHOLD", "0.45")),
+            )
+            from backend.memory_banks import doc_effective_status, get_registry
+            hits = [
+                d for d in (docs or [])
+                if doc_effective_status(d) == "active"
+            ]
+            if hits:
+                lines = [f"From the {bank.title} memory bank:"]
+                for d in hits:
+                    body = str(d.get("contentMd") or d.get("content_md") or "").strip()
+                    if body:
+                        lines.append(f"- {body}")
+                await on_complete("\n".join(lines) if len(lines) > 1 else
+                                  f"I found a note in the {bank.title} memory bank but it was empty.")
+                return
+            # Low confidence: escalate to the bank's deep-tier notebook if any.
+            notebook = bank.notebook(get_registry().notebook_ids)
+            if not notebook:
+                await on_complete(
+                    f"I couldn't find anything in the {bank.title} memory bank."
+                )
+                return
+            group = None
+            return await self._recall_ask(question, on_complete, None, on_slow, notebook)
+        await self._recall_ask(question, on_complete, group, on_slow, None)
+
+    async def _recall_ask(
+        self,
+        question: str,
+        on_complete: Callable[[str | None], Awaitable[None]],
+        group: str | None = None,
+        on_slow: Callable[[], Awaitable[None]] | None = None,
+        notebook: str | None = None,
+    ) -> None:
+        ask = asyncio.create_task(self.client.ask(question, group=group, notebook=notebook))
         if on_slow is not None:
             done, _ = await asyncio.wait({ask}, timeout=RECALL_SLOW_AFTER_S)
             if not done:
