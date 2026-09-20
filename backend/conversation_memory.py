@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
@@ -326,6 +327,75 @@ class ConversationMemory:
         session_text = await _summarize_session(transcript)
         if session_text:
             await _save_session_summary(self.session_id, session_text)
+        await self._extract_candidates(transcript)
+
+    async def _extract_candidates(self, transcript: str) -> None:
+        """Auto-distill durable facts/decisions from the session into bank
+        docs with status=draft — invisible to recall until a human promotes
+        them (vault inbox -> consolidate flips draft -> active)."""
+        if os.environ.get("ADA_EXTRACT_CANDIDATES", "1") in ("0", "false", "no"):
+            return
+        if not _GEMINI_API_KEY:
+            return
+        try:
+            from google import genai
+            from backend.memory_banks import get_registry
+            registry = get_registry()
+            bank_names = [b.name for b in registry.banks().values() if b.writable]
+            prompt = (
+                "Transcript of one voice session:\n"
+                f"{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}\n\n"
+                "Extract up to 5 durable facts, decisions, preferences, or "
+                "requests worth remembering long-term — things a future "
+                "session should know, not small talk or one-off questions. "
+                f"Return a JSON array of objects with keys "
+                f'"text", "bank" (one of: {", ".join(bank_names)}), and '
+                '"subject". Return [] if nothing is worth keeping.'
+            )
+            resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
+                model=_SUMMARY_MODEL, contents=prompt
+            )
+            text = (resp.text or "").strip()
+            m = re.search(r"\[.*\]", text, re.DOTALL)
+            candidates = json.loads(m.group(0)) if m else []
+        except Exception as exc:
+            _report_failure("extract_candidates", exc)
+            return
+        today = datetime.now(timezone.utc).date().isoformat()
+        for i, cand in enumerate(candidates[:5]):
+            if not isinstance(cand, dict) or not cand.get("text"):
+                continue
+            try:
+                bank = registry.bank(str(cand.get("bank") or ""))
+            except Exception:
+                bank = None
+            if bank is None or not bank.writable:
+                bank = registry.bank("personal")  # safest: per-instance
+            meta = {
+                "bank": [bank.name],
+                "scope": [registry.instance],
+                "kind": ["note"],
+                "status": ["draft"],
+                "source": ["extract"],
+                "written_by": ["conversation_memory"],
+                "session_id": [self.session_id],
+                "valid_from": [today],
+                "last_verified": [today],
+            }
+            if cand.get("subject"):
+                meta["subject"] = [str(cand["subject"])]
+            key = f"extract-{today}-{self.session_id}-{i}"
+            try:
+                await _mddb().add_document(
+                    collection=bank.mddb_collection,
+                    key=key, lang="en",
+                    content_md=str(cand["text"]), meta=meta,
+                )
+            except Exception as exc:
+                _report_failure("candidate_mddb", exc)
+        if candidates:
+            logger.info("session %s: extracted %d candidate memories",
+                        self.session_id, min(len(candidates), 5))
 
     def warm_summary(self) -> None:
         """Kick a background warm: load the persisted summary, or seed it."""
