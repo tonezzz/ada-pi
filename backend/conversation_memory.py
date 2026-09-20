@@ -424,12 +424,53 @@ class ConversationMemory:
                 "bank recall %r: miss (top scores=%s) — escalating to notebook",
                 bank.name, scores or "none",
             )
+            mid = await self._recall_summaries(question)
+            if mid:
+                await on_complete(f"From recent memory:\n{mid}")
+                return
             notebook = bank.notebook(get_registry().notebook_ids)
             if not notebook:
                 logger.info("bank %r has no notebook; falling back to memory group", bank.name)
                 return await self._recall_ask(question, on_complete, "memory", on_slow, None)
             return await self._recall_ask(question, on_complete, None, on_slow, notebook)
+        # No bank specified: try the mid-tier summary collection before the
+        # ~26s NotebookLM path.
+        mid = await self._recall_summaries(question)
+        if mid:
+            await on_complete(f"From recent memory:\n{mid}")
+            return
         await self._recall_ask(question, on_complete, group, on_slow, None)
+
+    async def _recall_summaries(
+        self, question: str
+    ) -> str | None:
+        """Mid tier: semantic search over session/daily/weekly/monthly
+        summaries + the rolling recent-sessions doc. Returns an answer
+        string on a confident hit, else None (caller escalates to
+        NotebookLM)."""
+        threshold = float(os.environ.get("ADA_BANK_SEARCH_THRESHOLD", "0.45"))
+        try:
+            docs = await _mddb().vector_search(
+                collection=_summary_collection(),
+                query=question,
+                limit=3,
+                threshold=threshold,
+            )
+        except Exception as exc:
+            _report_failure("summary_recall", exc)
+            return None
+        if not docs:
+            return None
+        logger.info(
+            "summary recall: %d hit(s), scores=%s",
+            len(docs), [round(d.get("score") or 0, 3) for d in docs],
+        )
+        lines = []
+        for d in docs:
+            body = str(d.get("contentMd") or d.get("content_md") or "").strip()
+            if body:
+                lines.append(f"- {body}")
+        return "\n".join(lines) if lines else None
 
     async def _recall_ask(
         self,
