@@ -66,6 +66,15 @@ def memory_meta(
     return meta
 
 
+def _warn_unknown_meta(registry: MemoryBankRegistry, meta: dict[str, list[str]]) -> None:
+    unknown = registry.validate_meta(meta)
+    if unknown:
+        logger.warning(
+            "memory meta fields not in SSOT meta_schema: %s "
+            "(extend docs/ssot/apps/ssot.apps.ada-memory-schema.yml)", unknown,
+        )
+
+
 async def memory_search(
     mddb: MddbClient,
     registry: MemoryBankRegistry,
@@ -164,6 +173,7 @@ async def remember(
             )
         new_key = str(key) if key else f"{b.name}/{_slug(str(subject or text))}"
         meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies)
+        _warn_unknown_meta(registry, meta)
         meta["supersedes"] = [str(supersedes)]
         await mddb.add_document(b.mddb_collection, new_key, "en", str(text), meta)
         old_meta = dict(old.get("meta") or {})
@@ -217,6 +227,7 @@ async def remember(
             )
 
     meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies)
+    _warn_unknown_meta(registry, meta)
     if existing is not None:
         old_meta = dict(existing.get("meta") or {})
         for keep in ("valid_from", "supersedes", "superseded_by"):

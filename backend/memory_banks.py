@@ -105,6 +105,7 @@ class MemoryBankRegistry:
         self.instance = instance or ada_instance_id()
         self.notebook_ids = notebook_ids if notebook_ids is not None else _load_notebook_ids()
         self.errors: list[str] = []
+        self.schema_fields: set[str] = set()
         self._banks: dict[str, MemoryBank] = {}
         self._load(explicit=bool(path or explicit))
 
@@ -121,6 +122,8 @@ class MemoryBankRegistry:
             self._error(f"cannot load registry {self.path}: {exc}")
             return
         banks = data.get("banks", data) if isinstance(data, dict) else {}
+        if isinstance(data, dict) and isinstance(data.get("schema"), dict):
+            self.schema_fields = set(data["schema"].get("fields") or {})
         if not isinstance(banks, dict):
             self._error(f"registry {self.path}: 'banks' is not a map")
             return
@@ -192,6 +195,14 @@ class MemoryBankRegistry:
 
     def notebook_for(self, name: str) -> str | None:
         return self.bank(name).notebook(self.notebook_ids)
+
+    def validate_meta(self, meta: dict[str, Any]) -> list[str]:
+        """Return meta keys outside the SSOT meta_schema (empty if schema
+        absent or all fields known). Warn-only — drift should surface in
+        logs, not break writes."""
+        if not self.schema_fields:
+            return []
+        return sorted(k for k in meta if k not in self.schema_fields)
 
     def health(self) -> dict[str, Any]:
         return {
