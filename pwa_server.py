@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -24,6 +25,11 @@ from backend.conversation_memory import conversation_health
 from backend.decision_check import DecisionCheckEngine, decode_image
 from backend.memory_banks import get_registry
 from backend import auth
+from backend.speaker_id import SpeakerIdentifier, SpeakerSession
+
+# Speaker identification is opt-in via ADA_SPEAKER_ID=true.  When disabled
+# (or when speechbrain/torch are not installed), the voice path is unchanged.
+SPEAKER_ID_ENABLED = os.environ.get("ADA_SPEAKER_ID", "true").lower() == "true"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -311,6 +317,31 @@ async def voice_socket(ws: WebSocket) -> None:
     provider_ref = [create_provider(tool_runner=tool_runner, session_id=session_id)]
     closed = asyncio.Event()
 
+    # Speaker identification: non-blocking, runs in parallel with the
+    # audio forward path.  When a new speaker is identified, inject the
+    # identity as a system text turn and notify the browser.
+    speaker_session: SpeakerSession | None = None
+    if SPEAKER_ID_ENABLED:
+        try:
+            identifier = SpeakerIdentifier.get()
+            async def _on_speaker(name: str, confidence: float) -> None:
+                with suppress(Exception):
+                    await ws.send_text(json.dumps({
+                        "type": "speaker",
+                        "name": name,
+                        "confidence": round(confidence, 3),
+                    }))
+                with suppress(Exception):
+                    await provider_ref[0].send_text_turn(
+                        f"(system) The current speaker is {name} "
+                        f"(confidence {confidence:.0%}). Use this to personalize "
+                        f"your response if appropriate, but do not announce it."
+                    )
+            speaker_session = SpeakerSession(identifier, _on_speaker)
+            logger.info("session=%s speaker identification enabled", session_id)
+        except Exception as exc:
+            logger.warning("session=%s speaker ID disabled: %s", session_id, exc)
+
     try:
         await provider_ref[0].connect()
     except Exception as exc:
@@ -335,6 +366,9 @@ async def voice_socket(ws: WebSocket) -> None:
                 if pcm16:
                     with suppress(Exception):
                         await provider_ref[0].send_audio(pcm16)
+                    if speaker_session is not None:
+                        with suppress(Exception):
+                            await speaker_session.feed(pcm16)
                     continue
                 text = message.get("text")
                 if text:
@@ -429,6 +463,9 @@ async def voice_socket(ws: WebSocket) -> None:
                 await task
         with suppress(Exception):
             await provider_ref[0].close()
+        if speaker_session is not None:
+            with suppress(Exception):
+                await speaker_session.close()
         with suppress(Exception):
             await ws.close()
         logger.info("session=%s closed", session_id)
@@ -476,6 +513,76 @@ async def get_sensors(search: str = "", limit: int = 50) -> dict:
     except Exception as exc:
         logger.warning("home assistant sensors failed: %s", exc)
         return {"status": "unavailable", "error": str(exc), "sensors": []}
+
+
+# -- Speaker identification REST API ------------------------------------
+
+@app.get("/api/speakers")
+async def list_speakers(request: Request) -> dict:
+    """List enrolled speaker profiles."""
+    _require_api_key(request)
+    if not SPEAKER_ID_ENABLED:
+        return {"enabled": False, "speakers": []}
+    try:
+        identifier = SpeakerIdentifier.get()
+        return {"enabled": True, "speakers": identifier.enrolled_names()}
+    except Exception as exc:
+        logger.warning("list speakers failed: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/speakers/enroll")
+async def enroll_speaker(request: Request) -> dict:
+    """Enroll a speaker from base64-encoded PCM16 audio.
+
+    Body: {"name": "tony", "audio": "<base64 PCM16 16kHz mono>"}
+    Minimum 3 seconds of audio recommended.
+    """
+    _require_api_key(request)
+    if not SPEAKER_ID_ENABLED:
+        raise HTTPException(status_code=503, detail="speaker ID is disabled")
+    try:
+        payload = await request.json()
+        name = str(payload.get("name", "")).strip()
+        audio_b64 = str(payload.get("audio", ""))
+        if not name:
+            raise ValueError("name is required")
+        if not audio_b64:
+            raise ValueError("audio (base64 PCM16) is required")
+        pcm16 = base64.b64decode(audio_b64)
+        # Minimum 1.5 s of audio (48 000 bytes at 16 kHz 16-bit).
+        if len(pcm16) < 48000:
+            raise ValueError(
+                f"audio too short: {len(pcm16) / 32000:.1f}s, need at least 1.5s"
+            )
+        identifier = SpeakerIdentifier.get()
+        result = identifier.enroll(name, pcm16)
+        logger.info("speaker enrolled via REST: %s", result)
+        return {"status": "ok", **result}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("enroll speaker failed: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.delete("/api/speakers/{name}")
+async def remove_speaker(name: str, request: Request) -> dict:
+    """Remove an enrolled speaker profile."""
+    _require_api_key(request)
+    if not SPEAKER_ID_ENABLED:
+        raise HTTPException(status_code=503, detail="speaker ID is disabled")
+    try:
+        identifier = SpeakerIdentifier.get()
+        removed = identifier.remove(name)
+        if not removed:
+            raise HTTPException(status_code=404, detail=f"speaker '{name}' not found")
+        return {"status": "ok", "removed": name}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("remove speaker failed: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/home-assistant/history")
