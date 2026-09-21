@@ -28,6 +28,19 @@ import numpy as np
 
 logger = logging.getLogger("voice.speaker_id")
 
+# Import speechbrain at module level to avoid circular-import issues when
+# loaded lazily inside a server process that has already partially imported
+# the package through a transitive dependency.  The import is optional — if
+# speechbrain/torch are not installed, the module still loads and speaker ID
+# is simply unavailable (the server starts, endpoints return 503).
+try:
+    from speechbrain.inference.speaker import SpeakerRecognition  # noqa: F401
+    _SPEAKERBRAIN_AVAILABLE = True
+except Exception as exc:
+    SpeakerRecognition = None  # type: ignore[assignment,misc]
+    _SPEAKERBRAIN_AVAILABLE = False
+    logger.info("speechbrain not available (%s) — speaker ID disabled", exc)
+
 SAMPLE_RATE = 16000
 # 2 seconds of 16-bit mono PCM at 16 kHz.
 MIN_CHUNK_BYTES = SAMPLE_RATE * 2 * 2  # 64 000 bytes
@@ -93,7 +106,9 @@ class SpeakerIdentifier:
         with self._model_lock:
             if self._model is not None:
                 return
-            from speechbrain.inference.speaker import SpeakerRecognition
+            if not _SPEAKERBRAIN_AVAILABLE:
+                raise RuntimeError("speechbrain is not installed")
+            import torch  # local import — heavy, only needed for inference
 
             cache = Path(
                 os.environ.get("ADA_SPEAKER_MODEL_DIR", "/tmp/ada-speaker-model")
