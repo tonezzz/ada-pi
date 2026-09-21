@@ -109,8 +109,9 @@ async function createPlayback() {
   URL.revokeObjectURL(url);
   playbackNode = new AudioWorkletNode(playbackContext, "pcm-player", { outputChannelCount: [1] });
   playbackNode.connect(playbackContext.destination);
-  await playbackContext.resume().catch(() => {});
-  // iOS/Safari: AudioContext created outside a gesture starts suspended.
+  // AudioContext created outside a user gesture starts suspended and
+  // resume() pends until the next tap — do NOT await it or connect() stalls.
+  playbackContext.resume().catch(() => {});
   document.body.addEventListener("touchstart", () => playbackContext?.resume().catch(() => {}), { passive: true });
   document.body.addEventListener("click", () => playbackContext?.resume().catch(() => {}));
 }
