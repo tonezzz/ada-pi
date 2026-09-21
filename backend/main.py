@@ -620,6 +620,14 @@ async def voice_socket(browser: WebSocket) -> None:
                             speech_clear_task = asyncio.create_task(
                                 clear_speech_activity_after_grace()
                             )
+                        elif control.get("type") == "text":
+                            chat_text = str(control.get("text") or "").strip()
+                            if chat_text:
+                                logger.info(
+                                    "session=%s chat text turn (%d chars)",
+                                    session_id, len(chat_text),
+                                )
+                                await provider.send_text_turn(chat_text[:4000])
         except WebSocketDisconnect:
             pass
         finally:
