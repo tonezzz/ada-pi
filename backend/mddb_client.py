@@ -28,6 +28,7 @@ class MddbClient:
         lang: str,
         content_md: str,
         meta: dict[str, list[str]] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any] | None:
         payload: dict[str, Any] = {
             "collection": collection,
@@ -38,7 +39,11 @@ class MddbClient:
         if meta:
             payload["meta"] = meta
         try:
-            resp = await self._client.post(f"{self.base_url}/add", json=payload)
+            # /add embeds inline — slow embedding providers need >20s.
+            kwargs = {"timeout": timeout} if timeout else {}
+            resp = await self._client.post(
+                f"{self.base_url}/add", json=payload, **kwargs
+            )
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:

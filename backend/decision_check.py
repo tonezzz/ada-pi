@@ -449,8 +449,14 @@ class DecisionCheckEngine:
             "checked_by": [caller],
         }
         written = await self.mddb.add_document(
-            bank.mddb_collection, key, "en", "\n".join(lines), meta
+            bank.mddb_collection, key, "en", "\n".join(lines), meta,
+            timeout=90,
         )
+        if written is None:
+            # A client-side timeout can still complete server-side (embedding
+            # is slow) — confirm before reporting the write as lost, or a
+            # retry would duplicate the doc.
+            written = await self.mddb.get_document(bank.mddb_collection, key)
         return (key if written is not None else None, written is not None)
 
     async def _emit_event(self, result: CheckResult) -> None:
