@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 from google import genai
 from google.genai import types
 
@@ -42,11 +43,9 @@ logger = logging.getLogger("decision.check")
 DECISION_MODEL = os.environ.get("DECISION_MODEL", "gemini-2.5-flash")
 DECISION_BANK = os.environ.get("DECISION_BANK", "purchase")
 DECISION_TIMEOUT_S = float(os.environ.get("DECISION_TIMEOUT_S", "90"))
-# Where chaba-event-log.py lives; events are best-effort and never fail a check.
-CHABA_EVENT_CMD = (
-    "ssh", "tony-dell", "python3",
-    "/home/tony/.config/home-assistant/scripts/chaba-event-log.py", "add", "-",
-)
+# chaba-admin Events feed — emitted through the Home Assistant
+# shell_command.chaba_event service (base64 JSON -> chaba-event-log.py),
+# so no extra credentials or SSH are needed beyond HOME_ASSISTANT_*.
 
 PRODUCT_SCHEMA = {
     "type": "object",
@@ -460,12 +459,17 @@ class DecisionCheckEngine:
         return (key if written is not None else None, written is not None)
 
     async def _emit_event(self, result: CheckResult) -> None:
-        """Best-effort chaba-admin Events feed entry via SSH (never raises)."""
+        """Best-effort chaba-admin Events feed entry via the HA
+        shell_command.chaba_event service (never raises)."""
+        ha_url = os.environ.get("HOME_ASSISTANT_URL", "").rstrip("/")
+        ha_token = os.environ.get("HOME_ASSISTANT_TOKEN", "")
+        if not ha_url or not ha_token:
+            return
         name = str(result.product.get("name") or "item")[:80]
         severity = {"buy": "info", "caution": "warn", "avoid": "fail"}.get(
             result.verdict, "info"
         )
-        payload = json.dumps({
+        payload = base64.b64encode(json.dumps({
             "title": f"purchase check: {result.verdict or 'error'} — {name}",
             "category": "decision-check",
             "source": "ada-pi",
@@ -473,15 +477,16 @@ class DecisionCheckEngine:
             "requires_response": result.verdict == "avoid",
             "confidence": result.confidence,
             "body": result.summary[:600],
-        })
+        }).encode()).decode()
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *CHABA_EVENT_CMD,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.communicate(payload.encode()), timeout=15)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{ha_url}/api/services/shell_command/chaba_event",
+                    headers={"Authorization": f"Bearer {ha_token}"},
+                    json={"payload": payload},
+                )
+                if resp.status_code >= 400:
+                    logger.debug("chaba event emit %s: %s", resp.status_code, resp.text[:200])
         except Exception as exc:
             logger.debug("chaba event emit skipped: %s", exc)
 
