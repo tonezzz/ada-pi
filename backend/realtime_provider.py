@@ -9,7 +9,9 @@ import os
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from google import genai
 from google.genai import types
@@ -59,6 +61,15 @@ CALENDAR_INSTRUCTIONS = (
     "and stop retrying. Event and task ids are provider-qualified (e.g. 'google:primary/abc') — "
     "pass them back exactly as returned."
 )
+
+
+def _now_context() -> str:
+    tz = ZoneInfo(os.environ.get("ADA_TIMEZONE", "Asia/Bangkok"))
+    now = datetime.now(tz)
+    return (
+        f"\n\nCurrent local date and time: {now:%A, %Y-%m-%d %H:%M} ({now.tzname()}, {now:%z}). "
+        "All times and dates the user mentions are in this timezone unless they say otherwise."
+    )
 
 DEFAULT_ADA_INSTRUCTIONS = """You are Ada, a polished, highly capable voice assistant running on a Raspberry Pi desk companion.
 
@@ -251,7 +262,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 if self.video_resolution == "high"
                 else types.MediaResolution.MEDIA_RESOLUTION_LOW
             ),
-            "system_instruction": self.instructions,
+            # Per-session clock injection — the model has no intrinsic 'now',
+            # so time-sensitive tool calls (calendar 'in 2 hours', 'Friday')
+            # anchor to the user's local time at session start.
+            "system_instruction": self.instructions + _now_context(),
             "input_audio_transcription": {},
             "output_audio_transcription": {},
             "speech_config": {
