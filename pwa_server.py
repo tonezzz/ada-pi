@@ -21,6 +21,7 @@ from backend.realtime_provider import create_provider
 from backend.home_assistant import HomeAssistantClient
 from backend.tool_runner import ToolRunner
 from backend.conversation_memory import conversation_health
+from backend.decision_check import DecisionCheckEngine, decode_image
 from backend.memory_banks import get_registry
 from backend import auth
 
@@ -585,6 +586,68 @@ async def memory_banks(request: Request) -> dict:
             for name, b in registry.banks().items()
         },
     }
+
+
+_decision_engine: DecisionCheckEngine | None = None
+
+
+def _get_decision_engine() -> DecisionCheckEngine:
+    """Lazy: shares the ToolRunner's MDDB client and bank registry so the
+    check lands in the same purchase bank voice recall searches."""
+    global _decision_engine
+    if _decision_engine is None:
+        _decision_engine = DecisionCheckEngine(
+            tool_runner.mddb, tool_runner.banks, tool_runner.memory.instance
+        )
+    return _decision_engine
+
+
+@app.post("/api/decision/check")
+async def decision_check(request: Request) -> dict:
+    """Verify a purchase/listing before buying. Body: {text?, url?,
+    image_b64?, image_mime?, mode: quick|deep}. Persisted to the purchase
+    memory bank and the chaba-admin Events feed."""
+    _require_api_key(request)
+    caller = auth.caller_name(request) or "api"
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="body must be an object")
+    try:
+        image, image_mime = decode_image(payload)
+    except (ValueError, Exception) as exc:
+        raise HTTPException(status_code=422, detail=f"invalid image: {exc}") from exc
+    mode = str(payload.get("mode") or "quick")
+    try:
+        result = await _get_decision_engine().check(
+            text=str(payload.get("text") or ""),
+            image=image,
+            image_mime=image_mime,
+            url=str(payload.get("url") or ""),
+            mode=mode,
+            caller=caller,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("decision check failed caller=%s: %s", caller, exc)
+        raise HTTPException(status_code=502, detail=f"check failed: {exc}") from exc
+    return result.to_dict()
+
+
+@app.get("/api/decision/history")
+async def decision_history(request: Request, limit: int = 20) -> dict:
+    """Newest-first list of past purchase checks from the bank."""
+    _require_api_key(request)
+    try:
+        engine = _get_decision_engine()
+    except Exception as exc:
+        return {"status": "unavailable", "error": str(exc), "checks": []}
+    return {"status": "ok", "checks": await engine.history(limit)}
 
 
 @app.get("/api/tools")

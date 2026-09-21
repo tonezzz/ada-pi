@@ -379,6 +379,132 @@ unlockInput?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") submitUnlock();
 });
 
+// --- Decision check: upload/paste a listing, get a verified verdict ---
+
+const checkToggle = document.querySelector("#check-toggle");
+const checkPanel = document.querySelector("#check-panel");
+const checkText = document.querySelector("#check-text");
+const checkFileBtn = document.querySelector("#check-file");
+const checkFileInput = document.querySelector("#check-file-input");
+const checkFileName = document.querySelector("#check-file-name");
+const checkMode = document.querySelector("#check-mode");
+const checkRun = document.querySelector("#check-run");
+let checkFile = null;
+let checking = false;
+
+checkToggle?.addEventListener("click", () => checkPanel?.classList.toggle("open"));
+checkFileBtn?.addEventListener("click", () => checkFileInput?.click());
+checkFileInput?.addEventListener("change", () => {
+  checkFile = checkFileInput.files?.[0] || null;
+  if (checkFileName) checkFileName.textContent = checkFile ? checkFile.name : "no file";
+});
+
+function readFileDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function checkLine(parent, label, items) {
+  if (!items || !items.length) return;
+  const section = document.createElement("div");
+  section.className = "check-section";
+  const head = document.createElement("b");
+  head.textContent = label;
+  const list = document.createElement("ul");
+  for (const item of items) {
+    const li = document.createElement("li");
+    li.textContent = item;
+    list.append(li);
+  }
+  section.append(head, list);
+  parent.append(section);
+}
+
+function renderCheckResult(data) {
+  const card = document.createElement("div");
+  card.className = "msg check";
+  const who = document.createElement("span");
+  who.className = "who";
+  who.textContent = "Check";
+  const product = data.product || {};
+  const title = document.createElement("div");
+  const price = product.price ? ` — ${product.price} ${product.currency || ""}` : "";
+  title.textContent = `${product.name || "Item"}${price}`;
+  const badge = document.createElement("span");
+  badge.className = `check-verdict ${data.verdict || "caution"}`;
+  badge.textContent = data.verdict || "unknown";
+  const summary = document.createElement("div");
+  summary.className = "check-section";
+  summary.textContent = data.summary || "";
+  card.append(who, title, badge, summary);
+  if (data.price_assessment) {
+    checkLine(card, "Price", [`${data.price_assessment} — ${data.price_reference || ""}`]);
+  }
+  checkLine(card, "Why", data.reasons);
+  checkLine(card, "Flags", data.flags);
+  const criteriaFails = (data.criteria_results || [])
+    .map(c => `${c.pass ? "✓" : "✗"} ${c.criterion}${c.note ? ` — ${c.note}` : ""}`);
+  checkLine(card, "Your criteria", criteriaFails);
+  checkLine(card, "Alternatives", (data.alternatives || []).map(
+    a => `${a.name || "?"} — ${a.source || ""} ${a.price || ""}: ${a.why || ""}`
+  ));
+  const meta = document.createElement("div");
+  meta.className = "check-meta";
+  const ms = data.durations_ms || {};
+  meta.textContent = `${data.mode} · ${data.adapter} · ${Math.round((ms.total_ms || 0) / 1000)}s` +
+    (data.persisted ? " · saved" : " · not saved");
+  card.append(meta);
+  logElement.append(card);
+  logElement.scrollTop = logElement.scrollHeight;
+}
+
+checkRun?.addEventListener("click", async () => {
+  const text = (checkText?.value || "").trim();
+  if (!text && !checkFile) { systemLine("Add a screenshot or product text first"); return; }
+  if (checking) return;
+  checking = true;
+  if (checkRun) checkRun.disabled = true;
+  systemLine(`Checking (${checkMode?.value || "quick"}) — this can take a moment…`);
+  try {
+    const body = { mode: checkMode?.value || "quick" };
+    if (text) {
+      if (/^https?:\/\/\S+$/.test(text)) body.url = text;
+      else body.text = text;
+    }
+    if (checkFile) {
+      if (checkFile.type.startsWith("image/")) {
+        const dataUrl = await readFileDataUrl(checkFile);
+        body.image_b64 = String(dataUrl).split(",")[1];
+        body.image_mime = checkFile.type;
+      } else {
+        const fileText = await checkFile.text();
+        body.text = [body.text, fileText].filter(Boolean).join("\n\n");
+      }
+    }
+    const headers = { "Content-Type": "application/json", "X-Device-Id": getDeviceId() };
+    const key = getApiKey();
+    if (key) headers["X-Api-Key"] = key;
+    const resp = await fetch(`${chatBasePath()}/api/decision/check`, {
+      method: "POST", headers, body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      systemLine(`Check failed: ${data.detail || resp.status}`);
+      return;
+    }
+    renderCheckResult(data);
+  } catch (error) {
+    systemLine(`Check error: ${error.message}`);
+  } finally {
+    checking = false;
+    if (checkRun) checkRun.disabled = false;
+  }
+});
+
 lockButton?.addEventListener("click", async () => {
   if (!authed) { showUnlock(); return; }
   if (socket) await disconnect(true);

@@ -25,6 +25,19 @@
       .msg.voice { align-self: flex-end; background: rgba(42,106,85,.3); border: 1px solid #2a6a55; }
       .msg.system { align-self: center; background: none; color: #ff9a8a; font-size: 12px; padding: 2px; }
       .msg.streaming { opacity: .75; }
+      .msg.check { align-self: stretch; max-width: 100%; background: rgba(13,74,99,.4); border: 1px solid #0d4a63; }
+      .check-verdict { display: inline-block; padding: 2px 10px; border-radius: 8px; font-weight: 700; text-transform: uppercase; font-size: 12px; margin: 4px 0; }
+      .check-verdict.buy { background: rgba(42,140,90,.35); border: 1px solid #2a8c5a; color: #7dffb8; }
+      .check-verdict.caution { background: rgba(200,140,20,.25); border: 1px solid #c88c14; color: #ffd97a; }
+      .check-verdict.avoid { background: rgba(180,50,40,.3); border: 1px solid #b43228; color: #ff9a8a; }
+      .check-section { margin: 6px 0 0; font-size: 13px; }
+      .check-section ul { margin: 4px 0; padding-left: 18px; }
+      .check-meta { font-size: 11px; opacity: .6; margin-top: 6px; }
+      #check-panel { display: none; gap: 8px; padding: 10px; border: 1px solid #0d4a63; border-radius: 10px; background: rgba(4,20,28,.95); flex-wrap: wrap; align-items: center; }
+      #check-panel.open { display: flex; }
+      #check-text { flex: 1 1 100%; min-height: 56px; padding: 8px 10px; border: 1px solid #087ef2; border-radius: 8px; background: rgba(5,35,48,.9); color: #c9fbff; font: 13px system-ui, sans-serif; resize: vertical; }
+      #check-file-name { flex: 1; color: #75bdc5; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #check-mode { padding: 8px; border: 1px solid #087ef2; border-radius: 8px; background: rgba(5,35,48,.9); color: #c9fbff; font: 13px system-ui, sans-serif; }
       #chat-input-row { display: flex; gap: 8px; }
       #chat-input { flex: 1; min-height: 44px; padding: 10px 14px; border: 1px solid #087ef2; border-radius: 9px; background: rgba(5,35,48,.9); color: #c9fbff; font: 15px system-ui, sans-serif; }
       #chat-send { min-width: 72px; }
@@ -41,12 +54,24 @@
   <body>
     <main id="chat-ui" aria-label="Ada text chat">
       <div id="chat-toolbar">
+        <button id="check-toggle" class="pwa-button" title="Verify a product before buying">Check 🛒</button>
         <button id="lock-toggle" class="pwa-button" hidden>Locked</button>
         <button id="voice-toggle" class="pwa-button" title="Play Ada's spoken replies">Voice: On</button>
         <button id="connect" class="pwa-button">Connect</button>
         <button id="disconnect" class="pwa-button" disabled>Disconnect</button>
       </div>
       <div id="chat-status" aria-live="polite">Tap Connect</div>
+      <div id="check-panel">
+        <textarea id="check-text" placeholder="Paste product info or a Shopee link…"></textarea>
+        <button id="check-file" class="pwa-button">Upload 📷</button>
+        <span id="check-file-name">no file</span>
+        <select id="check-mode" title="Quick: ~10s red-flag check. Deep: full spec/price/alternatives hunt.">
+          <option value="quick">Quick</option>
+          <option value="deep">Deep</option>
+        </select>
+        <button id="check-run" class="pwa-button">Run</button>
+        <input id="check-file-input" type="file" accept="image/*,.txt,.md" hidden>
+      </div>
       <div id="chat-log"></div>
       <div id="chat-input-row">
         <input id="chat-input" type="text" autocomplete="off" placeholder="Type to Ada…" disabled>
@@ -62,6 +87,6 @@
         <button id="unlock-submit" class="pwa-button">Unlock</button>
       </div>
     </div>
-    <script src="chat.js?v=2"></script>
+    <script src="chat.js?v=3"></script>
   </body>
 </html>
