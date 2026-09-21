@@ -213,10 +213,12 @@ class DecisionCheckEngine:
         registry: MemoryBankRegistry,
         instance: str,
         client: Any = None,
+        ha_client: Any = None,
     ) -> None:
         self.mddb = mddb
         self.registry = registry
         self.instance = instance
+        self.ha_client = ha_client
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = os.environ.get("DECISION_MODEL", DECISION_MODEL)
         self._client = client
@@ -460,10 +462,11 @@ class DecisionCheckEngine:
 
     async def _emit_event(self, result: CheckResult) -> None:
         """Best-effort chaba-admin Events feed entry via the HA
-        shell_command.chaba_event service (never raises)."""
-        ha_url = os.environ.get("HOME_ASSISTANT_URL", "").rstrip("/")
-        ha_token = os.environ.get("HOME_ASSISTANT_TOKEN", "")
-        if not ha_url or not ha_token:
+        shell_command.chaba_event service (never raises).
+
+        Uses the shared ha_client's minted access token — the env
+        HOME_ASSISTANT_TOKEN is a refresh token that REST rejects."""
+        if self.ha_client is None or not getattr(self.ha_client, "token", None):
             return
         name = str(result.product.get("name") or "item")[:80]
         severity = {"buy": "info", "caution": "warn", "avoid": "fail"}.get(
@@ -479,10 +482,12 @@ class DecisionCheckEngine:
             "body": result.summary[:600],
         }).encode()).decode()
         try:
+            await self.ha_client._ensure_access_token()
+            base = str(self.ha_client.base_url).rstrip("/")
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
-                    f"{ha_url}/api/services/shell_command/chaba_event",
-                    headers={"Authorization": f"Bearer {ha_token}"},
+                    f"{base}/api/services/shell_command/chaba_event",
+                    headers={"Authorization": f"Bearer {self.ha_client._access_token}"},
                     json={"payload": payload},
                 )
                 if resp.status_code >= 400:

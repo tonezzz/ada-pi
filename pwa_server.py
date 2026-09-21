@@ -597,7 +597,8 @@ def _get_decision_engine() -> DecisionCheckEngine:
     global _decision_engine
     if _decision_engine is None:
         _decision_engine = DecisionCheckEngine(
-            tool_runner.mddb, tool_runner.banks, tool_runner.memory.instance
+            tool_runner.mddb, tool_runner.banks, tool_runner.memory.instance,
+            ha_client=ha_client,
         )
     return _decision_engine
 
