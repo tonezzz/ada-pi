@@ -231,6 +231,28 @@ class DecisionCheckEngine:
             self._client = genai.Client(api_key=self.api_key)
         return self._client
 
+    async def _generate(self, contents: list, config: Any, timeout: float | None = None) -> Any:
+        """generate_content with bounded retry on free-tier 429s — the shared
+        key is also used by other services, so quota hits are routine. Honors
+        the API's retryDelay hint, capped so a check can't stall forever."""
+        for attempt in range(3):
+            try:
+                return await asyncio.wait_for(
+                    self.client.aio.models.generate_content(
+                        model=self.model, contents=contents, config=config,
+                    ),
+                    timeout=timeout or DECISION_TIMEOUT_S,
+                )
+            except Exception as exc:
+                text = str(exc)
+                if "429" not in text or attempt == 2:
+                    raise
+                match = re.search(r"retry in ([\d.]+)s|retryDelay.*?(\d+)s", text)
+                delay = min(45.0, float(next(g for g in match.groups() if g)) + 2) if match else 10.0
+                logger.info("decision check: 429 quota, retry in %.0fs", delay)
+                await asyncio.sleep(delay)
+        raise RuntimeError("unreachable")
+
     async def check(
         self,
         text: str | None = None,
@@ -310,19 +332,15 @@ class DecisionCheckEngine:
         ]
         if image:
             parts.append(types.Part.from_bytes(data=image, mime_type=image_mime))
-        response = await asyncio.wait_for(
-            self.client.aio.models.generate_content(
-                model=self.model,
-                contents=parts,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_json_schema=PRODUCT_SCHEMA,
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                        disable=True
-                    ),
+        response = await self._generate(
+            contents=parts,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_json_schema=PRODUCT_SCHEMA,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    disable=True
                 ),
             ),
-            timeout=DECISION_TIMEOUT_S,
         )
         return _extract_json(response.text)
 
@@ -382,15 +400,12 @@ class DecisionCheckEngine:
             + "Reply with ONLY a JSON object matching:\n"
             + VERDICT_SCHEMA_HINT
         )
-        response = await asyncio.wait_for(
-            self.client.aio.models.generate_content(
-                model=self.model,
-                contents=[types.Part.from_text(text=prompt)],
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                        disable=True
-                    ),
+        response = await self._generate(
+            contents=[types.Part.from_text(text=prompt)],
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    disable=True
                 ),
             ),
             timeout=DECISION_TIMEOUT_S * (2 if mode == "deep" else 1),
