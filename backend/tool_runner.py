@@ -14,6 +14,7 @@ from typing import Any
 
 from backend import memory_ops
 from backend.calendar_providers import CalendarService
+from backend.decision_check import DecisionCheckEngine
 from backend.event_recorder import HaEventRecorder
 from backend.home_assistant import HomeAssistantClient
 from backend.instance import ada_instance_id
@@ -424,6 +425,7 @@ class ToolRunner:
         # provider sets this so memory writes carry provenance.
         self.session_id: str | None = None
         self._banks: MemoryBankRegistry | None = None
+        self._decision_engine: DecisionCheckEngine | None = None
         self._calendar: CalendarService | None = None
         self._calendar_loaded = False
         self._control_calls: list[float] = []
@@ -439,6 +441,17 @@ class ToolRunner:
             else:
                 self._banks = get_registry()
         return self._banks
+
+    @property
+    def decision_engine(self) -> DecisionCheckEngine:
+        """Shared purchase-check pipeline for POST /api/decision/check and the
+        ada_decision_check voice tool — same persist + event side-effects."""
+        if self._decision_engine is None:
+            self._decision_engine = DecisionCheckEngine(
+                self.mddb, self.banks, self.memory.instance,
+                ha_client=self.context.ha_client,
+            )
+        return self._decision_engine
 
     async def execute(self, name: str, args: dict[str, Any] | None = None) -> Any:
         method = getattr(self, name, None)

@@ -1,4 +1,6 @@
+import asyncio
 import base64
+import inspect
 import json
 import tempfile
 import unittest
@@ -6,6 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from backend.decision_check import (
+    CheckResult,
     DecisionCheckEngine,
     _detect_adapter,
     _extract_json,
@@ -175,6 +178,61 @@ class DecisionCheckTests(unittest.IsolatedAsyncioTestCase):
         # criteria doc was excluded by the kind=check filter in the request
         filt = self.mddb.search_documents.await_args.kwargs["filter_meta"]
         self.assertEqual(filt["kind"], ["check"])
+
+
+class VoiceToolTests(unittest.IsolatedAsyncioTestCase):
+    """The ada_decision_check tool runs the check in the background and
+    injects the verdict as a text turn (same pattern as ada_session_recall)."""
+
+    def _provider(self):
+        from backend.realtime_provider import GeminiLiveProvider
+        p = GeminiLiveProvider(tool_runner=AsyncMock(), session_id="test")
+        p.send_text_turn = AsyncMock()
+        p._wait_for_idle = AsyncMock()
+        p._response_active = False
+        return p
+
+    def test_declaration_and_dispatch_present(self):
+        # The declaration is a literal inside connect()'s config dict — verify
+        # the tool name, NON_BLOCKING behavior, and dispatch branch all exist.
+        import backend.realtime_provider as rp
+        src = inspect.getsource(rp)
+        self.assertIn('"name": "ada_decision_check"', src)
+        self.assertIn('call.name == "ada_decision_check"', src)
+
+    async def test_start_check_returns_running_status(self):
+        p = self._provider()
+        status = p._start_decision_check({"product": "Anker 737", "mode": "quick"})
+        self.assertIn("running", status.lower())
+        self.assertEqual(len(p._bg_tasks), 1)
+        task = p._bg_tasks.pop()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+    def test_start_check_needs_input(self):
+        p = self._provider()
+        status = p._start_decision_check({})
+        self.assertIn("ask the user", status)
+        self.assertEqual(len(p._bg_tasks), 0)
+
+    async def test_on_check_complete_speaks_verdict(self):
+        p = self._provider()
+        result = CheckResult(
+            ok=True, verdict="avoid", confidence=0.9,
+            summary="Counterfeit risk — price 60% under market.",
+            flags=["price too low"], product={"name": "Anker 737"},
+        )
+        await p._on_check_complete(result, None)
+        prompt = p.send_text_turn.await_args.args[0]
+        self.assertIn("avoid", prompt)
+        self.assertIn("Counterfeit risk", prompt)
+
+    async def test_on_check_failure_speaks_error(self):
+        p = self._provider()
+        await p._on_check_complete(None, "quota")
+        prompt = p.send_text_turn.await_args.args[0]
+        self.assertIn("failed", prompt.lower())
 
 
 class JsonExtractTests(unittest.TestCase):

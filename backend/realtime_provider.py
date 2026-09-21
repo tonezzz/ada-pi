@@ -132,6 +132,7 @@ class GeminiLiveProvider(RealtimeProvider):
         self.home_assistant_client = home_assistant_client
         self.habit_state_getter = habit_state_getter
         self.conversation = ConversationMemory(session_id or "unknown")
+        self._bg_tasks: set[asyncio.Task] = set()
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
         self.voice = os.environ.get("GEMINI_LIVE_VOICE", "Kore")
@@ -249,6 +250,85 @@ class GeminiLiveProvider(RealtimeProvider):
             await self.send_text_turn(prompt)
         except Exception as exc:
             logger.warning("session=%s recall send_text_turn failed: %s", self.session_id, exc)
+
+    # --- ada_decision_check: background purchase verification ---
+
+    def _start_decision_check(self, args: dict) -> str:
+        """Fire-and-forget check — the tool returns instantly, the verdict
+        arrives as an injected text turn via _on_check_complete."""
+        product = str(args.get("product") or args.get("text") or "").strip()
+        url = str(args.get("url") or "").strip()
+        mode = "deep" if args.get("mode") == "deep" else "quick"
+        if not product and not url:
+            return ("Nothing to check — ask the user for the product name, "
+                    "price, or some listing details.")
+        task = asyncio.create_task(self._run_decision_check(product, url, mode))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return ("The purchase check is running — it usually takes 30-60 "
+                "seconds. Briefly tell the user you're verifying it and will "
+                "report back.")
+
+    async def _run_decision_check(self, product: str, url: str, mode: str) -> None:
+        filler = asyncio.create_task(self._check_slow_filler(mode))
+        result = None
+        error = "unknown"
+        try:
+            result = await self.tool_runner.decision_engine.check(
+                text=product, url=url, mode=mode, caller="voice",
+            )
+        except Exception as exc:
+            error = str(exc)
+            logger.warning("session=%s decision check failed: %s", self.session_id, exc)
+        finally:
+            filler.cancel()
+        await self._on_check_complete(result, None if result and result.ok else error)
+
+    async def _check_slow_filler(self, mode: str) -> None:
+        # If the check runs long, keep the user informed rather than going quiet.
+        await asyncio.sleep(20 if mode == "quick" else 45)
+        await self._wait_for_idle(timeout=4.0)
+        if self._response_active:
+            return
+        try:
+            await self.send_text_turn(
+                "(system) The purchase check is still running — it searches "
+                "the live web. Briefly tell the user you're still verifying it."
+            )
+        except Exception:
+            pass
+
+    async def _on_check_complete(self, result: Any, error: str | None) -> None:
+        """Push the verdict back into the session so Ada speaks it."""
+        await self._wait_for_idle()
+        if result is None or error:
+            prompt = (
+                f"(system) The purchase check failed ({error}). Briefly tell the "
+                "user the check couldn't complete and suggest the Check panel "
+                "in the chat app as an alternative."
+            )
+        else:
+            bits = [f"verdict: {result.verdict} (confidence {result.confidence:.0%})"]
+            if result.summary:
+                bits.append(result.summary)
+            if result.flags:
+                bits.append("flags: " + "; ".join(result.flags[:3]))
+            if result.alternatives:
+                alt = result.alternatives[0]
+                bits.append(
+                    f"top alternative: {alt.get('name', '?')} — "
+                    f"{alt.get('source', '')} {alt.get('price', '')}".strip()
+                )
+            prompt = (
+                "(system) The purchase check finished. " + ". ".join(bits) +
+                ". Tell the user the verdict and the most important reason in "
+                "one or two sentences, and mention the full detail card is in "
+                "the chat panel."
+            )
+        try:
+            await self.send_text_turn(prompt)
+        except Exception as exc:
+            logger.warning("session=%s check send_text_turn failed: %s", self.session_id, exc)
 
     async def connect(self, resumption_handle: str | None = None) -> None:
         if not self.api_key:
@@ -1144,6 +1224,41 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "ada_decision_check",
+                    "description": (
+                        "Verify a product or purchase before the user buys — checks it "
+                        "against the user's stored purchase criteria and the live web "
+                        "for price sanity, red flags, spec accuracy, and alternatives. "
+                        "Use when the user asks 'should I buy this', 'check this "
+                        "listing', shares a Shopee/Lazada link, or wants a second "
+                        "opinion on a purchase. Put the product name and listing "
+                        "details (price, shop, ratings, specs) into `product`; a bare "
+                        "URL in `url` helps but alone may not give enough detail. "
+                        "Runs in the background (~30-60 seconds); the verdict is "
+                        "spoken when ready and saved to the purchase memory bank."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "product": {
+                                "type": "string",
+                                "description": "Product description or pasted listing details — name, price, shop, ratings, specs.",
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "Listing URL if the user shared one.",
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["quick", "deep"],
+                                "description": "quick = fast red-flag/price check (default). deep = thorough spec verification plus alternatives search — only when the user asks for a thorough check.",
+                            },
+                        },
+                        "required": [],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "calendar_list_calendars",
                     "description": (
                         "Lists every calendar across the configured providers (Google, etc.) "
@@ -1612,6 +1727,8 @@ class GeminiLiveProvider(RealtimeProvider):
                                 on_slow=self._on_recall_slow,
                             )
                             result = {"output": recall_status}
+                        elif call.name == "ada_decision_check" and self.tool_runner is not None:
+                            result = {"output": self._start_decision_check(dict(call.args or {}))}
                         else:
                             if self.tool_runner is not None:
                                 try:
