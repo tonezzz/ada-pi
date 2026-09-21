@@ -341,6 +341,16 @@ async def voice_socket(ws: WebSocket) -> None:
                         control = json.loads(text)
                         if control.get("type") in ("local_speech_started", "local_speech_stopped"):
                             logger.info("session=%s %s", session_id, control.get("type"))
+                        elif control.get("type") == "text":
+                            chat_text = str(control.get("text") or "").strip()
+                            if chat_text:
+                                logger.info("session=%s chat text turn (%d chars)", session_id, len(chat_text))
+                                try:
+                                    await provider_ref[0].send_text_turn(chat_text[:4000])
+                                except Exception as exc:
+                                    logger.warning("session=%s text turn failed: %s", session_id, exc)
+                                    with suppress(Exception):
+                                        await ws.send_text(json.dumps({"type": "error", "message": "text send failed"}))
         except WebSocketDisconnect:
             pass
         finally:
