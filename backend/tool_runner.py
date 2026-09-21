@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from backend import memory_ops
+from backend.calendar_providers import CalendarService
 from backend.event_recorder import HaEventRecorder
 from backend.home_assistant import HomeAssistantClient
 from backend.instance import ada_instance_id
@@ -35,6 +36,13 @@ CONTROL_TOOLS = {
 # Tools that mutate curated memory banks. Each bank's write_policy decides
 # whether confirmed=true is required (same gate pattern as CONTROL_TOOLS).
 MEMORY_WRITE_TOOLS = {"ada_remember", "ada_forget", "ada_outcome"}
+
+# Calendar/task writes: creating or deleting events and tasks mutates the
+# user's real calendar, so all writes require confirmed=true.
+CALENDAR_WRITE_TOOLS = {
+    "calendar_create_event", "calendar_delete_event",
+    "tasks_add", "tasks_complete",
+}
 
 CONTROL_RATE_WINDOW_S = float(os.environ.get("ADA_CONTROL_RATE_WINDOW_S", "60"))
 CONTROL_MAX_PER_ENTITY = int(os.environ.get("ADA_CONTROL_MAX_PER_ENTITY", "5"))
@@ -416,6 +424,8 @@ class ToolRunner:
         # provider sets this so memory writes carry provenance.
         self.session_id: str | None = None
         self._banks: MemoryBankRegistry | None = None
+        self._calendar: CalendarService | None = None
+        self._calendar_loaded = False
         self._control_calls: list[float] = []
         self._control_entity_calls: dict[str, list[float]] = {}
 
@@ -441,6 +451,9 @@ class ToolRunner:
         elif name in MEMORY_WRITE_TOOLS:
             confirmed = call_args.pop("confirmed", None)
             self._check_memory_write_allowed(name, call_args, confirmed)
+        elif name in CALENDAR_WRITE_TOOLS:
+            confirmed = call_args.pop("confirmed", None)
+            self._check_calendar_write_allowed(name, call_args, confirmed)
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
         return await method(**call_args)
@@ -527,6 +540,106 @@ class ToolRunner:
                 f"memory bank '{bank_name}' requires confirmation. Call again with "
                 "confirmed=true only after explicit user confirmation."
             )
+
+    def _check_calendar_write_allowed(
+        self, name: str, args: dict[str, Any], confirmed: Any,
+    ) -> None:
+        """Server-side gate for calendar/task writes. Raises PermissionError on denial."""
+        if os.environ.get("ADA_READ_ONLY") == "true":
+            logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
+            raise PermissionError("calendar writes are disabled (ADA_READ_ONLY=true)")
+        if confirmed is not True:
+            logger.warning("denied %s %r: calendar write without confirmed=true", name, args)
+            raise PermissionError(
+                f"{name} requires confirmation. Restate the details to the user, "
+                "get an explicit yes, then call again with confirmed=true."
+            )
+
+    # -- Calendar / tasks tools (provider-agnostic; see ssot.apps.ada-calendar.yml) --
+
+    @property
+    def calendar(self) -> CalendarService | None:
+        """Rendered provider registry, loaded on first use. None = not configured."""
+        if not self._calendar_loaded:
+            self._calendar_loaded = True
+            try:
+                self._calendar = CalendarService.load(instance=self._instance_id)
+            except Exception as exc:
+                logger.warning("calendar registry load failed: %s", exc)
+                self._calendar = None
+        return self._calendar
+
+    def _calendar_svc(self) -> CalendarService:
+        svc = self.calendar
+        if svc is None:
+            raise RuntimeError(
+                "calendar is not configured on this instance — render "
+                "ssot.apps.ada-calendar.yml to ~/.config/ada/calendar.json"
+            )
+        return svc
+
+    async def calendar_list_calendars(self) -> dict[str, Any]:
+        return await self._calendar_svc().list_calendars()
+
+    async def calendar_list_events(
+        self,
+        day: str = "today",
+        days: int = 1,
+        query: str | None = None,
+        calendar: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._calendar_svc().list_events(
+            day=str(day), days=int(days),
+            query=str(query) if query else None,
+            calendar=str(calendar) if calendar else None,
+        )
+
+    async def calendar_create_event(
+        self,
+        title: str,
+        start: str,
+        end: str,
+        notes: str | None = None,
+        location: str | None = None,
+        calendar: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._calendar_svc().create_event(
+            str(title), str(start), str(end),
+            calendar=str(calendar) if calendar else None,
+            notes=str(notes) if notes else None,
+            location=str(location) if location else None,
+        )
+
+    async def calendar_delete_event(self, event_id: str) -> str:
+        return await self._calendar_svc().delete_event(str(event_id))
+
+    async def calendar_freebusy(self, day: str = "today", days: int = 1) -> dict[str, Any]:
+        return await self._calendar_svc().freebusy(day=str(day), days=int(days))
+
+    async def tasks_list(self, task_list: str | None = None) -> dict[str, Any]:
+        return await self._calendar_svc().list_tasks(
+            task_list=str(task_list) if task_list else None
+        )
+
+    async def tasks_add(
+        self,
+        title: str,
+        due: str | None = None,
+        notes: str | None = None,
+        task_list: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._calendar_svc().add_task(
+            str(title),
+            due=str(due) if due else None,
+            notes=str(notes) if notes else None,
+            task_list=str(task_list) if task_list else None,
+        )
+
+    async def tasks_complete(self, task_id: str) -> str:
+        return await self._calendar_svc().complete_task(str(task_id))
+
+    async def plan_day(self, day: str = "today") -> dict[str, Any]:
+        return await self._calendar_svc().plan_day(day=str(day))
 
     # -- Home Assistant tools --
 

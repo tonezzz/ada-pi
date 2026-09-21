@@ -33,6 +33,33 @@ EXPRESSION_NAMES = (
     "alert",
 )
 
+# Calendar/task tool names and the instruction paragraph that describes them.
+# Kept as constants so ADA_EXCLUDED_TOOLS can strip both declarations and
+# instructions together (dark-launching the tools without confusing the model).
+CALENDAR_TOOLS = {
+    "calendar_list_calendars", "calendar_list_events", "calendar_freebusy",
+    "plan_day", "calendar_create_event", "calendar_delete_event",
+    "tasks_list", "tasks_add", "tasks_complete",
+}
+
+CALENDAR_INSTRUCTIONS = (
+    " You have calendar and task tools backed by the user's configured providers: "
+    "calendar_list_calendars shows which calendars exist, "
+    "calendar_list_events and calendar_freebusy read the schedule, "
+    "plan_day returns one merged view of events plus open tasks for a day, "
+    "calendar_create_event and calendar_delete_event modify the calendar, and "
+    "tasks_list, tasks_add, and tasks_complete manage the task list. "
+    "For any schedule question call calendar_list_events or plan_day first and answer "
+    "from the result; never recite a schedule from memory. "
+    "Interpret relative dates ('tomorrow', 'Friday') in the user's local timezone. "
+    "Before creating or deleting an event, or adding or completing a task, restate the "
+    "exact details (title, date, time) and get an explicit yes, then call the tool with "
+    "confirmed=true — writes are enforced server-side. "
+    "If a calendar tool reports an auth error, say the calendar provider needs re-authentication "
+    "and stop retrying. Event and task ids are provider-qualified (e.g. 'google:primary/abc') — "
+    "pass them back exactly as returned."
+)
+
 DEFAULT_ADA_INSTRUCTIONS = """You are Ada, a polished, highly capable voice assistant running on a Raspberry Pi desk companion.
 
 Personality:
@@ -163,6 +190,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "ada_ha_search_events searches recorded events from memory. "
             "Use these when the user asks about the stored home state, past state, or how it has changed. "
             "When the user asks 'what did we talk about' or 'do you remember', call ada_session_recall."
+            + CALENDAR_INSTRUCTIONS
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -1101,6 +1129,233 @@ class GeminiLiveProvider(RealtimeProvider):
                         "required": ["bank", "key", "outcome"],
                         "additionalProperties": False,
                     },
+                }, {
+                    "name": "calendar_list_calendars",
+                    "description": (
+                        "Lists every calendar across the configured providers (Google, etc.) "
+                        "with provider, id, and which provider receives new events by default. "
+                        "Use this when the user asks which calendars exist or before writing to "
+                        "a non-default calendar."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "calendar_list_events",
+                    "description": (
+                        "Lists calendar events for a day or range across all configured "
+                        "providers, sorted by start time. Use this FIRST whenever the user asks "
+                        "about their schedule, what's next, or whether they're free."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "day": {
+                                "type": "string",
+                                "description": "Day to list: 'today', 'tomorrow', or ISO date 'YYYY-MM-DD'. Default 'today'.",
+                            },
+                            "days": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 31,
+                                "description": "Number of days to span starting at day. Default 1; use 7 for 'this week'.",
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "Optional text filter on event titles, e.g. 'dentist'.",
+                            },
+                            "calendar": {
+                                "type": "string",
+                                "description": "Optional 'provider:calendar_id' to read one calendar only (from calendar_list_calendars).",
+                            },
+                        },
+                        "required": [],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "calendar_freebusy",
+                    "description": (
+                        "Returns busy time slots across all configured providers for a day or range. "
+                        "Use this for 'am I free between X and Y' or finding an open slot."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "day": {
+                                "type": "string",
+                                "description": "Day to check: 'today', 'tomorrow', or ISO date 'YYYY-MM-DD'. Default 'today'.",
+                            },
+                            "days": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 31,
+                                "description": "Number of days to span. Default 1.",
+                            },
+                        },
+                        "required": [],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "plan_day",
+                    "description": (
+                        "Merged view of one day's calendar events plus all open tasks — the data "
+                        "for 'plan my day' or 'what does tomorrow look like'. Read-only; speak the "
+                        "proposed plan but never create events without approval."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "day": {
+                                "type": "string",
+                                "description": "Day to plan: 'today', 'tomorrow', or ISO date 'YYYY-MM-DD'. Default 'today'.",
+                            },
+                        },
+                        "required": [],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "calendar_create_event",
+                    "description": (
+                        "Creates a calendar event on the default write provider (or a named "
+                        "'provider:calendar_id'). Always restate title/date/time to the user and "
+                        "get an explicit yes, then pass confirmed=true."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "description": "Event title as the user phrased it.",
+                            },
+                            "start": {
+                                "type": "string",
+                                "description": "Start as ISO 8601 datetime ('2026-09-22T14:00:00') or date ('2026-09-22') for all-day.",
+                            },
+                            "end": {
+                                "type": "string",
+                                "description": "End as ISO 8601 datetime or date (exclusive for all-day).",
+                            },
+                            "notes": {
+                                "type": "string",
+                                "description": "Optional event description/notes.",
+                            },
+                            "location": {
+                                "type": "string",
+                                "description": "Optional location string.",
+                            },
+                            "calendar": {
+                                "type": "string",
+                                "description": "Optional 'provider:calendar_id' to write a non-default calendar.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["title", "start", "end"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "calendar_delete_event",
+                    "description": (
+                        "Deletes a calendar event by its provider-qualified id "
+                        "(e.g. 'google:primary/abc123', from calendar_list_events). "
+                        "Always confirm the event with the user first, then pass confirmed=true."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "event_id": {
+                                "type": "string",
+                                "description": "Provider-qualified event id exactly as returned by calendar_list_events.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["event_id"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "tasks_list",
+                    "description": (
+                        "Lists open (not completed) tasks across task-capable providers. "
+                        "Use this when the user asks what's on their todo list."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "task_list": {
+                                "type": "string",
+                                "description": "Optional 'provider:list_id' to read one list only.",
+                            },
+                        },
+                        "required": [],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "tasks_add",
+                    "description": (
+                        "Adds a task to the default write provider's task list. "
+                        "Restate the task and due date, get an explicit yes, then pass confirmed=true."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "title": {
+                                "type": "string",
+                                "description": "Task title as the user phrased it.",
+                            },
+                            "due": {
+                                "type": "string",
+                                "description": "Optional due date: 'today', 'tomorrow', or 'YYYY-MM-DD'.",
+                            },
+                            "notes": {
+                                "type": "string",
+                                "description": "Optional task notes.",
+                            },
+                            "task_list": {
+                                "type": "string",
+                                "description": "Optional 'provider:list_id' for a non-default list.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["title"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "tasks_complete",
+                    "description": (
+                        "Marks a task complete by its provider-qualified id "
+                        "(e.g. 'google:@default/abc123', from tasks_list). "
+                        "Confirm which task first, then pass confirmed=true."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Provider-qualified task id exactly as returned by tasks_list.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["task_id"],
+                        "additionalProperties": False,
+                    },
                 }]
             }],
         }
@@ -1126,6 +1381,12 @@ class GeminiLiveProvider(RealtimeProvider):
                 fd for fd in config["tools"][0]["function_declarations"]
                 if fd.get("name") not in excluded
             ]
+            # Keep instructions consistent: when every calendar tool is
+            # excluded, drop the paragraph describing them too.
+            if CALENDAR_TOOLS <= excluded:
+                config["system_instruction"] = config["system_instruction"].replace(
+                    CALENDAR_INSTRUCTIONS, ""
+                )
         self._session_context = self._client.aio.live.connect(
             model=self.model,
             config=config,
