@@ -345,12 +345,20 @@ class ConversationMemory:
             prompt = (
                 "Transcript of one voice session:\n"
                 f"{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}\n\n"
-                "Extract up to 5 durable facts, decisions, preferences, or "
-                "requests worth remembering long-term — things a future "
-                "session should know, not small talk or one-off questions. "
-                f"Return a JSON array of objects with keys "
-                f'"text", "bank" (one of: {", ".join(bank_names)}), and '
-                '"subject". Return [] if nothing is worth keeping.'
+                "Extract up to 5 durable items worth remembering long-term — "
+                "things a future session should know, not small talk or "
+                "one-off questions. Look especially for: facts, decisions, "
+                "preferences; procedures that worked (kind: procedure); "
+                "user corrections of something previously said or remembered "
+                "(set 'corrects' to the subject of the older fact, e.g. the "
+                "user says 'no, it's actually in the cabinet'); and questions "
+                "the assistant could not answer (kind: note, subject starting "
+                "with 'gap-'). "
+                "Return a JSON array of objects with keys "
+                f'"text", "bank" (one of: {", ".join(bank_names)}), '
+                '"subject", "kind" (fact|preference|person|procedure|note), '
+                'and optional "corrects" (subject of the older fact this '
+                'corrects). Return [] if nothing is worth keeping.'
             )
             resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
                 model=_SUMMARY_MODEL, contents=prompt
@@ -371,10 +379,13 @@ class ConversationMemory:
                 bank = None
             if bank is None or not bank.writable:
                 bank = registry.bank("personal")  # safest: per-instance
+            kind = str(cand.get("kind") or "note")
+            if kind not in bank.kinds:
+                kind = "note"
             meta = {
                 "bank": [bank.name],
                 "scope": [registry.instance],
-                "kind": ["note"],
+                "kind": [kind],
                 "status": ["draft"],
                 "source": ["extract"],
                 "written_by": ["conversation_memory"],
@@ -382,7 +393,12 @@ class ConversationMemory:
                 "valid_from": [today],
                 "last_verified": [today],
             }
-            if cand.get("subject"):
+            if cand.get("corrects"):
+                # Correction candidate: subject = the corrected fact's subject
+                # so the join key points a reviewer at the doc to supersede.
+                meta["subject"] = [str(cand["corrects"])]
+                meta["attribute"] = ["correction"]
+            elif cand.get("subject"):
                 meta["subject"] = [str(cand["subject"])]
             key = f"extract-{today}-{self.session_id}-{i}"
             try:
@@ -469,7 +485,11 @@ class ConversationMemory:
                 filter_meta=None if not bank.writable else {"status": ["active"]},
                 threshold=float(os.environ.get("ADA_BANK_SEARCH_THRESHOLD", "0.45")),
             )
-            from backend.memory_banks import doc_effective_status, get_registry
+            from backend.memory_banks import (
+                _meta_first,
+                doc_effective_status,
+                get_registry,
+            )
             hits = [
                 d for d in (docs or [])
                 if doc_effective_status(d) == "active"
@@ -480,20 +500,33 @@ class ConversationMemory:
                     bank.name, len(hits),
                     [round(d.get("score") or 0, 3) for d in hits],
                 )
+                from backend.memory_ops import record_use_bg
+                record_use_bg(_mddb(), bank.mddb_collection, hits)
+                conf_min = float(
+                    os.environ.get("ADA_BANK_CONFIDENCE_MIN", "0.4")
+                )
                 lines = [f"From the {bank.title} memory bank:"]
                 for d in hits:
                     body = str(d.get("contentMd") or d.get("content_md") or "").strip()
-                    if body:
-                        lines.append(f"- {body}")
+                    if not body:
+                        continue
+                    try:
+                        conf = float(_meta_first(d.get("meta") or {}, "confidence"))
+                    except (TypeError, ValueError):
+                        conf = None
+                    tag = "[unverified] " if conf is not None and conf < conf_min else ""
+                    lines.append(f"- {tag}{body}")
                 await on_complete("\n".join(lines) if len(lines) > 1 else
                                   f"I found a note in the {bank.title} memory bank but it was empty.")
                 return
             # Low confidence: escalate to the bank's deep-tier notebook if it
             # has one, else the instance's memory notebook as a last resort.
+            # The query is logged (json-quoted) so memory-gap-report.py can
+            # cluster misses into "knowledge gap" drafts.
             scores = [round(d.get("score") or 0, 3) for d in (docs or [])]
             logger.info(
-                "bank recall %r: miss (top scores=%s) — escalating to notebook",
-                bank.name, scores or "none",
+                "bank recall %r: miss q=%s (top scores=%s) — escalating to notebook",
+                bank.name, json.dumps(question[:200]), scores or "none",
             )
             mid = await self._recall_summaries(question)
             if mid:

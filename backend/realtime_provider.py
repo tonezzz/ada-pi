@@ -146,7 +146,12 @@ class GeminiLiveProvider(RealtimeProvider):
             "ada_session_recall to ask NotebookLM about previous conversations or stored knowledge by topic group, "
             "and curated memory banks you can search and write: "
             "ada_memory_search to find what you know, ada_remember to store or correct a memory "
-            "when the user says 'remember that', and ada_forget to retract a memory that is no longer true. "
+            "when the user says 'remember that', ada_forget to retract a memory that is no longer true, "
+            "and ada_outcome to record how a memory or check turned out when the user reports back "
+            "(e.g. 'that shop was fine', 'the fix worked', 'I skipped it') — outcomes update confidence "
+            "so future recall trusts knowledge with a good track record. "
+            "Memories returned with unverified=true are low-confidence: hedge or say you are not sure "
+            "rather than stating them as fact. "
             "Prefer the ada_ha_* memory tools for home, device, sensor, or event questions — they answer instantly. "
             "Prefer ada_memory_search and bank recall for stored facts and preferences. "
             "Reserve ada_session_recall for previous conversations or stored knowledge; it can take up to 20 seconds, "
@@ -1056,6 +1061,44 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["bank", "key"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_outcome",
+                    "description": (
+                        "Record the real-world outcome of a stored memory or purchase check when the "
+                        "user reports how it turned out (e.g. 'that shop was fine', 'the fix worked', "
+                        "'I skipped it'). Updates the document's confidence so future recall trusts "
+                        "knowledge with a good track record. Get the document key from "
+                        "ada_memory_search or a decision-check result first."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "bank": {
+                                "type": "string",
+                                "description": "Memory bank name: general, home, people, personal, tony-projects, note, purchase.",
+                            },
+                            "key": {
+                                "type": "string",
+                                "description": "Document key the outcome applies to (from ada_memory_search or a check result).",
+                            },
+                            "outcome": {
+                                "type": "string",
+                                "enum": ["good", "bad", "partial", "skipped", "worked", "failed", "bought_good", "bought_bad"],
+                                "description": "How it turned out. bought_good/bought_bad for purchase checks, worked/failed for procedures, skipped when it was never exercised.",
+                            },
+                            "note": {
+                                "type": "string",
+                                "description": "Optional detail about the outcome.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["bank", "key", "outcome"],
                         "additionalProperties": False,
                     },
                 }]

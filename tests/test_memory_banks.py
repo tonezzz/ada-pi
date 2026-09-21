@@ -1,3 +1,4 @@
+import asyncio
 import json
 import tempfile
 import unittest
@@ -18,7 +19,7 @@ REGISTRY = {
             "kinds": ["fact", "preference", "note"],
             "writable": True,
             "write_policy": "confirmed",
-            "allowed_tools": ["ada_remember", "ada_forget"],
+            "allowed_tools": ["ada_remember", "ada_forget", "ada_outcome"],
             "status": "active",
         },
         "personal": {
@@ -29,7 +30,7 @@ REGISTRY = {
             "kinds": ["note"],
             "writable": True,
             "write_policy": "direct",
-            "allowed_tools": ["ada_remember", "ada_forget"],
+            "allowed_tools": ["ada_remember", "ada_forget", "ada_outcome"],
             "status": "active",
         },
         "tony-only": {
@@ -357,6 +358,98 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(out["degraded"])
         self.assertEqual([h["key"] for h in out["hits"]], ["b"])
+
+    async def test_search_marks_low_confidence_unverified(self):
+        self.runner.mddb.vector_search.return_value = [
+            {"key": "a", "contentMd": "shaky fact",
+             "meta": {"status": ["active"], "confidence": ["0.2"]}},
+            {"key": "b", "contentMd": "solid fact",
+             "meta": {"status": ["active"], "confidence": ["0.9"]}},
+            {"key": "c", "contentMd": "no confidence",
+             "meta": {"status": ["active"]}},
+        ]
+        out = await self.runner.execute(
+            "ada_memory_search", {"bank": "general", "query": "x"}
+        )
+        hits = {h["key"]: h for h in out["hits"]}
+        self.assertTrue(hits["a"]["unverified"])
+        self.assertNotIn("unverified", hits["b"])
+        self.assertNotIn("confidence", hits["c"])
+
+    async def test_search_records_use(self):
+        self.runner.mddb.vector_search.return_value = [
+            {"key": "a", "contentMd": "fact",
+             "meta": {"status": ["active"], "use_count": ["3"]}},
+        ]
+        await self.runner.execute(
+            "ada_memory_search", {"bank": "general", "query": "x"}
+        )
+        await asyncio.sleep(0)  # let the fire-and-forget task run
+        kw = self.runner.mddb.update_document.call_args.kwargs
+        self.assertEqual(kw["meta"]["use_count"], ["4"])
+        self.assertIn("last_used", kw["meta"])
+
+    async def test_search_skips_use_count_for_listing(self):
+        self.runner.mddb.search_documents.return_value = [
+            {"key": "a", "contentMd": "fact", "meta": {"status": ["active"]}},
+        ]
+        await self.runner.execute(
+            "ada_memory_search", {"bank": "general", "query": "*"}
+        )
+        await asyncio.sleep(0)
+        self.runner.mddb.update_document.assert_not_called()
+
+    async def test_outcome_good_bumps_confidence_and_verified(self):
+        self.runner.mddb.get_document.return_value = {
+            "key": "personal/x",
+            "meta": {"status": ["active"], "confidence": ["0.7"],
+                     "last_verified": ["2020-01-01"]},
+        }
+        out = await self.runner.execute(
+            "ada_outcome",
+            {"bank": "personal", "key": "personal/x", "outcome": "worked"},
+        )
+        self.assertEqual(out["verb"], "outcome")
+        kw = self.runner.mddb.update_document.call_args.kwargs
+        self.assertEqual(kw["meta"]["outcome"], ["worked"])
+        self.assertEqual(kw["meta"]["confidence"], ["0.8"])
+        self.assertNotEqual(kw["meta"]["last_verified"], ["2020-01-01"])
+
+    async def test_outcome_bad_lowers_confidence(self):
+        self.runner.mddb.get_document.return_value = {
+            "key": "personal/x",
+            "meta": {"status": ["active"], "confidence": ["0.5"]},
+        }
+        await self.runner.execute(
+            "ada_outcome",
+            {"bank": "personal", "key": "personal/x", "outcome": "bad"},
+        )
+        kw = self.runner.mddb.update_document.call_args.kwargs
+        self.assertEqual(kw["meta"]["confidence"], ["0.3"])
+
+    async def test_outcome_rejects_unknown_value(self):
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "ada_outcome",
+                {"bank": "personal", "key": "k", "outcome": "meh"},
+            )
+        self.runner.mddb.update_document.assert_not_called()
+
+    async def test_outcome_confirmed_policy_needs_confirmation(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "ada_outcome",
+                {"bank": "general", "key": "k", "outcome": "good"},
+            )
+        self.runner.mddb.update_document.assert_not_called()
+
+    async def test_outcome_missing_doc_fails(self):
+        self.runner.mddb.get_document.return_value = None
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "ada_outcome",
+                {"bank": "personal", "key": "personal/none", "outcome": "good"},
+            )
 
 
 if __name__ == "__main__":

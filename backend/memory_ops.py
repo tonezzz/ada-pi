@@ -8,6 +8,7 @@ focused on dispatch + Home Assistant tooling.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -33,6 +34,26 @@ ADA_BANK_SEARCH_THRESHOLD = float(os.environ.get("ADA_BANK_SEARCH_THRESHOLD", "0
 # no exact key/subject match, a hit above this score is corrected in place
 # instead of creating a near-duplicate.
 ADA_BANK_UPDATE_THRESHOLD = float(os.environ.get("ADA_BANK_UPDATE_THRESHOLD", "0.85"))
+
+# Below this stored confidence, a hit is tagged unverified so the model must
+# hedge or escalate rather than state it as fact. record_outcome() is what
+# moves a doc's confidence over time — this gate makes that matter.
+# See docs/ada-memory/tony-projects/knowledge-circle.md (chaba repo).
+ADA_BANK_CONFIDENCE_MIN = float(os.environ.get("ADA_BANK_CONFIDENCE_MIN", "0.4"))
+
+# How each recorded outcome nudges a doc's confidence (clamped 0.05..1.0).
+# Good outcomes also bump last_verified — the verify stage of the knowledge
+# circle. "skipped" is neutral: the check ran but was never exercised.
+OUTCOME_CONFIDENCE_DELTA = {
+    "good": 0.1,
+    "worked": 0.1,
+    "bought_good": 0.1,
+    "partial": -0.05,
+    "skipped": 0.0,
+    "bad": -0.2,
+    "failed": -0.2,
+    "bought_bad": -0.2,
+}
 
 
 def memory_meta(
@@ -120,12 +141,13 @@ async def memory_search(
             limit=int(limit) * 3,
         )
     hits = []
+    used_docs = []
     for doc in docs or []:
         status = doc_effective_status(doc)
         if not include_inactive and status != "active":
             continue
         meta = doc.get("meta") or {}
-        hits.append({
+        hit = {
             "key": doc.get("key"),
             "status": status,
             "score": doc.get("score"),
@@ -135,15 +157,119 @@ async def memory_search(
             "attribute": _meta_first(meta, "attribute"),
             "last_verified": _meta_first(meta, "last_verified"),
             "valid_until": _meta_first(meta, "valid_until"),
-        })
+        }
+        try:
+            confidence = float(_meta_first(meta, "confidence"))
+        except (TypeError, ValueError):
+            confidence = None
+        if confidence is not None:
+            hit["confidence"] = confidence
+            if confidence < ADA_BANK_CONFIDENCE_MIN:
+                hit["unverified"] = True
+        hits.append(hit)
+        used_docs.append(doc)
         if len(hits) >= int(limit):
             break
+    # Knowledge-circle bookkeeping: a real query that surfaced docs counts as
+    # "applied" — the observable proxy for the doc being used in the answer.
+    # Listing/audit queries (empty, '*', include_inactive) don't count.
+    if used_docs and not include_inactive and q and q != "*":
+        record_use_bg(mddb, b.mddb_collection, used_docs)
     return {
         "bank": b.name,
         "collection": b.mddb_collection,
         "count": len(hits),
         "hits": hits,
         "degraded": degraded,
+    }
+
+
+async def record_use(
+    mddb: MddbClient, collection: str, doc: dict[str, Any]
+) -> None:
+    """Bump use_count/last_used on a surfaced doc. Best-effort bookkeeping —
+    recall never depends on it succeeding."""
+    key = doc.get("key")
+    if not key:
+        return
+    meta = dict(doc.get("meta") or {})
+    try:
+        count = int(_meta_first(meta, "use_count") or 0)
+    except ValueError:
+        count = 0
+    meta["use_count"] = [str(count + 1)]
+    meta["last_used"] = [datetime.now(timezone.utc).date().isoformat()]
+    await mddb.update_document(collection, str(key), meta=meta)
+
+
+async def _record_use_safe(
+    mddb: MddbClient, collection: str, doc: dict[str, Any]
+) -> None:
+    try:
+        await record_use(mddb, collection, doc)
+    except Exception as exc:
+        logger.debug("record_use failed for %r: %s", doc.get("key"), exc)
+
+
+def record_use_bg(
+    mddb: MddbClient, collection: str, docs: list[dict[str, Any]]
+) -> None:
+    """Fire-and-forget use accounting — never blocks or breaks recall.
+    Silently skipped without a running loop (unit tests, sync callers)."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    for doc in docs:
+        loop.create_task(_record_use_safe(mddb, collection, doc))
+
+
+async def record_outcome(
+    mddb: MddbClient,
+    registry: MemoryBankRegistry,
+    bank: str,
+    key: str,
+    outcome: str,
+    note: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Record how applied knowledge turned out — the verify stage that
+    closes the learn->apply loop. Sets meta outcome, nudges confidence per
+    OUTCOME_CONFIDENCE_DELTA, and bumps last_verified on good outcomes."""
+    b = registry.bank(str(bank))
+    outcome = str(outcome)
+    delta = OUTCOME_CONFIDENCE_DELTA.get(outcome)
+    if delta is None:
+        raise ValueError(
+            f"unknown outcome {outcome!r} "
+            f"(allowed: {', '.join(sorted(OUTCOME_CONFIDENCE_DELTA))})"
+        )
+    doc = await mddb.get_document(b.mddb_collection, str(key))
+    if doc is None:
+        raise ValueError(f"no such document {key!r} in bank '{b.name}'")
+    meta = dict(doc.get("meta") or {})
+    today = datetime.now(timezone.utc).date().isoformat()
+    meta["outcome"] = [outcome]
+    meta["last_used"] = [today]
+    try:
+        conf = float(_meta_first(meta, "confidence") or 0.6)
+    except ValueError:
+        conf = 0.6
+    meta["confidence"] = [str(round(min(1.0, max(0.05, conf + delta)), 2))]
+    if delta > 0:
+        meta["last_verified"] = [today]
+    if note:
+        meta["outcome_note"] = [str(note)]
+    if session_id and session_id != "unknown":
+        meta["outcome_session"] = [session_id]
+    _warn_unknown_meta(registry, meta)
+    await mddb.update_document(b.mddb_collection, str(key), meta=meta)
+    return {
+        "verb": "outcome",
+        "bank": b.name,
+        "key": str(key),
+        "outcome": outcome,
+        "confidence": meta["confidence"][0],
     }
 
 

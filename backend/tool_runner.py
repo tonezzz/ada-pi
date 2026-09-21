@@ -34,7 +34,7 @@ CONTROL_TOOLS = {
 
 # Tools that mutate curated memory banks. Each bank's write_policy decides
 # whether confirmed=true is required (same gate pattern as CONTROL_TOOLS).
-MEMORY_WRITE_TOOLS = {"ada_remember", "ada_forget"}
+MEMORY_WRITE_TOOLS = {"ada_remember", "ada_forget", "ada_outcome"}
 
 CONTROL_RATE_WINDOW_S = float(os.environ.get("ADA_CONTROL_RATE_WINDOW_S", "60"))
 CONTROL_MAX_PER_ENTITY = int(os.environ.get("ADA_CONTROL_MAX_PER_ENTITY", "5"))
@@ -757,4 +757,17 @@ class ToolRunner:
         """Retract a memory: status becomes retracted; the doc stays auditable."""
         return await memory_ops.forget(
             self.mddb, self.banks, bank, key, reason, session_id=self.session_id
+        )
+
+    async def ada_outcome(
+        self,
+        bank: str,
+        key: str,
+        outcome: str,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        """Record how a remembered fact/check turned out (good/bad/…)."""
+        return await memory_ops.record_outcome(
+            self.mddb, self.banks, bank, key, outcome, note,
+            session_id=self.session_id,
         )

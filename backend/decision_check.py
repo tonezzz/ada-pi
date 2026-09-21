@@ -534,6 +534,7 @@ class DecisionCheckEngine:
                 "verdict": _meta_first(meta, "verdict"),
                 "mode": _meta_first(meta, "mode"),
                 "checked_at": _meta_first(meta, "valid_from"),
+                "outcome": _meta_first(meta, "outcome"),
             })
         return out
 
