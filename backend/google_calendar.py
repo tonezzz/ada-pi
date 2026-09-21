@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import time
+import urllib.parse
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,12 @@ TASKS_API = "https://tasks.googleapis.com/tasks/v1"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 DEFAULT_TOKEN_FILE = "~/.config/secrets/ada-google-calendar-token.json"
 DEFAULT_TASK_LIST = "@default"
+
+
+def _q(value: str) -> str:
+    """URL-encode a calendar/event/task id for use as a path segment —
+    Google calendar ids can contain '#' (e.g. en.th#holiday@group...)."""
+    return urllib.parse.quote(str(value), safe="")
 
 
 class GoogleCalendarProvider:
@@ -172,7 +179,7 @@ class GoogleCalendarProvider:
             }
             if query:
                 params["q"] = query
-            data = await self._req("GET", f"{CAL_API}/calendars/{calid}/events", params=params)
+            data = await self._req("GET", f"{CAL_API}/calendars/{_q(calid)}/events", params=params)
             for item in (data or {}).get("items", []):
                 events.append(self._norm_event(item, calid))
         return events
@@ -191,14 +198,14 @@ class GoogleCalendarProvider:
             body["description"] = notes
         if location:
             body["location"] = location
-        data = await self._req("POST", f"{CAL_API}/calendars/{calid}/events", json=body)
+        data = await self._req("POST", f"{CAL_API}/calendars/{_q(calid)}/events", json=body)
         return self._norm_event(data, calid)
 
     async def delete_event(self, raw_id: str) -> None:
         calid, _, event_id = raw_id.partition("/")
         if not event_id:
             raise CalendarError(f"{self.name}: malformed event id {raw_id!r}")
-        await self._req("DELETE", f"{CAL_API}/calendars/{calid}/events/{event_id}")
+        await self._req("DELETE", f"{CAL_API}/calendars/{_q(calid)}/events/{_q(event_id)}")
 
     async def freebusy(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         data = await self._req("POST", f"{CAL_API}/freeBusy", json={
@@ -227,7 +234,7 @@ class GoogleCalendarProvider:
         params: dict[str, Any] = {"showCompleted": "false", "showHidden": "false", "maxResults": 100}
         if due_before is not None:
             params["dueMax"] = due_before.isoformat()
-        data = await self._req("GET", f"{TASKS_API}/lists/{lid}/tasks", params=params)
+        data = await self._req("GET", f"{TASKS_API}/lists/{_q(lid)}/tasks", params=params)
         return [self._norm_task(t, lid) for t in (data or {}).get("items", [])]
 
     async def add_task(
@@ -243,7 +250,7 @@ class GoogleCalendarProvider:
         if due is not None:
             # Tasks API due is RFC3339; the time part is ignored (date-only tasks)
             body["due"] = datetime(due.year, due.month, due.day).isoformat() + "Z"
-        data = await self._req("POST", f"{TASKS_API}/lists/{lid}/tasks", json=body)
+        data = await self._req("POST", f"{TASKS_API}/lists/{_q(lid)}/tasks", json=body)
         return self._norm_task(data, lid)
 
     async def complete_task(self, raw_id: str) -> None:
@@ -251,7 +258,7 @@ class GoogleCalendarProvider:
         if not task_id:
             raise CalendarError(f"{self.name}: malformed task id {raw_id!r}")
         await self._req(
-            "PATCH", f"{TASKS_API}/lists/{lid}/tasks/{task_id}",
+            "PATCH", f"{TASKS_API}/lists/{_q(lid)}/tasks/{_q(task_id)}",
             json={"status": "completed"},
         )
 

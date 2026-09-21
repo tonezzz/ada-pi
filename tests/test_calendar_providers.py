@@ -332,6 +332,21 @@ class GoogleAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args.args[0], "DELETE")
         self.assertIn("/calendars/primary/events/abc123", args.args[1])
 
+    async def test_hash_calendar_id_is_url_encoded(self):
+        """en.th#holiday@group... ids break URL paths if not quoted."""
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = _resp(200, {"access_token": "t", "expires_in": 3600})
+        client.request.return_value = _resp(200, {"items": []})
+        p = GoogleCalendarProvider(
+            name="google", token_file="/tmp/x.json",
+            calendars=["en.th#holiday@group.v.calendar.google.com"], client=client,
+        )
+        p._creds = {"client_id": "c", "client_secret": "s", "refresh_token": "r"}
+        await p.list_events(datetime(2026, 9, 22, tzinfo=TZ), datetime(2026, 9, 23, tzinfo=TZ))
+        url = client.request.call_args.args[1]
+        self.assertIn("en.th%23holiday", url)
+        self.assertNotIn("#holiday@group", url.split("?")[0])
+
     async def test_tasks_list_and_complete(self):
         client = AsyncMock(spec=httpx.AsyncClient)
         client.post.return_value = _resp(200, {"access_token": "t", "expires_in": 3600})
