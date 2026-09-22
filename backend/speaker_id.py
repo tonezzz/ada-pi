@@ -74,6 +74,11 @@ class SpeakerIdentifier:
     Use ``SpeakerIdentifier.get()`` to obtain the shared instance.  The
     model is loaded on first ``identify`` or ``enroll`` call so the server
     starts fast even when the libraries are installed.
+
+    Enrolled profiles store:
+      - embedding: base64 float32 voiceprint
+      - ha_person: optional HA person entity_id (e.g. "person.tony")
+      - display_name: optional friendly name for Gemini context
     """
 
     _instance: "SpeakerIdentifier | None" = None
@@ -90,6 +95,7 @@ class SpeakerIdentifier:
         self._model: Any = None
         self._model_lock = threading.Lock()
         self._enrolled: dict[str, np.ndarray] = {}
+        self._metadata: dict[str, dict[str, Any]] = {}  # name -> {ha_person, display_name}
         self._profiles_path = Path(
             os.environ.get(
                 "ADA_SPEAKER_PROFILES",
@@ -147,15 +153,22 @@ class SpeakerIdentifier:
             if isinstance(entry, dict) and "embedding" in entry:
                 raw = base64.b64decode(entry["embedding"])
                 self._enrolled[name] = np.frombuffer(raw, dtype=np.float32).copy()
+                self._metadata[name] = {
+                    "ha_person": entry.get("ha_person"),
+                    "display_name": entry.get("display_name"),
+                }
         logger.info("loaded %d enrolled speaker profiles from %s", len(self._enrolled), self._profiles_path)
 
     def _save_enrolled(self) -> None:
         self._profiles_path.parent.mkdir(parents=True, exist_ok=True)
         data = {}
         for name, emb in self._enrolled.items():
+            meta = self._metadata.get(name, {})
             data[name] = {
                 "embedding": base64.b64encode(emb.tobytes()).decode("ascii"),
                 "dim": int(emb.shape[0]),
+                "ha_person": meta.get("ha_person"),
+                "display_name": meta.get("display_name"),
             }
         self._profiles_path.write_text(json.dumps(data, indent=2))
 
@@ -164,18 +177,61 @@ class SpeakerIdentifier:
     def enrolled_names(self) -> list[str]:
         return sorted(self._enrolled)
 
-    def enroll(self, name: str, pcm16: bytes, sample_rate: int = SAMPLE_RATE) -> dict[str, Any]:
+    def enrolled_info(self) -> list[dict[str, Any]]:
+        """Return full profile info including HA person mapping."""
+        return [
+            {
+                "name": name,
+                "ha_person": self._metadata.get(name, {}).get("ha_person"),
+                "display_name": self._metadata.get(name, {}).get("display_name"),
+            }
+            for name in sorted(self._enrolled)
+        ]
+
+    def get_ha_person(self, name: str) -> str | None:
+        """Return the HA person entity_id for an enrolled speaker, or None."""
+        return self._metadata.get(name, {}).get("ha_person")
+
+    def get_display_name(self, name: str) -> str | None:
+        """Return the display name for an enrolled speaker, or the raw name."""
+        return self._metadata.get(name, {}).get("display_name") or name
+
+    def set_metadata(self, name: str, ha_person: str | None = None,
+                     display_name: str | None = None) -> bool:
+        """Update HA person mapping and/or display name for an enrolled speaker."""
+        if name not in self._enrolled:
+            return False
+        meta = self._metadata.setdefault(name, {})
+        if ha_person is not None:
+            meta["ha_person"] = ha_person or None
+        if display_name is not None:
+            meta["display_name"] = display_name or None
+        self._save_enrolled()
+        logger.info("updated metadata for '%s': ha_person=%s display_name=%s",
+                    name, meta.get("ha_person"), meta.get("display_name"))
+        return True
+
+    def enroll(self, name: str, pcm16: bytes, sample_rate: int = SAMPLE_RATE,
+               ha_person: str | None = None,
+               display_name: str | None = None) -> dict[str, Any]:
         """Compute and store an embedding for *name*."""
         emb = self._compute_embedding(pcm16, sample_rate)
         self._enrolled[name] = emb
+        self._metadata[name] = {
+            "ha_person": ha_person,
+            "display_name": display_name,
+        }
         self._save_enrolled()
-        logger.info("enrolled speaker '%s' (dim=%d)", name, emb.shape[0])
-        return {"name": name, "samples": len(pcm16) // 2, "duration_s": round(len(pcm16) / 2 / sample_rate, 1)}
+        logger.info("enrolled speaker '%s' (dim=%d, ha_person=%s)", name, emb.shape[0], ha_person)
+        return {"name": name, "samples": len(pcm16) // 2,
+                "duration_s": round(len(pcm16) / 2 / sample_rate, 1),
+                "ha_person": ha_person, "display_name": display_name}
 
     def remove(self, name: str) -> bool:
         if name not in self._enrolled:
             return False
         del self._enrolled[name]
+        self._metadata.pop(name, None)
         self._save_enrolled()
         logger.info("removed speaker '%s'", name)
         return True

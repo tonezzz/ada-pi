@@ -269,6 +269,8 @@ class GeminiLiveProvider(RealtimeProvider):
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
         self._response_active = False
+        self.current_speaker: str | None = None
+        self.current_speaker_ha_person: str | None = None
 
     def _memory_bank_names(self) -> tuple[str, str]:
         """Comma-joined bank names visible to this instance, for tool
@@ -1785,7 +1787,9 @@ class GeminiLiveProvider(RealtimeProvider):
                             result = {"output": f"Ada is now {requested}"}
                         elif call.name == "get_home_state" and self.home_assistant_client is not None:
                             try:
-                                snapshot = await self.home_assistant_client.snapshot()
+                                snapshot = await self.home_assistant_client.snapshot(
+                                    person_entity=self.current_speaker_ha_person
+                                )
                                 plugs_on_named = [
                                     {"entity_id": e, "name": snapshot.plug_names.get(e, e)}
                                     for e in snapshot.plugs_on

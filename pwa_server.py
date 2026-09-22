@@ -406,17 +406,30 @@ async def voice_socket(ws: WebSocket) -> None:
         try:
             identifier = SpeakerIdentifier.get()
             async def _on_speaker(name: str, confidence: float) -> None:
+                # Level 1: set the provider's HA person so get_home_state
+                # queries the speaker's person entity instead of the
+                # instance default.
+                ha_person = identifier.get_ha_person(name)
+                display_name = identifier.get_display_name(name) or name
+                provider = provider_ref[0]
+                provider.current_speaker = name
+                provider.current_speaker_ha_person = ha_person
                 with suppress(Exception):
                     await ws.send_text(json.dumps({
                         "type": "speaker",
                         "name": name,
+                        "display_name": display_name,
+                        "ha_person": ha_person,
                         "confidence": round(confidence, 3),
                     }))
+                # Level 2: inject identity as system context for Gemini.
+                # Use display_name (e.g. "Tony") rather than the raw key.
                 with suppress(Exception):
-                    await provider_ref[0].send_text_turn(
-                        f"(system) The current speaker is {name} "
+                    await provider.send_text_turn(
+                        f"(system) The current speaker is {display_name} "
                         f"(confidence {confidence:.0%}). Use this to personalize "
-                        f"your response if appropriate, but do not announce it."
+                        f"your response if appropriate, but do not announce it "
+                        f"unless the user asks who you are talking to."
                     )
             speaker_session = SpeakerSession(identifier, _on_speaker)
             logger.info("session=%s speaker identification enabled", session_id)
@@ -616,13 +629,13 @@ async def get_sensors(search: str = "", limit: int = 50) -> dict:
 
 @app.get("/api/speakers")
 async def list_speakers(request: Request) -> dict:
-    """List enrolled speaker profiles."""
+    """List enrolled speaker profiles with HA person mappings."""
     _require_api_key(request)
     if not SPEAKER_ID_ENABLED:
         return {"enabled": False, "speakers": []}
     try:
         identifier = SpeakerIdentifier.get()
-        return {"enabled": True, "speakers": identifier.enrolled_names()}
+        return {"enabled": True, "speakers": identifier.enrolled_info()}
     except Exception as exc:
         logger.warning("list speakers failed: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -632,7 +645,8 @@ async def list_speakers(request: Request) -> dict:
 async def enroll_speaker(request: Request) -> dict:
     """Enroll a speaker from base64-encoded PCM16 audio.
 
-    Body: {"name": "tony", "audio": "<base64 PCM16 16kHz mono>"}
+    Body: {"name": "tony", "audio": "<base64 PCM16 16kHz mono>",
+           "ha_person": "person.tony", "display_name": "Tony"}
     Minimum 3 seconds of audio recommended.
     """
     _require_api_key(request)
@@ -642,6 +656,8 @@ async def enroll_speaker(request: Request) -> dict:
         payload = await request.json()
         name = str(payload.get("name", "")).strip()
         audio_b64 = str(payload.get("audio", ""))
+        ha_person = str(payload.get("ha_person", "")).strip() or None
+        display_name = str(payload.get("display_name", "")).strip() or None
         if not name:
             raise ValueError("name is required")
         if not audio_b64:
@@ -653,13 +669,41 @@ async def enroll_speaker(request: Request) -> dict:
                 f"audio too short: {len(pcm16) / 32000:.1f}s, need at least 1.5s"
             )
         identifier = SpeakerIdentifier.get()
-        result = identifier.enroll(name, pcm16)
+        result = identifier.enroll(name, pcm16, ha_person=ha_person,
+                                  display_name=display_name)
         logger.info("speaker enrolled via REST: %s", result)
         return {"status": "ok", **result}
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         logger.warning("enroll speaker failed: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.put("/api/speakers/{name}/metadata")
+async def update_speaker_metadata(name: str, request: Request) -> dict:
+    """Update HA person mapping and/or display name for an enrolled speaker.
+
+    Body: {"ha_person": "person.tony", "display_name": "Tony"}
+    Either field is optional; pass null/empty to clear.
+    """
+    _require_api_key(request)
+    if not SPEAKER_ID_ENABLED:
+        raise HTTPException(status_code=503, detail="speaker ID is disabled")
+    try:
+        payload = await request.json()
+        ha_person = str(payload.get("ha_person", "")).strip() or None
+        display_name = str(payload.get("display_name", "")).strip() or None
+        identifier = SpeakerIdentifier.get()
+        if not identifier.set_metadata(name, ha_person=ha_person,
+                                       display_name=display_name):
+            raise HTTPException(status_code=404, detail=f"speaker '{name}' not found")
+        return {"status": "ok", "name": name, "ha_person": ha_person,
+                "display_name": display_name}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("update speaker metadata failed: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 

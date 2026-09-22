@@ -115,6 +115,12 @@
     <div class="row">
       <input type="text" id="speaker-name" placeholder="Speaker name (e.g. Tony)" maxlength="40">
     </div>
+    <div class="row">
+      <input type="text" id="display-name" placeholder="Display name for Ada (optional, e.g. Tony)" maxlength="40">
+    </div>
+    <div class="row">
+      <input type="text" id="ha-person" placeholder="HA person entity (optional, e.g. person.tony)" maxlength="60">
+    </div>
     <div class="record-box">
       <button class="record-btn" id="record-btn" title="Click to start/stop recording">●</button>
       <div class="timer" id="timer">0.0s</div>
@@ -143,6 +149,8 @@
     const keyInput = document.getElementById("api-key");
     const authStatus = document.getElementById("auth-status");
     const nameInput = document.getElementById("speaker-name");
+    const displayInput = document.getElementById("display-name");
+    const haPersonInput = document.getElementById("ha-person");
     const recordBtn = document.getElementById("record-btn");
     const timerEl = document.getElementById("timer");
     const levelFill = document.getElementById("level-fill");
@@ -186,17 +194,49 @@
           speakerList.innerHTML = '<div class="empty">Speaker ID is disabled on the server.</div>';
           return;
         }
-        const names = data.speakers || [];
-        if (!names.length) {
+        const speakers = data.speakers || [];
+        if (!speakers.length) {
           speakerList.innerHTML = '<div class="empty">No speakers enrolled yet.</div>';
           return;
         }
         speakerList.innerHTML = "";
-        for (const name of names) {
+        for (const sp of speakers) {
+          // sp is {name, ha_person, display_name}
+          const name = sp.name;
           const row = document.createElement("div");
           row.className = "speaker-row";
-          row.innerHTML = `<span class="icon">👤</span><span class="name"></span>`;
-          row.querySelector(".name").textContent = name;
+          row.style.flexDirection = "column";
+          row.style.alignItems = "stretch";
+          row.style.gap = "6px";
+
+          const top = document.createElement("div");
+          top.style.display = "flex";
+          top.style.alignItems = "center";
+          top.style.gap = "10px";
+          top.innerHTML = `<span class="icon">👤</span><span class="name"></span>`;
+          top.querySelector(".name").textContent = sp.display_name || name;
+          if (sp.display_name && sp.display_name !== name)
+            top.querySelector(".name").textContent += ` (${name})`;
+
+          const meta = document.createElement("div");
+          meta.style.fontSize = ".8rem";
+          meta.style.color = "var(--muted)";
+          meta.style.paddingLeft = "30px";
+          meta.textContent = sp.ha_person
+            ? `HA: ${sp.ha_person}`
+            : "HA: not mapped";
+
+          const actions = document.createElement("div");
+          actions.style.display = "flex";
+          actions.style.gap = "6px";
+          actions.style.paddingLeft = "30px";
+
+          const editBtn = document.createElement("button");
+          editBtn.className = "small";
+          editBtn.textContent = "Edit mapping";
+          editBtn.addEventListener("click", () => editMapping(name, sp));
+          actions.appendChild(editBtn);
+
           const del = document.createElement("button");
           del.className = "danger";
           del.textContent = "Remove";
@@ -207,7 +247,9 @@
               refreshSpeakers();
             } catch (e) { alert(`Failed: ${e.message}`); }
           });
-          row.appendChild(del);
+          actions.appendChild(del);
+
+          row.append(top, meta, actions);
           speakerList.appendChild(row);
         }
       } catch (e) {
@@ -370,15 +412,22 @@
       recordStatus.className = "status muted";
 
       try {
+        const body = { name, audio: audio_b64 };
+        const dn = displayInput.value.trim();
+        const hp = haPersonInput.value.trim();
+        if (dn) body.display_name = dn;
+        if (hp) body.ha_person = hp;
         const result = await api("/api/speakers/enroll", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, audio: audio_b64 }),
+          body: JSON.stringify(body),
         });
         recordStatus.textContent = `Enrolled "${result.name}" — ${result.duration_s}s of voice saved.`;
         recordStatus.className = "status ok";
         chunks = [];
         enrollBtn.textContent = "Enroll Speaker";
+        displayInput.value = "";
+        haPersonInput.value = "";
         refreshSpeakers();
       } catch (e) {
         recordStatus.textContent = `Failed: ${e.message}`;
@@ -387,6 +436,44 @@
         enrollBtn.textContent = "Enroll Speaker";
       }
     });
+
+    // -- Edit mapping (HA person + display name) --
+    function editMapping(name, sp) {
+      const card = document.createElement("div");
+      card.style.cssText = "position:fixed;inset:0;display:grid;place-items:center;background:rgba(0,8,12,.85);z-index:300";
+      card.innerHTML = `
+        <div style="width:min(360px,90vw);padding:24px;border:1px solid var(--border);border-radius:12px;background:var(--bg);display:flex;flex-direction:column;gap:12px">
+          <h2 style="margin:0;font-size:1.1rem;color:var(--accent-light)">Edit: ${name}</h2>
+          <label style="font-size:.8rem;color:var(--muted)">Display name</label>
+          <input type="text" id="edit-dn" value="${sp.display_name || ""}" placeholder="Display name (e.g. Tony)" maxlength="40"
+            style="padding:10px;border-radius:8px;border:1px solid var(--accent);background:var(--panel);color:var(--text);font:15px system-ui">
+          <label style="font-size:.8rem;color:var(--muted)">HA person entity</label>
+          <input type="text" id="edit-hp" value="${sp.ha_person || ""}" placeholder="person.tony" maxlength="60"
+            style="padding:10px;border-radius:8px;border:1px solid var(--accent);background:var(--panel);color:var(--text);font:15px system-ui">
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button id="edit-cancel" class="small">Cancel</button>
+            <button id="edit-save" class="primary small">Save</button>
+          </div>
+          <div class="status muted" id="edit-status" style="font-size:.8rem;min-height:1em"></div>
+        </div>`;
+      document.body.appendChild(card);
+      card.querySelector("#edit-cancel").onclick = () => card.remove();
+      card.querySelector("#edit-save").onclick = async () => {
+        const dn = card.querySelector("#edit-dn").value.trim();
+        const hp = card.querySelector("#edit-hp").value.trim();
+        const st = card.querySelector("#edit-status");
+        try {
+          st.textContent = "Saving…"; st.className = "status muted";
+          await api(`/api/speakers/${encodeURIComponent(name)}/metadata`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ display_name: dn, ha_person: hp }),
+          });
+          card.remove();
+          refreshSpeakers();
+        } catch (e) { st.textContent = `Failed: ${e.message}`; st.className = "status err"; }
+      };
+    }
 
     // Stop recording if user leaves the page
     window.addEventListener("beforeunload", () => {

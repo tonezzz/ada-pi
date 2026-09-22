@@ -144,7 +144,9 @@ class HomeAssistantClient:
             )
         return self._client
 
-    async def snapshot(self) -> HomeAssistantSnapshot:
+    async def snapshot(self, person_entity: str | None = None) -> HomeAssistantSnapshot:
+        """Return home state. If *person_entity* is given (e.g. from speaker
+        ID), use it instead of the instance default HOME_ASSISTANT_PERSON."""
         if not self.token:
             raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
         client = await self._http_client()
@@ -161,7 +163,7 @@ class HomeAssistantClient:
         plug_states = {entity: states.get(entity, "unavailable") for entity in self.home_plug_entities}
         plug_names = {entity: names.get(entity, entity) for entity in self.home_plug_entities}
         return HomeAssistantSnapshot(
-            person_state=states.get(self.person_entity, "unavailable"),
+            person_state=states.get(person_entity or self.person_entity, "unavailable"),
             plugs_on=tuple(entity for entity, state in plug_states.items() if state == "on"),
             plug_states=plug_states,
             plug_names=plug_names,
