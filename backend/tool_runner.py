@@ -679,6 +679,12 @@ class ToolRunner:
     async def plan_day(self, day: str = "today") -> dict[str, Any]:
         return await self._calendar_svc().plan_day(day=str(day))
 
+    async def ada_resolve_action(self, key: str, resolution: str) -> str:
+        """Resolve a pending action proposal (applied|dismissed). Bookkeeping
+        only — not a calendar write, so no confirmed gate."""
+        from backend.conversation_memory import resolve_action_proposal
+        return await resolve_action_proposal(str(key), str(resolution))
+
     # -- Home Assistant tools --
 
     async def get_home_state(self) -> dict[str, Any]:

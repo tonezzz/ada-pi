@@ -9,6 +9,7 @@ import os
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import httpx
@@ -41,6 +42,15 @@ _SUMMARY_MAX_TRANSCRIPT_CHARS = int(
 )
 _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 _SUMMARY_MODEL = os.environ.get("ADA_SUMMARY_MODEL", "gemini-3.5-flash-lite")
+
+# Raw transcript archive — local-only. Transcripts can contain private
+# details and credential-shaped text, so they are never pushed to git or
+# public MDDB collections. scripts/ada/export-transcripts.py pulls this
+# directory for offline review (e.g. a Devin session audit).
+TRANSCRIPT_DIR = os.environ.get(
+    "ADA_TRANSCRIPT_DIR",
+    os.path.expanduser("~/.local/share/ada/transcripts"),
+)
 _summary_cache: dict[str, Any] = {"text": None, "ts": 0.0, "task": None}
 
 # Per-instance deep-tier answer cache: a bank/group miss costs a ~20-60s
@@ -163,6 +173,52 @@ async def last_session_end(mddb: Any) -> tuple[float | None, str]:
         except ValueError:
             pass
     return ts, _first("last_tail")
+
+
+def _actions_collection() -> str:
+    # Pending action proposals live in a per-instance operational
+    # collection (like ada-ha-events-*, not a memory bank).
+    from backend.instance import ada_instance_id
+    return f"ada-ha-actions-{ada_instance_id()}"
+
+
+async def pending_action_proposals(limit: int = 5) -> list[dict[str, str]]:
+    """Unresolved {key, text} proposals for session-start context."""
+    try:
+        docs = await _mddb().search_documents(
+            collection=_actions_collection(),
+            query="*",
+            filter_meta={"status": ["pending"], "kind": ["action-proposal"]},
+            limit=limit,
+        )
+    except Exception as exc:
+        _report_failure("actions_mddb", exc)
+        return []
+    out: list[dict[str, str]] = []
+    for d in docs or []:
+        body = str(d.get("contentMd") or d.get("content_md") or "").strip()
+        if body:
+            out.append({"key": str(d.get("key") or ""),
+                        "text": body.splitlines()[0]})
+    return out
+
+
+async def resolve_action_proposal(key: str, resolution: str) -> str:
+    """Mark a pending proposal applied|dismissed (ada_resolve_action tool)."""
+    if resolution not in ("applied", "dismissed"):
+        return "resolution must be 'applied' or 'dismissed'"
+    if os.environ.get("ADA_READ_ONLY") == "true":
+        return "action proposals are disabled (ADA_READ_ONLY=true)"
+    doc = await _mddb().get_document(_actions_collection(), key)
+    if doc is None:
+        return f"no proposal with key {key!r}"
+    meta = dict(doc.get("meta") or {})
+    meta["status"] = [resolution]
+    meta["resolved_at"] = [datetime.now(timezone.utc).isoformat()]
+    result = await _mddb().update_document(
+        _actions_collection(), key, meta=meta
+    )
+    return f"marked {resolution}" if result is not None else "update failed"
 
 
 def _mddb():
@@ -424,14 +480,31 @@ class ConversationMemory:
             lines.append("")
         return "\n".join(lines)
 
-    async def persist(self) -> None:
-        if not self._turns or not self.client.configured:
+    def _save_transcript_file(self) -> None:
+        """Archive the raw transcript to the local transcript directory."""
+        if os.environ.get("ADA_TRANSCRIPT_SAVE", "1") in ("0", "false", "no"):
             return
-        title = f"Ada session {self.session_id} {datetime.now(timezone.utc).isoformat()}"
-        result = await self.client.add_text_source(title, self.transcript())
-        if result is not None:
-            # New history exists — fold it into the rolling summary.
-            _summary_cache["task"] = asyncio.create_task(self._update_summary())
+        try:
+            d = Path(TRANSCRIPT_DIR)
+            d.mkdir(parents=True, exist_ok=True)
+            day = datetime.now(timezone.utc).date().isoformat()
+            safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", self.session_id)
+            (d / f"{day}-{safe}.md").write_text(
+                self.transcript(), encoding="utf-8"
+            )
+        except Exception as exc:
+            _report_failure("transcript_file", exc)
+
+    async def persist(self) -> None:
+        if not self._turns:
+            return
+        self._save_transcript_file()
+        if self.client.configured:
+            title = f"Ada session {self.session_id} {datetime.now(timezone.utc).isoformat()}"
+            await self.client.add_text_source(title, self.transcript())
+        # Summaries/candidates live in MDDB, not NotebookLM — run them even
+        # when the deep tier is unconfigured or unreachable.
+        _summary_cache["task"] = asyncio.create_task(self._update_summary())
 
     async def _update_summary(self) -> None:
         prev = _summary_cache["text"] or await _load_summary_from_mddb()
@@ -447,6 +520,7 @@ class ConversationMemory:
         if session_text:
             await _save_session_summary(self.session_id, session_text)
         await self._extract_candidates(transcript)
+        await self._extract_actions(transcript)
 
     async def _extract_candidates(self, transcript: str) -> None:
         """Auto-distill durable facts/decisions from the session into bank
@@ -531,6 +605,72 @@ class ConversationMemory:
         if candidates:
             logger.info("session %s: extracted %d candidate memories",
                         self.session_id, min(len(candidates), 5))
+
+    async def _extract_actions(self, transcript: str) -> None:
+        """Distill conversation action items (appointments, reminders,
+        todos) into pending proposals in ada-ha-actions-{instance}. Ada
+        offers them at the next session; actual calendar/task writes still
+        go through the confirmed=true tools."""
+        if os.environ.get("ADA_EXTRACT_ACTIONS", "1") in ("0", "false", "no"):
+            return
+        if not _GEMINI_API_KEY:
+            return
+        try:
+            from google import genai
+            prompt = (
+                "Transcript of one voice session:\n"
+                f"{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}\n\n"
+                "Extract up to 3 concrete action items the user stated or "
+                "implied — things to put on the calendar or task list. "
+                "Examples: an appointment mentioned ('dentist Thursday 3pm'), "
+                "a reminder request ('remind me to…'), a purchase or chore "
+                "('need to buy X'). Skip vague talk and things already "
+                "scheduled during the conversation. "
+                "Return a JSON array of objects with keys "
+                '"type" (event|task), "title", "when" (ISO date/time or '
+                'natural language like "Thursday 15:00"), and optional '
+                '"notes". Return [] if there is nothing actionable.'
+            )
+            resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
+                model=_SUMMARY_MODEL, contents=prompt
+            )
+            text = (resp.text or "").strip()
+            m = re.search(r"\[.*\]", text, re.DOTALL)
+            actions = json.loads(m.group(0)) if m else []
+        except Exception as exc:
+            _report_failure("extract_actions", exc)
+            return
+        today = datetime.now(timezone.utc).date().isoformat()
+        for i, act in enumerate(actions[:3]):
+            if not isinstance(act, dict) or not act.get("title"):
+                continue
+            atype = "event" if str(act.get("type")) == "event" else "task"
+            when = str(act.get("when") or "").strip()
+            line = f"{atype}: {act['title']}" + (f" — {when}" if when else "")
+            if act.get("notes"):
+                line += f" ({act['notes']})"
+            meta = {
+                "kind": ["action-proposal"],
+                "status": ["pending"],
+                "action_type": [atype],
+                "source": ["extract"],
+                "written_by": ["conversation_memory"],
+                "session_id": [self.session_id],
+                "date": [today],
+            }
+            if when:
+                meta["when"] = [when]
+            key = f"action-{today}-{self.session_id}-{i}"
+            try:
+                await _mddb().add_document(
+                    collection=_actions_collection(),
+                    key=key, lang="en", content_md=line, meta=meta,
+                )
+            except Exception as exc:
+                _report_failure("action_mddb", exc)
+        if actions:
+            logger.info("session %s: extracted %d action proposal(s)",
+                        self.session_id, min(len(actions), 3))
 
     def warm_summary(self) -> None:
         """Kick a background warm: load the persisted summary, or seed it."""

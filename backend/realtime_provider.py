@@ -41,7 +41,7 @@ EXPRESSION_NAMES = (
 CALENDAR_TOOLS = {
     "calendar_list_calendars", "calendar_list_events", "calendar_freebusy",
     "plan_day", "calendar_create_event", "calendar_delete_event",
-    "tasks_list", "tasks_add", "tasks_complete",
+    "tasks_list", "tasks_add", "tasks_complete", "ada_resolve_action",
 }
 
 # Same constant pattern as CALENDAR_TOOLS: lets ADA_EXCLUDED_TOOLS strip the
@@ -65,7 +65,13 @@ CALENDAR_INSTRUCTIONS = (
     "confirmed=true — writes are enforced server-side. "
     "If a calendar tool reports an auth error, say the calendar provider needs re-authentication "
     "and stop retrying. Event and task ids are provider-qualified (e.g. 'google:primary/abc') — "
-    "pass them back exactly as returned."
+    "pass them back exactly as returned. "
+    "When the session context lists pending suggestions from earlier conversations, offer each "
+    "once, briefly and early in the conversation; if the user accepts, restate the details, call "
+    "the matching calendar/task tool with confirmed=true, then call ada_resolve_action with the "
+    "shown key and resolution 'applied'. If declined, call ada_resolve_action with 'dismissed'. "
+    "When the user states a plan, appointment, or reminder intention unprompted, proactively "
+    "offer to put it on the calendar or task list instead of waiting to be asked."
 )
 
 CMS_INSTRUCTIONS = (
@@ -373,6 +379,60 @@ class GeminiLiveProvider(RealtimeProvider):
             )
         except Exception:
             pass
+
+    async def _session_context_tail(self, excluded: set[str] | None = None) -> str:
+        """Session-start awareness blob: today's agenda + open tasks +
+        pending action proposals from earlier conversations."""
+        if os.environ.get("ADA_AGENDA_CONTEXT", "1") in ("0", "false", "no"):
+            return ""
+        if excluded and CALENDAR_TOOLS <= excluded:
+            return ""
+        svc = None
+        if self.tool_runner is not None:
+            try:
+                svc = self.tool_runner.calendar
+            except Exception:
+                svc = None
+        if svc is None:
+            return ""
+        parts: list[str] = []
+        try:
+            plan = await asyncio.wait_for(svc.plan_day("today"), timeout=4.0)
+        except Exception as exc:
+            logger.info("session=%s agenda prefetch failed: %s",
+                        self.session_id, exc)
+        else:
+            lines = ["Today's agenda (snapshot from session start; call "
+                     "plan_day for a fresh view):"]
+            events = plan.get("events") or []
+            if not events:
+                lines.append("- no events today")
+            for e in events[:6]:
+                start = str(e.get("start") or "")
+                when = ("all-day" if e.get("all_day")
+                        else start[11:16] if "T" in start else start)
+                lines.append(f"- {when} {e.get('title') or '?'}")
+            for t in (plan.get("open_tasks") or [])[:8]:
+                due = f" (due {t['due']})" if t.get("due") else ""
+                lines.append(f"- open task: {t.get('title') or '?'}{due}")
+            parts.append("\n".join(lines))
+        try:
+            from backend.conversation_memory import pending_action_proposals
+            proposals = await asyncio.wait_for(
+                pending_action_proposals(), timeout=4.0
+            )
+        except Exception as exc:
+            logger.info("session=%s proposals prefetch failed: %s",
+                        self.session_id, exc)
+            proposals = []
+        if proposals:
+            lines = ["Pending suggestions from recent conversations:"]
+            for p in proposals:
+                lines.append(f"- [{p['key']}] {p['text']}")
+            parts.append("\n".join(lines))
+        if not parts:
+            return ""
+        return "\n\n" + "\n".join(parts)
 
     async def _on_check_complete(self, result: Any, error: str | None) -> None:
         """Push the verdict back into the session so Ada speaks it."""
@@ -1655,6 +1715,28 @@ class GeminiLiveProvider(RealtimeProvider):
                         "required": ["slug"],
                         "additionalProperties": False,
                     },
+                }, {
+                    "name": "ada_resolve_action",
+                    "description": (
+                        "Marks a pending action proposal as applied or dismissed. Call with the "
+                        "proposal key shown in the pending-suggestions list after the user "
+                        "accepts or declines the suggestion."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "key": {
+                                "type": "string",
+                                "description": "Proposal key, e.g. 'action-2026-09-22-abc123-0'.",
+                            },
+                            "resolution": {
+                                "type": "string",
+                                "enum": ["applied", "dismissed"],
+                            },
+                        },
+                        "required": ["key", "resolution"],
+                        "additionalProperties": False,
+                    },
                 }]
             }],
         }
@@ -1690,6 +1772,7 @@ class GeminiLiveProvider(RealtimeProvider):
                 config["system_instruction"] = config["system_instruction"].replace(
                     CMS_INSTRUCTIONS, ""
                 )
+        config["system_instruction"] += await self._session_context_tail(excluded)
         # Per-instance memory banks: descriptions name only banks this
         # instance can actually use ({banks}=readable, {writable_banks}=
         # writable), so the model never calls a bank that fails loudly.
