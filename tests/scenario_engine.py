@@ -24,6 +24,8 @@ A scenario file looks like:
       - say: "it's the ada-ha-michael one"          # feeds conversation ctx
       - expand_query: "the other one"
         expect: {expanded_contains: ["ada-ha-michael"]}
+      - reconnect_after: 3h          # simulate ws disconnect+reconnect;
+        expect: {output_contains: ['"tier": "return"']}   # null = first session
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from typing import Any
 
 import yaml
 
+from backend import memory_ops
 from backend.conversation_memory import ConversationMemory
 from backend.memory_banks import MemoryBankRegistry
 from backend.tool_runner import ToolRunner
@@ -127,6 +130,20 @@ SCENARIO_BANKS: dict[str, Any] = {
         },
     }
 }
+
+_AWAY_RE = re.compile(r"^(\d+(?:\.\d+)?)(s|m|h|d|w)?$")
+_AWAY_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def _parse_away(raw: Any) -> float | None:
+    """'90s'/'5m'/'4h'/'2d'/'1w' or bare seconds; null/'none' = first session."""
+    if raw is None or str(raw).strip().lower() in ("", "none", "null"):
+        return None
+    m = _AWAY_RE.match(str(raw).strip().lower())
+    if not m:
+        raise ValueError(f"bad reconnect_after duration {raw!r}")
+    return float(m.group(1)) * _AWAY_UNITS.get(m.group(2) or "s", 1)
+
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 _STOP = {
@@ -313,6 +330,23 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
                 result = {"output": "recorded"}
             elif "expand_query" in step:
                 result = {"expanded": conv.expand_query(str(step["expand_query"]))}
+            elif "reconnect_after" in step:
+                # Simulate a websocket disconnect+reconnect: snapshot the
+                # transcript tail, start a fresh ConversationMemory, and run
+                # the real session prime with the simulated gap.
+                away = _parse_away(step["reconnect_after"])
+                last_tail = conv.recent_context(max_turns=6, max_chars=800)
+                conv = ConversationMemory(session_id=f"scenario-r{i}")
+                result = {
+                    "away_seconds": away,
+                    "tier": memory_ops.away_tier(away),
+                    "prime": await memory_ops.session_prime_text(
+                        runner.mddb,
+                        runner.banks,
+                        away_seconds=away,
+                        last_tail=last_tail,
+                    ),
+                }
             elif "tool" in step:
                 try:
                     result = await runner.execute(

@@ -18,8 +18,14 @@ Turn expectations (all optional, all must pass):
   no_calls: true               no tools were invoked
   result_contains: [s, ...]    each substring appears in some tool_result
   response_contains: [s, ...]  each substring appears in the spoken transcript
+  response_nonempty: true      any spoken transcript at all
   timeout_s: N                 per-turn hard timeout (default 90)
   settle_s: N                  quiet period after last response (default 5)
+
+Reconnect step (tests/scenarios-live/reconnect_continuity.yaml):
+  - reconnect: {away_s: 300}   closes the ws, reconnects with
+                               ?simulate_away_s=N, then checks the greeting
+                               turn with the same expect vocabulary.
 """
 
 from __future__ import annotations
@@ -62,16 +68,19 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
             failures.append(
                 f"response_contains: {sub!r} not in transcript ({transcript[:160]!r})"
             )
+    if expect.get("response_nonempty") and not transcript.strip():
+        failures.append("response_nonempty: empty transcript")
     return failures
 
 
 async def run_turn(
-    ws: Any, text: str, expect: dict, verbose: bool
+    ws: Any, text: str | None, expect: dict, verbose: bool
 ) -> tuple[list[dict], list[str]]:
     timeout = float(expect.get("timeout_s", 90))
     settle = float(expect.get("settle_s", 5))
     events: list[dict] = []
-    await ws.send(json.dumps({"type": "text", "text": text}))
+    if text is not None:
+        await ws.send(json.dumps({"type": "text", "text": text}))
     deadline = time.monotonic() + timeout
     last_completed = 0.0
     completed = 0
@@ -126,30 +135,48 @@ async def main() -> int:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}api_key={api_key}"
 
+    async def connect(target: str) -> Any:
+        ws = await websockets.connect(target, max_size=8 * 1024 * 1024)
+        while True:
+            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+            if isinstance(raw, str) and json.loads(raw).get("type") == "ready":
+                return ws
+
     spec = yaml.safe_load(args.scenario.read_text())
     turns = spec.get("turns") or []
     print(f"scenario: {spec.get('name') or args.scenario.stem} -> {url.split('?')[0]}")
 
     total_fail = 0
-    async with websockets.connect(url, max_size=8 * 1024 * 1024) as ws:
-        # wait for ready
+    ws = None
+    try:
         try:
-            while True:
-                raw = await asyncio.wait_for(ws.recv(), timeout=30)
-                if isinstance(raw, str) and json.loads(raw).get("type") == "ready":
-                    break
+            ws = await connect(url)
         except asyncio.TimeoutError:
             print("FATAL: no ready event from server")
             return 2
         print("connected (ready)")
 
         for i, turn in enumerate(turns):
-            text = str(turn.get("user") or "")
             expect = dict(turn.get("expect") or {})
             expect.setdefault("timeout_s", turn.get("timeout_s", 90))
             expect.setdefault("settle_s", turn.get("settle_s", 5))
-            print(f"turn {i + 1}: {text!r}")
-            events, failures = await run_turn(ws, text, expect, args.verbose)
+            if "reconnect" in turn:
+                away = (turn.get("reconnect") or {}).get("away_s")
+                rurl = url
+                if away is not None:
+                    sep = "&" if "?" in rurl else "?"
+                    rurl = f"{rurl}{sep}simulate_away_s={away}"
+                print(f"turn {i + 1}: reconnect (away_s={away})")
+                await ws.close()
+                ws = await connect(rurl)
+                # The reconnect prime triggers the greeting turn unprompted —
+                # collect it like a normal response window.
+                events, failures = await run_turn(ws, None, expect, args.verbose)
+                text = None
+            else:
+                text = str(turn.get("user") or "")
+                print(f"turn {i + 1}: {text!r}")
+                events, failures = await run_turn(ws, text, expect, args.verbose)
             n_tools = sum(1 for e in events if e.get("type") == "tool_call")
             transcript = "".join(
                 str(e.get("text") or "")
@@ -164,6 +191,9 @@ async def main() -> int:
                 print(f"    transcript: {transcript[:300]!r}")
             else:
                 print(f"  ok ({n_tools} tool calls) ada: {transcript[:140]!r}")
+    finally:
+        if ws is not None:
+            await ws.close()
 
     print(f"{'PASS' if total_fail == 0 else 'FAIL'}: {total_fail} failed expectations")
     return 0 if total_fail == 0 else 1

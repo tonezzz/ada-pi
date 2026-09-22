@@ -380,6 +380,7 @@ async def voice_socket(ws: WebSocket) -> None:
     await ws.accept()
     session_id = uuid.uuid4().hex[:10]
     logger.info("session=%s client connected", session_id)
+    reconnect_ctx = await _reconnect_context(ws)
     # One ConversationMemory per websocket session, shared across provider
     # reconnects so the transcript survives a Gemini session swap.
     conversation = ConversationMemory(session_id)
@@ -421,7 +422,7 @@ async def voice_socket(ws: WebSocket) -> None:
             await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
             await ws.close(code=1011)
         return
-    await _prime_session(provider_ref[0])
+    await _prime_session(provider_ref[0], reconnect=reconnect_ctx)
 
     try:
         await ws.send_text(json.dumps({"type": "ready"}))
@@ -549,6 +550,8 @@ async def voice_socket(ws: WebSocket) -> None:
                 await speaker_session.close()
         with suppress(Exception):
             await ws.close()
+        with suppress(Exception):
+            await _mark_session_end(conversation)
         logger.info("session=%s closed", session_id)
 
 
