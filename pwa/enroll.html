@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Ada — Speaker Enrollment</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    :root {
+      --bg: #04141c;
+      --panel: rgba(5, 35, 48, .9);
+      --text: #c9fbff;
+      --muted: #75bdc5;
+      --accent: #087ef2;
+      --accent-light: #aef8ff;
+      --border: #0d4a63;
+      --ok: #34d399;
+      --err: #ff9a8a;
+      --warn: #ffd97a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: env(safe-area-inset-top) 20px env(safe-area-inset-bottom);
+      font: 15px/1.5 system-ui, -apple-system, sans-serif;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; display: flex; flex-direction: column; gap: 16px;
+    }
+    header { text-align: center; padding-top: 8px; }
+    header h1 { margin: 0; font-size: 1.4rem; color: var(--accent-light); }
+    header p { margin: 4px 0 0; font-size: .85rem; color: var(--muted); }
+    a { color: var(--accent); text-decoration: none; }
+    .card {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 12px;
+    }
+    .card h2 { margin: 0; font-size: 1rem; color: var(--accent-light); }
+    .sub { font-size: .8rem; color: var(--muted); }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input[type="text"], input[type="password"] {
+      flex: 1; min-width: 140px; padding: 10px 14px; border-radius: 8px;
+      border: 1px solid var(--accent); background: rgba(5, 35, 48, .9);
+      color: var(--text); font: 15px system-ui, sans-serif;
+    }
+    button {
+      min-height: 44px; padding: 10px 18px; border-radius: 9px;
+      border: 1px solid var(--accent); color: var(--accent-light);
+      background: rgba(5, 35, 48, .9); font: 600 15px system-ui, sans-serif;
+      cursor: pointer; transition: border-color .15s, opacity .15s;
+    }
+    button:hover { border-color: var(--accent-light); }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.primary:hover { filter: brightness(1.1); }
+    button:disabled { opacity: .4; cursor: default; }
+    button.danger { border-color: #c0392b; color: var(--err); font-size: .8rem; padding: 6px 12px; min-height: auto; }
+    button.small { font-size: .8rem; padding: 6px 12px; min-height: auto; }
+    .status { font-size: .85rem; min-height: 1.2em; }
+    .status.ok { color: var(--ok); }
+    .status.err { color: var(--err); }
+    .status.muted { color: var(--muted); }
+    .status.warn { color: var(--warn); }
+
+    /* Recording UI */
+    .record-box { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+    .record-btn {
+      width: 80px; height: 80px; border-radius: 50%; border: 3px solid var(--accent);
+      background: var(--panel); color: var(--accent-light); font-size: 28px;
+      display: flex; align-items: center; justify-content: center; cursor: pointer;
+      transition: all .2s; min-height: auto; padding: 0;
+    }
+    .record-btn.recording { border-color: #e74c3c; background: rgba(231, 76, 60, .15); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, .3); } 50% { box-shadow: 0 0 0 12px rgba(231, 76, 60, 0); } }
+    .timer { font: 700 1.6rem system-ui, sans-serif; color: var(--accent-light); font-variant-numeric: tabular-nums; }
+    .level-bar { width: 200px; height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; }
+    .level-fill { height: 100%; background: var(--accent); transition: width .05s; }
+
+    /* Speaker list */
+    .speakers { display: flex; flex-direction: column; gap: 8px; }
+    .speaker-row {
+      display: flex; align-items: center; gap: 10px; padding: 10px 14px;
+      border: 1px solid var(--border); border-radius: 8px; background: rgba(5, 35, 48, .6);
+    }
+    .speaker-row .name { flex: 1; font-weight: 600; }
+    .speaker-row .icon { font-size: 1.2rem; }
+    .empty { color: var(--muted); font-size: .85rem; text-align: center; padding: 12px; }
+
+    /* Auth */
+    .auth-row { display: flex; gap: 8px; align-items: center; }
+    .auth-row input { font-family: ui-monospace, monospace; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Speaker Enrollment</h1>
+    <p><a href="/">← Ada</a> · record your voice so Ada can recognize you</p>
+  </header>
+
+  <!-- Auth -->
+  <section class="card" id="auth-card">
+    <h2>API Key</h2>
+    <div class="sub">Same key you used to unlock Ada. Stored in this browser only.</div>
+    <div class="auth-row">
+      <input type="password" id="api-key" placeholder="Ada API key">
+      <button id="save-key" class="small">Save</button>
+    </div>
+    <div class="status muted" id="auth-status"></div>
+  </section>
+
+  <!-- Enroll -->
+  <section class="card">
+    <h2>Record Your Voice</h2>
+    <div class="sub">Speak naturally for 3-5 seconds. Say your name or a short sentence. Avoid background noise.</div>
+    <div class="row">
+      <input type="text" id="speaker-name" placeholder="Speaker name (e.g. Tony)" maxlength="40">
+    </div>
+    <div class="record-box">
+      <button class="record-btn" id="record-btn" title="Click to start/stop recording">●</button>
+      <div class="timer" id="timer">0.0s</div>
+      <div class="level-bar"><div class="level-fill" id="level-fill" style="width:0%"></div></div>
+    </div>
+    <div class="status muted" id="record-status">Click the button to record. 3 seconds minimum.</div>
+    <div class="row">
+      <button id="enroll-btn" class="primary" disabled>Enroll Speaker</button>
+    </div>
+  </section>
+
+  <!-- Enrolled speakers -->
+  <section class="card">
+    <h2>Enrolled Speakers</h2>
+    <div class="speakers" id="speaker-list">
+      <div class="empty">Loading…</div>
+    </div>
+    <button id="refresh-btn" class="small">Refresh list</button>
+  </section>
+
+  <script>
+  (function() {
+    "use strict";
+
+    const AUTH_KEY = "ada_api_key";
+    const keyInput = document.getElementById("api-key");
+    const authStatus = document.getElementById("auth-status");
+    const nameInput = document.getElementById("speaker-name");
+    const recordBtn = document.getElementById("record-btn");
+    const timerEl = document.getElementById("timer");
+    const levelFill = document.getElementById("level-fill");
+    const recordStatus = document.getElementById("record-status");
+    const enrollBtn = document.getElementById("enroll-btn");
+    const speakerList = document.getElementById("speaker-list");
+    const refreshBtn = document.getElementById("refresh-btn");
+
+    // Load saved API key
+    keyInput.value = localStorage.getItem(AUTH_KEY) || "";
+    authStatus.textContent = keyInput.value ? "Saved — ready." : "Enter your Ada API key.";
+    authStatus.className = keyInput.value ? "status ok" : "status muted";
+
+    document.getElementById("save-key").addEventListener("click", () => {
+      const k = keyInput.value.trim();
+      if (!k) { authStatus.textContent = "Enter a key first."; authStatus.className = "status err"; return; }
+      localStorage.setItem(AUTH_KEY, k);
+      authStatus.textContent = "Saved."; authStatus.className = "status ok";
+      refreshSpeakers();
+    });
+
+    function apiKey() { return keyInput.value.trim() || localStorage.getItem(AUTH_KEY) || ""; }
+
+    async function api(path, opts = {}) {
+      const r = await fetch(path, {
+        ...opts,
+        headers: { ...(opts.headers || {}), "X-Api-Key": apiKey() },
+      });
+      if (r.status === 401) throw new Error("API key rejected — check it above.");
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || `HTTP ${r.status}`);
+      return data;
+    }
+
+    // -- Speaker list --
+    async function refreshSpeakers() {
+      speakerList.innerHTML = '<div class="empty">Loading…</div>';
+      try {
+        const data = await api("/api/speakers");
+        if (!data.enabled) {
+          speakerList.innerHTML = '<div class="empty">Speaker ID is disabled on the server.</div>';
+          return;
+        }
+        const names = data.speakers || [];
+        if (!names.length) {
+          speakerList.innerHTML = '<div class="empty">No speakers enrolled yet.</div>';
+          return;
+        }
+        speakerList.innerHTML = "";
+        for (const name of names) {
+          const row = document.createElement("div");
+          row.className = "speaker-row";
+          row.innerHTML = `<span class="icon">👤</span><span class="name"></span>`;
+          row.querySelector(".name").textContent = name;
+          const del = document.createElement("button");
+          del.className = "danger";
+          del.textContent = "Remove";
+          del.addEventListener("click", async () => {
+            if (!confirm(`Remove speaker "${name}"?`)) return;
+            try {
+              await api(`/api/speakers/${encodeURIComponent(name)}`, { method: "DELETE" });
+              refreshSpeakers();
+            } catch (e) { alert(`Failed: ${e.message}`); }
+          });
+          row.appendChild(del);
+          speakerList.appendChild(row);
+        }
+      } catch (e) {
+        speakerList.innerHTML = `<div class="empty" style="color:var(--err)">${e.message}</div>`;
+      }
+    }
+    refreshBtn.addEventListener("click", refreshSpeakers);
+    refreshSpeakers();
+
+    // -- Recording --
+    const SAMPLE_RATE = 16000;
+    let mediaStream = null;
+    let audioContext = null;
+    let processor = null;
+    let source = null;
+    let chunks = [];
+    let recording = false;
+    let recordStart = 0;
+    let timerInterval = null;
+    let analyser = null;
+    let levelRAF = null;
+
+    async function startRecording() {
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: { channelCount: 1, sampleRate: SAMPLE_RATE, echoCancellation: true, noiseSuppression: true },
+        });
+      } catch (e) {
+        recordStatus.textContent = `Microphone error: ${e.message}`;
+        recordStatus.className = "status err";
+        return;
+      }
+      audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+      source = audioContext.createMediaStreamSource(mediaStream);
+      analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      processor = audioContext.createScriptProcessor(4096, 1, 1);
+      chunks = [];
+      processor.onaudioprocess = (e) => {
+        if (!recording) return;
+        const input = e.inputBuffer.getChannelData(0);
+        // Downsample if needed (AudioContext may not honor sampleRate on all browsers)
+        const ratio = audioContext.sampleRate / SAMPLE_RATE;
+        let samples = input;
+        if (ratio > 1) {
+          const newLen = Math.floor(input.length / ratio);
+          samples = new Float32Array(newLen);
+          for (let i = 0; i < newLen; i++) samples[i] = input[Math.floor(i * ratio)];
+        }
+        // Convert float [-1,1] to int16
+        const pcm16 = new Int16Array(samples.length);
+        for (let i = 0; i < samples.length; i++) {
+          const s = Math.max(-1, Math.min(1, samples[i]));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
+        chunks.push(pcm16);
+      };
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+
+      recording = true;
+      recordStart = Date.now();
+      recordBtn.classList.add("recording");
+      recordBtn.textContent = "■";
+      enrollBtn.disabled = true;
+      recordStatus.textContent = "Recording… speak now.";
+      recordStatus.className = "status warn";
+
+      timerInterval = setInterval(() => {
+        const elapsed = (Date.now() - recordStart) / 1000;
+        timerEl.textContent = elapsed.toFixed(1) + "s";
+        if (elapsed >= 3) {
+          enrollBtn.disabled = false;
+          recordStatus.textContent = `${elapsed.toFixed(1)}s — click Enroll, or stop to record more.`;
+          recordStatus.className = "status ok";
+        }
+      }, 100);
+
+      // Level meter
+      const levelData = new Uint8Array(analyser.frequencyBinCount);
+      function updateLevel() {
+        if (!recording) return;
+        analyser.getByteFrequencyData(levelData);
+        let sum = 0;
+        for (let i = 0; i < levelData.length; i++) sum += levelData[i];
+        const avg = sum / levelData.length / 255;
+        levelFill.style.width = Math.min(100, avg * 200) + "%";
+        levelRAF = requestAnimationFrame(updateLevel);
+      }
+      updateLevel();
+    }
+
+    function stopRecording() {
+      recording = false;
+      recordBtn.classList.remove("recording");
+      recordBtn.textContent = "●";
+      clearInterval(timerInterval);
+      cancelAnimationFrame(levelRAF);
+      levelFill.style.width = "0%";
+
+      if (processor) { try { processor.disconnect(); } catch {} processor = null; }
+      if (source) { try { source.disconnect(); } catch {} source = null; }
+      if (analyser) { try { analyser.disconnect(); } catch {} analyser = null; }
+      if (audioContext) { try { audioContext.close(); } catch {} audioContext = null; }
+      if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+
+      const duration = (Date.now() - recordStart) / 1000;
+      timerEl.textContent = duration.toFixed(1) + "s";
+      if (duration >= 3) {
+        enrollBtn.disabled = false;
+        recordStatus.textContent = `Recorded ${duration.toFixed(1)}s — ready to enroll.`;
+        recordStatus.className = "status ok";
+      } else {
+        recordStatus.textContent = `Only ${duration.toFixed(1)}s — need at least 3s. Click again.`;
+        recordStatus.className = "status err";
+        enrollBtn.disabled = true;
+      }
+    }
+
+    recordBtn.addEventListener("click", () => {
+      if (recording) stopRecording();
+      else {
+        const name = nameInput.value.trim();
+        if (!name) {
+          recordStatus.textContent = "Enter a speaker name first.";
+          recordStatus.className = "status err";
+          nameInput.focus();
+          return;
+        }
+        startRecording();
+      }
+    });
+
+    // -- Enroll --
+    enrollBtn.addEventListener("click", async () => {
+      const name = nameInput.value.trim();
+      if (!name) { recordStatus.textContent = "Enter a speaker name."; recordStatus.className = "status err"; return; }
+      if (chunks.length === 0) { recordStatus.textContent = "Record audio first."; recordStatus.className = "status err"; return; }
+      if (!apiKey()) { recordStatus.textContent = "Save the API key first."; recordStatus.className = "status err"; return; }
+
+      // Merge chunks into one PCM16 buffer
+      const totalLen = chunks.reduce((s, c) => s + c.length, 0);
+      const merged = new Int16Array(totalLen);
+      let offset = 0;
+      for (const c of chunks) { merged.set(c, offset); offset += c.length; }
+
+      // Base64 encode
+      const bytes = new Uint8Array(merged.buffer);
+      let binary = "";
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+      }
+      const audio_b64 = btoa(binary);
+
+      enrollBtn.disabled = true;
+      enrollBtn.textContent = "Enrolling…";
+      recordStatus.textContent = "Computing voiceprint and saving…";
+      recordStatus.className = "status muted";
+
+      try {
+        const result = await api("/api/speakers/enroll", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, audio: audio_b64 }),
+        });
+        recordStatus.textContent = `Enrolled "${result.name}" — ${result.duration_s}s of voice saved.`;
+        recordStatus.className = "status ok";
+        chunks = [];
+        enrollBtn.textContent = "Enroll Speaker";
+        refreshSpeakers();
+      } catch (e) {
+        recordStatus.textContent = `Failed: ${e.message}`;
+        recordStatus.className = "status err";
+        enrollBtn.disabled = false;
+        enrollBtn.textContent = "Enroll Speaker";
+      }
+    });
+
+    // Stop recording if user leaves the page
+    window.addEventListener("beforeunload", () => {
+      if (recording) stopRecording();
+    });
+  })();
+  </script>
+</body>
+</html>
