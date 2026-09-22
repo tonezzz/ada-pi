@@ -68,6 +68,87 @@ OUTCOME_CONFIDENCE_DELTA = {
     "bought_bad": -0.2,
 }
 
+# Reconnect priming: when a websocket session opens, the gap since the
+# previous session ended is classified so session_prime_text can tell the
+# model how to greet the user. Boundaries are deliberately coarse — the
+# greeting should feel natural, not like a stopwatch. Scenario coverage:
+# tests/scenarios/reconnect_continuity.yaml.
+AWAY_TIER_RESUME = "resume"  # brief disconnect — pick up mid-thought
+AWAY_TIER_RETURN = "return"  # same-day hours — welcome back, offer to resume
+AWAY_TIER_RECAP = "recap"    # most of a day — offer a one-line recap
+AWAY_TIER_DAYS = "days"      # several days — greet, recap, don't assume active
+AWAY_TIER_LONG = "long"      # a week or more — treat as a fresh start
+
+_AWAY_TIERS: list[tuple[float, str]] = [
+    (15 * 60, AWAY_TIER_RESUME),
+    (4 * 3600, AWAY_TIER_RETURN),
+    (24 * 3600, AWAY_TIER_RECAP),
+    (7 * 86400, AWAY_TIER_DAYS),
+]
+
+
+def away_tier(away_seconds: float | None) -> str | None:
+    """Reconnect tier for a gap, or None for a first-ever session."""
+    if away_seconds is None or away_seconds < 0:
+        return None
+    for limit, tier in _AWAY_TIERS:
+        if away_seconds < limit:
+            return tier
+    return AWAY_TIER_LONG
+
+
+def _format_away(away_seconds: float) -> str:
+    if away_seconds < 120:
+        return "a minute or two"
+    if away_seconds < 3600:
+        return f"about {max(1, round(away_seconds / 60))} minutes"
+    if away_seconds < 86400:
+        return f"about {round(away_seconds / 3600)} hours"
+    return f"about {round(away_seconds / 86400)} days"
+
+
+def reconnect_directive(away_seconds: float | None, last_tail: str = "") -> str | None:
+    """Session note telling the model how to greet a returning user, or
+    None for a first-ever session (no prior disconnect on record)."""
+    tier = away_tier(away_seconds)
+    if tier is None:
+        return None
+    gap = _format_away(float(away_seconds))
+    if tier == AWAY_TIER_RESUME:
+        note = (
+            f"Session note: the user's connection dropped {gap} ago — this is "
+            "the same conversation resuming, not a new one. Greet them very "
+            "briefly and pick up right where you left off."
+        )
+        if last_tail.strip():
+            note += (
+                "\nConversation just before the disconnect:\n"
+                + last_tail.strip()
+            )
+        return note
+    if tier == AWAY_TIER_RETURN:
+        return (
+            f"Session note: the user is back after {gap}. Welcome them back "
+            "and offer to continue what you were discussing."
+        )
+    if tier == AWAY_TIER_RECAP:
+        return (
+            f"Session note: the user has been away for {gap}. Welcome them "
+            "back and offer a one-line recap of what you were working on, "
+            "then ask if they want to continue."
+        )
+    if tier == AWAY_TIER_DAYS:
+        return (
+            f"Session note: the user has been away for {gap}. Greet them "
+            "warmly, mention briefly what you last discussed, and ask what "
+            "they'd like to do — don't assume the old task is still active."
+        )
+    return (
+        f"Session note: the user has been away for {gap}. Treat this as a "
+        "fresh start — greet them and ask what they'd like to do. Use the "
+        "context below only if it's clearly relevant."
+    )
+
 
 def memory_meta(
     bank: MemoryBank,
@@ -526,14 +607,20 @@ async def session_prime_text(
     summary: str | None = None,
     max_facts: int = 6,
     max_chars: int = 160,
+    away_seconds: float | None = None,
+    last_tail: str = "",
 ) -> str | None:
     """Build the session-start context injection: the rolling recent-sessions
     summary plus a few facts from the personal/general banks, so Ada starts
-    aware of general info instead of blank. Returns None when there is
-    nothing worth injecting."""
+    aware of general info instead of blank. When away_seconds is set, a
+    reconnect directive is prepended so the greeting matches how long the
+    user was gone. Returns None when there is nothing worth injecting."""
     if os.environ.get("ADA_SESSION_PRIME", "1") in ("0", "false", "no"):
         return None
     parts: list[str] = []
+    directive = reconnect_directive(away_seconds, last_tail)
+    if directive:
+        parts.append(directive)
     if summary:
         parts.append(f"Recent sessions: {summary.strip()}")
     facts: list[str] = []
@@ -563,7 +650,11 @@ async def session_prime_text(
         parts.append("Known facts:\n" + "\n".join(f"- {f}" for f in facts))
     if not parts:
         return None
-    return (
-        "(system) Session context — background information only, do not "
-        "announce or answer it:\n" + "\n\n".join(parts)
+    header = (
+        "(system) Reconnect context — act on the session note below, treat "
+        "the rest as background information:"
+        if directive
+        else "(system) Session context — background information only, do not "
+        "announce or answer it:"
     )
+    return header + "\n" + "\n\n".join(parts)

@@ -97,6 +97,74 @@ def _summary_collection() -> str:
     return f"ada-ha-recall-summary-{ada_instance_id()}"
 
 
+# Reconnect continuity: a keyed marker doc records when the last websocket
+# session ended (and its transcript tail) so a service restart still knows
+# how long the user has been away. Upserted on every session close — one
+# doc, always the latest end.
+_SESSION_END_KEY = "last-session-end"
+_SESSION_END_TAIL_CHARS = 400
+
+
+async def record_session_end(
+    mddb: Any, tail: str, ended_at: float | None = None
+) -> None:
+    """Upsert the session-end marker into the recall-summary collection."""
+    from backend.instance import ada_instance_id
+    ts = float(ended_at if ended_at is not None else time.time())
+    iso = datetime.fromtimestamp(ts, timezone.utc).isoformat()
+    tail = str(tail or "").strip()[-_SESSION_END_TAIL_CHARS:]
+    try:
+        await mddb.add_document(
+            collection=_summary_collection(),
+            key=_SESSION_END_KEY,
+            lang="en",
+            content_md=(
+                f"Last voice session ended {iso}."
+                + (f"\nLast exchange:\n{tail}" if tail else "")
+            ),
+            meta={
+                "kind": ["session-end"],
+                "scope": [ada_instance_id()],
+                "ended_at": [iso],
+                "ended_at_ts": [f"{ts:.3f}"],
+                "last_tail": [tail] if tail else [],
+            },
+        )
+    except Exception as exc:
+        logger.warning("session-end marker write failed: %s", exc)
+
+
+async def last_session_end(mddb: Any) -> tuple[float | None, str]:
+    """(ended_at unix ts, transcript tail) from the persisted marker, or
+    (None, "") when no session has ended since tracking began."""
+    try:
+        doc = await mddb.get_document(_summary_collection(), _SESSION_END_KEY)
+    except Exception as exc:
+        logger.debug("session-end marker read failed: %s", exc)
+        return None, ""
+    if not doc:
+        return None, ""
+    meta = doc.get("meta") or {}
+
+    def _first(field: str) -> str:
+        v = meta.get(field) or []
+        return str(v[0] if isinstance(v, list) and v else v or "")
+
+    ts: float | None = None
+    raw = _first("ended_at_ts")
+    if raw:
+        try:
+            ts = float(raw)
+        except ValueError:
+            ts = None
+    if ts is None:
+        try:
+            ts = datetime.fromisoformat(_first("ended_at")).timestamp()
+        except ValueError:
+            pass
+    return ts, _first("last_tail")
+
+
 def _mddb():
     return MddbClient()
 
