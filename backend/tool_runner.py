@@ -1023,3 +1023,76 @@ class ToolRunner:
         if result is None:
             return {"status": "not_found", "slug": slug}
         return {"status": "deleted", "slug": slug}
+
+    async def cms_verify_page(self, slug: str) -> dict[str, Any]:
+        """Re-read a page and check its content parses for its declared format.
+
+        The assistant can't see the rendered miniapp — this is the feedback
+        loop after publish: returns a structural summary of what the viewer
+        renders, or the parse error to fix.
+        """
+        page = await self.cms_get_page(slug)
+        if page is None:
+            return {"ok": False, "status": "not_found", "slug": slug}
+        content = page["content"]
+        fmt = page["format"]
+        report: dict[str, Any] = {
+            "ok": True,
+            "slug": page["slug"],
+            "title": page["title"],
+            "format": fmt,
+            "chars": len(content),
+        }
+        if not content.strip():
+            report.update(ok=False, error="page content is empty")
+            return report
+        if fmt == "yaml":
+            try:
+                import yaml
+                data = yaml.safe_load(content)
+            except ImportError:
+                report["summary"] = {"note": "pyyaml not installed — parse check skipped"}
+                return report
+            except Exception as exc:
+                report.update(
+                    ok=False,
+                    error=f"yaml parse error: {str(exc).splitlines()[0]}",
+                )
+                return report
+            if not isinstance(data, dict):
+                report.update(
+                    ok=False,
+                    error="yaml page must be a mapping (title/sections/items)",
+                )
+                return report
+            sections = data.get("sections")
+            report["summary"] = {
+                "title": data.get("title"),
+                "subtitle": data.get("subtitle"),
+                "section_count": len(sections) if isinstance(sections, list) else 0,
+                "sections": [
+                    {
+                        "label": (s or {}).get("label") or (s or {}).get("title"),
+                        "items": len((s or {}).get("items") or []),
+                    }
+                    for s in sections
+                ] if isinstance(sections, list) else [],
+            }
+        elif fmt == "slides":
+            slides = [
+                s for s in re.split(r"^---+\s*$", content, flags=re.M) if s.strip()
+            ]
+            report["summary"] = {"slide_count": len(slides)}
+        elif fmt == "html":
+            title = re.search(r"<title[^>]*>(.*?)</title>", content, re.I | re.S)
+            report["summary"] = {
+                "title": title.group(1).strip() if title else None,
+                "has_doctype": content.lstrip().lower().startswith("<!doctype"),
+                "script_tags": len(re.findall(r"<script\b", content, re.I)),
+            }
+        else:  # markdown
+            headings = [
+                ln.strip() for ln in content.splitlines() if ln.lstrip().startswith("#")
+            ]
+            report["summary"] = {"headings": headings[:20]}
+        return report

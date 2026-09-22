@@ -165,6 +165,10 @@ def enforce_device(name: str, device_id: str) -> str | None:
     if name not in _key_entries():
         return name
     bound = bound_device(name)
+    if bound == "*":
+        # Shared key (e.g. a viewer URL embedded in a dashboard iframe):
+        # device binding is intentionally disabled for this key.
+        return name
     if bound is not None:
         return name if device_id and hmac.compare_digest(device_id, bound) else None
     if device_id:

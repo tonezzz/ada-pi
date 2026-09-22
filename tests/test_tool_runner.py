@@ -218,6 +218,39 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "deleted")
         self.runner.mddb.delete_document.assert_awaited_once_with("ada-cms-pages", "pool-notes")
 
+    async def test_verify_page_yaml_ok_and_bad(self):
+        self.runner.mddb.get_document.return_value = {
+            "key": "dash",
+            "contentMd": "title: T\nsections:\n  - label: A\n    items:\n      - label: x\n",
+            "meta": {"slug": ["dash"], "title": ["Dash"], "format": ["yaml"]},
+        }
+        report = await self.runner.execute("cms_verify_page", {"slug": "dash"})
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["summary"]["section_count"], 1)
+        self.assertEqual(report["summary"]["sections"][0]["items"], 1)
+
+        self.runner.mddb.get_document.return_value = {
+            "key": "dash",
+            "contentMd": "title: [unclosed",
+            "meta": {"slug": ["dash"], "title": ["Dash"], "format": ["yaml"]},
+        }
+        report = await self.runner.execute("cms_verify_page", {"slug": "dash"})
+        self.assertFalse(report["ok"])
+        self.assertIn("yaml", report["error"])
+
+    async def test_verify_page_not_found_and_markdown(self):
+        report = await self.runner.execute("cms_verify_page", {"slug": "missing"})
+        self.assertEqual(report["status"], "not_found")
+
+        self.runner.mddb.get_document.return_value = {
+            "key": "doc",
+            "contentMd": "# Title\n\n## Sub\ntext",
+            "meta": {"slug": ["doc"], "title": ["Doc"], "format": ["markdown"]},
+        }
+        report = await self.runner.execute("cms_verify_page", {"slug": "doc"})
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["summary"]["headings"], ["# Title", "## Sub"])
+
     async def test_read_only_blocks_publish(self):
         os.environ["ADA_READ_ONLY"] = "true"
         try:

@@ -1001,6 +1001,19 @@ async def cms_get_page(request: Request, slug: str) -> dict:
     return page
 
 
+@app.get("/api/cms/pages/{slug}/verify")
+async def cms_verify_page(request: Request, slug: str) -> dict:
+    """Parse-check a page against its declared format. Read-only, key-gated."""
+    _require_api_key(request)
+    try:
+        report = await tool_runner.cms_verify_page(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if report.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="page not found")
+    return report
+
+
 static_dir = ROOT / "frontend"
 pwa_dir = ROOT / "pwa"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")

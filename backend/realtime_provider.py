@@ -47,7 +47,8 @@ CALENDAR_TOOLS = {
 # Same constant pattern as CALENDAR_TOOLS: lets ADA_EXCLUDED_TOOLS strip the
 # CMS declarations and their instruction paragraph together.
 CMS_TOOLS = {
-    "cms_list_pages", "cms_get_page", "cms_publish_page", "cms_delete_page",
+    "cms_list_pages", "cms_get_page", "cms_verify_page",
+    "cms_publish_page", "cms_delete_page",
 }
 
 CALENDAR_INSTRUCTIONS = (
@@ -81,7 +82,10 @@ CMS_INSTRUCTIONS = (
     "cms_delete_page removes one. Page content is written as markdown, html, yaml, or slides markdown. "
     "When the user asks you to prepare a document or update a page, draft the content, "
     "restate the slug and title, get an explicit yes, then call the write tool with "
-    "confirmed=true — writes are enforced server-side."
+    "confirmed=true — writes are enforced server-side. "
+    "You cannot see the rendered site: after publishing or updating a page, call "
+    "cms_verify_page to check the content parses and confirm the structure, then "
+    "tell the user the page is live (or fix it if verification failed)."
 )
 
 
@@ -1651,6 +1655,27 @@ class GeminiLiveProvider(RealtimeProvider):
                             "slug": {
                                 "type": "string",
                                 "description": "Page slug, e.g. 'pool-notes' (from cms_list_pages).",
+                            },
+                        },
+                        "required": ["slug"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "cms_verify_page",
+                    "description": (
+                        "Verify a published miniapp page — re-reads it and checks the "
+                        "content parses for its declared format, returning a structural "
+                        "summary (title, sections/items, headings, slide count). You "
+                        "cannot see the rendered site, so call this after publishing "
+                        "or updating a page."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {
+                                "type": "string",
+                                "description": "Page slug to verify (from cms_list_pages).",
                             },
                         },
                         "required": ["slug"],

@@ -81,6 +81,36 @@ class AuthTests(unittest.TestCase):
             self.assertFalse(auth.websocket_authorized(_ws(query={"api_key": "bad"})))
             self.assertFalse(auth.websocket_authorized(_ws()))
 
+    def test_shared_star_key_skips_device_binding(self):
+        import json
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({"viewer": {"key": "viewer-key", "device": "*"}}, f)
+            path = f.name
+        try:
+            env = {"ADA_KEYS_FILE": path}
+            with patch.dict(os.environ, env, clear=True):
+                # Any device id (or none) authenticates, and nothing rebinds it.
+                self.assertEqual(
+                    auth.caller_name(_request(headers={"x-api-key": "viewer-key"})),
+                    "viewer",
+                )
+                self.assertEqual(
+                    auth.caller_name(_request(
+                        headers={"x-api-key": "viewer-key", "x-device-id": "a"})),
+                    "viewer",
+                )
+                self.assertEqual(
+                    auth.caller_name(_request(
+                        headers={"x-api-key": "viewer-key", "x-device-id": "b"})),
+                    "viewer",
+                )
+                self.assertIsNone(
+                    auth.caller_name(_request(headers={"x-api-key": "nope"}))
+                )
+        finally:
+            os.unlink(path)
+
 
 if __name__ == "__main__":
     unittest.main()
