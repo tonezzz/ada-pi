@@ -1,0 +1,24 @@
+name: reconnect-continuity-live
+# Exercises the away-time reconnect tiers against a live /ws backend via
+# ?simulate_away_s=. Greeting phrasing is model-dependent — expectations are
+# deliberately soft (response_nonempty / loose substrings).
+turns:
+  - user: "Ada, quick note: we've been discussing the garage door sensor today."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+
+  # <15m — resume tier: the greeting should reference the prior topic.
+  - reconnect: {away_s: 300}
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      response_contains: ["garage"]
+
+  # ~5 days — long-gap tier: a greeting turn, topic reference optional.
+  - reconnect: {away_s: 432000}
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      response_nonempty: true

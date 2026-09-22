@@ -1,0 +1,63 @@
+name: reconnect-continuity
+instance: tony
+description: >
+  Away-time reconnect priming — after a websocket disconnect, the injected
+  session note must match the gap tier and carry the transcript tail for
+  short interruptions.
+seed:
+  - bank: personal
+    key: fact/garage-sensor
+    text: "Tony's garage door sensor keeps dropping off Zigbee; RSSI is marginal."
+    meta: {kind: [fact], subject: [garage-door-sensor]}
+steps:
+  # First session ever — no prior disconnect, no session note at all.
+  - reconnect_after:
+    expect:
+      output_contains: ['"tier": null']
+      output_not_contains: ["Session note:"]
+
+  # <15m — resume mid-conversation; the tail is injected verbatim.
+  - say: "the garage door sensor is offline again"
+  - assistant: "I'll check the Zigbee RSSI we logged."
+  - reconnect_after: 5m
+    expect:
+      output_contains:
+        - '"tier": "resume"'
+        - "pick up right where you left off"
+        - "garage door sensor is offline again"
+        - "Known facts"
+
+  # 15m-4h — welcome back + offer to resume.
+  - say: "remind me where we were"
+  - reconnect_after: 3h
+    expect:
+      output_contains:
+        - '"tier": "return"'
+        - "Welcome them back"
+      output_not_contains: ["pick up right where"]
+
+  # 4-24h — offer a one-line recap.
+  - reconnect_after: 12h
+    expect:
+      output_contains:
+        - '"tier": "recap"'
+        - "one-line recap"
+
+  # 1-7d — greet + recap offer, don't assume the task is still active.
+  - reconnect_after: 3d
+    expect:
+      output_contains:
+        - '"tier": "days"'
+        - "don't assume the old task"
+
+  # >=7d — fresh start; context is background only.
+  - reconnect_after: 9d
+    expect:
+      output_contains:
+        - '"tier": "long"'
+        - "fresh start"
+
+  # Bad durations surface as engine errors, not silent passes.
+  - reconnect_after: soon
+    expect:
+      error_contains: "bad reconnect_after duration"
