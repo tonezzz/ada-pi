@@ -361,6 +361,60 @@ class GoogleAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tasks.googleapis.com", url)
 
 
+class SessionInstructionTests(unittest.IsolatedAsyncioTestCase):
+    """The Gemini Live session config must carry current local time — the
+    model has no intrinsic 'now', so time-sensitive tool calls depend on it."""
+
+    async def test_system_instruction_contains_current_time(self):
+        import os
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from backend.realtime_provider import GeminiLiveProvider
+
+        runner = ToolRunner(AsyncMock(), instance_id="test")
+        fake_session = AsyncMock()
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=fake_session)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        fake_client = MagicMock()
+        fake_client.aio.live.connect = MagicMock(return_value=ctx)
+
+        env = {"GEMINI_API_KEY": "test-key", "ADA_TIMEZONE": "Asia/Bangkok"}
+        with patch.dict(os.environ, env), \
+             patch("backend.realtime_provider.genai.Client", return_value=fake_client):
+            provider = GeminiLiveProvider(tool_runner=runner)
+            await provider.connect()
+
+        config = fake_client.aio.live.connect.call_args.kwargs["config"]
+        instr = config["system_instruction"]
+        self.assertIn("Current local date and time:", instr)
+        self.assertIn("+07", instr)  # Asia/Bangkok offset
+
+    async def test_excluding_calendar_tools_strips_instructions(self):
+        import os
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from backend.realtime_provider import GeminiLiveProvider, CALENDAR_TOOLS
+
+        runner = ToolRunner(AsyncMock(), instance_id="test")
+        fake_session = AsyncMock()
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=fake_session)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        fake_client = MagicMock()
+        fake_client.aio.live.connect = MagicMock(return_value=ctx)
+
+        env = {"GEMINI_API_KEY": "test-key",
+               "ADA_EXCLUDED_TOOLS": ",".join(sorted(CALENDAR_TOOLS))}
+        with patch.dict(os.environ, env), \
+             patch("backend.realtime_provider.genai.Client", return_value=fake_client):
+            provider = GeminiLiveProvider(tool_runner=runner)
+            await provider.connect()
+
+        config = fake_client.aio.live.connect.call_args.kwargs["config"]
+        names = {fd["name"] for fd in config["tools"][0]["function_declarations"]}
+        self.assertFalse(names & CALENDAR_TOOLS)
+        self.assertNotIn("calendar_list_events", config["system_instruction"])
+
+
 class CalendarGateTests(unittest.IsolatedAsyncioTestCase):
     def _runner(self):
         ha = AsyncMock()

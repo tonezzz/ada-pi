@@ -201,7 +201,14 @@ class GeminiLiveProvider(RealtimeProvider):
             "get_entity_events gives one entity's open/close timeline with durations, and "
             "ada_ha_search_events searches recorded events from memory. "
             "Use these when the user asks about the stored home state, past state, or how it has changed. "
-            "When the user asks 'what did we talk about' or 'do you remember', call ada_session_recall."
+            "When the user asks 'what did we talk about' or 'do you remember', call ada_session_recall. "
+            "Scope discipline: answer only within the scope you actually queried — a memory answer "
+            "covers memory, a calendar answer covers the date range you listed, nothing more. "
+            "Name the scope when you answer (e.g. 'from your calendar today', 'from memory') and, "
+            "when the scoped answer might be incomplete, offer to widen it (other days, tasks, "
+            "or memory). For 'what did I do / what have I been up to' questions, check the tools "
+            "that fit the topic — calendar and tasks for schedule, memory banks for facts — "
+            "instead of answering from one source alone."
             + CALENDAR_INSTRUCTIONS
         )
         self._client: Any = None
