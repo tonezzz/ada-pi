@@ -46,9 +46,9 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
         for e in events
         if e.get("type") == "assistant_transcript_delta"
     )
-    for want in expect.get("calls_any") or []:
-        if not names & {want}:
-            failures.append(f"calls_any: {want!r} not in {sorted(names)}")
+    calls_any = expect.get("calls_any") or []
+    if calls_any and not names & set(calls_any):
+        failures.append(f"calls_any: none of {calls_any} in {sorted(names)}")
     for want in expect.get("calls") or []:
         if want not in names:
             failures.append(f"calls: {want!r} not in {sorted(names)}")

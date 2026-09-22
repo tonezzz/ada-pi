@@ -22,8 +22,9 @@ turns:
     expect:
       timeout_s: 60
 
+  # 'What did I just tell you' is answerable from live context — a memory
+  # tool call is optional; the answer itself must contain the fix.
   - user: "What did I just tell you fixed it?"
     expect:
-      calls_any: [ada_memory_search, ada_session_recall]
-      timeout_s: 120
-      settle_s: 8
+      response_contains: ["restart"]
+      timeout_s: 60
