@@ -9,6 +9,7 @@ import sys
 import time
 import uuid
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -318,6 +319,9 @@ async def stop_event_recorder() -> None:
 # it to MDDB so a service restart still knows how long the user was away.
 _last_session_end: dict[str, Any] | None = None
 
+# Live /ws sessions keyed by session_id, for the transcript endpoint.
+_live_sessions: dict[str, dict[str, Any]] = {}
+
 
 async def _reconnect_context(ws: WebSocket) -> tuple[float | None, str]:
     """(away_seconds, transcript tail) since the previous session ended.
@@ -384,6 +388,11 @@ async def voice_socket(ws: WebSocket) -> None:
     # One ConversationMemory per websocket session, shared across provider
     # reconnects so the transcript survives a Gemini session swap.
     conversation = ConversationMemory(session_id)
+    _live_sessions[session_id] = {
+        "conversation": conversation,
+        "connected_at": time.time(),
+        "client": ws.client.host if ws.client else None,
+    }
     provider_ref = [create_provider(
         tool_runner=tool_runner, session_id=session_id, conversation=conversation
     )]
@@ -455,6 +464,9 @@ async def voice_socket(ws: WebSocket) -> None:
                                 logger.info("session=%s chat text turn (%d chars)", session_id, len(chat_text))
                                 try:
                                     await provider_ref[0].send_text_turn(chat_text[:4000])
+                                    # Text turns produce no input transcription,
+                                    # so record the user side explicitly.
+                                    conversation.add_user(chat_text[:4000])
                                 except Exception as exc:
                                     logger.warning("session=%s text turn failed: %s", session_id, exc)
                                     with suppress(Exception):
@@ -552,6 +564,7 @@ async def voice_socket(ws: WebSocket) -> None:
             await ws.close()
         with suppress(Exception):
             await _mark_session_end(conversation)
+        _live_sessions.pop(session_id, None)
         logger.info("session=%s closed", session_id)
 
 
@@ -880,6 +893,48 @@ async def call_tool(request: Request) -> dict:
     except Exception as exc:
         logger.warning("tool %s failed: %s", name, exc)
         return {"tool": name, "status": "error", "error": str(exc)}
+
+
+@app.get("/api/chat/transcript")
+async def chat_transcript(request: Request, max_turns: int = 200) -> dict:
+    """Live chat transcripts plus the persisted last-session tail.
+
+    Text chats only exist in process memory until the session ends and is
+    summarized into MDDB — this endpoint is the way to read them live.
+    """
+    _require_api_key(request)
+    sessions = []
+    for sid, sess in sorted(
+        _live_sessions.items(),
+        key=lambda kv: kv[1]["connected_at"],
+        reverse=True,
+    ):
+        turns = sess["conversation"].turns()
+        sessions.append({
+            "session_id": sid,
+            "connected_at": datetime.fromtimestamp(
+                sess["connected_at"], timezone.utc
+            ).isoformat(),
+            "client": sess.get("client"),
+            "turn_count": len(turns),
+            "turns": turns[-max_turns:] if max_turns > 0 else turns,
+        })
+    last_end: dict[str, Any] | None = None
+    if _last_session_end is not None:
+        last_end = {
+            "ended_at": datetime.fromtimestamp(
+                _last_session_end["ts"], timezone.utc
+            ).isoformat(),
+            "tail": _last_session_end.get("tail") or "",
+        }
+    else:
+        ts, tail = await last_session_end(tool_runner.mddb)
+        if ts is not None:
+            last_end = {
+                "ended_at": datetime.fromtimestamp(ts, timezone.utc).isoformat(),
+                "tail": tail,
+            }
+    return {"live_sessions": sessions, "last_session_end": last_end}
 
 
 @app.get("/api/cms/pages")

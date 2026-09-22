@@ -374,11 +374,15 @@ class ConversationMemory:
 
     def add_user(self, text: str) -> None:
         if text.strip():
-            self._turns.append({"role": "user", "text": text.strip()})
+            self._turns.append({"role": "user", "text": text.strip(), "ts": time.time()})
 
     def add_assistant(self, text: str) -> None:
         if text.strip():
-            self._turns.append({"role": "assistant", "text": text.strip()})
+            self._turns.append({"role": "assistant", "text": text.strip(), "ts": time.time()})
+
+    def turns(self) -> list[dict[str, Any]]:
+        """Structured transcript turns ({role, text, ts}), oldest first."""
+        return [dict(t) for t in self._turns]
 
     def recent_context(self, max_turns: int = 4, max_chars: int = 500) -> str:
         """Compact tail of this session's transcript for query expansion."""
