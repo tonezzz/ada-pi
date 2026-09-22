@@ -432,6 +432,10 @@ class ToolRunner:
         # Voice session that invoked the current tool call; the realtime
         # provider sets this so memory writes carry provenance.
         self.session_id: str | None = None
+        # HA person entity of the current speaker (set by the realtime
+        # provider from speaker ID). Used to route personal memory to the
+        # speaker's person-scoped bank instead of the instance default.
+        self.current_speaker_ha_person: str | None = None
         self._banks: MemoryBankRegistry | None = None
         self._decision_engine: DecisionCheckEngine | None = None
         self._calendar: CalendarService | None = None
@@ -888,7 +892,8 @@ class ToolRunner:
     ) -> dict[str, Any]:
         """Search a curated memory bank's MDDB collection."""
         return await memory_ops.memory_search(
-            self.mddb, self.banks, bank, query, limit, include_inactive
+            self.mddb, self.banks, bank, query, limit, include_inactive,
+            person_entity=self.current_speaker_ha_person,
         )
 
     async def ada_remember(
@@ -908,12 +913,14 @@ class ToolRunner:
             self.mddb, self.banks, self.memory.instance,
             bank, text, key, subject, attribute, kind, valid_until, applies_to,
             supersedes, session_id=self.session_id,
+            person_entity=self.current_speaker_ha_person,
         )
 
     async def ada_forget(self, bank: str, key: str, reason: str | None = None) -> dict[str, Any]:
         """Retract a memory: status becomes retracted; the doc stays auditable."""
         return await memory_ops.forget(
-            self.mddb, self.banks, bank, key, reason, session_id=self.session_id
+            self.mddb, self.banks, bank, key, reason, session_id=self.session_id,
+            person_entity=self.current_speaker_ha_person,
         )
 
     async def ada_outcome(
@@ -927,6 +934,7 @@ class ToolRunner:
         return await memory_ops.record_outcome(
             self.mddb, self.banks, bank, key, outcome, note,
             session_id=self.session_id,
+            person_entity=self.current_speaker_ha_person,
         )
 
     # -- Miniapp/CMS page tools: one MDDB document per page in CMS_COLLECTION --

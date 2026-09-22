@@ -414,6 +414,10 @@ async def voice_socket(ws: WebSocket) -> None:
                 provider = provider_ref[0]
                 provider.current_speaker = name
                 provider.current_speaker_ha_person = ha_person
+                # Sync to tool_runner so memory ops route to the speaker's
+                # person-scoped bank (e.g. personal-kk instead of personal).
+                if provider.tool_runner is not None:
+                    provider.tool_runner.current_speaker_ha_person = ha_person
                 with suppress(Exception):
                     await ws.send_text(json.dumps({
                         "type": "speaker",

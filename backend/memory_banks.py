@@ -74,7 +74,7 @@ class MemoryBank:
     name: str
     title: str
     description: str
-    scope: str  # shared | instance
+    scope: str  # shared | instance | person
     mddb_collection: str
     notebooklm_group: str | None
     notebooklm_id: str | None
@@ -83,6 +83,7 @@ class MemoryBank:
     write_policy: str  # confirmed | direct
     allowed_tools: list[str]
     status: str
+    person_scope: str | None = None  # "default" for instance owner, "person.<id>" for person-scoped
 
     def notebook(self, notebook_ids: dict[str, str]) -> str | None:
         """Resolve the deep-tier notebook id: literal id wins, else group."""
@@ -174,6 +175,7 @@ class MemoryBankRegistry:
             write_policy=str(spec.get("write_policy") or "confirmed"),
             allowed_tools=list(spec.get("allowed_tools") or []),
             status=str(spec.get("status") or "planned"),
+            person_scope=spec.get("person_scope") or None,
         )
 
     @property
@@ -192,6 +194,48 @@ class MemoryBankRegistry:
                 f"unknown or unassigned memory bank {name!r} "
                 f"(available for {self.instance}: {available})"
             ) from None
+
+    def personal_bank_name(self, person_entity: str | None) -> str:
+        """Resolve the effective personal bank name for a speaker.
+
+        If a person-scoped bank exists whose person_scope matches the
+        speaker's HA person entity, return that bank's name. Otherwise
+        return the default 'personal' bank (the instance owner's).
+        """
+        if person_entity:
+            for name, b in self._banks.items():
+                if (
+                    b.scope == "person"
+                    and b.person_scope
+                    and b.person_scope == person_entity
+                ):
+                    return name
+        return "personal"
+
+    def banks_for_person(self, person_entity: str | None) -> dict[str, MemoryBank]:
+        """All banks visible to this instance, with the personal bank
+        swapped for the speaker's person-scoped bank when one exists.
+
+        When a speaker has a person-scoped bank (e.g. personal-kk for
+        person.kk), the default 'personal' bank is excluded from the
+        returned dict so bank='all' searches and writes never cross
+        person boundaries.
+        """
+        result = dict(self._banks)
+        if person_entity:
+            scoped_name = None
+            for name, b in self._banks.items():
+                if (
+                    b.scope == "person"
+                    and b.person_scope
+                    and b.person_scope == person_entity
+                ):
+                    scoped_name = name
+                    break
+            if scoped_name and scoped_name in result:
+                # Remove the default personal bank — the scoped one replaces it
+                result.pop("personal", None)
+        return result
 
     def notebook_for(self, name: str) -> str | None:
         return self.bank(name).notebook(self.notebook_ids)

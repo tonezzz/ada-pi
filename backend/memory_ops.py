@@ -319,6 +319,7 @@ async def memory_search(
     query: str,
     limit: int = 5,
     include_inactive: bool = False,
+    person_entity: str | None = None,
 ) -> dict[str, Any]:
     """Search a curated memory bank's MDDB collection.
 
@@ -326,10 +327,15 @@ async def memory_search(
     metadata filter. Vector search failures fall back to the listing so
     recall degrades gracefully when embeddings are down.
     bank='all' fans out across every bank assigned to this instance and
-    merges hits by score — the model doesn't have to guess which bank."""
+    merges hits by score — the model doesn't have to guess which bank.
+
+    When *person_entity* is set (speaker ID active), the default 'personal'
+    bank is swapped for the speaker's person-scoped bank (e.g. personal-kk)
+    in both single-bank and bank='all' modes, so personal memory never
+    crosses person boundaries."""
     q = str(query or "").strip()
     if str(bank).lower() in ("all", "*"):
-        banks = list(registry.banks().values())
+        banks = list(registry.banks_for_person(person_entity).values())
         results = await asyncio.gather(
             *(
                 _bank_docs(mddb, b, q, limit, include_inactive)
@@ -358,6 +364,9 @@ async def memory_search(
             "degraded": degraded,
         }
 
+    # Resolve personal → person-scoped bank when speaker is identified
+    if str(bank) == "personal" and person_entity:
+        bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
     docs, degraded = await _bank_docs(mddb, b, q, limit, include_inactive)
     hits = []
@@ -432,10 +441,16 @@ async def record_outcome(
     outcome: str,
     note: str | None = None,
     session_id: str | None = None,
+    person_entity: str | None = None,
 ) -> dict[str, Any]:
     """Record how applied knowledge turned out — the verify stage that
     closes the learn->apply loop. Sets meta outcome, nudges confidence per
-    OUTCOME_CONFIDENCE_DELTA, and bumps last_verified on good outcomes."""
+    OUTCOME_CONFIDENCE_DELTA, and bumps last_verified on good outcomes.
+
+    When *person_entity* is set and bank is 'personal', the outcome is
+    recorded on the speaker's person-scoped bank."""
+    if str(bank) == "personal" and person_entity:
+        bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
     outcome = str(outcome)
     delta = OUTCOME_CONFIDENCE_DELTA.get(outcome)
@@ -488,8 +503,15 @@ async def remember(
     applies_to: list[str] | str | None = None,
     supersedes: str | None = None,
     session_id: str | None = None,
+    person_entity: str | None = None,
 ) -> dict[str, Any]:
-    """Write a memory to a bank: create, correct-in-place, or supersede."""
+    """Write a memory to a bank: create, correct-in-place, or supersede.
+
+    When *person_entity* is set and bank is 'personal', the write is routed
+    to the speaker's person-scoped bank (e.g. personal-kk) so personal
+    memories never cross person boundaries."""
+    if str(bank) == "personal" and person_entity:
+        bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
     if str(kind or "note") not in b.kinds:
         raise ValueError(
@@ -598,8 +620,14 @@ async def forget(
     key: str,
     reason: str | None = None,
     session_id: str | None = None,
+    person_entity: str | None = None,
 ) -> dict[str, Any]:
-    """Retract a memory: status becomes retracted; the doc stays auditable."""
+    """Retract a memory: status becomes retracted; the doc stays auditable.
+
+    When *person_entity* is set and bank is 'personal', the retraction
+    targets the speaker's person-scoped bank."""
+    if str(bank) == "personal" and person_entity:
+        bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
     doc = await mddb.get_document(b.mddb_collection, str(key))
     if doc is None:

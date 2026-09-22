@@ -173,11 +173,18 @@ class GeminiLiveProvider(RealtimeProvider):
                  home_assistant_client: Any = None, habit_state_getter: Any = None,
                  session_id: str | None = None,
                  conversation: ConversationMemory | None = None) -> None:
+        # Speaker ID state — initialized before tool_runner so the sync below works
+        self.current_speaker: str | None = None
+        self.current_speaker_ha_person: str | None = None
         if tool_runner is None and home_assistant_client is not None:
             tool_runner = ToolRunner(home_assistant_client, habit_state_getter)
         self.tool_runner = tool_runner
         if self.tool_runner is not None:
             self.tool_runner.session_id = session_id
+            # Inherit the tool_runner's current speaker person so memory
+            # routing survives provider reconnects. The _on_speaker
+            # callback updates this when a new speaker is identified.
+            self.current_speaker_ha_person = self.tool_runner.current_speaker_ha_person
         self.home_assistant_client = home_assistant_client
         self.habit_state_getter = habit_state_getter
         # Callers may share one ConversationMemory across provider reconnects
@@ -279,8 +286,7 @@ class GeminiLiveProvider(RealtimeProvider):
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
         self._response_active = False
-        self.current_speaker: str | None = None
-        self.current_speaker_ha_person: str | None = None
+        # current_speaker / current_speaker_ha_person initialized in __init__ prologue
 
     def _memory_bank_names(self) -> tuple[str, str]:
         """Comma-joined bank names visible to this instance, for tool
