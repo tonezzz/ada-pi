@@ -193,6 +193,13 @@ def _warn_unknown_meta(registry: MemoryBankRegistry, meta: dict[str, list[str]])
         )
 
 
+def _must(res: Any, what: str) -> None:
+    # mddb write helpers return None on failure; surface it instead of
+    # reporting a successful write.
+    if res is None:
+        raise RuntimeError(f"mddb write failed: {what}")
+
+
 def _draft_visible(bank: MemoryBank, doc: dict[str, Any], instance: str) -> bool:
     """True when a status=draft doc may surface in recall: only for
     allowlisted banks, only the extracting instance's own docs, only
@@ -456,7 +463,8 @@ async def record_outcome(
     if session_id and session_id != "unknown":
         meta["outcome_session"] = [session_id]
     _warn_unknown_meta(registry, meta)
-    await mddb.update_document(b.mddb_collection, str(key), meta=meta)
+    _must(await mddb.update_document(b.mddb_collection, str(key), meta=meta),
+          f"update {b.mddb_collection}/{key}")
     return {
         "verb": "outcome",
         "bank": b.name,
@@ -509,11 +517,15 @@ async def remember(
         meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies, session_id)
         _warn_unknown_meta(registry, meta)
         meta["supersedes"] = [str(supersedes)]
-        await mddb.add_document(b.mddb_collection, new_key, "en", str(text), meta)
+        _must(await mddb.add_document(
+            b.mddb_collection, new_key, "en", str(text), meta),
+            f"add {b.mddb_collection}/{new_key}")
         old_meta = dict(old.get("meta") or {})
         old_meta["status"] = ["superseded"]
         old_meta["superseded_by"] = [new_key]
-        await mddb.update_document(b.mddb_collection, str(supersedes), meta=old_meta)
+        _must(await mddb.update_document(
+            b.mddb_collection, str(supersedes), meta=old_meta),
+            f"supersede-mark {b.mddb_collection}/{supersedes}")
         return {
             "verb": "supersede",
             "bank": b.name,
@@ -569,11 +581,13 @@ async def remember(
                 meta[keep] = old_meta[keep]
         if kind is None and "kind" in old_meta:
             meta["kind"] = old_meta["kind"]
-        await mddb.update_document(
+        _must(await mddb.update_document(
             b.mddb_collection, target_key, content_md=str(text), meta=meta
-        )
+        ), f"correct {b.mddb_collection}/{target_key}")
         return {"verb": "correct", "bank": b.name, "key": target_key}
-    await mddb.add_document(b.mddb_collection, target_key, "en", str(text), meta)
+    _must(await mddb.add_document(
+        b.mddb_collection, target_key, "en", str(text), meta),
+        f"add {b.mddb_collection}/{target_key}")
     return {"verb": "create", "bank": b.name, "key": target_key}
 
 
@@ -597,7 +611,8 @@ async def forget(
         meta["retracted_reason"] = [str(reason)]
     if session_id and session_id != "unknown":
         meta["retracted_by_session"] = [session_id]
-    await mddb.update_document(b.mddb_collection, str(key), meta=meta)
+    _must(await mddb.update_document(b.mddb_collection, str(key), meta=meta),
+          f"retract {b.mddb_collection}/{key}")
     return {"verb": "retract", "bank": b.name, "key": str(key)}
 
 

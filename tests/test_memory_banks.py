@@ -193,6 +193,26 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[0], "ada-ha-bank-personal-tony")
         self.assertEqual(args[4]["scope"], ["test"])
 
+    async def test_mddb_write_failure_propagates(self):
+        self.runner.mddb.add_document.return_value = None
+        with self.assertRaises(RuntimeError):
+            await self.runner.execute(
+                "ada_remember", {"bank": "personal", "text": "x"}
+            )
+
+    async def test_mddb_update_failure_propagates(self):
+        self.runner.mddb.get_document.return_value = {
+            "key": "personal/gate-remote-location",
+            "meta": {"status": ["active"]},
+        }
+        self.runner.mddb.update_document.return_value = None
+        with self.assertRaises(RuntimeError):
+            await self.runner.execute(
+                "ada_remember",
+                {"bank": "personal", "key": "personal/gate-remote-location",
+                 "text": "fixed"},
+            )
+
     async def test_readonly_bank_denied(self):
         with self.assertRaises(PermissionError):
             await self.runner.execute(
