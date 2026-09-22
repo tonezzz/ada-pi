@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1a1a2e">
+  <title>Ada Pages</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { theme: { extend: { colors: { bg: '#1a1a2e', card: '#16213e', accent: '#0a84ff' } } } };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12/lib/marked.umd.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+  <style>
+    .prose-ada h1 { font-size: 1.6rem; font-weight: 700; color: #fff; margin: 1rem 0 .5rem; }
+    .prose-ada h2 { font-size: 1.3rem; font-weight: 600; color: #fff; margin: 1rem 0 .5rem; }
+    .prose-ada h3 { font-size: 1.1rem; font-weight: 600; color: #e2e8f0; margin: .75rem 0 .4rem; }
+    .prose-ada p  { margin: .5rem 0; color: #cbd5e1; }
+    .prose-ada ul, .prose-ada ol { margin: .5rem 0 .5rem 1.4rem; color: #cbd5e1; }
+    .prose-ada ul { list-style: disc; } .prose-ada ol { list-style: decimal; }
+    .prose-ada code { background: #0f172a; padding: .1em .35em; border-radius: .3rem; font-size: .85em; }
+    .prose-ada pre { background: #0f172a; padding: .75rem; border-radius: .5rem; overflow-x: auto; margin: .6rem 0; }
+    .prose-ada pre code { background: none; padding: 0; }
+    .prose-ada a { color: #38bdf8; } .prose-ada a:hover { text-decoration: underline; }
+    .prose-ada table { border-collapse: collapse; margin: .6rem 0; }
+    .prose-ada th, .prose-ada td { border: 1px solid #334155; padding: .35rem .7rem; font-size: .9rem; }
+    .prose-ada blockquote { border-left: 3px solid #0a84ff; padding-left: .8rem; color: #94a3b8; margin: .6rem 0; }
+  </style>
+</head>
+<body class="bg-bg text-slate-100 min-h-screen">
+  <nav class="bg-card border-b border-slate-700 px-4 py-3 flex items-center gap-3">
+    <a href="../" class="text-sky-400 hover:text-sky-300">&larr; Ada</a>
+    <span class="text-slate-500">|</span>
+    <span class="font-semibold">Pages</span>
+    <button id="btn-refresh" class="ml-auto text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Refresh</button>
+  </nav>
+
+  <div class="max-w-6xl mx-auto p-4 md:flex md:gap-6">
+    <aside class="md:w-64 shrink-0 mb-6 md:mb-0">
+      <h2 class="text-xs uppercase tracking-wide text-slate-500 mb-2">Pages</h2>
+      <div id="page-list" class="space-y-1 text-sm"></div>
+    </aside>
+    <main class="flex-1 min-w-0">
+      <div id="content" class="text-slate-400">Loading…</div>
+    </main>
+  </div>
+
+  <div id="unlock-overlay" class="fixed inset-0 bg-black/70 flex items-center justify-center" hidden>
+    <div class="bg-card border border-slate-700 rounded-xl p-6 w-80">
+      <h2 class="font-semibold mb-1">Unlock Pages</h2>
+      <p id="unlock-hint" class="text-sm text-slate-400 mb-3">Enter an Ada API key.</p>
+      <input id="unlock-key" type="password" class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm mb-2" placeholder="API key">
+      <p id="unlock-error" class="text-xs text-red-400 mb-2"></p>
+      <button id="unlock-submit" class="w-full bg-accent text-white rounded py-2 text-sm font-semibold">Unlock</button>
+    </div>
+  </div>
+
+<script>
+"use strict";
+const AUTH_KEY = "ada_api_key";       // shared with the voice PWA (same origin)
+const DEVICE_KEY = "ada_device_id";
+
+function getDeviceId() {
+  let id = localStorage.getItem(DEVICE_KEY);
+  if (!id) {
+    id = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`).replace(/-/g, "");
+    localStorage.setItem(DEVICE_KEY, id);
+  }
+  return id;
+}
+
+function getApiKey() {
+  const params = new URLSearchParams(location.search);
+  const fromUrl = params.get("api_key");
+  if (fromUrl) {
+    localStorage.setItem(AUTH_KEY, fromUrl);
+    params.delete("api_key");
+    const clean = params.toString();
+    history.replaceState(null, "", location.pathname + (clean ? `?${clean}` : "") + location.hash);
+  }
+  return localStorage.getItem(AUTH_KEY) || "";
+}
+
+// API lives on the app root: /api/... direct on mn01, or
+// /apps/ha/ada-*/api/... through the Caddy proxy (prefix stripped upstream).
+function cmsBasePath() {
+  return location.pathname.replace(/\/cms\/?$/, "") || "/";
+}
+const API_BASE = cmsBasePath() === "/" ? "" : cmsBasePath();
+
+function apiFetch(path) {
+  return fetch(`${API_BASE}${path}`, {
+    headers: { "x-api-key": getApiKey(), "x-device-id": getDeviceId() },
+  });
+}
+
+function escapeHtml(t) {
+  if (t == null) return "";
+  return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function showUnlock(msg) {
+  const o = document.getElementById("unlock-overlay");
+  o.hidden = false;
+  document.getElementById("unlock-hint").textContent = msg || "Enter an Ada API key.";
+  document.getElementById("unlock-key").focus();
+}
+
+document.getElementById("unlock-submit").addEventListener("click", () => {
+  const k = document.getElementById("unlock-key").value.trim();
+  if (!k) return;
+  localStorage.setItem(AUTH_KEY, k);
+  document.getElementById("unlock-overlay").hidden = true;
+  loadPages();
+});
+document.getElementById("unlock-key").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("unlock-submit").click();
+});
+document.getElementById("btn-refresh").addEventListener("click", loadPages);
+window.addEventListener("hashchange", renderRoute);
+
+let pages = [];
+
+async function loadPages() {
+  const list = document.getElementById("page-list");
+  try {
+    const res = await apiFetch("/api/cms/pages?limit=100");
+    if (res.status === 401) { showUnlock("API key required (or invalid for this device)."); return; }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    pages = (await res.json()).pages || [];
+    list.innerHTML = "";
+    if (!pages.length) {
+      list.innerHTML = '<div class="text-slate-500 italic">No pages yet — ask Ada to create one.</div>';
+    }
+    for (const p of pages) {
+      const a = document.createElement("a");
+      a.href = `#/${encodeURIComponent(p.slug)}`;
+      a.className = "block px-2 py-1.5 rounded hover:bg-slate-800 truncate";
+      a.innerHTML = `<span class="text-slate-200">${escapeHtml(p.title)}</span>
+        <span class="text-xs text-slate-500 ml-1">${escapeHtml(p.format || "markdown")}</span>`;
+      list.appendChild(a);
+    }
+    renderRoute();
+  } catch (err) {
+    document.getElementById("content").innerHTML =
+      `<div class="text-red-400">Error loading pages: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function renderRoute() {
+  const slug = decodeURIComponent((location.hash.match(/^#\/(.+)$/) || [])[1] || "");
+  const el = document.getElementById("content");
+  if (!slug) {
+    el.innerHTML = pages.length
+      ? '<div class="text-slate-500 italic">Pick a page on the left.</div>'
+      : '<div class="text-slate-500 italic">No pages yet.</div>';
+    return;
+  }
+  el.textContent = "Loading…";
+  try {
+    const res = await apiFetch(`/api/cms/pages/${encodeURIComponent(slug)}`);
+    if (res.status === 401) { showUnlock(); return; }
+    if (res.status === 404) { el.innerHTML = `<div class="text-slate-500">Page not found: ${escapeHtml(slug)}</div>`; return; }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    renderPage(el, await res.json());
+  } catch (err) {
+    el.innerHTML = `<div class="text-red-400">Error: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderPage(el, page) {
+  el.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "mb-5";
+  head.innerHTML = `<h1 class="text-2xl font-bold text-white">${escapeHtml(page.title)}</h1>
+    <div class="text-xs text-slate-500 mt-1">${escapeHtml(page.slug)} · ${escapeHtml(page.format)}${page.updated ? " · updated " + escapeHtml(page.updated) : ""}</div>`;
+  el.appendChild(head);
+
+  const body = document.createElement("div");
+  el.appendChild(body);
+  const fmt = (page.format || "markdown").toLowerCase();
+  if (fmt === "html") renderHtml(body, page.content);
+  else if (fmt === "yaml") renderYaml(body, page.content);
+  else if (fmt === "slides") renderSlides(body, page.content);
+  else renderMarkdown(body, page.content);
+}
+
+function renderMarkdown(el, md) {
+  const d = document.createElement("div");
+  d.className = "prose-ada";
+  d.innerHTML = DOMPurify.sanitize(marked.parse(md || ""));
+  el.appendChild(d);
+}
+
+function renderHtml(el, html) {
+  // Ada-authored raw HTML renders in an isolated sandbox — scripts run but
+  // cannot reach this app's origin, storage, or API credentials.
+  const f = document.createElement("iframe");
+  f.className = "w-full rounded-lg border border-slate-700 bg-white";
+  f.style.minHeight = "70vh";
+  f.setAttribute("sandbox", "allow-scripts");
+  f.srcdoc = html || "";
+  el.appendChild(f);
+}
+
+function renderSlides(el, md) {
+  const slides = (md || "").split(/^---\s*$/m);
+  slides.forEach((s, i) => {
+    const card = document.createElement("section");
+    card.className = "bg-card border border-slate-700 rounded-xl p-8 mb-6 min-h-[40vh] prose-ada";
+    card.innerHTML = `<div class="text-xs text-slate-500 mb-3">${i + 1} / ${slides.length}</div>`
+      + DOMPurify.sanitize(marked.parse(s));
+    el.appendChild(card);
+  });
+}
+
+// Chaba-style structured page: sections[] with layout list|grid|timeline and
+// items[] carrying label/text/url/status/priority/tags/subtasks.
+function renderYaml(el, src) {
+  let data;
+  try {
+    data = jsyaml.load(src || "");
+  } catch (err) {
+    el.innerHTML = `<div class="text-red-400">YAML parse error: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  if (!data || typeof data !== "object") {
+    el.innerHTML = '<div class="text-slate-500 italic">Empty page.</div>';
+    return;
+  }
+  if (data.subtitle) {
+    const p = document.createElement("p");
+    p.className = "text-slate-400 mb-4";
+    p.textContent = data.subtitle;
+    el.appendChild(p);
+  }
+  (data.sections || []).forEach((section) => {
+    const sec = document.createElement("section");
+    sec.className = "bg-card border border-slate-700 rounded-xl p-4 mb-4";
+    sec.innerHTML = `<h2 class="text-lg font-semibold mb-3">${section.icon ? escapeHtml(section.icon) + " " : ""}${escapeHtml(section.title || "")}</h2>`;
+    const items = section.items || [];
+    const wrap = document.createElement("div");
+    if (section.layout === "grid") wrap.className = "grid grid-cols-1 md:grid-cols-2 gap-3";
+    else if (section.layout === "timeline") wrap.className = "border-l-2 border-slate-600 pl-4 space-y-3";
+    else wrap.className = "space-y-3";
+    items.forEach((item) => wrap.appendChild(renderYamlItem(item)));
+    if (!items.length) wrap.innerHTML = '<p class="text-slate-500 text-sm italic">No items.</p>';
+    sec.appendChild(wrap);
+    el.appendChild(sec);
+  });
+}
+
+const STATUS_COLORS = {
+  completed: "bg-green-900 text-green-200 border-green-700",
+  active: "bg-sky-900 text-sky-200 border-sky-700",
+  in_progress: "bg-yellow-900 text-yellow-200 border-yellow-700",
+  planned: "bg-slate-700 text-slate-300 border-slate-600",
+  pending: "bg-slate-700 text-slate-300 border-slate-600",
+  not_started: "bg-slate-700 text-slate-300 border-slate-600",
+};
+
+function badge(status) {
+  const s = (status || "").toLowerCase();
+  if (!s) return "";
+  const c = STATUS_COLORS[s] || "bg-slate-700 text-slate-300 border-slate-600";
+  return `<span class="text-xs px-1.5 py-0.5 rounded border ${c}">${escapeHtml(status)}</span>`;
+}
+
+function renderYamlItem(item) {
+  const div = document.createElement("div");
+  div.className = "border-l-4 pl-3 " + (
+    item.status === "active" ? "border-sky-500"
+    : item.priority === "high" ? "border-red-500"
+    : item.priority === "medium" ? "border-yellow-500"
+    : "border-slate-600");
+  const label = item.url
+    ? `<a class="font-semibold text-sky-400 hover:underline" href="${escapeHtml(item.url)}">${escapeHtml(item.label)}</a>`
+    : `<span class="font-semibold">${escapeHtml(item.label)}</span>`;
+  const tags = (item.tags || []).map(t =>
+    `<span class="text-xs px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">${escapeHtml(t)}</span>`).join(" ");
+  div.innerHTML = `<div class="flex items-center gap-2 flex-wrap">${label} ${badge(item.status)} ${tags}</div>`;
+  if (item.text) {
+    const p = document.createElement("p");
+    p.className = "text-slate-300 text-sm mt-1";
+    p.textContent = item.text;
+    div.appendChild(p);
+  }
+  if (item.subtasks && item.subtasks.length) {
+    const ul = document.createElement("ul");
+    ul.className = "mt-2 space-y-1";
+    item.subtasks.forEach((st) => {
+      const li = document.createElement("li");
+      li.className = "flex items-start gap-2 text-sm text-slate-300";
+      li.innerHTML = `${badge(st.status)} <span>${escapeHtml(st.label)}</span>`;
+      ul.appendChild(li);
+    });
+    div.appendChild(ul);
+  }
+  return div;
+}
+
+loadPages();
+</script>
+</body>
+</html>

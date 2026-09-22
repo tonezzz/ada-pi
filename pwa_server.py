@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import sys
+import time
 import uuid
 from contextlib import suppress
 from pathlib import Path
@@ -19,7 +20,12 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.conversation_memory import ConversationMemory, recent_summary
+from backend.conversation_memory import (
+    ConversationMemory,
+    last_session_end,
+    recent_summary,
+    record_session_end,
+)
 from backend.realtime_provider import create_provider
 from backend import memory_ops
 from backend.home_assistant import HomeAssistantClient
@@ -307,12 +313,56 @@ async def stop_event_recorder() -> None:
     await tool_runner.events.stop()
 
 
-async def _prime_session(provider: Any) -> None:
+# Reconnect continuity: the previous websocket session's end timestamp and
+# transcript tail. In-memory is the fast path; _mark_session_end also mirrors
+# it to MDDB so a service restart still knows how long the user was away.
+_last_session_end: dict[str, Any] | None = None
+
+
+async def _reconnect_context(ws: WebSocket) -> tuple[float | None, str]:
+    """(away_seconds, transcript tail) since the previous session ended.
+
+    ?simulate_away_s=<seconds> forces a gap — used by tests/scenarios-live
+    to exercise reconnect tiers without waiting real days."""
+    sim = ws.query_params.get("simulate_away_s")
+    if sim is not None:
+        try:
+            return max(0.0, float(sim)), ""
+        except (TypeError, ValueError):
+            pass
+    if _last_session_end is not None:
+        return (
+            time.time() - float(_last_session_end["ts"]),
+            str(_last_session_end.get("tail") or ""),
+        )
+    ts, tail = await last_session_end(tool_runner.mddb)
+    if ts is None:
+        return None, ""
+    return time.time() - ts, tail
+
+
+async def _mark_session_end(conversation: ConversationMemory) -> None:
+    global _last_session_end
+    tail = conversation.recent_context(max_turns=6, max_chars=800)
+    _last_session_end = {"ts": time.time(), "tail": tail}
+    await record_session_end(tool_runner.mddb, tail)
+
+
+async def _prime_session(
+    provider: Any, reconnect: tuple[float | None, str] | None = None
+) -> None:
     """Inject session-start context (recent-sessions summary + top personal/
-    general memories) so Ada starts aware of general info instead of blank."""
+    general memories) so Ada starts aware of general info instead of blank.
+    On websocket connect, reconnect=(away_seconds, tail) adds a directive so
+    the greeting matches how long the user was gone."""
     try:
+        away_s, tail = reconnect if reconnect else (None, "")
         text = await memory_ops.session_prime_text(
-            tool_runner.mddb, tool_runner.banks, summary=recent_summary()
+            tool_runner.mddb,
+            tool_runner.banks,
+            summary=recent_summary(),
+            away_seconds=away_s,
+            last_tail=tail,
         )
         if text:
             await provider.send_text_turn(text)
@@ -827,6 +877,26 @@ async def call_tool(request: Request) -> dict:
     except Exception as exc:
         logger.warning("tool %s failed: %s", name, exc)
         return {"tool": name, "status": "error", "error": str(exc)}
+
+
+@app.get("/api/cms/pages")
+async def cms_list_pages(request: Request, limit: int = 50) -> dict:
+    """List miniapp pages (slug/title/format/updated). Read-only, key-gated."""
+    _require_api_key(request)
+    return {"pages": await tool_runner.cms_list_pages(limit=limit)}
+
+
+@app.get("/api/cms/pages/{slug}")
+async def cms_get_page(request: Request, slug: str) -> dict:
+    """Fetch one miniapp page's content by slug. Read-only, key-gated."""
+    _require_api_key(request)
+    try:
+        page = await tool_runner.cms_get_page(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if page is None:
+        raise HTTPException(status_code=404, detail="page not found")
+    return page
 
 
 static_dir = ROOT / "frontend"

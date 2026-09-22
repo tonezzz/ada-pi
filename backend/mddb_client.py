@@ -146,3 +146,21 @@ class MddbClient:
         except Exception as exc:
             logger.error("mddb update_document failed: %s", exc)
             return None
+
+    async def delete_document(
+        self, collection: str, key: str, lang: str = "en"
+    ) -> dict[str, Any] | None:
+        try:
+            resp = await self._client.post(
+                f"{self.base_url}/delete",
+                json={"collection": collection, "key": key, "lang": lang},
+            )
+            if resp.status_code == 404 or (
+                resp.status_code == 400 and "not found" in resp.text.lower()
+            ):
+                return None
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            logger.error("mddb delete_document failed: %s", exc)
+            return None

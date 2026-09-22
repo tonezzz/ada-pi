@@ -45,6 +45,14 @@ CALENDAR_WRITE_TOOLS = {
     "tasks_add", "tasks_complete",
 }
 
+# Miniapp/CMS page writes: publishing or deleting a page changes what the
+# miniapp renders, so all writes require confirmed=true.
+CMS_WRITE_TOOLS = {"cms_publish_page", "cms_delete_page"}
+
+CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
+CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
 CONTROL_RATE_WINDOW_S = float(os.environ.get("ADA_CONTROL_RATE_WINDOW_S", "60"))
 CONTROL_MAX_PER_ENTITY = int(os.environ.get("ADA_CONTROL_MAX_PER_ENTITY", "5"))
 CONTROL_MAX_GLOBAL = int(os.environ.get("ADA_CONTROL_MAX_GLOBAL", "30"))
@@ -467,6 +475,9 @@ class ToolRunner:
         elif name in CALENDAR_WRITE_TOOLS:
             confirmed = call_args.pop("confirmed", None)
             self._check_calendar_write_allowed(name, call_args, confirmed)
+        elif name in CMS_WRITE_TOOLS:
+            confirmed = call_args.pop("confirmed", None)
+            self._check_cms_write_allowed(name, call_args, confirmed)
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
         return await method(**call_args)
@@ -566,6 +577,20 @@ class ToolRunner:
             raise PermissionError(
                 f"{name} requires confirmation. Restate the details to the user, "
                 "get an explicit yes, then call again with confirmed=true."
+            )
+
+    def _check_cms_write_allowed(
+        self, name: str, args: dict[str, Any], confirmed: Any,
+    ) -> None:
+        """Server-side gate for miniapp page writes. Raises PermissionError on denial."""
+        if os.environ.get("ADA_READ_ONLY") == "true":
+            logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
+            raise PermissionError("CMS writes are disabled (ADA_READ_ONLY=true)")
+        if confirmed is not True:
+            logger.warning("denied %s %r: CMS write without confirmed=true", name, args)
+            raise PermissionError(
+                f"{name} requires confirmation. Restate the page slug, title, and "
+                "what will change, get an explicit yes, then call again with confirmed=true."
             )
 
     # -- Calendar / tasks tools (provider-agnostic; see ssot.apps.ada-calendar.yml) --
@@ -897,3 +922,98 @@ class ToolRunner:
             self.mddb, self.banks, bank, key, outcome, note,
             session_id=self.session_id,
         )
+
+    # -- Miniapp/CMS page tools: one MDDB document per page in CMS_COLLECTION --
+    # Meta carries the page contract the miniapp shell renders: slug, title,
+    # format (markdown/html/yaml/slides), and the last-updated timestamp.
+
+    @staticmethod
+    def _cms_slug(slug: str) -> str:
+        s = (slug or "").strip().lower().replace(" ", "-")
+        if not _SLUG_RE.match(s):
+            raise ValueError(
+                f"invalid page slug {slug!r}: use 1-64 chars of a-z, 0-9, '-' or '_'"
+            )
+        return s
+
+    @staticmethod
+    def _cms_page_summary(doc: dict[str, Any]) -> dict[str, Any]:
+        meta = doc.get("meta") or {}
+
+        def first(name: str) -> str | None:
+            v = meta.get(name)
+            if isinstance(v, list) and v:
+                return str(v[0])
+            return str(v) if isinstance(v, str) else None
+
+        return {
+            "slug": first("slug") or doc.get("key"),
+            "title": first("title") or doc.get("key"),
+            "format": first("format") or "markdown",
+            "updated": first("updated"),
+        }
+
+    async def cms_list_pages(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List pages in the miniapp CMS collection."""
+        docs = await self.mddb.search_documents(
+            CMS_COLLECTION, filter_meta={"kind": ["page"]}, limit=limit
+        )
+        return [self._cms_page_summary(d) for d in docs]
+
+    async def cms_get_page(self, slug: str) -> dict[str, Any] | None:
+        """Fetch one page's content and metadata by slug."""
+        doc = await self.mddb.get_document(CMS_COLLECTION, self._cms_slug(slug))
+        if not doc:
+            return None
+        page = self._cms_page_summary(doc)
+        page["content"] = doc.get("contentMd") or doc.get("content") or ""
+        return page
+
+    async def cms_publish_page(
+        self,
+        slug: str,
+        title: str,
+        content: str,
+        format: str = "markdown",
+    ) -> dict[str, Any]:
+        """Create or update a miniapp page. Upserts by slug."""
+        slug = self._cms_slug(slug)
+        fmt = (format or "markdown").strip().lower()
+        if fmt not in CMS_FORMATS:
+            raise ValueError(
+                f"invalid format {format!r}: expected one of {sorted(CMS_FORMATS)}"
+            )
+        if not (title or "").strip():
+            raise ValueError("title is required")
+        updated = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        result = await self.mddb.add_document(
+            CMS_COLLECTION,
+            slug,
+            "en",
+            content,
+            meta={
+                "kind": ["page"],
+                "slug": [slug],
+                "title": [title.strip()],
+                "format": [fmt],
+                "updated": [updated],
+                "instance": [self._instance_id or "ada"],
+            },
+        )
+        if result is None:
+            return {"status": "error", "error": "mddb write failed", "slug": slug}
+        return {
+            "status": "published",
+            "slug": slug,
+            "title": title.strip(),
+            "format": fmt,
+            "updated": updated,
+        }
+
+    async def cms_delete_page(self, slug: str) -> dict[str, Any]:
+        """Delete a miniapp page by slug."""
+        slug = self._cms_slug(slug)
+        result = await self.mddb.delete_document(CMS_COLLECTION, slug)
+        if result is None:
+            return {"status": "not_found", "slug": slug}
+        return {"status": "deleted", "slug": slug}

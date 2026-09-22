@@ -44,6 +44,12 @@ CALENDAR_TOOLS = {
     "tasks_list", "tasks_add", "tasks_complete",
 }
 
+# Same constant pattern as CALENDAR_TOOLS: lets ADA_EXCLUDED_TOOLS strip the
+# CMS declarations and their instruction paragraph together.
+CMS_TOOLS = {
+    "cms_list_pages", "cms_get_page", "cms_publish_page", "cms_delete_page",
+}
+
 CALENDAR_INSTRUCTIONS = (
     " You have calendar and task tools backed by the user's configured providers: "
     "calendar_list_calendars shows which calendars exist, "
@@ -60,6 +66,16 @@ CALENDAR_INSTRUCTIONS = (
     "If a calendar tool reports an auth error, say the calendar provider needs re-authentication "
     "and stop retrying. Event and task ids are provider-qualified (e.g. 'google:primary/abc') — "
     "pass them back exactly as returned."
+)
+
+CMS_INSTRUCTIONS = (
+    " You maintain the user's miniapp — a small multi-page site whose pages you own. "
+    "cms_list_pages lists existing pages, cms_get_page reads one, "
+    "cms_publish_page creates or fully replaces a page (slugs are lowercase, e.g. 'pool-notes'), and "
+    "cms_delete_page removes one. Page content is written as markdown, html, yaml, or slides markdown. "
+    "When the user asks you to prepare a document or update a page, draft the content, "
+    "restate the slug and title, get an explicit yes, then call the write tool with "
+    "confirmed=true — writes are enforced server-side."
 )
 
 
@@ -242,6 +258,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "that fit the topic — calendar and tasks for schedule, memory banks for facts — "
             "instead of answering from one source alone."
             + CALENDAR_INSTRUCTIONS
+            + CMS_INSTRUCTIONS
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -1542,6 +1559,100 @@ class GeminiLiveProvider(RealtimeProvider):
                         "required": ["task_id"],
                         "additionalProperties": False,
                     },
+                }, {
+                    "name": "cms_list_pages",
+                    "description": (
+                        "List the pages in the user's miniapp. Returns each page's "
+                        "slug, title, format, and last-updated timestamp."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max pages to return (default 50).",
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "cms_get_page",
+                    "description": (
+                        "Read one miniapp page by slug — returns its title, format, "
+                        "and full content. Use before updating a page."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {
+                                "type": "string",
+                                "description": "Page slug, e.g. 'pool-notes' (from cms_list_pages).",
+                            },
+                        },
+                        "required": ["slug"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "cms_publish_page",
+                    "description": (
+                        "Create or fully replace a page in the user's miniapp. The slug "
+                        "is the page's URL-friendly id; publishing an existing slug "
+                        "overwrites it. Restate the slug, title, and what will change, "
+                        "get an explicit yes, then call with confirmed=true."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {
+                                "type": "string",
+                                "description": "Lowercase page id, 1-64 chars of a-z, 0-9, '-' or '_', e.g. 'pool-notes'.",
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Human-readable page title shown in the miniapp navigation.",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Full page content in the given format (markdown by default).",
+                            },
+                            "format": {
+                                "type": "string",
+                                "enum": ["markdown", "html", "yaml", "slides"],
+                                "description": "Content format. 'slides' is markdown with '---' between slides.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["slug", "title", "content"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "cms_delete_page",
+                    "description": (
+                        "Delete a miniapp page by slug. Restate which page will be "
+                        "removed, get an explicit yes, then call with confirmed=true."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {
+                                "type": "string",
+                                "description": "Page slug to delete (from cms_list_pages).",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["slug"],
+                        "additionalProperties": False,
+                    },
                 }]
             }],
         }
@@ -1572,6 +1683,10 @@ class GeminiLiveProvider(RealtimeProvider):
             if CALENDAR_TOOLS <= excluded:
                 config["system_instruction"] = config["system_instruction"].replace(
                     CALENDAR_INSTRUCTIONS, ""
+                )
+            if CMS_TOOLS <= excluded:
+                config["system_instruction"] = config["system_instruction"].replace(
+                    CMS_INSTRUCTIONS, ""
                 )
         # Per-instance memory banks: descriptions name only banks this
         # instance can actually use ({banks}=readable, {writable_banks}=

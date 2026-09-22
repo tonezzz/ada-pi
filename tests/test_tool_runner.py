@@ -141,5 +141,94 @@ class ControlGateTests(unittest.IsolatedAsyncioTestCase):
         self.runner.memory.search_all.assert_awaited_once_with("power", 10)
 
 
+class CmsToolTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.search_documents.return_value = []
+        self.runner.mddb.add_document.return_value = {"status": "ok"}
+        self.runner.mddb.get_document.return_value = None
+        self.runner.mddb.delete_document.return_value = {"status": "deleted"}
+
+    async def test_publish_denied_without_confirmed(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "cms_publish_page",
+                {"slug": "pool-notes", "title": "Pool", "content": "# hi"},
+            )
+        self.runner.mddb.add_document.assert_not_awaited()
+
+    async def test_publish_with_confirmed_writes_page_doc(self):
+        result = await self.runner.execute(
+            "cms_publish_page",
+            {
+                "slug": "Pool Notes",
+                "title": "Pool notes",
+                "content": "# Pool\npH 7.4",
+                "confirmed": True,
+            },
+        )
+        self.assertEqual(result["status"], "published")
+        self.assertEqual(result["slug"], "pool-notes")
+        args, kwargs = self.runner.mddb.add_document.call_args
+        self.assertEqual(args[:3], ("ada-cms-pages", "pool-notes", "en"))
+        meta = kwargs["meta"]
+        self.assertEqual(meta["kind"], ["page"])
+        self.assertEqual(meta["slug"], ["pool-notes"])
+        self.assertEqual(meta["format"], ["markdown"])
+
+    async def test_publish_rejects_bad_slug_and_format(self):
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "cms_publish_page",
+                {"slug": "../evil", "title": "x", "content": "x", "confirmed": True},
+            )
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "cms_publish_page",
+                {"slug": "ok", "title": "x", "content": "x", "format": "exe", "confirmed": True},
+            )
+
+    async def test_list_and_get_are_not_gated(self):
+        self.runner.mddb.search_documents.return_value = [
+            {"key": "pool-notes", "meta": {"slug": ["pool-notes"], "title": ["Pool"], "format": ["markdown"], "updated": ["2026-09-22T10:00:00+00:00"]}},
+        ]
+        pages = await self.runner.execute("cms_list_pages", {})
+        self.assertEqual(pages[0]["slug"], "pool-notes")
+        self.assertEqual(pages[0]["title"], "Pool")
+
+        self.runner.mddb.get_document.return_value = {
+            "key": "pool-notes",
+            "contentMd": "# Pool",
+            "meta": {"slug": ["pool-notes"], "title": ["Pool"], "format": ["markdown"]},
+        }
+        page = await self.runner.execute("cms_get_page", {"slug": "pool-notes"})
+        self.assertEqual(page["content"], "# Pool")
+
+    async def test_delete_requires_confirmed(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute("cms_delete_page", {"slug": "pool-notes"})
+        result = await self.runner.execute(
+            "cms_delete_page", {"slug": "pool-notes", "confirmed": True}
+        )
+        self.assertEqual(result["status"], "deleted")
+        self.runner.mddb.delete_document.assert_awaited_once_with("ada-cms-pages", "pool-notes")
+
+    async def test_read_only_blocks_publish(self):
+        os.environ["ADA_READ_ONLY"] = "true"
+        try:
+            with self.assertRaises(PermissionError):
+                await self.runner.execute(
+                    "cms_publish_page",
+                    {"slug": "x", "title": "x", "content": "x", "confirmed": True},
+                )
+        finally:
+            os.environ.pop("ADA_READ_ONLY", None)
+
+
 if __name__ == "__main__":
     unittest.main()
