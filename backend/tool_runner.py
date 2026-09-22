@@ -850,8 +850,8 @@ class ToolRunner:
 
     async def ada_memory_search(
         self,
-        bank: str,
         query: str,
+        bank: str = "all",
         limit: int = 5,
         include_inactive: bool = False,
     ) -> dict[str, Any]:

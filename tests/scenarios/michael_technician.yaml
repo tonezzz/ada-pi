@@ -1,0 +1,122 @@
+name: michael-technician
+instance: michael
+# Michael (technician persona) hits a service issue and asks Ada. Ada must
+# find the runbook in the read-only home bank, hold context across short
+# follow-ups, write the confirmed fix to memory, and recall it next turn.
+
+seed:
+  - bank: home
+    key: runbook/ada-ha-michael
+    text: >
+      ada-ha-michael is the Michael voice backend on mn01 (port 8003).
+      A blank or stuck dashboard is usually fixed by
+      `systemctl --user restart ada-ha-michael`.
+    meta: {kind: [procedure], subject: [ada-ha-michael]}
+  - bank: personal
+    key: personal/michael-role
+    text: "Michael is the household technician; he maintains the office rack and the Home Assistant setup."
+    meta: {kind: [fact], subject: [michael], attribute: [role], scope: [michael]}
+  - bank: general
+    key: general/mn01-topology
+    text: "mn01 hosts the ada-pi voice backends: ada-ha-tony on :8002, ada-ha-michael on :8003."
+    meta: {kind: [fact], subject: [mn01], scope: [shared]}
+  # A recent same-instance draft must surface as an unverified draft hit;
+  # an old draft and a foreign-instance draft must not.
+  - bank: general
+    key: extract-2026-09-21-abc-0
+    text: "Michael suspects the ada-ha-michael OOM killer is what takes the dashboard down."
+    meta:
+      kind: [note]
+      status: [draft]
+      scope: [michael]
+      valid_from: ["__TODAY__"]
+      subject: [ada-ha-michael]
+  - bank: general
+    key: extract-2026-09-10-abc-0
+    text: "Stale guess: dashboard failures were blamed on Caddy."
+    meta:
+      kind: [note]
+      status: [draft]
+      scope: [michael]
+      valid_from: ["2026-09-10"]
+      subject: [ada-ha-michael]
+  - bank: personal
+    key: extract-2026-09-21-abc-1
+    text: "Tony's private draft about the rack layout — must not reach Michael."
+    meta:
+      kind: [note]
+      status: [draft]
+      scope: [tony]
+      valid_from: ["__TODAY__"]
+
+steps:
+  # 1. Broad question — 'all' search should find the runbook without the
+  #    model guessing the right bank.
+  - tool: ada_memory_search
+    args: {bank: all, query: "ada-ha-michael dashboard blank fix"}
+    expect:
+      count_min: 1
+      hits_contain: ["restart ada-ha-michael"]
+      hit_banks: [home]
+
+  # 2. Same query surfaces the fresh draft too — tagged draft, never as fact.
+  - tool: ada_memory_search
+    args: {bank: general, query: "ada-ha-michael dashboard"}
+    expect:
+      count_min: 1
+      draft_hits_min: 1
+      hits_contain: ["OOM killer"]
+      output_not_contains: ["Caddy", "rack layout"]
+
+  # 3. Short coreferential follow-up — the engine expands the bare pronoun
+  #    with conversation context before embedding.
+  - say: "the dashboard is blank again"
+  - expand_query: "what about the other one?"
+    expect:
+      expanded_contains: ["dashboard"]
+
+  # 4. Confirmed write of the resolution — goes to a writable bank only.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "Restarting ada-ha-michael fixed the blank dashboard on 2026-09-22."
+      kind: procedure
+      subject: ada-ha-michael
+      confirmed: true
+    expect: {verb: create, no_error: true}
+
+  # 5. Next-turn awareness: the memory just written is recallable.
+  - tool: ada_memory_search
+    args: {query: "what fixed the ada-ha-michael blank dashboard"}
+    expect:
+      count_min: 1
+      hits_contain: ["Restarting ada-ha-michael"]
+
+  # 6. Correction flow: refine the same subject in place, not a duplicate.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "Restarting ada-ha-michael fixes the blank dashboard; check journalctl for OOM first."
+      kind: procedure
+      subject: ada-ha-michael
+      confirmed: true
+    expect: {verb: correct}
+
+  # 7. Outcome recording closes the loop on the memory's confidence.
+  - tool: ada_outcome
+    args:
+      bank: personal
+      key: personal/ada-ha-michael
+      outcome: worked
+      confirmed: true
+    expect: {verb: outcome}
+
+  # 8. Access control: Michael cannot see tony-only banks.
+  - tool: ada_memory_search
+    args: {bank: tony-projects, query: "anything"}
+    expect: {error_contains: "unknown or unassigned"}
+
+  # 9. Write gate: a read-only bank rejects writes loudly.
+  - tool: ada_remember
+    args: {bank: home, text: "x", confirmed: true}
+    expect: {error_contains: "read-only"}

@@ -43,6 +43,22 @@ _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 _SUMMARY_MODEL = os.environ.get("ADA_SUMMARY_MODEL", "gemini-3.5-flash-lite")
 _summary_cache: dict[str, Any] = {"text": None, "ts": 0.0, "task": None}
 
+# Per-instance deep-tier answer cache: a bank/group miss costs a ~20-60s
+# NotebookLM chat/ask; identical-or-near-identical questions inside the TTL
+# window are served from MDDB instead.
+_NLM_CACHE_THRESHOLD = float(os.environ.get("ADA_NLM_CACHE_THRESHOLD", "0.90"))
+_NLM_CACHE_TTL_DAYS = int(os.environ.get("ADA_NLM_CACHE_TTL_DAYS", "7"))
+
+
+def _nlm_cache_collection() -> str:
+    from backend.instance import ada_instance_id
+    return f"ada-ha-nlm-answers-{ada_instance_id()}"
+
+
+def recent_summary() -> str | None:
+    """The rolling recent-sessions summary, when warmed."""
+    return _summary_cache.get("text")
+
 # Failure surface: the last error per subsystem plus timestamps, exposed via
 # conversation_health(). Fail-quick policy — errors are recorded and logged at
 # ERROR level, never silently converted into "empty"/"not found" results.
@@ -296,6 +312,37 @@ class ConversationMemory:
         if text.strip():
             self._turns.append({"role": "assistant", "text": text.strip()})
 
+    def recent_context(self, max_turns: int = 4, max_chars: int = 500) -> str:
+        """Compact tail of this session's transcript for query expansion."""
+        lines = []
+        for turn in self._turns[-max_turns:]:
+            role = "User" if turn["role"] == "user" else "Ada"
+            lines.append(f"{role}: {turn['text']}")
+        return "\n".join(lines)[-max_chars:]
+
+    # Short utterances like "what about the other one?" embed terribly as a
+    # bare vector-search query. When a query is anaphoric or very short,
+    # append the recent conversation so the embedding lands near the topic
+    # actually being discussed.
+    _COREF_RE = re.compile(
+        r"\b(it|its|that|this|they|them|the other|another|the same|those|"
+        r"he|she|his|her|again|previous|earlier)\b",
+        re.IGNORECASE,
+    )
+
+    def expand_query(self, query: str) -> str:
+        q = str(query or "").strip()
+        if not q:
+            return q
+        if len(q.split()) > 4 and not self._COREF_RE.search(q):
+            return q
+        ctx = self.recent_context()
+        if not ctx:
+            return q
+        expanded = f"{q}\n\nConversation context:\n{ctx}"
+        logger.info("query expanded with context: %r -> %d chars", q[:80], len(expanded))
+        return expanded
+
     def transcript(self) -> str:
         lines = [f"# Ada voice session {self.session_id}", ""]
         for turn in self._turns:
@@ -446,13 +493,17 @@ class ConversationMemory:
             return "My notes are not connected."
         if self._recall_task is not None and not self._recall_task.done():
             return "I'm still checking my notes."
-        bank_obj = None
+        bank_obj: Any = None
         if bank:
             from backend.memory_banks import get_registry
-            try:
-                bank_obj = get_registry().bank(str(bank))
-            except KeyError as exc:
-                return str(exc)
+            if str(bank).lower() in ("all", "*"):
+                bank_obj = "all"
+            else:
+                try:
+                    bank_obj = get_registry().bank(str(bank))
+                except KeyError as exc:
+                    return str(exc)
+        question = self.expand_query(question)
         self.warm_summary()
         self._recall_task = asyncio.create_task(
             self._recall(question, on_complete, group, on_slow, bank=bank_obj)
@@ -476,63 +527,55 @@ class ConversationMemory:
         bank: Any | None = None,
     ) -> None:
         if bank is not None:
-            # Fast tier: semantic search on the bank's MDDB collection.
-            docs = await _mddb().vector_search(
-                collection=bank.mddb_collection,
-                query=question,
-                limit=3,
-                # Read-only banks lack lifecycle meta — filter would exclude all.
-                filter_meta=None if not bank.writable else {"status": ["active"]},
-                threshold=float(os.environ.get("ADA_BANK_SEARCH_THRESHOLD", "0.45")),
-            )
-            from backend.memory_banks import (
-                _meta_first,
-                doc_effective_status,
-                get_registry,
-            )
-            hits = [
-                d for d in (docs or [])
-                if doc_effective_status(d) == "active"
-            ]
+            # Fast tier: semantic search on the bank's MDDB collection, or
+            # across every assigned bank when the model asked for 'all'.
+            # memory_search applies the active/draft filters, the draft
+            # score bar, and confidence tagging.
+            from backend.memory_ops import memory_search as _bank_search
+            from backend.memory_banks import get_registry
+            registry = get_registry()
+            bank_name = "all" if bank == "all" else bank.name
+            res = await _bank_search(_mddb(), registry, bank_name, question, limit=3)
+            hits = res.get("hits") or []
             if hits:
                 logger.info(
                     "bank recall %r: %d hit(s), scores=%s",
-                    bank.name, len(hits),
-                    [round(d.get("score") or 0, 3) for d in hits],
+                    bank_name, len(hits),
+                    [round(h.get("score") or 0, 3) for h in hits],
                 )
-                from backend.memory_ops import record_use_bg
-                record_use_bg(_mddb(), bank.mddb_collection, hits)
-                conf_min = float(
-                    os.environ.get("ADA_BANK_CONFIDENCE_MIN", "0.4")
-                )
-                lines = [f"From the {bank.title} memory bank:"]
-                for d in hits:
-                    body = str(d.get("contentMd") or d.get("content_md") or "").strip()
+                where = ("your memory banks" if bank == "all"
+                         else f"the {bank.title} memory bank")
+                lines = [f"From {where}:"]
+                for h in hits:
+                    body = str(h.get("content") or "").strip()
                     if not body:
                         continue
-                    try:
-                        conf = float(_meta_first(d.get("meta") or {}, "confidence"))
-                    except (TypeError, ValueError):
-                        conf = None
-                    tag = "[unverified] " if conf is not None and conf < conf_min else ""
-                    lines.append(f"- {tag}{body}")
+                    if h.get("draft"):
+                        tag = "[unverified draft] "
+                    elif h.get("unverified"):
+                        tag = "[unverified] "
+                    else:
+                        tag = ""
+                    prefix = f"{h['bank']}: " if h.get("bank") else ""
+                    lines.append(f"- {tag}{prefix}{body}")
                 await on_complete("\n".join(lines) if len(lines) > 1 else
-                                  f"I found a note in the {bank.title} memory bank but it was empty.")
+                                  f"I found a note in {where} but it was empty.")
                 return
             # Low confidence: escalate to the bank's deep-tier notebook if it
             # has one, else the instance's memory notebook as a last resort.
             # The query is logged (json-quoted) so memory-gap-report.py can
             # cluster misses into "knowledge gap" drafts.
-            scores = [round(d.get("score") or 0, 3) for d in (docs or [])]
             logger.info(
-                "bank recall %r: miss q=%s (top scores=%s) — escalating to notebook",
-                bank.name, json.dumps(question[:200]), scores or "none",
+                "bank recall %r: miss q=%s — escalating",
+                bank_name, json.dumps(question[:200]),
             )
             mid = await self._recall_summaries(question)
             if mid:
                 await on_complete(f"From recent memory:\n{mid}")
                 return
-            notebook = bank.notebook(get_registry().notebook_ids)
+            if bank == "all":
+                return await self._recall_ask(question, on_complete, "memory", on_slow, None)
+            notebook = bank.notebook(registry.notebook_ids)
             if not notebook:
                 logger.info("bank %r has no notebook; falling back to memory group", bank.name)
                 return await self._recall_ask(question, on_complete, "memory", on_slow, None)
@@ -584,6 +627,11 @@ class ConversationMemory:
         on_slow: Callable[[], Awaitable[None]] | None = None,
         notebook: str | None = None,
     ) -> None:
+        ctx = notebook or group or "memory"
+        cached = await self._nlm_cache_get(question, ctx)
+        if cached is not None:
+            await on_complete(cached)
+            return
         ask = asyncio.create_task(self.client.ask(question, group=group, notebook=notebook))
         if on_slow is not None:
             done, _ = await asyncio.wait({ask}, timeout=RECALL_SLOW_AFTER_S)
@@ -602,6 +650,59 @@ class ConversationMemory:
             )
             return
         if answer:
+            await self._nlm_cache_put(question, ctx, answer)
             await on_complete(answer)
         else:
             await on_complete("I couldn't find anything in my notes.")
+
+    async def _nlm_cache_get(self, question: str, ctx: str) -> str | None:
+        """Deep-tier answer cache: a semantically identical recent question
+        in this context (bank/group/notebook) returns its stored answer."""
+        try:
+            docs = await _mddb().vector_search(
+                collection=_nlm_cache_collection(),
+                query=question,
+                limit=1,
+                filter_meta={"ctx": [ctx]},
+                threshold=_NLM_CACHE_THRESHOLD,
+            )
+        except Exception as exc:
+            _report_failure("nlm_cache", exc)
+            return None
+        if not docs:
+            return None
+        doc = docs[0]
+        meta = doc.get("meta") or {}
+        try:
+            created = datetime.fromisoformat(str((meta.get("created") or [""])[0]))
+            age = datetime.now(timezone.utc).date() - created.date()
+        except (ValueError, TypeError, IndexError):
+            return None
+        if age.days > _NLM_CACHE_TTL_DAYS:
+            return None
+        answer = str(doc.get("contentMd") or doc.get("content_md") or "").strip()
+        if answer:
+            logger.info("nlm cache hit ctx=%r score=%s", ctx, doc.get("score"))
+            return answer
+        return None
+
+    async def _nlm_cache_put(self, question: str, ctx: str, answer: str) -> None:
+        today = datetime.now(timezone.utc).date().isoformat()
+        import hashlib
+        digest = hashlib.sha1(f"{ctx}\n{question}".encode()).hexdigest()[:12]
+        try:
+            await _mddb().add_document(
+                collection=_nlm_cache_collection(),
+                key=f"{ctx}-{today}-{digest}",
+                lang="en",
+                content_md=answer[:8000],
+                meta={
+                    "kind": ["nlm-answer"],
+                    "ctx": [ctx],
+                    "question": [question[:300]],
+                    "created": [today],
+                    "source": ["conversation_memory"],
+                },
+            )
+        except Exception as exc:
+            _report_failure("nlm_cache", exc)

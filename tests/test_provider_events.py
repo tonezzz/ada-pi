@@ -86,9 +86,12 @@ class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
 
         events = [event async for event in provider.events()]
 
-        self.assertEqual([(event.type, event.data) for event in events], [
-            ("expression", {"name": "sassy"})
-        ])
+        self.assertEqual(
+            [event.type for event in events],
+            ["tool_call", "expression", "tool_result"],
+        )
+        self.assertEqual(events[0].data["name"], "set_facial_expression")
+        self.assertEqual(events[1].data, {"name": "sassy"})
         self.assertEqual(len(session.responses), 1)
         response = session.responses[0]
         self.assertEqual(response.id, "expression-call-1")
@@ -97,9 +100,10 @@ class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
     async def test_habit_observation_tool_emits_structured_event(self) -> None:
         provider=GeminiLiveProvider(); session=HabitObservationToolSession(provider); provider._session=session
         events=[event async for event in provider.events()]
-        self.assertEqual(events[0].type,"habit_observation")
-        self.assertEqual(events[0].data["challenge_id"],"water-1")
-        self.assertTrue(events[0].data["observed"])
+        self.assertEqual(events[0].type,"tool_call")
+        self.assertEqual(events[1].type,"habit_observation")
+        self.assertEqual(events[1].data["challenge_id"],"water-1")
+        self.assertTrue(events[1].data["observed"])
         self.assertEqual(session.responses[0].name,"report_habit_observation")
 
     async def test_habit_status_tool_returns_complete_snapshot(self) -> None:
@@ -107,7 +111,7 @@ class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
         provider=GeminiLiveProvider(habit_state_getter=lambda:snapshot)
         session=HabitStatusToolSession(provider); provider._session=session
         events=[event async for event in provider.events()]
-        self.assertEqual(events,[])
+        self.assertEqual([e.type for e in events],["tool_call","tool_result"])
         self.assertEqual(session.responses[0].name,"get_habit_status")
         self.assertEqual(session.responses[0].response,{"output":snapshot})
 

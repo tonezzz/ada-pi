@@ -9,6 +9,7 @@ import sys
 import uuid
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse
@@ -18,7 +19,9 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from backend.conversation_memory import ConversationMemory, recent_summary
 from backend.realtime_provider import create_provider
+from backend import memory_ops
 from backend.home_assistant import HomeAssistantClient
 from backend.tool_runner import ToolRunner
 from backend.conversation_memory import conversation_health
@@ -304,6 +307,19 @@ async def stop_event_recorder() -> None:
     await tool_runner.events.stop()
 
 
+async def _prime_session(provider: Any) -> None:
+    """Inject session-start context (recent-sessions summary + top personal/
+    general memories) so Ada starts aware of general info instead of blank."""
+    try:
+        text = await memory_ops.session_prime_text(
+            tool_runner.mddb, tool_runner.banks, summary=recent_summary()
+        )
+        if text:
+            await provider.send_text_turn(text)
+    except Exception as exc:
+        logger.warning("session prime failed: %s", exc)
+
+
 @app.websocket("/ws")
 async def voice_socket(ws: WebSocket) -> None:
     if not auth.websocket_authorized(ws):
@@ -314,7 +330,12 @@ async def voice_socket(ws: WebSocket) -> None:
     await ws.accept()
     session_id = uuid.uuid4().hex[:10]
     logger.info("session=%s client connected", session_id)
-    provider_ref = [create_provider(tool_runner=tool_runner, session_id=session_id)]
+    # One ConversationMemory per websocket session, shared across provider
+    # reconnects so the transcript survives a Gemini session swap.
+    conversation = ConversationMemory(session_id)
+    provider_ref = [create_provider(
+        tool_runner=tool_runner, session_id=session_id, conversation=conversation
+    )]
     closed = asyncio.Event()
 
     # Speaker identification: non-blocking, runs in parallel with the
@@ -350,6 +371,7 @@ async def voice_socket(ws: WebSocket) -> None:
             await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
             await ws.close(code=1011)
         return
+    await _prime_session(provider_ref[0])
 
     try:
         await ws.send_text(json.dumps({"type": "ready"}))
@@ -405,6 +427,8 @@ async def voice_socket(ws: WebSocket) -> None:
                     "user_transcript",
                     "assistant_transcript_delta",
                     "expression",
+                    "tool_call",
+                    "tool_result",
                 ):
                     if event.type == "speech_started" or event.type == "response_interrupted":
                         await ws.send_text(json.dumps({"type": "clear_audio"}))
@@ -434,9 +458,16 @@ async def voice_socket(ws: WebSocket) -> None:
                 delay = 1.0
                 while not closed.is_set():
                     try:
-                        new_provider = create_provider(tool_runner=tool_runner, session_id=session_id)
+                        new_provider = create_provider(
+                            tool_runner=tool_runner, session_id=session_id,
+                            conversation=conversation,
+                        )
                         await new_provider.connect(resumption_handle=handle)
                         provider_ref[0] = new_provider
+                        if not handle:
+                            # Fresh Gemini context — re-prime so the new
+                            # session starts aware of recent/general memory.
+                            await _prime_session(new_provider)
                         await ws.send_text(json.dumps({"type": "ready"}))
                         logger.info("session=%s provider reconnected (resumed=%s)", session_id, bool(handle))
                         break

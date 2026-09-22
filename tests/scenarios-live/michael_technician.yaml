@@ -1,0 +1,29 @@
+name: michael-technician-live
+# Live replay of the technician scenario against a running Ada backend.
+# Run on mn01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/michael_technician.yaml --url ws://127.0.0.1:8003/ws \
+#   --api-key "$ADA_API_KEY"
+#
+# Expectations are soft (live LLM behavior varies) — they check that Ada
+# consults memory, holds context across short follow-ups, and writes back.
+
+turns:
+  - user: "Hey Ada, the dashboard is not loading again."
+    expect:
+      timeout_s: 60
+
+  - user: "It is the ada-ha-michael service on mn01. What do you know about it?"
+    expect:
+      calls_any: [ada_memory_search, ada_session_recall, ada_ha_recall]
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Remember that restarting it fixed the blank screen last time."
+    expect:
+      timeout_s: 60
+
+  - user: "What did I just tell you fixed it?"
+    expect:
+      calls_any: [ada_memory_search, ada_session_recall]
+      timeout_s: 120
+      settle_s: 8

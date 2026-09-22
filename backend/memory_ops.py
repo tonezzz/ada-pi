@@ -41,6 +41,19 @@ ADA_BANK_UPDATE_THRESHOLD = float(os.environ.get("ADA_BANK_UPDATE_THRESHOLD", "0
 # See docs/ada-memory/tony-projects/knowledge-circle.md (chaba repo).
 ADA_BANK_CONFIDENCE_MIN = float(os.environ.get("ADA_BANK_CONFIDENCE_MIN", "0.4"))
 
+# Banks whose auto-extracted draft notes may surface in recall before human
+# promotion. Restricted to same-instance docs — extraction noise stays
+# private to the instance that produced it.
+DRAFT_VISIBLE_BANKS = {
+    s.strip()
+    for s in os.environ.get("ADA_DRAFT_VISIBLE_BANKS", "personal,general").split(",")
+    if s.strip()
+}
+# Drafts must clear a higher score bar than active docs and age out of
+# recall after this many days, so stale extraction noise can't linger.
+ADA_DRAFT_MIN_SCORE = float(os.environ.get("ADA_DRAFT_MIN_SCORE", "0.55"))
+ADA_DRAFT_MAX_AGE_DAYS = int(os.environ.get("ADA_DRAFT_MAX_AGE_DAYS", "7"))
+
 # How each recorded outcome nudges a doc's confidence (clamped 0.05..1.0).
 # Good outcomes also bump last_verified — the verify stage of the knowledge
 # circle. "skipped" is neutral: the check ran but was never exercised.
@@ -99,6 +112,118 @@ def _warn_unknown_meta(registry: MemoryBankRegistry, meta: dict[str, list[str]])
         )
 
 
+def _draft_visible(bank: MemoryBank, doc: dict[str, Any], instance: str) -> bool:
+    """True when a status=draft doc may surface in recall: only for
+    allowlisted banks, only the extracting instance's own docs, only
+    recent, and only above the draft score bar."""
+    if bank.name not in DRAFT_VISIBLE_BANKS:
+        return False
+    meta = doc.get("meta") or {}
+    if _meta_first(meta, "scope") != instance:
+        return False
+    score = doc.get("score")
+    if score is not None and float(score) < ADA_DRAFT_MIN_SCORE:
+        return False
+    try:
+        created = datetime.fromisoformat(str(_meta_first(meta, "valid_from") or ""))
+    except ValueError:
+        return False
+    age = datetime.now(timezone.utc).date() - created.date()
+    return 0 <= age.days <= ADA_DRAFT_MAX_AGE_DAYS
+
+
+def _doc_to_hit(
+    bank: MemoryBank,
+    doc: dict[str, Any],
+    instance: str,
+    include_inactive: bool,
+    with_bank: bool = False,
+) -> dict[str, Any] | None:
+    """Shape one doc into a search hit, or None when filtered out."""
+    status = doc_effective_status(doc)
+    is_draft = False
+    if status != "active":
+        if include_inactive:
+            pass
+        elif status == "draft" and _draft_visible(bank, doc, instance):
+            is_draft = True
+        else:
+            return None
+    meta = doc.get("meta") or {}
+    hit: dict[str, Any] = {
+        "key": doc.get("key"),
+        "status": status,
+        "score": doc.get("score"),
+        "content": doc.get("contentMd") or doc.get("content_md") or "",
+        "kind": _meta_first(meta, "kind"),
+        "subject": _meta_first(meta, "subject"),
+        "attribute": _meta_first(meta, "attribute"),
+        "last_verified": _meta_first(meta, "last_verified"),
+        "valid_until": _meta_first(meta, "valid_until"),
+    }
+    if with_bank:
+        hit["bank"] = bank.name
+    if is_draft:
+        hit["draft"] = True
+        hit["unverified"] = True
+    else:
+        try:
+            confidence = float(_meta_first(meta, "confidence"))
+        except (TypeError, ValueError):
+            confidence = None
+        if confidence is not None:
+            hit["confidence"] = confidence
+            if confidence < ADA_BANK_CONFIDENCE_MIN:
+                hit["unverified"] = True
+    return hit
+
+
+async def _bank_docs(
+    mddb: MddbClient,
+    bank: MemoryBank,
+    q: str,
+    limit: int,
+    include_inactive: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Fetch candidate docs for one bank: vector search on a real query,
+    meta-filtered listing otherwise; falls back to listing when the
+    embedding path is down. Returns (docs, degraded)."""
+    # Read-only banks (kb imports, devin summaries) have no lifecycle meta —
+    # filtering on status would exclude every doc. Post-filter still runs
+    # (missing status is treated as active). Draft-visible banks widen the
+    # filter so recent same-instance drafts can surface as unverified hits.
+    filter_meta = None
+    if not include_inactive and bank.writable:
+        statuses = ["active", "draft"] if bank.name in DRAFT_VISIBLE_BANKS else ["active"]
+        filter_meta = {"status": statuses}
+    if q and q != "*":
+        docs = await mddb.vector_search(
+            collection=bank.mddb_collection,
+            query=q,
+            limit=int(limit) * 3,
+            filter_meta=filter_meta,
+            threshold=ADA_BANK_SEARCH_THRESHOLD,
+        )
+        if docs is None:
+            return (
+                await mddb.search_documents(
+                    collection=bank.mddb_collection,
+                    filter_meta=filter_meta,
+                    limit=int(limit) * 3,
+                ),
+                True,
+            )
+        return docs or [], False
+    return (
+        await mddb.search_documents(
+            collection=bank.mddb_collection,
+            filter_meta=filter_meta,
+            limit=int(limit) * 3,
+        ),
+        False,
+    )
+
+
 async def memory_search(
     mddb: MddbClient,
     registry: MemoryBankRegistry,
@@ -111,61 +236,48 @@ async def memory_search(
 
     A real query uses semantic (vector) search; '*' or empty lists by
     metadata filter. Vector search failures fall back to the listing so
-    recall degrades gracefully when embeddings are down."""
-    b = registry.bank(str(bank))
-    # Read-only banks (kb imports, devin summaries) have no lifecycle meta —
-    # filtering on status would exclude every doc. Post-filter still runs
-    # (missing status is treated as active).
-    filter_meta = None if (include_inactive or not b.writable) else {"status": ["active"]}
+    recall degrades gracefully when embeddings are down.
+    bank='all' fans out across every bank assigned to this instance and
+    merges hits by score — the model doesn't have to guess which bank."""
     q = str(query or "").strip()
-    degraded = False
-    if q and q != "*":
-        docs = await mddb.vector_search(
-            collection=b.mddb_collection,
-            query=q,
-            limit=int(limit) * 3,
-            filter_meta=filter_meta,
-            threshold=ADA_BANK_SEARCH_THRESHOLD,
-        )
-        if docs is None:
-            degraded = True
-            docs = await mddb.search_documents(
-                collection=b.mddb_collection,
-                filter_meta=filter_meta,
-                limit=int(limit) * 3,
+    if str(bank).lower() in ("all", "*"):
+        banks = list(registry.banks().values())
+        results = await asyncio.gather(
+            *(
+                _bank_docs(mddb, b, q, limit, include_inactive)
+                for b in banks
             )
-    else:
-        docs = await mddb.search_documents(
-            collection=b.mddb_collection,
-            filter_meta=filter_meta,
-            limit=int(limit) * 3,
         )
+        hits: list[dict[str, Any]] = []
+        degraded = False
+        for b, (docs, deg) in zip(banks, results):
+            degraded = degraded or deg
+            used: list[dict[str, Any]] = []
+            for doc in docs:
+                hit = _doc_to_hit(b, doc, registry.instance, include_inactive, with_bank=True)
+                if hit is None:
+                    continue
+                hits.append(hit)
+                used.append(doc)
+            if used and not include_inactive and q and q != "*":
+                record_use_bg(mddb, b.mddb_collection, used)
+        hits.sort(key=lambda h: float(h.get("score") or 0), reverse=True)
+        hits = hits[: int(limit)]
+        return {
+            "bank": "all",
+            "count": len(hits),
+            "hits": hits,
+            "degraded": degraded,
+        }
+
+    b = registry.bank(str(bank))
+    docs, degraded = await _bank_docs(mddb, b, q, limit, include_inactive)
     hits = []
     used_docs = []
-    for doc in docs or []:
-        status = doc_effective_status(doc)
-        if not include_inactive and status != "active":
+    for doc in docs:
+        hit = _doc_to_hit(b, doc, registry.instance, include_inactive)
+        if hit is None:
             continue
-        meta = doc.get("meta") or {}
-        hit = {
-            "key": doc.get("key"),
-            "status": status,
-            "score": doc.get("score"),
-            "content": doc.get("contentMd") or doc.get("content_md") or "",
-            "kind": _meta_first(meta, "kind"),
-            "subject": _meta_first(meta, "subject"),
-            "attribute": _meta_first(meta, "attribute"),
-            "last_verified": _meta_first(meta, "last_verified"),
-            "valid_until": _meta_first(meta, "valid_until"),
-        }
-        try:
-            confidence = float(_meta_first(meta, "confidence"))
-        except (TypeError, ValueError):
-            confidence = None
-        if confidence is not None:
-            hit["confidence"] = confidence
-            if confidence < ADA_BANK_CONFIDENCE_MIN:
-                hit["unverified"] = True
         hits.append(hit)
         used_docs.append(doc)
         if len(hits) >= int(limit):
@@ -305,6 +417,14 @@ async def remember(
                 f"cannot supersede {supersedes!r}: no such document in bank '{b.name}'"
             )
         new_key = str(key) if key else f"{b.name}/{_slug(str(subject or text))}"
+        if new_key == str(supersedes):
+            # The derived key collides with the doc being superseded — writing
+            # there would resurrect-then-supersede the same doc. Bump the key.
+            base = new_key
+            n = 2
+            while await mddb.get_document(b.mddb_collection, new_key) is not None:
+                new_key = f"{base}-{n}"
+                n += 1
         meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies, session_id)
         _warn_unknown_meta(registry, meta)
         meta["supersedes"] = [str(supersedes)]
@@ -398,3 +518,52 @@ async def forget(
         meta["retracted_by_session"] = [session_id]
     await mddb.update_document(b.mddb_collection, str(key), meta=meta)
     return {"verb": "retract", "bank": b.name, "key": str(key)}
+
+
+async def session_prime_text(
+    mddb: MddbClient,
+    registry: MemoryBankRegistry,
+    summary: str | None = None,
+    max_facts: int = 6,
+    max_chars: int = 160,
+) -> str | None:
+    """Build the session-start context injection: the rolling recent-sessions
+    summary plus a few facts from the personal/general banks, so Ada starts
+    aware of general info instead of blank. Returns None when there is
+    nothing worth injecting."""
+    if os.environ.get("ADA_SESSION_PRIME", "1") in ("0", "false", "no"):
+        return None
+    parts: list[str] = []
+    if summary:
+        parts.append(f"Recent sessions: {summary.strip()}")
+    facts: list[str] = []
+    for name in ("personal", "general"):
+        try:
+            b = registry.bank(name)
+        except KeyError:
+            continue
+        try:
+            docs = await mddb.search_documents(
+                collection=b.mddb_collection,
+                filter_meta={"status": ["active"]},
+                limit=max_facts,
+            )
+        except Exception as exc:
+            logger.debug("session prime listing failed for %r: %s", name, exc)
+            continue
+        for doc in docs or []:
+            body = str(doc.get("contentMd") or doc.get("content_md") or "").strip()
+            if body:
+                facts.append(body[:max_chars])
+            if len(facts) >= max_facts:
+                break
+        if len(facts) >= max_facts:
+            break
+    if facts:
+        parts.append("Known facts:\n" + "\n".join(f"- {f}" for f in facts))
+    if not parts:
+        return None
+    return (
+        "(system) Session context — background information only, do not "
+        "announce or answer it:\n" + "\n\n".join(parts)
+    )

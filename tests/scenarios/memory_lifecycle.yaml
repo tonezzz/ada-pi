@@ -1,0 +1,73 @@
+name: memory-lifecycle
+instance: tony
+# Write -> correct -> supersede -> retract, plus draft visibility rules.
+
+seed:
+  - bank: personal
+    key: extract-old-1
+    text: "Tony keeps the spare gate remote in the drawer."
+    meta:
+      kind: [fact]
+      status: [draft]
+      scope: [tony]
+      valid_from: ["__TODAY__"]
+      subject: [gate-remote]
+  - bank: tony-projects
+    key: extract-old-2
+    text: "Private project note that general 'all' search may surface for tony."
+    meta: {kind: [note], status: [active], scope: [tony], subject: [project]}
+
+steps:
+  # Fresh same-instance draft in a visible bank surfaces as a draft hit.
+  - tool: ada_memory_search
+    args: {bank: personal, query: "where is the gate remote"}
+    expect:
+      count_min: 1
+      draft_hits_min: 1
+      hits_contain: ["drawer"]
+
+  # Remember on a confirmed bank without confirmation is refused.
+  - tool: ada_remember
+    args: {bank: personal, text: "gate remote moved to the cabinet", subject: gate-remote, attribute: location}
+    expect: {error_contains: "requires confirmation"}
+
+  # Confirmed write creates; the find-then-update path keys on subject.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The spare gate remote lives in the hallway cabinet."
+      kind: fact
+      subject: gate-remote
+      attribute: location
+      confirmed: true
+    expect: {verb: create}
+
+  - tool: ada_memory_search
+    args: {bank: personal, query: "gate remote location"}
+    expect:
+      count_min: 1
+      hits_contain: ["hallway cabinet"]
+
+  # Supersede: replace with a new doc; old one stops surfacing.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The spare gate remote is now on the hook by the door."
+      kind: fact
+      subject: gate-remote
+      attribute: location
+      supersedes: personal/gate-remote
+      confirmed: true
+    expect: {verb: supersede}
+
+  # The superseding doc surfaces; the superseded one does not.
+  - tool: ada_memory_search
+    args: {bank: personal, query: "gate remote location"}
+    expect:
+      count_min: 1
+      hits_contain: ["hook by the door"]
+      output_not_contains: ["hallway cabinet"]
+
+  - tool: ada_forget
+    args: {bank: personal, key: personal/gate-remote, reason: "sold the gate", confirmed: true}
+    expect: {verb: retract}

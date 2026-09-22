@@ -63,6 +63,28 @@ CALENDAR_INSTRUCTIONS = (
 )
 
 
+def _fill_bank_placeholders(node: Any, banks: str, writable: str) -> Any:
+    """Recursively substitute {banks}/{writable_banks} in tool schemas."""
+    if isinstance(node, str):
+        return node.replace("{banks}", banks).replace("{writable_banks}", writable)
+    if isinstance(node, dict):
+        return {k: _fill_bank_placeholders(v, banks, writable) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_fill_bank_placeholders(v, banks, writable) for v in node]
+    return node
+
+
+def _safe_args(args: Any) -> dict[str, Any]:
+    """JSON-safe shallow copy of tool args/results for trace events."""
+    out: dict[str, Any] = {}
+    for k, v in dict(args or {}).items():
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            out[str(k)] = v
+        else:
+            out[str(k)] = str(v)[:300]
+    return out
+
+
 def _now_context() -> str:
     tz = ZoneInfo(os.environ.get("ADA_TIMEZONE", "Asia/Bangkok"))
     now = datetime.now(tz)
@@ -123,7 +145,8 @@ class GeminiLiveProvider(RealtimeProvider):
 
     def __init__(self, instructions: str | None = None, tool_runner: Any = None,
                  home_assistant_client: Any = None, habit_state_getter: Any = None,
-                 session_id: str | None = None) -> None:
+                 session_id: str | None = None,
+                 conversation: ConversationMemory | None = None) -> None:
         if tool_runner is None and home_assistant_client is not None:
             tool_runner = ToolRunner(home_assistant_client, habit_state_getter)
         self.tool_runner = tool_runner
@@ -131,7 +154,9 @@ class GeminiLiveProvider(RealtimeProvider):
             self.tool_runner.session_id = session_id
         self.home_assistant_client = home_assistant_client
         self.habit_state_getter = habit_state_getter
-        self.conversation = ConversationMemory(session_id or "unknown")
+        # Callers may share one ConversationMemory across provider reconnects
+        # so the server-side transcript survives a Gemini session swap.
+        self.conversation = conversation or ConversationMemory(session_id or "unknown")
         self._bg_tasks: set[asyncio.Task] = set()
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
@@ -189,6 +214,13 @@ class GeminiLiveProvider(RealtimeProvider):
             "and ada_outcome to record how a memory or check turned out when the user reports back "
             "(e.g. 'that shop was fine', 'the fix worked', 'I skipped it') — outcomes update confidence "
             "so future recall trusts knowledge with a good track record. "
+            "When the user states a durable fact, preference, or a fix that worked, offer to "
+            "remember it, then call ada_remember — pass confirmed=true only after the user agrees. "
+            "When the user reports how something turned out ('that worked', 'it failed'), call "
+            "ada_outcome on the memory it applies to — find the key with ada_memory_search if needed. "
+            "When calling any search or recall tool, always write a fully self-contained query: "
+            "resolve 'it', 'that one', 'the same service', and similar references using the "
+            "conversation so far — never pass a bare pronoun as the query. "
             "Memories returned with unverified=true are low-confidence: hedge or say you are not sure "
             "rather than stating them as fact. "
             "Prefer the ada_ha_* memory tools for home, device, sensor, or event questions — they answer instantly. "
@@ -220,6 +252,24 @@ class GeminiLiveProvider(RealtimeProvider):
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
         self._response_active = False
+
+    def _memory_bank_names(self) -> tuple[str, str]:
+        """Comma-joined bank names visible to this instance, for tool
+        descriptions — read tools get all banks, write tools only writable."""
+        try:
+            banks = (
+                self.tool_runner.banks.banks()
+                if self.tool_runner is not None
+                else {}
+            )
+        except Exception:
+            banks = {}
+        all_names = ", ".join(sorted(banks)) or "none configured"
+        writable = (
+            ", ".join(sorted(n for n, b in banks.items() if b.writable))
+            or "none configured"
+        )
+        return all_names, writable
 
     async def _wait_for_idle(self, timeout: float = 8.0) -> None:
         """Wait until the model is not mid-response, so injected text turns
@@ -1061,7 +1111,7 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "string",
                                 "description": (
                                     "Optional curated memory bank to search instead of a notebook "
-                                    "group: general, home, people, personal, tony-projects, note. "
+                                    "group ({banks}), or 'all' to search every bank. "
                                     "Bank recall checks the fast memory tier first and only "
                                     "escalates to NotebookLM when nothing is found."
                                 ),
@@ -1085,7 +1135,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "bank": {
                                 "type": "string",
-                                "description": "Memory bank name: general, home, people, personal, tony-projects, note.",
+                                "description": "Memory bank name ({banks}), or 'all' to search every bank — default when unsure.",
                             },
                             "query": {
                                 "type": "string",
@@ -1102,7 +1152,7 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "description": "Also return superseded, retracted, and expired memories. Default false.",
                             },
                         },
-                        "required": ["bank", "query"],
+                        "required": ["query"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -1122,7 +1172,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "bank": {
                                 "type": "string",
-                                "description": "Memory bank name: general, home, people, personal, tony-projects, note.",
+                                "description": "Memory bank name ({writable_banks}).",
                             },
                             "text": {
                                 "type": "string",
@@ -1174,7 +1224,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "bank": {
                                 "type": "string",
-                                "description": "Memory bank name: general, home, people, personal, tony-projects, note.",
+                                "description": "Memory bank name ({writable_banks}).",
                             },
                             "key": {
                                 "type": "string",
@@ -1207,7 +1257,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "bank": {
                                 "type": "string",
-                                "description": "Memory bank name: general, home, people, personal, tony-projects, note, purchase.",
+                                "description": "Memory bank name ({writable_banks}).",
                             },
                             "key": {
                                 "type": "string",
@@ -1523,6 +1573,13 @@ class GeminiLiveProvider(RealtimeProvider):
                 config["system_instruction"] = config["system_instruction"].replace(
                     CALENDAR_INSTRUCTIONS, ""
                 )
+        # Per-instance memory banks: descriptions name only banks this
+        # instance can actually use ({banks}=readable, {writable_banks}=
+        # writable), so the model never calls a bank that fails loudly.
+        all_banks, writable_banks = self._memory_bank_names()
+        config["tools"][0]["function_declarations"] = _fill_bank_placeholders(
+            config["tools"][0]["function_declarations"], all_banks, writable_banks
+        )
         self._session_context = self._client.aio.live.connect(
             model=self.model,
             config=config,
@@ -1603,6 +1660,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "session=%s function_call received id=%s name=%s args=%r",
                             self.session_id, call.id, call.name, call.args,
                         )
+                        yield ProviderEvent("tool_call", {
+                            "name": str(call.name),
+                            "args": _safe_args(call.args),
+                        })
                         requested = (call.args or {}).get("expression")
                         if call.name == "set_facial_expression" and requested in EXPRESSION_NAMES:
                             yield ProviderEvent("expression", {"name": requested})
@@ -1739,12 +1800,21 @@ class GeminiLiveProvider(RealtimeProvider):
                         else:
                             if self.tool_runner is not None:
                                 try:
-                                    output = await self.tool_runner.execute(str(call.name), dict(call.args or {}))
+                                    call_args = dict(call.args or {})
+                                    if call.name == "ada_memory_search":
+                                        q = call_args.get("query")
+                                        if q:
+                                            call_args["query"] = self.conversation.expand_query(str(q))
+                                    output = await self.tool_runner.execute(str(call.name), call_args)
                                     result = {"output": output}
                                 except Exception as exc:
                                     result = {"error": f"{call.name} failed: {exc}"}
                             else:
                                 result = {"error": "Unsupported or unavailable function"}
+                        yield ProviderEvent("tool_result", {
+                            "name": str(call.name),
+                            "result": _safe_args(result) if isinstance(result, dict) else {"value": str(result)[:500]},
+                        })
                         function_responses.append(types.FunctionResponse(
                             id=call.id,
                             name=call.name or "set_facial_expression",
@@ -1860,11 +1930,13 @@ class GeminiLiveProvider(RealtimeProvider):
 
 def create_provider(instructions: str | None = None, tool_runner: Any = None,
                     home_assistant_client: Any = None, habit_state_getter: Any = None,
-                    session_id: str | None = None) -> RealtimeProvider:
+                    session_id: str | None = None,
+                    conversation: ConversationMemory | None = None) -> RealtimeProvider:
     return GeminiLiveProvider(
         instructions=instructions,
         tool_runner=tool_runner,
         home_assistant_client=home_assistant_client,
         habit_state_getter=habit_state_getter,
         session_id=session_id,
+        conversation=conversation,
     )
