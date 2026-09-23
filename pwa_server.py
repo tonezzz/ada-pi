@@ -742,17 +742,39 @@ _bridge_tokens: dict[str, float] = {}
 _BRIDGE_TTL_S = 900  # 15 min to scan the QR
 
 
-def _ha_guest_credentials() -> tuple[str, str, str] | None:
+def _ha_guest_credentials() -> tuple[str, str, str | None] | None:
     origin = os.environ.get("CHABA_HA_ORIGIN", "").rstrip("/")
     user = os.environ.get("CHABA_GUEST_USER", "guest")
-    password = os.environ.get("CHABA_GUEST_PASSWORD", "")
-    if not origin or not password:
+    password = os.environ.get("CHABA_GUEST_PASSWORD") or None
+    if not origin:
         return None
     return origin, user, password
 
 
-async def _ha_guest_login(ha_origin: str, user: str, password: str) -> dict[str, Any]:
-    """Run HA's login flow as the shared guest user and return token data.
+_guest_user_id_cache: str | None = None
+
+
+async def _ha_guest_user_id(username: str) -> str:
+    """Find the guest user's id via the admin auth list (cached)."""
+    global _guest_user_id_cache
+    if _guest_user_id_cache:
+        return _guest_user_id_cache
+    users = await ha_client.ws_command({"type": "config/auth/list"})
+    for u in users:
+        if u.get("username") == username or u.get("name", "").lower() == username:
+            _guest_user_id_cache = u["id"]
+            return _guest_user_id_cache
+    raise RuntimeError(f"HA user '{username}' not found")
+
+
+async def _ha_guest_login(ha_origin: str, user: str, password: str | None) -> dict[str, Any]:
+    """Mint tokens for the shared guest user.
+
+    Preferred path: trusted_networks login flow — works only when this
+    service's connection to HA is from a trusted network (127.0.0.1 added
+    to trusted_networks). No shared password needed.
+
+    Fallback: homeassistant provider with CHABA_GUEST_PASSWORD.
 
     Calls go to HOME_ASSISTANT_URL (loopback); ha_origin is only the
     client_id/hassUrl the guest browser will use, so LAN and tailnet
@@ -760,19 +782,20 @@ async def _ha_guest_login(ha_origin: str, user: str, password: str) -> dict[str,
     import httpx
     ha_api = os.environ.get("HOME_ASSISTANT_URL", ha_origin).rstrip("/")
     client_id = f"{ha_origin}/"
+    handler = ["homeassistant", None] if password else ["trusted_networks", None]
     async with httpx.AsyncClient(timeout=10.0) as c:
         r = await c.post(f"{ha_api}/auth/login_flow", json={
             "client_id": client_id,
-            "handler": ["homeassistant", None],
+            "handler": handler,
             "redirect_uri": f"{ha_origin}/",
         })
         r.raise_for_status()
         flow_id = r.json()["flow_id"]
-        r = await c.post(f"{ha_api}/auth/login_flow/{flow_id}", json={
-            "client_id": client_id,
-            "username": user,
-            "password": password,
-        })
+        if password:
+            data = {"client_id": client_id, "username": user, "password": password}
+        else:
+            data = {"client_id": client_id, "user_id": await _ha_guest_user_id(user)}
+        r = await c.post(f"{ha_api}/auth/login_flow/{flow_id}", json=data)
         r.raise_for_status()
         step = r.json()
         if step.get("type") != "create_entry":
@@ -794,7 +817,7 @@ async def chaba_ha_bridge_mint(request: Request) -> dict:
         raise HTTPException(status_code=409, detail="chaba mode not enabled")
     creds = _ha_guest_credentials()
     if creds is None:
-        raise HTTPException(status_code=503, detail="CHABA_HA_ORIGIN/CHABA_GUEST_PASSWORD not set")
+        raise HTTPException(status_code=503, detail="CHABA_HA_ORIGIN not set")
     origin, _, _ = creds
     token = uuid.uuid4().hex
     _bridge_tokens[token] = time.time() + _BRIDGE_TTL_S
