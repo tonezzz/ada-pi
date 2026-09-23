@@ -475,7 +475,12 @@ class ConversationMemory:
         lines = [f"# Ada voice session {self.session_id}", ""]
         for turn in self._turns:
             role = "User" if turn["role"] == "user" else "Ada"
-            lines.append(f"## {role}")
+            ts = turn.get("ts")
+            stamp = (
+                f" [{datetime.fromtimestamp(float(ts), timezone.utc).strftime('%H:%M:%S')}]"
+                if ts else ""
+            )
+            lines.append(f"## {role}{stamp}")
             lines.append(turn["text"])
             lines.append("")
         return "\n".join(lines)

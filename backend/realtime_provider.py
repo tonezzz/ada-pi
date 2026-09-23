@@ -210,6 +210,11 @@ class GeminiLiveProvider(RealtimeProvider):
         # so the server-side transcript survives a Gemini session swap.
         self.conversation = conversation or ConversationMemory(session_id or "unknown")
         self._bg_tasks: set[asyncio.Task] = set()
+        # Monotonic time of the last confident ada_memory_search hit — used to
+        # short-circuit a redundant ada_session_recall in the same turn.
+        self._strong_hit_at = 0.0
+        self._recall_gate_score = float(os.environ.get("ADA_RECALL_GATE_SCORE", "0.6"))
+        self._recall_gate_window = float(os.environ.get("ADA_RECALL_GATE_WINDOW_S", "60"))
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
         self.voice = os.environ.get("GEMINI_LIVE_VOICE", "Kore")
@@ -219,8 +224,9 @@ class GeminiLiveProvider(RealtimeProvider):
             f"{base_instructions}\n\n"
             "Your name is Ada. You have a visible animated face. Use the "
             "set_facial_expression tool to select the expression that best matches "
-            "your response and attitude. Call it once at the beginning of every spoken "
-            "reply, before speaking. You may update it again only if your tone changes "
+            "your response and attitude. Call it once per reply — if you need a memory "
+            "or device tool to answer, run that tool first and set the expression "
+            "while composing the reply instead of before it. You may update it again only if your tone changes "
             "materially. Prefer neutral for ordinary replies; "
             "use alert only for genuine urgency or warnings. Never describe or announce "
             "the tool call to the user."
@@ -278,8 +284,14 @@ class GeminiLiveProvider(RealtimeProvider):
             "Memories returned with unverified=true are low-confidence: hedge or say you are not sure "
             "rather than stating them as fact. "
             "Prefer the ada_ha_* memory tools for home, device, sensor, or event questions — they answer instantly. "
-            "Prefer ada_memory_search and bank recall for stored facts and preferences. "
-            "Reserve ada_session_recall for previous conversations or stored knowledge; it can take up to 20 seconds, "
+            "For any factual lookup — people, projects, purchases, procedures, fixes — "
+            "call ada_memory_search with bank='all' first; it fans out across every bank "
+            "so you never have to guess which one. When its top hit is a confident match, "
+            "ground the answer in that result, not in earlier conversation or session "
+            "context that may be stale or off-topic. "
+            "Reserve ada_session_recall strictly for 'what did we talk about' or "
+            "'do you remember' questions — never for fact lookup, and never in the same "
+            "turn as a confident ada_memory_search result; it can take up to 20 seconds, "
             "so keep the user informed while it runs. "
             "Use ada_ha_get_device_confidence when the user asks what is broken, new, needs setup, or trusted. "
             "For event history: get_logbook gives the friendly Home Assistant event log, "
@@ -1248,9 +1260,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_session_recall",
                     "description": (
-                        "Ask NotebookLM about previous voice sessions or stored knowledge. "
-                        "Use this when the user asks 'what did we talk about', 'do you remember', "
-                        "or wants to recall something from an earlier conversation. "
+                        "Recall previous voice conversations. Use ONLY when the user asks "
+                        "'what did we talk about', 'do you remember', or wants something "
+                        "from an earlier conversation — not for fact lookup (use "
+                        "ada_memory_search bank='all' for that). "
                         "Pick the group or bank that best matches the topic. "
                         "The recall runs in the background and can take up to ~20 seconds; "
                         "the result will be spoken when ready."
@@ -1291,8 +1304,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_memory_search",
                     "description": (
-                        "Search a curated memory bank for stored facts, preferences, people, "
-                        "procedures, and notes. Returns document keys you can pass to "
+                        "Search curated memory banks for stored facts, preferences, people, "
+                        "procedures, and notes — the FIRST tool for any factual lookup; "
+                        "pass bank='all' (default) when unsure which bank holds the fact. "
+                        "Returns document keys you can pass to "
                         "ada_remember (to correct) or ada_forget (to retract). "
                         "Use this before updating a memory and when the user asks what you "
                         "know about a topic."
@@ -2200,16 +2215,22 @@ class GeminiLiveProvider(RealtimeProvider):
                         elif call.name == "get_habit_status" and self.habit_state_getter is not None:
                             result = {"output": self.habit_state_getter()}
                         elif call.name == "ada_session_recall":
-                            question = (call.args or {}).get("question", "What did we discuss in the previous session?")
-                            group = (call.args or {}).get("group")
-                            bank = (call.args or {}).get("bank")
-                            recall_status = self.conversation.start_recall(
-                                str(question), self._on_recall_complete,
-                                group=str(group) if group else None,
-                                bank=str(bank) if bank else None,
-                                on_slow=self._on_recall_slow,
-                            )
-                            result = {"output": recall_status}
+                            if time.monotonic() - self._strong_hit_at < self._recall_gate_window:
+                                result = {"output": (
+                                    "ada_memory_search already returned a confident match "
+                                    "moments ago — answer from those hits. Session recall "
+                                    "skipped (redundant).")}
+                            else:
+                                question = (call.args or {}).get("question", "What did we discuss in the previous session?")
+                                group = (call.args or {}).get("group")
+                                bank = (call.args or {}).get("bank")
+                                recall_status = self.conversation.start_recall(
+                                    str(question), self._on_recall_complete,
+                                    group=str(group) if group else None,
+                                    bank=str(bank) if bank else None,
+                                    on_slow=self._on_recall_slow,
+                                )
+                                result = {"output": recall_status}
                         elif call.name == "ada_decision_check" and self.tool_runner is not None:
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
                         else:
@@ -2222,6 +2243,11 @@ class GeminiLiveProvider(RealtimeProvider):
                                             call_args["query"] = self.conversation.expand_query(str(q))
                                     output = await self.tool_runner.execute(str(call.name), call_args)
                                     result = {"output": output}
+                                    if call.name == "ada_memory_search" and isinstance(output, dict):
+                                        hits = output.get("hits") or []
+                                        top = float(hits[0].get("score") or 0) if hits else 0.0
+                                        if top >= self._recall_gate_score:
+                                            self._strong_hit_at = time.monotonic()
                                 except Exception as exc:
                                     result = {"error": f"{call.name} failed: {exc}"}
                             else:
