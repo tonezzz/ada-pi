@@ -551,6 +551,8 @@ class GeminiLiveProvider(RealtimeProvider):
             "live", session_id=self.session_id,
             input_tokens=in_tokens, output_tokens=out_tokens,
             input_by_modality=in_mod, output_by_modality=out_mod,
+            cached_tokens=int(getattr(usage, "cached_content_token_count", 0) or 0),
+            tool_use_tokens=int(getattr(usage, "tool_use_prompt_token_count", 0) or 0),
         )
         logger.info(
             "session=%s usage turn in=%d out=%d | total in=%d out=%d in_by_modality=%s out_by_modality=%s",

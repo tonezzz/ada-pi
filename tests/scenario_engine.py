@@ -289,6 +289,7 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
     runner._banks = registry
     runner.mddb = fake
     conv = ConversationMemory(session_id="scenario")
+    usage_ledger.configure(None)  # no data/usage.jsonl writes in offline runs
     usage_ledger.reset()
     today = datetime.now(timezone.utc).date().isoformat()
 

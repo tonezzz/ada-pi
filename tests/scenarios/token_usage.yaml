@@ -14,6 +14,8 @@ steps:
       output_tokens: 9200
       input_by_modality: {audio: 54000, text: 1400}
       output_by_modality: {audio: 9200}
+      cached_tokens: 12000
+      tool_use_tokens: 3400
   - record_usage:
       source: posture
       input_tokens: 730
@@ -33,6 +35,10 @@ steps:
       output_contains:
         - '"input_tokens": 56865'
         - '"output_tokens": 9295'
+        - '"cached_tokens": 12000'
+        - '"tool_use_tokens": 3400'
+        - '"turns": 3'
+        - '"by_day"'
         - '"live"'
         - '"posture"'
         - '"clutter"'
@@ -46,13 +52,14 @@ steps:
         - '"input_tokens": 55400'
         - '"audio": 54000'
         - '"session_count": 1'
+        - '"turns": 1'
 
   # Follow-up: "what does that cost us?" — live audio is the expensive part.
   - say: "what does that cost us?"
   - tool: ada_usage_summary
     args: {source: live}
     expect:
-      output_contains: ['"est_cost_usd": 0.2728']
+      output_contains: ['"est_cost_usd": 0.2818']
 
   # Follow-up: "and the posture checks?"
   - say: "and the posture checks?"
@@ -61,7 +68,7 @@ steps:
     expect:
       output_contains: ['"input_tokens": 730', '"image": 620']
 
-  # Follow-up: "reset the counters" -> zeroes the ledger.
+  # Follow-up: "reset the counters" -> zeroes the ledger and the log file.
   - say: "reset the counters please"
   - tool: ada_usage_summary
     args: {reset: true}
@@ -70,4 +77,4 @@ steps:
 
   - tool: ada_usage_summary
     expect:
-      output_contains: ['"input_tokens": 0, "output_tokens": 0']
+      output_contains: ['"input_tokens": 0, "output_tokens": 0', '"by_day": {}']

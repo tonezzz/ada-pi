@@ -33,6 +33,7 @@ def _log_usage(response: Any, label: str) -> None:
     usage_ledger.record(
         label.split()[0], input_tokens=in_tokens, output_tokens=out_tokens,
         input_by_modality=in_mod,
+        cached_tokens=int(getattr(usage, "cached_content_token_count", 0) or 0),
     )
     logger.info("%s tokens in=%s out=%s", label, in_tokens, out_tokens)
 
