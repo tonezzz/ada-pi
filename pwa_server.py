@@ -378,6 +378,17 @@ async def _mark_session_end(conversation: ConversationMemory) -> None:
         await record_session_end(tool_runner.mddb, tail)
 
 
+async def _prime_session_task(provider: Any, ws: WebSocket) -> None:
+    """Background session prime: resolve reconnect context (may hit MDDB)
+    then inject the session-start text. Runs after 'ready' is sent so a
+    stalled MDDB can't hold up the client handshake."""
+    try:
+        reconnect = await asyncio.wait_for(_reconnect_context(ws), timeout=6.0)
+    except Exception:
+        reconnect = None
+    await _prime_session(provider, reconnect=reconnect)
+
+
 async def _prime_session(
     provider: Any, reconnect: tuple[float | None, str] | None = None
 ) -> None:
@@ -418,7 +429,6 @@ async def voice_socket(ws: WebSocket) -> None:
     await ws.accept()
     session_id = uuid.uuid4().hex[:10]
     logger.info("session=%s client connected", session_id)
-    reconnect_ctx = await _reconnect_context(ws)
     # Chaba guest mode: a ?name= query param binds the visitor's declared
     # name to this session so memory writes land under guests/<name>.yml.
     if CHABA_MODE:
@@ -489,12 +499,13 @@ async def voice_socket(ws: WebSocket) -> None:
             await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
             await ws.close(code=1011)
         return
-    await _prime_session(provider_ref[0], reconnect=reconnect_ctx)
-
+    # Send 'ready' as soon as Gemini is live; reconnect-context lookup and
+    # memory priming can stall on MDDB, so they run in the background.
     try:
         await ws.send_text(json.dumps({"type": "ready"}))
     except Exception:
         return
+    asyncio.create_task(_prime_session_task(provider_ref[0], ws))
 
     async def browser_to_provider() -> None:
         try:
