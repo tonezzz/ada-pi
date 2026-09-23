@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import re
 import sys
 import time
 import uuid
@@ -35,11 +36,18 @@ from backend.conversation_memory import conversation_health
 from backend.decision_check import DecisionCheckEngine, decode_image
 from backend.memory_banks import get_registry
 from backend import auth
+from backend import chaba_memory
 from backend.speaker_id import SpeakerIdentifier, SpeakerSession
 
 # Speaker identification is opt-in via ADA_SPEAKER_ID=true.  When disabled
 # (or when speechbrain/torch are not installed), the voice path is unchanged.
 SPEAKER_ID_ENABLED = os.environ.get("ADA_SPEAKER_ID", "true").lower() == "true"
+
+# CHABA_MEMORY=1 runs this service as the Chaba guest assistant: file-backed
+# public memory under ~/.local/share/chaba/, no MDDB/NotebookLM. See
+# backend/chaba_memory.py and docs/ssot/chaba/ssot.chaba.memory.yml.
+CHABA_MODE = chaba_memory.enabled()
+chaba = chaba_memory.get_store() if CHABA_MODE else None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,6 +73,15 @@ async def api_health() -> dict:
     reports only ok/error strings, no data. Non-null errors mean something
     failed recently (fail-quick reporting, not silent decay)."""
     mem = conversation_health()
+    if CHABA_MODE:
+        cstat = chaba.health()
+        return {
+            "ok": True,
+            "mode": "chaba-guest",
+            "conversation_memory": mem,
+            "chaba": cstat,
+            "degraded": bool(mem["errors"] or not cstat["context_present"]),
+        }
     banks = get_registry().health()
     return {
         "ok": True,
@@ -292,12 +309,15 @@ async def redeem(token: str, request: Request):
 @app.on_event("startup")
 async def warm_cache() -> None:
     logger.info("warming HA and confidence cache")
-    try:
-        await tool_runner.memory.refresh()
-        logger.info("cache warm complete")
-    except Exception as exc:
-        logger.warning("cache warm failed, will retry on first request: %s", exc)
-    if ha_client.configured:
+    if CHABA_MODE:
+        logger.info("chaba guest mode — skipping HA memory cache warm")
+    else:
+        try:
+            await tool_runner.memory.refresh()
+            logger.info("cache warm complete")
+        except Exception as exc:
+            logger.warning("cache warm failed, will retry on first request: %s", exc)
+    if ha_client.configured and tool_runner.events is not None:
         await tool_runner.events.start()
         logger.info("ha event recorder running=%s", tool_runner.events.running)
     if not auth.configured():
@@ -311,7 +331,8 @@ async def warm_cache() -> None:
 
 @app.on_event("shutdown")
 async def stop_event_recorder() -> None:
-    await tool_runner.events.stop()
+    if tool_runner.events is not None:
+        await tool_runner.events.stop()
 
 
 # Reconnect continuity: the previous websocket session's end timestamp and
@@ -339,6 +360,8 @@ async def _reconnect_context(ws: WebSocket) -> tuple[float | None, str]:
             time.time() - float(_last_session_end["ts"]),
             str(_last_session_end.get("tail") or ""),
         )
+    if tool_runner.mddb is None:
+        return None, ""
     ts, tail = await last_session_end(tool_runner.mddb)
     if ts is None:
         return None, ""
@@ -349,7 +372,8 @@ async def _mark_session_end(conversation: ConversationMemory) -> None:
     global _last_session_end
     tail = conversation.recent_context(max_turns=6, max_chars=800)
     _last_session_end = {"ts": time.time(), "tail": tail}
-    await record_session_end(tool_runner.mddb, tail)
+    if tool_runner.mddb is not None:
+        await record_session_end(tool_runner.mddb, tail)
 
 
 async def _prime_session(
@@ -359,6 +383,14 @@ async def _prime_session(
     general memories) so Ada starts aware of general info instead of blank.
     On websocket connect, reconnect=(away_seconds, tail) adds a directive so
     the greeting matches how long the user was gone."""
+    if CHABA_MODE:
+        try:
+            ctx = chaba.system_context(provider.session_id)
+            if ctx:
+                await provider.send_text_turn("(system) Guest context follows.\n\n" + ctx)
+        except Exception as exc:
+            logger.warning("chaba session prime failed: %s", exc)
+        return
     try:
         away_s, tail = reconnect if reconnect else (None, "")
         text = await memory_ops.session_prime_text(
@@ -385,6 +417,12 @@ async def voice_socket(ws: WebSocket) -> None:
     session_id = uuid.uuid4().hex[:10]
     logger.info("session=%s client connected", session_id)
     reconnect_ctx = await _reconnect_context(ws)
+    # Chaba guest mode: a ?name= query param binds the visitor's declared
+    # name to this session so memory writes land under guests/<name>.yml.
+    if CHABA_MODE:
+        guest_name = (ws.query_params.get("name") or "").strip()
+        if guest_name:
+            chaba.set_identity(session_id, "guest", guest_name)
     # One ConversationMemory per websocket session, shared across provider
     # reconnects so the transcript survives a Gemini session swap.
     conversation = ConversationMemory(session_id)
@@ -392,6 +430,7 @@ async def voice_socket(ws: WebSocket) -> None:
         "conversation": conversation,
         "connected_at": time.time(),
         "client": ws.client.host if ws.client else None,
+        "ws": ws,
     }
     provider_ref = [create_provider(
         tool_runner=tool_runner, session_id=session_id, conversation=conversation
@@ -475,6 +514,21 @@ async def voice_socket(ws: WebSocket) -> None:
                         control = json.loads(text)
                         if control.get("type") in ("local_speech_started", "local_speech_stopped"):
                             logger.info("session=%s %s", session_id, control.get("type"))
+                        elif control.get("type") == "register" and CHABA_MODE:
+                            # Guest name registration: binds name to this
+                            # session for memory writes and queues a pending
+                            # record for admin promotion.
+                            gname = str(control.get("name") or "").strip()
+                            try:
+                                res = chaba.register_pending(gname, session_id=session_id)
+                                await ws.send_text(json.dumps({
+                                    "type": "registered",
+                                    "name": res["name"], "status": res["status"],
+                                }))
+                            except Exception as exc:
+                                await ws.send_text(json.dumps({
+                                    "type": "error", "message": f"register failed: {exc}",
+                                }))
                         elif control.get("type") == "text":
                             chat_text = str(control.get("text") or "").strip()
                             if chat_text:
@@ -582,7 +636,199 @@ async def voice_socket(ws: WebSocket) -> None:
         with suppress(Exception):
             await _mark_session_end(conversation)
         _live_sessions.pop(session_id, None)
+        if CHABA_MODE:
+            chaba.sessions.pop(session_id, None)
         logger.info("session=%s closed", session_id)
+
+
+@app.get("/api/chaba/pending")
+async def chaba_pending(request: Request) -> dict:
+    """List guest registrations awaiting admin promotion (chaba mode only)."""
+    _require_api_key(request)
+    if not CHABA_MODE:
+        return {"pending": []}
+    return {"pending": chaba.pending_list()}
+
+
+@app.post("/api/chaba/promote/{name}")
+async def chaba_promote(name: str, request: Request) -> dict:
+    """Admin promotes a pending guest to a named user: moves their public
+    memory file, creates their private namespace, binds ha_person, and pushes
+    identity_changed to any live session so the client switches without a
+    reconnect."""
+    _require_api_key(request)
+    if not CHABA_MODE:
+        raise HTTPException(status_code=409, detail="chaba mode not enabled")
+    payload: dict[str, Any] = {}
+    try:
+        payload = await request.json()
+    except Exception:
+        pass
+    result = chaba.promote(name, ha_person=payload.get("ha_person"))
+    # Best-effort HA person creation — needs an admin HA token; if it fails
+    # the admin can create the person manually and re-run metadata binding.
+    if ha_client.configured:
+        try:
+            person = await ha_client.ws_command({
+                "type": "person/create",
+                "name": result["name"],
+            })
+            result["ha_person_created"] = True
+            result["ha_person"] = f"person.{person.get('id', result['slug'])}"
+        except Exception as exc:
+            result["ha_person_created"] = False
+            result["ha_person_error"] = str(exc)
+            logger.warning("person/create for %s failed: %s", result["name"], exc)
+    # Bind the guest's enrolled voiceprint (guest-<slug>) to their person.
+    try:
+        identifier = SpeakerIdentifier.get()
+        if identifier.set_metadata(
+            f"guest-{result['slug']}", ha_person=result["ha_person"]
+        ):
+            result["voiceprint_bound"] = True
+    except Exception as exc:
+        logger.info("voiceprint bind skipped for %s: %s", result["name"], exc)
+    for sid in result["sessions"]:
+        live = _live_sessions.get(sid)
+        if live and live.get("ws"):
+            with suppress(Exception):
+                await live["ws"].send_text(json.dumps({
+                    "type": "identity_changed",
+                    "kind": "user",
+                    "name": result["name"],
+                    "ha_person": result["ha_person"],
+                }))
+    return result
+
+
+@app.post("/api/chaba/revoke/{name}")
+async def chaba_revoke(name: str, request: Request) -> dict:
+    """Admin revokes a guest/user: their files are archived under revoked/
+    and live sessions for that name are dropped back to anonymous guest."""
+    _require_api_key(request)
+    if not CHABA_MODE:
+        raise HTTPException(status_code=409, detail="chaba mode not enabled")
+    import shutil
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    archived = []
+    for p in (chaba.guest_file(name), chaba.user_file(name),
+              chaba.private_file(name), chaba.pending_file(name)):
+        if p.exists():
+            dest = chaba._path("revoked", p.name)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(p), str(dest))
+            archived.append(p.name)
+    dropped = []
+    for sid, ident in list(chaba.sessions.items()):
+        if re.sub(r"[^a-z0-9]+", "-", ident.get("name", "").lower()).strip("-") == slug:
+            chaba.set_identity(sid, "guest", "")
+            dropped.append(sid)
+            live = _live_sessions.get(sid)
+            if live and live.get("ws"):
+                with suppress(Exception):
+                    await live["ws"].send_text(json.dumps({
+                        "type": "identity_changed", "kind": "guest", "name": "",
+                    }))
+    return {"ok": True, "archived": archived, "sessions_dropped": dropped}
+
+
+# -- Chaba guest HA auto-login bridge --------------------------------------
+# One-time bridge tokens minted by admins; the /local/chaba-gate.html page on
+# the HA origin fetches /api/chaba/ha-bridge/<token> (burn-once, CORS-scoped)
+# and writes the returned hassTokens into localStorage — landing the guest in
+# the HA web UI already logged in as the shared `guest` account.
+
+_bridge_tokens: dict[str, float] = {}
+_BRIDGE_TTL_S = 900  # 15 min to scan the QR
+
+
+def _ha_guest_credentials() -> tuple[str, str, str] | None:
+    origin = os.environ.get("CHABA_HA_ORIGIN", "").rstrip("/")
+    user = os.environ.get("CHABA_GUEST_USER", "guest")
+    password = os.environ.get("CHABA_GUEST_PASSWORD", "")
+    if not origin or not password:
+        return None
+    return origin, user, password
+
+
+async def _ha_guest_login(ha_origin: str, user: str, password: str) -> dict[str, Any]:
+    """Run HA's login flow as the shared guest user and return token data."""
+    import httpx
+    client_id = f"{ha_origin}/"
+    async with httpx.AsyncClient(timeout=10.0) as c:
+        r = await c.post(f"{ha_origin}/auth/login_flow", json={
+            "client_id": client_id,
+            "handler": ["homeassistant", None],
+            "redirect_uri": f"{ha_origin}/",
+        })
+        r.raise_for_status()
+        flow_id = r.json()["flow_id"]
+        r = await c.post(f"{ha_origin}/auth/login_flow/{flow_id}", json={
+            "client_id": client_id,
+            "username": user,
+            "password": password,
+        })
+        r.raise_for_status()
+        step = r.json()
+        if step.get("type") != "create_entry":
+            raise RuntimeError(f"login flow did not complete: {step.get('type')}")
+        r = await c.post(f"{ha_origin}/auth/token", data={
+            "grant_type": "authorization_code",
+            "code": step["result"],
+            "client_id": client_id,
+        })
+        r.raise_for_status()
+        return r.json()
+
+
+@app.post("/api/chaba/ha-bridge")
+async def chaba_ha_bridge_mint(request: Request) -> dict:
+    """Admin mints a one-time HA auto-login bridge token (chaba mode only)."""
+    _require_api_key(request)
+    if not CHABA_MODE:
+        raise HTTPException(status_code=409, detail="chaba mode not enabled")
+    creds = _ha_guest_credentials()
+    if creds is None:
+        raise HTTPException(status_code=503, detail="CHABA_HA_ORIGIN/CHABA_GUEST_PASSWORD not set")
+    origin, _, _ = creds
+    token = uuid.uuid4().hex
+    _bridge_tokens[token] = time.time() + _BRIDGE_TTL_S
+    gate_url = f"{origin}/local/chaba-gate.html?t={token}"
+    return {"token": token, "gate_url": gate_url, "expires_in": _BRIDGE_TTL_S}
+
+
+@app.get("/api/chaba/ha-bridge/{token}")
+async def chaba_ha_bridge_redeem(token: str) -> Response:
+    """Burn-once endpoint returning hassTokens JSON for localStorage."""
+    cors = os.environ.get("CHABA_HA_ORIGIN", "").rstrip("/") or "*"
+    headers = {"Access-Control-Allow-Origin": cors}
+    if not CHABA_MODE:
+        return Response(status_code=404, headers=headers)
+    expires = _bridge_tokens.pop(token, None)  # burn on read
+    if expires is None or expires < time.time():
+        return Response(json.dumps({"error": "invalid or expired token"}),
+                        status_code=410, media_type="application/json", headers=headers)
+    creds = _ha_guest_credentials()
+    if creds is None:
+        return Response(json.dumps({"error": "guest login not configured"}),
+                        status_code=503, media_type="application/json", headers=headers)
+    origin, user, password = creds
+    try:
+        tok = await _ha_guest_login(origin, user, password)
+    except Exception as exc:
+        logger.warning("guest HA login failed: %s", exc)
+        return Response(json.dumps({"error": "login failed"}),
+                        status_code=502, media_type="application/json", headers=headers)
+    body = {
+        "access_token": tok["access_token"],
+        "refresh_token": tok["refresh_token"],
+        "token_type": "Bearer",
+        "expires_in": tok.get("expires_in", 1800),
+        "hassUrl": origin,
+        "clientId": f"{origin}/",
+        "expires": int(time.time() * 1000) + int(tok.get("expires_in", 1800)) * 1000,
+    }
+    return Response(json.dumps(body), media_type="application/json", headers=headers)
 
 
 @app.get("/api/home-assistant/entities")

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from backend import memory_ops
+from backend import chaba_memory
 from backend import devin_dispatch as devin_dispatch_mod
 from backend.calendar_providers import CalendarService
 from backend.decision_check import DecisionCheckEngine
@@ -432,9 +433,16 @@ class ToolRunner:
 
     def __init__(self, ha_client: HomeAssistantClient, habit_state_getter: Any | None = None, instance_id: str | None = None) -> None:
         self.context = ToolContext(ha_client=ha_client, habit_state_getter=habit_state_getter)
-        self.mddb = MddbClient()
-        self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb, instance_id=instance_id)
-        self.events = HaEventRecorder(ha_client, mddb_client=self.mddb, instance_id=instance_id)
+        # CHABA_MEMORY=1 guest mode: file-backed public memory, no MDDB.
+        self.chaba = chaba_memory.get_store() if chaba_memory.enabled() else None
+        if self.chaba is not None:
+            self.mddb = None
+            self.memory = None
+            self.events = None
+        else:
+            self.mddb = MddbClient()
+            self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb, instance_id=instance_id)
+            self.events = HaEventRecorder(ha_client, mddb_client=self.mddb, instance_id=instance_id)
         self._instance_id = instance_id
         # Voice session that invoked the current tool call; the realtime
         # provider sets this so memory writes carry provenance.
@@ -535,8 +543,17 @@ class ToolRunner:
                     f"rate limit exceeded for {entity_id}: more than {CONTROL_MAX_PER_ENTITY} "
                     f"control calls in {int(CONTROL_RATE_WINDOW_S)}s"
                 )
-            await self.memory._ensure_confidence()
-            safety = self.memory._safety.get(entity_id)
+            if self.chaba is not None:
+                # Guest mode has no MDDB safety map — deny anything that can
+                # move or open: locks, covers, buttons, gates, garages, doors.
+                if re.search(r"(?:lock|cover|button|gate|garage|door|siren|alarm)", entity_id):
+                    logger.warning("denied %s on %r: chaba guest deny-pattern", name, entity_id)
+                    raise PermissionError(
+                        f"guests cannot control '{entity_id}' (locks/covers/gates are off-limits)"
+                    )
+            else:
+                await self.memory._ensure_confidence()
+            safety = self.memory._safety.get(entity_id) if self.memory is not None else None
             if safety != "dangerous":
                 # A related entity can inherit danger: button.gate_motor_my_position
                 # physically jogs the dangerous cover.gate_motor.
@@ -991,6 +1008,36 @@ class ToolRunner:
             session_id=self.session_id,
             person_entity=self.current_speaker_ha_person,
         )
+
+    # -- Chaba guest tools (CHABA_MEMORY=1 instances only) ------------------
+    # File-backed public memory under ~/.local/share/chaba/. No MDDB, no
+    # embeddings, no bank registry — guests write to guests/<name>.yml and
+    # promoted users to users/<name>.yml (+ a private file for their own
+    # namespace). Identity comes from the websocket session, not the model.
+
+    def _require_chaba(self) -> None:
+        if self.chaba is None:
+            raise PermissionError("guest tools are only available on CHABA_MEMORY=1 instances")
+
+    async def guest_remember(self, key: str, text: str) -> dict[str, Any]:
+        """Save a public memory under this visitor's declared name."""
+        self._require_chaba()
+        return self.chaba.remember(self.session_id, key, text)
+
+    async def guest_remember_private(self, key: str, text: str) -> dict[str, Any]:
+        """Save a private note — only for admin-promoted users."""
+        self._require_chaba()
+        return self.chaba.remember_private(self.session_id, key, text)
+
+    async def guest_recall(self, query: str, limit: int = 10) -> dict[str, Any]:
+        """Search public guest memories (and own private notes for users)."""
+        self._require_chaba()
+        return {"hits": self.chaba.recall(query, session_id=self.session_id, limit=limit)}
+
+    async def guest_register(self, name: str) -> dict[str, Any]:
+        """Register the visitor's name for admin promotion to a named user."""
+        self._require_chaba()
+        return self.chaba.register_pending(name, session_id=self.session_id)
 
     # -- Miniapp/CMS page tools: one MDDB document per page in CMS_COLLECTION --
     # Meta carries the page contract the miniapp shell renders: slug, title,

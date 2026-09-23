@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 
+from backend import chaba_memory
 from backend.conversation_memory import ConversationMemory
 from backend.tool_runner import ToolRunner
 from backend.usage_tracker import usage_ledger
@@ -106,6 +107,98 @@ DEVIN_INSTRUCTIONS = (
     "save the spec into the devin-handoff memory bank so a dispatched session can "
     "be told to 'check the ada handoff'."
 )
+
+
+# CHABA_MEMORY=1 guest mode: the instance serves visitors through the file-
+# backed chaba store instead of MDDB banks. Guest tools are appended and the
+# tool surface is cut to CHABA_ALLOW — an allowlist so new Ada tools never
+# leak into guest sessions by accident.
+CHABA_TOOLS = {"guest_remember", "guest_remember_private", "guest_recall", "guest_register"}
+
+CHABA_ALLOW = CHABA_TOOLS | {
+    "get_home_state", "list_home_devices", "search_home_devices",
+    "ada_ha_get_state", "ada_ha_search_devices", "ada_ha_search_sensors",
+    "list_sensors", "search_sensors", "get_sensor_history",
+    "get_power_summary", "get_rk600_weather", "get_pool_status",
+    "get_battery_status", "get_battery_detail",
+    "control_entity", "control_media_player",
+}
+
+CHABA_INSTRUCTIONS = (
+    " You are Chaba, the house assistant for visitors. On first contact ask "
+    "the visitor's name and call guest_register with it — registration lets an "
+    "admin promote them to a named user later. Before the first guest_remember "
+    "in a session, say clearly that saved memories are visible to everyone in "
+    "this household. guest_remember saves a PUBLIC note (key + text); "
+    "guest_recall searches saved notes; guest_remember_private is only for "
+    "promoted users and fails for guests. You can read home state and sensors "
+    "and control lights/media via control_entity and control_media_player, "
+    "but never anything that moves (covers, gates, buttons) — refuse those "
+    "politely."
+)
+
+CHABA_DECLARATIONS = [
+    {
+        "name": "guest_remember",
+        "description": (
+            "Save a public memory under the visitor's declared name. "
+            "Disclose first that guest memories are visible to the household."
+        ),
+        "parameters_json_schema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "Short slug, e.g. 'favorite-drink'."},
+                "text": {"type": "string", "description": "The fact or note to remember."},
+            },
+            "required": ["key", "text"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "guest_remember_private",
+        "description": (
+            "Save a private note — only works for admin-promoted users; "
+            "fails for guests."
+        ),
+        "parameters_json_schema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string"},
+                "text": {"type": "string"},
+            },
+            "required": ["key", "text"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "guest_recall",
+        "description": "Search public guest memories by keyword.",
+        "parameters_json_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "description": "Max hits (default 10)."},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "guest_register",
+        "description": (
+            "Register the visitor's name so an admin can promote them to a "
+            "named user with a private memory namespace. Ask their name first."
+        ),
+        "parameters_json_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Visitor's declared name."},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+]
 
 
 def _fill_bank_placeholders(node: Any, banks: str, writable: str) -> Any:
@@ -2015,14 +2108,32 @@ class GeminiLiveProvider(RealtimeProvider):
                 config["system_instruction"] = config["system_instruction"].replace(
                     DEVIN_INSTRUCTIONS, ""
                 )
-        config["system_instruction"] += await self._session_context_tail(excluded)
-        # Per-instance memory banks: descriptions name only banks this
-        # instance can actually use ({banks}=readable, {writable_banks}=
-        # writable), so the model never calls a bank that fails loudly.
-        all_banks, writable_banks = self._memory_bank_names()
-        config["tools"][0]["function_declarations"] = _fill_bank_placeholders(
-            config["tools"][0]["function_declarations"], all_banks, writable_banks
-        )
+        if chaba_memory.enabled():
+            # Guest mode: allowlist the tool surface, append chaba guest tools,
+            # and inject the rendered guest context instead of MDDB priming.
+            config["tools"][0]["function_declarations"] = [
+                fd for fd in config["tools"][0]["function_declarations"]
+                if fd.get("name") in CHABA_ALLOW
+            ]
+            config["tools"][0]["function_declarations"].extend(CHABA_DECLARATIONS)
+            config["system_instruction"] += CHABA_INSTRUCTIONS
+            try:
+                ctx = chaba_memory.get_store().system_context(
+                    getattr(self, "session_id", None)
+                )
+                if ctx:
+                    config["system_instruction"] += "\n\n" + ctx
+            except Exception as exc:
+                logger.warning("chaba context load failed: %s", exc)
+        else:
+            config["system_instruction"] += await self._session_context_tail(excluded)
+            # Per-instance memory banks: descriptions name only banks this
+            # instance can actually use ({banks}=readable, {writable_banks}=
+            # writable), so the model never calls a bank that fails loudly.
+            all_banks, writable_banks = self._memory_bank_names()
+            config["tools"][0]["function_declarations"] = _fill_bank_placeholders(
+                config["tools"][0]["function_declarations"], all_banks, writable_banks
+            )
         self._session_context = self._client.aio.live.connect(
             model=self.model,
             config=config,

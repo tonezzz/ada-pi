@@ -793,6 +793,32 @@ class HomeAssistantClient:
                         return payload.get("result", {})
                     raise RuntimeError(f"lovelace/config failed: {payload}")
 
+    async def ws_command(self, command: dict[str, Any], timeout: float = 10.0) -> Any:
+        """Send one websocket command and return its result payload.
+
+        Used for admin commands with no REST/service equivalent, e.g.
+        person/create during chaba guest promotion."""
+        if not self.token:
+            raise RuntimeError("HOME_ASSISTANT_TOKEN is not set")
+        await self._ensure_access_token()
+        base = self.base_url.replace("http://", "ws://").replace("https://", "wss://")
+        ws_url = f"{base.rstrip('/')}/api/websocket"
+        async with websockets.connect(ws_url) as ws:
+            hello = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+            if hello.get("type") != "auth_required":
+                raise RuntimeError(f"unexpected websocket hello: {hello}")
+            await ws.send(json.dumps({"type": "auth", "access_token": self._access_token}))
+            ack = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+            if ack.get("type") != "auth_ok":
+                raise RuntimeError(f"websocket auth failed: {ack}")
+            await ws.send(json.dumps({"id": 1, **command}))
+            while True:
+                payload = json.loads(await asyncio.wait_for(ws.recv(), timeout=timeout))
+                if payload.get("id") == 1:
+                    if payload.get("type") == "result" and payload.get("success"):
+                        return payload.get("result")
+                    raise RuntimeError(f"{command.get('type')} failed: {payload}")
+
     async def dashboard_tab(
         self,
         tab: str,
