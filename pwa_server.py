@@ -34,6 +34,8 @@ from backend.home_assistant import HomeAssistantClient
 from backend.tool_runner import ToolRunner
 from backend.conversation_memory import conversation_health
 from backend.decision_check import DecisionCheckEngine, decode_image
+from backend.document_check import DocumentCheckEngine
+from backend.document_check import decode_image as doc_decode_image
 from backend.memory_banks import get_registry
 from backend import auth
 from backend import chaba_memory
@@ -1168,6 +1170,73 @@ async def decision_check(request: Request) -> dict:
         logger.warning("decision check failed caller=%s: %s", caller, exc)
         raise HTTPException(status_code=502, detail=f"check failed: {exc}") from exc
     return result.to_dict()
+
+
+_document_engine: DocumentCheckEngine | None = None
+
+
+def _get_document_engine() -> DocumentCheckEngine:
+    """Lazy — document intake keeps rendered artifacts in RAM only;
+    printing/archive are separate confirmed tools (P2/P3)."""
+    global _document_engine
+    if _document_engine is None:
+        _document_engine = DocumentCheckEngine()
+    return _document_engine
+
+
+@app.post("/api/documents/intake")
+async def documents_intake(request: Request) -> dict:
+    """Upload a document image for classify+measure+render. Body:
+    {image_b64 (data-URL ok), image_mime?, filename?, mode: print|archive}.
+    Returns the assessment + pdf_url/preview_url keys."""
+    _require_api_key(request)
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="body must be an object")
+    try:
+        image, image_mime = doc_decode_image(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"invalid image: {exc}") from exc
+    if not image:
+        raise HTTPException(status_code=422, detail="image_b64 required")
+    try:
+        result = await _get_document_engine().intake(
+            image=image,
+            image_mime=image_mime,
+            filename=str(payload.get("filename") or ""),
+            mode=str(payload.get("mode") or "print"),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.warning("document intake failed: %s", exc)
+        raise HTTPException(status_code=502, detail=f"intake failed: {exc}") from exc
+    if not result.ok:
+        raise HTTPException(status_code=422, detail=result.error or "intake failed")
+    return result.to_dict()
+
+
+@app.get("/api/documents/{key:path}/pdf")
+async def documents_pdf(request: Request, key: str) -> Response:
+    """Print-ready A4 PDF for a held intake result (RAM-only, last 20)."""
+    _require_api_key(request)
+    held = _get_document_engine().held(key)
+    if held is None:
+        raise HTTPException(status_code=404, detail="unknown or expired document key")
+    return Response(content=held.pdf, media_type="application/pdf")
+
+
+@app.get("/api/documents/{key:path}/preview")
+async def documents_preview(request: Request, key: str) -> Response:
+    """JPEG preview of the rendered page for a held intake result."""
+    _require_api_key(request)
+    held = _get_document_engine().held(key)
+    if held is None:
+        raise HTTPException(status_code=404, detail="unknown or expired document key")
+    return Response(content=held.preview, media_type="image/jpeg")
 
 
 @app.get("/api/decision/history")

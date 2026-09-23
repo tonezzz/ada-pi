@@ -505,6 +505,114 @@ checkRun?.addEventListener("click", async () => {
   }
 });
 
+// --- Documents: upload a scan/photo, get classify+rendered print preview ---
+const docToggle = document.querySelector("#doc-toggle");
+const docPanel = document.querySelector("#doc-panel");
+const docFileBtn = document.querySelector("#doc-file");
+const docFileInput = document.querySelector("#doc-file-input");
+const docFileName = document.querySelector("#doc-file-name");
+const docRun = document.querySelector("#doc-run");
+let docFile = null;
+let docRunning = false;
+
+docToggle?.addEventListener("click", () => docPanel?.classList.toggle("open"));
+docFileBtn?.addEventListener("click", () => docFileInput?.click());
+docFileInput?.addEventListener("change", () => {
+  docFile = docFileInput.files?.[0] || null;
+  if (docFileName) docFileName.textContent = docFile ? docFile.name : "no file";
+});
+
+async function authedBlob(url) {
+  const headers = { "X-Device-Id": getDeviceId() };
+  const key = getApiKey();
+  if (key) headers["X-Api-Key"] = key;
+  const resp = await fetch(`${chatBasePath()}${url}`, { headers });
+  if (!resp.ok) throw new Error(`${resp.status}`);
+  return URL.createObjectURL(await resp.blob());
+}
+
+function renderDocResult(data) {
+  const card = document.createElement("div");
+  card.className = "msg check";
+  const who = document.createElement("span");
+  who.className = "who";
+  who.textContent = "Docs";
+  const title = document.createElement("div");
+  const conf = Math.round((data.confidence || 0) * 100);
+  title.textContent = `${data.doc_type || "document"} — ${conf}%`;
+  const summary = document.createElement("div");
+  summary.className = "check-section";
+  summary.textContent = data.summary || "";
+  card.append(who, title, summary);
+  const plan = data.plan || {};
+  const meas = data.measured || {};
+  checkLine(card, "Plan", [
+    `${plan.output || "?"} → ${(plan.placed_mm || []).join("×")}mm on A4 @300dpi`,
+    `source ${meas.width}×${meas.height}px` +
+      (meas.src_dpi ? ` (${meas.src_dpi}dpi)` : "") +
+      (meas.spread ? " — two-page spread, left page only" : ""),
+  ]);
+  checkLine(card, "Warnings", data.warnings);
+  if (data.preview_url) {
+    authedBlob(data.preview_url).then(u => {
+      const img = document.createElement("img");
+      img.src = u;
+      img.style.cssText = "max-width:100%;border-radius:8px;margin-top:6px";
+      card.append(img);
+    }).catch(() => {});
+  }
+  if (data.pdf_url) {
+    authedBlob(data.pdf_url).then(u => {
+      const a = document.createElement("a");
+      a.href = u;
+      a.download = `${data.key?.split("/").pop() || "document"}.pdf`;
+      a.className = "pwa-button";
+      a.style.cssText = "display:inline-block;margin-top:6px;text-decoration:none";
+      a.textContent = "Download PDF";
+      card.append(a);
+    }).catch(() => {});
+  }
+  const meta = document.createElement("div");
+  meta.className = "check-meta";
+  const ms = data.durations_ms || {};
+  meta.textContent = `${Math.round((ms.total_ms || 0) / 1000)}s · held in RAM (print/archive need confirmation)`;
+  card.append(meta);
+  logElement.append(card);
+  logElement.scrollTop = logElement.scrollHeight;
+}
+
+docRun?.addEventListener("click", async () => {
+  if (!docFile) { systemLine("Choose a document image first"); return; }
+  if (docRunning) return;
+  docRunning = true;
+  if (docRun) docRun.disabled = true;
+  systemLine("Assessing document — classify + render…");
+  try {
+    const dataUrl = await readFileDataUrl(docFile);
+    const headers = { "Content-Type": "application/json", "X-Device-Id": getDeviceId() };
+    const key = getApiKey();
+    if (key) headers["X-Api-Key"] = key;
+    const resp = await fetch(`${chatBasePath()}/api/documents/intake`, {
+      method: "POST", headers,
+      body: JSON.stringify({
+        image_b64: dataUrl, image_mime: docFile.type,
+        filename: docFile.name,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      systemLine(`Document intake failed: ${data.detail || resp.status}`);
+      return;
+    }
+    renderDocResult(data);
+  } catch (error) {
+    systemLine(`Document intake error: ${error.message}`);
+  } finally {
+    docRunning = false;
+    if (docRun) docRun.disabled = false;
+  }
+});
+
 lockButton?.addEventListener("click", async () => {
   if (!authed) { showUnlock(); return; }
   if (socket) await disconnect(true);
