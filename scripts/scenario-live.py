@@ -79,6 +79,7 @@ async def run_turn(
     timeout = float(expect.get("timeout_s", 90))
     settle = float(expect.get("settle_s", 5))
     events: list[dict] = []
+    t0 = time.monotonic()
     if text is not None:
         await ws.send(json.dumps({"type": "text", "text": text}))
     deadline = time.monotonic() + timeout
@@ -102,6 +103,7 @@ async def run_turn(
             msg = json.loads(raw)
         except json.JSONDecodeError:
             continue
+        msg["_t"] = round(time.monotonic() - t0, 3)
         events.append(msg)
         if verbose:
             t = msg.get("type")
@@ -125,6 +127,8 @@ async def main() -> int:
     ap.add_argument("--url", default=None)
     ap.add_argument("--api-key", default=None)
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("-t", "--timing", action="store_true",
+                    help="print per-turn event timeline (send->event offsets)")
     args = ap.parse_args()
 
     import os
@@ -177,6 +181,13 @@ async def main() -> int:
                 text = str(turn.get("user") or "")
                 print(f"turn {i + 1}: {text!r}")
                 events, failures = await run_turn(ws, text, expect, args.verbose)
+            if args.timing:
+                for e in events:
+                    t = e.get("type")
+                    if t in ("tool_call", "tool_result", "response_completed",
+                             "error", "live_reconnecting"):
+                        extra = f" {e.get('name')}" if e.get("name") else ""
+                        print(f"      +{e.get('_t', 0):6.1f}s {t}{extra}")
             n_tools = sum(1 for e in events if e.get("type") == "tool_call")
             transcript = "".join(
                 str(e.get("text") or "")

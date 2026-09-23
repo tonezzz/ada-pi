@@ -1,0 +1,39 @@
+name: latency-probe
+# Per-path latency probe. Run with --timing to see event offsets:
+#   python3 scripts/scenario-live.py tests/scenarios-live/latency_probe.yaml \
+#       --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY" -t
+#
+# Turn order isolates cost components:
+#   T1 baseline  — model round-trip, no tools
+#   T2 recall    — ada_memory_search (embed via proxy + mddb vector search)
+#   T3 write     — ada_remember (embed + mddb write)
+#   T4 context   — answerable from live context, no tools needed
+#   T5 cross-bank — bank='all' fan-out (heaviest read path)
+
+turns:
+  - user: "Hi Ada — quick check, no tools needed: what is 2+2?"
+    expect:
+      timeout_s: 60
+
+  - user: "Search your memory: what do you know about my Anker 737 power bank?"
+    expect:
+      calls_any: [ada_memory_search, ada_session_recall]
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Remember this test fact: the latency probe ran on 2026-09-23 with marker zeta-9917."
+    expect:
+      calls_any: [ada_remember]
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "What marker value did I just give you?"
+    expect:
+      response_contains: ["9917"]
+      timeout_s: 60
+
+  - user: "Search all your memory banks for the word 'deploy-card'."
+    expect:
+      calls_any: [ada_memory_search, ada_session_recall]
+      timeout_s: 150
+      settle_s: 8
