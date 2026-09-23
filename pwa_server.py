@@ -752,18 +752,23 @@ def _ha_guest_credentials() -> tuple[str, str, str] | None:
 
 
 async def _ha_guest_login(ha_origin: str, user: str, password: str) -> dict[str, Any]:
-    """Run HA's login flow as the shared guest user and return token data."""
+    """Run HA's login flow as the shared guest user and return token data.
+
+    Calls go to HOME_ASSISTANT_URL (loopback); ha_origin is only the
+    client_id/hassUrl the guest browser will use, so LAN and tailnet
+    guests get correctly-scoped tokens."""
     import httpx
+    ha_api = os.environ.get("HOME_ASSISTANT_URL", ha_origin).rstrip("/")
     client_id = f"{ha_origin}/"
     async with httpx.AsyncClient(timeout=10.0) as c:
-        r = await c.post(f"{ha_origin}/auth/login_flow", json={
+        r = await c.post(f"{ha_api}/auth/login_flow", json={
             "client_id": client_id,
             "handler": ["homeassistant", None],
             "redirect_uri": f"{ha_origin}/",
         })
         r.raise_for_status()
         flow_id = r.json()["flow_id"]
-        r = await c.post(f"{ha_origin}/auth/login_flow/{flow_id}", json={
+        r = await c.post(f"{ha_api}/auth/login_flow/{flow_id}", json={
             "client_id": client_id,
             "username": user,
             "password": password,
@@ -772,7 +777,7 @@ async def _ha_guest_login(ha_origin: str, user: str, password: str) -> dict[str,
         step = r.json()
         if step.get("type") != "create_entry":
             raise RuntimeError(f"login flow did not complete: {step.get('type')}")
-        r = await c.post(f"{ha_origin}/auth/token", data={
+        r = await c.post(f"{ha_api}/auth/token", data={
             "grant_type": "authorization_code",
             "code": step["result"],
             "client_id": client_id,
