@@ -798,7 +798,7 @@ async def _ha_guest_login(ha_origin: str, user: str, password: str | None) -> di
         if password:
             data = {"client_id": client_id, "username": user, "password": password}
         else:
-            data = {"client_id": client_id, "user_id": await _ha_guest_user_id(user)}
+            data = {"client_id": client_id, "user": await _ha_guest_user_id(user)}
         r = await c.post(f"{ha_api}/auth/login_flow/{flow_id}", json=data)
         r.raise_for_status()
         step = r.json()
