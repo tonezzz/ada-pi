@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from backend import memory_ops
+from backend import devin_dispatch as devin_dispatch_mod
 from backend.calendar_providers import CalendarService
 from backend.decision_check import DecisionCheckEngine
 from backend.event_recorder import HaEventRecorder
@@ -48,6 +49,11 @@ CALENDAR_WRITE_TOOLS = {
 # Miniapp/CMS page writes: publishing or deleting a page changes what the
 # miniapp renders, so all writes require confirmed=true.
 CMS_WRITE_TOOLS = {"cms_publish_page", "cms_delete_page"}
+
+# Devin dispatch: launching an unattended agent session (devin_dispatch) or
+# injecting a message into one (devin_followup) both cause autonomous code
+# changes, so they require confirmed=true. devin_status is read-only.
+DEVIN_CONFIRMED_TOOLS = {"devin_dispatch", "devin_followup"}
 
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
@@ -482,6 +488,9 @@ class ToolRunner:
         elif name in CMS_WRITE_TOOLS:
             confirmed = call_args.pop("confirmed", None)
             self._check_cms_write_allowed(name, call_args, confirmed)
+        elif name in DEVIN_CONFIRMED_TOOLS:
+            confirmed = call_args.pop("confirmed", None)
+            self._check_devin_confirmed(name, call_args, confirmed)
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
         return await method(**call_args)
@@ -596,6 +605,40 @@ class ToolRunner:
                 f"{name} requires confirmation. Restate the page slug, title, and "
                 "what will change, get an explicit yes, then call again with confirmed=true."
             )
+
+    def _check_devin_confirmed(
+        self, name: str, args: dict[str, Any], confirmed: Any,
+    ) -> None:
+        """Server-side gate for devin dispatch/followup. Raises PermissionError on denial."""
+        if os.environ.get("ADA_READ_ONLY") == "true":
+            logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
+            raise PermissionError("devin tools are disabled (ADA_READ_ONLY=true)")
+        if confirmed is not True:
+            logger.warning("denied %s %r: devin call without confirmed=true", name, args)
+            raise PermissionError(
+                f"{name} requires confirmation. Restate the repo, task, and "
+                "that an unattended Devin session will make code changes, get an "
+                "explicit yes, then call again with confirmed=true."
+            )
+
+    # -- Devin dispatch tools (headless sessions on tony-dell; job SSOT:
+    #    docs/ssot/jobs/ada/2026-09-22-ada-devin-dispatch.yml) --
+
+    async def devin_dispatch(self, repo: str, task: str) -> dict[str, Any]:
+        """Start an unattended Devin session on tony-dell for a task.
+
+        Runs in a dedicated git worktree as a systemd unit; completion is
+        reported back via chaba-admin event + iPhone notification.
+        """
+        return await devin_dispatch_mod.dispatch(repo, task)
+
+    async def devin_status(self, task_id: str | None = None) -> str:
+        """List dispatched tasks, or show one task's unit state."""
+        return await devin_dispatch_mod.status(task_id or None)
+
+    async def devin_followup(self, task_id: str, message: str) -> str:
+        """Send a follow-up message into a dispatched session."""
+        return await devin_dispatch_mod.followup(task_id, message)
 
     # -- Calendar / tasks tools (provider-agnostic; see ssot.apps.ada-calendar.yml) --
 

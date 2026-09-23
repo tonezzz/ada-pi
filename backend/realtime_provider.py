@@ -88,6 +88,24 @@ CMS_INSTRUCTIONS = (
     "tell the user the page is live (or fix it if verification failed)."
 )
 
+# Same constant pattern as CALENDAR_TOOLS/CMS_TOOLS: lets ADA_EXCLUDED_TOOLS
+# strip the devin declarations and their instruction paragraph together.
+DEVIN_TOOLS = {"devin_dispatch", "devin_status", "devin_followup"}
+
+DEVIN_INSTRUCTIONS = (
+    " You can dispatch unattended Devin coding sessions on tony-dell: "
+    "devin_dispatch starts one in a dedicated git worktree (repos: chaba, ada-pi, "
+    "sunsynk-card), devin_status lists running and finished tasks, and "
+    "devin_followup sends a message into a running session. "
+    "Before dispatching, restate the repo and task and get an explicit yes, then "
+    "call with confirmed=true — writes are enforced server-side. "
+    "Dispatched sessions run unattended; the user is notified on their phone when "
+    "one finishes, so report the task id and move on rather than polling. "
+    "When discussing an implementation task the user wants built later, offer to "
+    "save the spec into the devin-handoff memory bank so a dispatched session can "
+    "be told to 'check the ada handoff'."
+)
+
 
 def _fill_bank_placeholders(node: Any, banks: str, writable: str) -> Any:
     """Recursively substitute {banks}/{writable_banks} in tool schemas."""
@@ -276,6 +294,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "instead of answering from one source alone."
             + CALENDAR_INSTRUCTIONS
             + CMS_INSTRUCTIONS
+            + DEVIN_INSTRUCTIONS
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -1816,6 +1835,77 @@ class GeminiLiveProvider(RealtimeProvider):
                         "required": ["key", "resolution"],
                         "additionalProperties": False,
                     },
+                }, {
+                    "name": "devin_dispatch",
+                    "description": (
+                        "Starts an unattended Devin coding session on tony-dell in a dedicated "
+                        "git worktree. The session runs to completion by itself; the user is "
+                        "notified on their phone when it finishes. Use when the user asks to "
+                        "have a code task done later or autonomously. Requires confirmed=true "
+                        "after restating the repo and task."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "repo": {
+                                "type": "string",
+                                "enum": ["chaba", "ada-pi", "sunsynk-card"],
+                                "description": "Repository the session works in.",
+                            },
+                            "task": {
+                                "type": "string",
+                                "description": "The task prompt for the Devin session.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["repo", "task"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "devin_status",
+                    "description": (
+                        "Lists dispatched Devin tasks and their state, or shows one task's "
+                        "unit state and latest transcript info when task_id is given."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Optional task id, e.g. '20260922-194454-...'. Omit to list all.",
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "devin_followup",
+                    "description": (
+                        "Sends a follow-up message into a dispatched Devin session — either "
+                        "steering a running one or resuming a finished one with more work. "
+                        "Requires confirmed=true after restating what the message asks."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task id returned by devin_dispatch or devin_status.",
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": "The follow-up instruction to send.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["task_id", "message"],
+                        "additionalProperties": False,
+                    },
                 }]
             }],
         }
@@ -1850,6 +1940,10 @@ class GeminiLiveProvider(RealtimeProvider):
             if CMS_TOOLS <= excluded:
                 config["system_instruction"] = config["system_instruction"].replace(
                     CMS_INSTRUCTIONS, ""
+                )
+            if DEVIN_TOOLS <= excluded:
+                config["system_instruction"] = config["system_instruction"].replace(
+                    DEVIN_INSTRUCTIONS, ""
                 )
         config["system_instruction"] += await self._session_context_tail(excluded)
         # Per-instance memory banks: descriptions name only banks this
