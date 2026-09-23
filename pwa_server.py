@@ -780,7 +780,11 @@ async def _ha_guest_login(ha_origin: str, user: str, password: str | None) -> di
     client_id/hassUrl the guest browser will use, so LAN and tailnet
     guests get correctly-scoped tokens."""
     import httpx
-    ha_api = os.environ.get("HOME_ASSISTANT_URL", ha_origin).rstrip("/")
+    # Password mode talks to loopback HA directly. Trusted-networks mode must
+    # go through ha_origin (the Caddy LAN listener): the connection sources
+    # from 192.168.2.67 — which IS in trusted_networks — while HA ignores
+    # loopback there by design.
+    ha_api = os.environ.get("HOME_ASSISTANT_URL", ha_origin).rstrip("/") if password else ha_origin
     client_id = f"{ha_origin}/"
     handler = ["homeassistant", None] if password else ["trusted_networks", None]
     async with httpx.AsyncClient(timeout=10.0) as c:
