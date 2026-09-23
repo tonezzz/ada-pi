@@ -4,11 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from typing import Any
 
 from google import genai
 from google.genai import types
+
+logger = logging.getLogger("voice.posture")
+
+
+def _log_usage(response: Any, label: str) -> None:
+    usage = getattr(response, "usage_metadata", None)
+    if usage:
+        logger.info(
+            "%s tokens in=%s out=%s",
+            label,
+            getattr(usage, "prompt_token_count", None),
+            getattr(usage, "candidates_token_count", None)
+            or getattr(usage, "response_token_count", None),
+        )
 
 
 class GeminiPostureVerifier:
@@ -55,6 +70,7 @@ class GeminiPostureVerifier:
             ),
             timeout=15,
         )
+        _log_usage(response, "posture verify")
         data = json.loads(response.text)
         if not isinstance(data.get("slouching"), bool):
             raise ValueError("Gemini posture verdict is missing slouching")
@@ -80,5 +96,6 @@ class GeminiClutterVerifier(GeminiPostureVerifier):
                 "type":"object","properties":{"cluttered":{"type":"boolean"},"confidence":{"type":"number","minimum":0,"maximum":1},"reason":{"type":"string"}},
                 "required":["cluttered","confidence","reason"],"additionalProperties":False},
                 automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))), timeout=15)
+        _log_usage(response, "clutter verify")
         data=json.loads(response.text); confidence=max(0.0,min(1.0,float(data.get("confidence",0))))
         return {"cluttered": bool(data.get("cluttered")), "confidence":confidence, "reason":str(data.get("reason",""))[:300]}

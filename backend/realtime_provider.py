@@ -287,6 +287,10 @@ class GeminiLiveProvider(RealtimeProvider):
         self.go_away_time_left: str | None = None
         self._response_active = False
         # current_speaker / current_speaker_ha_person initialized in __init__ prologue
+        self.usage_input_tokens = 0
+        self.usage_output_tokens = 0
+        self.usage_input_by_modality: dict[str, int] = {}
+        self.usage_output_by_modality: dict[str, int] = {}
 
     def _memory_bank_names(self) -> tuple[str, str]:
         """Comma-joined bank names visible to this instance, for tool
@@ -475,6 +479,50 @@ class GeminiLiveProvider(RealtimeProvider):
             await self.send_text_turn(prompt)
         except Exception as exc:
             logger.warning("session=%s check send_text_turn failed: %s", self.session_id, exc)
+
+    @staticmethod
+    def _modality_name(modality: Any) -> str:
+        return str(getattr(modality, "value", modality) or "unknown").lower()
+
+    def _record_usage(self, usage: Any) -> None:
+        in_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
+        out_tokens = int(
+            getattr(usage, "response_token_count", None)
+            or getattr(usage, "candidates_token_count", 0)
+            or 0
+        )
+        self.usage_input_tokens += in_tokens
+        self.usage_output_tokens += out_tokens
+        for detail in getattr(usage, "prompt_tokens_details", None) or []:
+            modality = self._modality_name(getattr(detail, "modality", None))
+            self.usage_input_by_modality[modality] = (
+                self.usage_input_by_modality.get(modality, 0)
+                + int(getattr(detail, "token_count", 0) or 0)
+            )
+        for detail in (
+            getattr(usage, "response_tokens_details", None)
+            or getattr(usage, "candidates_tokens_details", None)
+            or []
+        ):
+            modality = self._modality_name(getattr(detail, "modality", None))
+            self.usage_output_by_modality[modality] = (
+                self.usage_output_by_modality.get(modality, 0)
+                + int(getattr(detail, "token_count", 0) or 0)
+            )
+        logger.info(
+            "session=%s usage turn in=%d out=%d | total in=%d out=%d in_by_modality=%s out_by_modality=%s",
+            self.session_id, in_tokens, out_tokens,
+            self.usage_input_tokens, self.usage_output_tokens,
+            self.usage_input_by_modality, self.usage_output_by_modality,
+        )
+
+    def usage_summary(self) -> dict[str, Any]:
+        return {
+            "input_tokens": self.usage_input_tokens,
+            "output_tokens": self.usage_output_tokens,
+            "input_by_modality": dict(self.usage_input_by_modality),
+            "output_by_modality": dict(self.usage_output_by_modality),
+        }
 
     async def connect(self, resumption_handle: str | None = None) -> None:
         if not self.api_key:
@@ -1876,6 +1924,9 @@ class GeminiLiveProvider(RealtimeProvider):
 
         while not self._closed:
             async for message in self._session.receive():
+                usage = message.usage_metadata
+                if usage:
+                    self._record_usage(usage)
                 update = message.session_resumption_update
                 if update and update.resumable and update.new_handle:
                     self.resumption_handle = update.new_handle
@@ -2144,6 +2195,10 @@ class GeminiLiveProvider(RealtimeProvider):
         if self._closed:
             return
         self._closed = True
+        if self.usage_input_tokens or self.usage_output_tokens:
+            logger.info(
+                "session=%s usage summary %s", self.session_id, self.usage_summary()
+            )
         # Persist conversation to NotebookLM in the background so we don't block disconnect.
         if self.conversation:
             _ = asyncio.create_task(self.conversation.persist())
