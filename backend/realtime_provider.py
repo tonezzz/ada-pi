@@ -414,6 +414,12 @@ class GeminiLiveProvider(RealtimeProvider):
         self._send_lock = asyncio.Lock()
         self.session_id = session_id or "-"
         self.resumption_handle: str | None = None
+        self.go_away_time_left: str | None = None
+        self._response_active = False
+        self.usage_input_tokens = 0
+        self.usage_output_tokens = 0
+        self.usage_input_by_modality: dict[str, int] = {}
+        self.usage_output_by_modality: dict[str, int] = {}
 
     def _recall_gated(self) -> bool:
         """True when a confident ada_memory_search hit is fresh enough that
@@ -427,13 +433,6 @@ class GeminiLiveProvider(RealtimeProvider):
             top = float(hits[0].get("score") or 0) if hits else 0.0
             if top >= self._recall_gate_score:
                 self._strong_hit_at = time.monotonic()
-        self.go_away_time_left: str | None = None
-        self._response_active = False
-        # current_speaker / current_speaker_ha_person initialized in __init__ prologue
-        self.usage_input_tokens = 0
-        self.usage_output_tokens = 0
-        self.usage_input_by_modality: dict[str, int] = {}
-        self.usage_output_by_modality: dict[str, int] = {}
 
     def _memory_bank_names(self) -> tuple[str, str]:
         """Comma-joined bank names visible to this instance, for tool
