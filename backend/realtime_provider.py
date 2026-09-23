@@ -276,6 +276,9 @@ class GeminiLiveProvider(RealtimeProvider):
             "so future recall trusts knowledge with a good track record. "
             "When the user states a durable fact, preference, or a fix that worked, offer to "
             "remember it, then call ada_remember — pass confirmed=true only after the user agrees. "
+            "But when the user explicitly asks you to remember something ('remember that…', "
+            "'note this'), that request IS the confirmation — pass confirmed=true directly "
+            "instead of asking again. "
             "When the user reports how something turned out ('that worked', 'it failed'), call "
             "ada_outcome on the memory it applies to — find the key with ada_memory_search if needed. "
             "When calling any search or recall tool, always write a fully self-contained query: "
@@ -318,6 +321,19 @@ class GeminiLiveProvider(RealtimeProvider):
         self._send_lock = asyncio.Lock()
         self.session_id = session_id or "-"
         self.resumption_handle: str | None = None
+
+    def _recall_gated(self) -> bool:
+        """True when a confident ada_memory_search hit is fresh enough that
+        an ada_session_recall call would be redundant."""
+        return time.monotonic() - self._strong_hit_at < self._recall_gate_window
+
+    def _note_search_result(self, output: Any) -> None:
+        """Record a confident memory_search hit for the recall gate."""
+        if isinstance(output, dict):
+            hits = output.get("hits") or []
+            top = float(hits[0].get("score") or 0) if hits else 0.0
+            if top >= self._recall_gate_score:
+                self._strong_hit_at = time.monotonic()
         self.go_away_time_left: str | None = None
         self._response_active = False
         # current_speaker / current_speaker_ha_person initialized in __init__ prologue
@@ -2217,7 +2233,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         elif call.name == "get_habit_status" and self.habit_state_getter is not None:
                             result = {"output": self.habit_state_getter()}
                         elif call.name == "ada_session_recall":
-                            if time.monotonic() - self._strong_hit_at < self._recall_gate_window:
+                            if self._recall_gated():
                                 result = {"output": (
                                     "ada_memory_search already returned a confident match "
                                     "moments ago — answer from those hits. Session recall "
@@ -2245,11 +2261,8 @@ class GeminiLiveProvider(RealtimeProvider):
                                             call_args["query"] = self.conversation.expand_query(str(q))
                                     output = await self.tool_runner.execute(str(call.name), call_args)
                                     result = {"output": output}
-                                    if call.name == "ada_memory_search" and isinstance(output, dict):
-                                        hits = output.get("hits") or []
-                                        top = float(hits[0].get("score") or 0) if hits else 0.0
-                                        if top >= self._recall_gate_score:
-                                            self._strong_hit_at = time.monotonic()
+                                    if call.name == "ada_memory_search":
+                                        self._note_search_result(output)
                                 except Exception as exc:
                                     result = {"error": f"{call.name} failed: {exc}"}
                             else:
