@@ -1,0 +1,73 @@
+name: token-usage-summary
+instance: tony
+# Devin asks Ada for a token-usage summary after a voice session, then
+# drills into the live-session numbers, the cost, and a counter reset.
+
+steps:
+  - say: "give me a summary of your token usage"
+
+  # Simulated Live session + verifier calls since the process started.
+  - record_usage:
+      source: live
+      session_id: sess-a1b2c3
+      input_tokens: 55400
+      output_tokens: 9200
+      input_by_modality: {audio: 54000, text: 1400}
+      output_by_modality: {audio: 9200}
+  - record_usage:
+      source: posture
+      input_tokens: 730
+      output_tokens: 55
+      input_by_modality: {image: 620, text: 110}
+      output_by_modality: {text: 55}
+  - record_usage:
+      source: clutter
+      input_tokens: 735
+      output_tokens: 40
+      input_by_modality: {image: 640, text: 95}
+      output_by_modality: {text: 40}
+
+  # "Give me a summary" -> aggregated report across all sources.
+  - tool: ada_usage_summary
+    expect:
+      output_contains:
+        - '"input_tokens": 56865'
+        - '"output_tokens": 9295'
+        - '"live"'
+        - '"posture"'
+        - '"clutter"'
+
+  # Follow-up: "how much of that was the voice session?"
+  - say: "how much of that was the voice session?"
+  - tool: ada_usage_summary
+    args: {source: live}
+    expect:
+      output_contains:
+        - '"input_tokens": 55400'
+        - '"audio": 54000'
+        - '"session_count": 1'
+
+  # Follow-up: "what does that cost us?" — live audio is the expensive part.
+  - say: "what does that cost us?"
+  - tool: ada_usage_summary
+    args: {source: live}
+    expect:
+      output_contains: ['"est_cost_usd": 0.2728']
+
+  # Follow-up: "and the posture checks?"
+  - say: "and the posture checks?"
+  - tool: ada_usage_summary
+    args: {source: posture}
+    expect:
+      output_contains: ['"input_tokens": 730', '"image": 620']
+
+  # Follow-up: "reset the counters" -> zeroes the ledger.
+  - say: "reset the counters please"
+  - tool: ada_usage_summary
+    args: {reset: true}
+    expect:
+      output_contains: ['"reset": true']
+
+  - tool: ada_usage_summary
+    expect:
+      output_contains: ['"input_tokens": 0, "output_tokens": 0']

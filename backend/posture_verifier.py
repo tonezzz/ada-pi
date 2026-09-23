@@ -11,19 +11,30 @@ from typing import Any
 from google import genai
 from google.genai import types
 
+from backend.usage_tracker import usage_ledger
+
 logger = logging.getLogger("voice.posture")
 
 
 def _log_usage(response: Any, label: str) -> None:
     usage = getattr(response, "usage_metadata", None)
-    if usage:
-        logger.info(
-            "%s tokens in=%s out=%s",
-            label,
-            getattr(usage, "prompt_token_count", None),
-            getattr(usage, "candidates_token_count", None)
-            or getattr(usage, "response_token_count", None),
-        )
+    if not usage:
+        return
+    in_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
+    out_tokens = int(
+        getattr(usage, "candidates_token_count", None)
+        or getattr(usage, "response_token_count", 0)
+        or 0
+    )
+    in_mod: dict[str, int] = {}
+    for detail in getattr(usage, "prompt_tokens_details", None) or []:
+        mod = str(getattr(getattr(detail, "modality", None), "value", "unknown")).lower()
+        in_mod[mod] = in_mod.get(mod, 0) + int(getattr(detail, "token_count", 0) or 0)
+    usage_ledger.record(
+        label.split()[0], input_tokens=in_tokens, output_tokens=out_tokens,
+        input_by_modality=in_mod,
+    )
+    logger.info("%s tokens in=%s out=%s", label, in_tokens, out_tokens)
 
 
 class GeminiPostureVerifier:

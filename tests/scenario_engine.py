@@ -44,6 +44,7 @@ from backend import memory_ops
 from backend.conversation_memory import ConversationMemory
 from backend.memory_banks import MemoryBankRegistry
 from backend.tool_runner import ToolRunner
+from backend.usage_tracker import usage_ledger
 
 # Registry mirror of the deployed bank set (ssot.apps.ada-memory-banks.yml),
 # trimmed to what the tools exercise. Scenario files may override with a
@@ -288,6 +289,7 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
     runner._banks = registry
     runner.mddb = fake
     conv = ConversationMemory(session_id="scenario")
+    usage_ledger.reset()
     today = datetime.now(timezone.utc).date().isoformat()
 
     for i, seed in enumerate(data.get("seed") or []):
@@ -347,6 +349,9 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
                         last_tail=last_tail,
                     ),
                 }
+            elif "record_usage" in step:
+                usage_ledger.record(**dict(step["record_usage"]))
+                result = {"output": "recorded"}
             elif "tool" in step:
                 try:
                     result = await runner.execute(

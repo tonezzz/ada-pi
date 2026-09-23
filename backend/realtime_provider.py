@@ -18,6 +18,7 @@ from google.genai import types
 
 from backend.conversation_memory import ConversationMemory
 from backend.tool_runner import ToolRunner
+from backend.usage_tracker import usage_ledger
 
 logger = logging.getLogger("voice.provider")
 
@@ -229,6 +230,8 @@ class GeminiLiveProvider(RealtimeProvider):
             "ask the user to hold it steady or move it closer instead. When the user "
             "asks what habits are tracked, their habit status, or their progress, always "
             "call get_habit_status and ground the answer in its current result."
+            " When the user asks about token usage, API usage, or what a session "
+            "costs, call ada_usage_summary and answer from its numbers."
             " You have Home Assistant device control through several tools: "
             "get_home_state to check occupancy and the state of the configured home plugs, "
             "list_home_devices to list all devices including lights, switches, covers, buttons, and media players, "
@@ -512,11 +515,14 @@ class GeminiLiveProvider(RealtimeProvider):
         )
         self.usage_input_tokens += in_tokens
         self.usage_output_tokens += out_tokens
+        in_mod: dict[str, int] = {}
+        out_mod: dict[str, int] = {}
         for detail in getattr(usage, "prompt_tokens_details", None) or []:
             modality = self._modality_name(getattr(detail, "modality", None))
+            n = int(getattr(detail, "token_count", 0) or 0)
+            in_mod[modality] = in_mod.get(modality, 0) + n
             self.usage_input_by_modality[modality] = (
-                self.usage_input_by_modality.get(modality, 0)
-                + int(getattr(detail, "token_count", 0) or 0)
+                self.usage_input_by_modality.get(modality, 0) + n
             )
         for detail in (
             getattr(usage, "response_tokens_details", None)
@@ -524,10 +530,16 @@ class GeminiLiveProvider(RealtimeProvider):
             or []
         ):
             modality = self._modality_name(getattr(detail, "modality", None))
+            n = int(getattr(detail, "token_count", 0) or 0)
+            out_mod[modality] = out_mod.get(modality, 0) + n
             self.usage_output_by_modality[modality] = (
-                self.usage_output_by_modality.get(modality, 0)
-                + int(getattr(detail, "token_count", 0) or 0)
+                self.usage_output_by_modality.get(modality, 0) + n
             )
+        usage_ledger.record(
+            "live", session_id=self.session_id,
+            input_tokens=in_tokens, output_tokens=out_tokens,
+            input_by_modality=in_mod, output_by_modality=out_mod,
+        )
         logger.info(
             "session=%s usage turn in=%d out=%d | total in=%d out=%d in_by_modality=%s out_by_modality=%s",
             self.session_id, in_tokens, out_tokens,
@@ -1904,6 +1916,31 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["task_id", "message"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_usage_summary",
+                    "description": (
+                        "Returns cumulative Gemini token usage for this Ada process: "
+                        "input/output totals, per-modality breakdown (audio/text/image), "
+                        "per-source totals (live session, posture, clutter), and a rough "
+                        "USD cost estimate. Use when the user asks about token usage, API "
+                        "usage, or what Ada costs. Pass source to filter to one source; "
+                        "pass reset=true only when the user asks to zero the counters."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "source": {
+                                "type": "string",
+                                "enum": ["all", "live", "posture", "clutter"],
+                                "description": "Which usage source to report; 'all' aggregates everything.",
+                            },
+                            "reset": {
+                                "type": "boolean",
+                                "description": "Zero the counters after reporting; only when the user asks.",
+                            },
+                        },
                         "additionalProperties": False,
                     },
                 }]

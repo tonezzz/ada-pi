@@ -24,6 +24,7 @@ from backend.memory_banks import (
     MemoryBankRegistry,
     get_registry,
 )
+from backend.usage_tracker import usage_ledger
 
 logger = logging.getLogger("tools")
 
@@ -639,6 +640,17 @@ class ToolRunner:
     async def devin_followup(self, task_id: str, message: str) -> str:
         """Send a follow-up message into a dispatched session."""
         return await devin_dispatch_mod.followup(task_id, message)
+
+    # -- Token usage reporting (usage_tracker.py) --
+
+    async def ada_usage_summary(self, source: str = "all", reset: bool = False) -> dict[str, Any]:
+        report = usage_ledger.snapshot(
+            None if str(source).lower() in ("", "all") else str(source).lower()
+        )
+        if reset:
+            usage_ledger.reset()
+            report["reset"] = True
+        return report
 
     # -- Calendar / tasks tools (provider-agnostic; see ssot.apps.ada-calendar.yml) --
 
