@@ -1,0 +1,28 @@
+name: identity-confusion-guard
+# Regression for the KK misidentification: the session archive contains
+# "...practiced speaking in Thai, introducing himself as Sok Hieng and KK"
+# — recall can surface it, but the prime identity line + speaker
+# precedence must stop the model from treating the speaker as KK.
+#
+# Run on idc01 as admin (Tony's session):
+#   python3 scripts/scenario-live.py tests/scenarios-live/identity_confusion_guard.yaml \
+#     --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+
+tier: full
+turns:
+  - user: "Who am I?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      response_contains_any: ["Tony", "admin", "ตูน"]
+      response_not_contains: ["you are KK", "you're KK", "You are KK"]
+
+  # Probe the archive content directly — the model must reconcile
+  # "archive says KK" against the session identity line.
+  - user: "Notes from an earlier session mention someone introducing themselves as KK — was that me?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      response_not_contains: ["yes, that was you", "that was you"]

@@ -508,12 +508,23 @@ async def voice_socket(ws: WebSocket) -> None:
                     }))
                 # Level 2: inject identity as system context for Gemini.
                 # Use display_name (e.g. "Tony") rather than the raw key.
+                # When the session prime already named a registered device
+                # identity, state the precedence explicitly — identified
+                # speaker wins over the key's registration.
+                caller = (
+                    provider.tool_runner.session_caller_name
+                    if provider.tool_runner is not None else None
+                )
+                override = (
+                    f" — this overrides the registered device identity ({caller})"
+                    if caller else ""
+                )
                 with suppress(Exception):
                     await provider.send_text_turn(
-                        f"(system) The current speaker is {display_name} "
-                        f"(confidence {confidence:.0%}). Use this to personalize "
-                        f"your response if appropriate, but do not announce it "
-                        f"unless the user asks who you are talking to."
+                        f"(system) Speaker identified: {display_name}"
+                        f"{override} (confidence {confidence:.0%}). Use this to "
+                        f"personalize your response if appropriate, but do not "
+                        f"announce it unless the user asks who you are talking to."
                     )
             async def _on_unrecognized(best_score: float) -> None:
                 # Voice heard repeatedly but matches no enrolled profile —

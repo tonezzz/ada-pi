@@ -844,9 +844,10 @@ async def session_prime_text(
     if person_entity:
         who = registry.identity_label(person_entity) or person_entity
         parts.append(
-            f"(system) Session identity: {who} ({person_entity}). This is who "
-            "you are talking to — names in memory and session archives may "
-            "refer to other people; never assume the speaker is someone else."
+            f"(system) Session identity: device registered to {who} "
+            f"({person_entity}). If a speaker-identification event names a "
+            "different person, the identified speaker takes precedence — "
+            "names in memory and session archives may refer to other people."
         )
     if summary and not (directive and (away_seconds or 0) < 3600):
         parts.append(f"Recent sessions: {summary.strip()}")
