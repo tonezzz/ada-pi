@@ -474,7 +474,11 @@ async def voice_socket(ws: WebSocket) -> None:
     # audio forward path.  When a new speaker is identified, inject the
     # identity as a system text turn and notify the browser.
     speaker_session: SpeakerSession | None = None
-    if SPEAKER_ID_ENABLED:
+    # Test hook: ?no_speaker_id=1 disables voice identification for this
+    # session — memory identity then falls back to the issued-key name, so
+    # an admin can faithfully test a restricted-key (e.g. testo) experience.
+    no_speaker_id = (ws.query_params.get("no_speaker_id") or "").lower() in ("1", "true")
+    if SPEAKER_ID_ENABLED and not no_speaker_id:
         try:
             identifier = SpeakerIdentifier.get()
             async def _on_speaker(name: str, confidence: float) -> None:
