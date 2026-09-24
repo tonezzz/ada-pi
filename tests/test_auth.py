@@ -33,7 +33,7 @@ class AuthTests(unittest.TestCase):
     def test_single_key(self):
         with patch.dict(os.environ, {"ADA_API_KEY": "k1"}, clear=True):
             req = _request(headers={"x-api-key": "k1"})
-            self.assertEqual(auth.caller_name(req), "default")
+            self.assertEqual(auth.caller_name(req), "admin")
 
     def test_named_keys(self):
         with patch.dict(os.environ, KEYS_ENV, clear=True):

@@ -1,0 +1,24 @@
+name: kk-info-probe
+# What does Ada know about KK — after seeding people/kk.
+# people/kk: "KK is a member of this household. She prefers to converse
+# in Thai — answer her in Thai unless she asks otherwise."
+#
+# Run on idc01 as admin (Tony's session):
+#   python3 scripts/scenario-live.py tests/scenarios-live/kk_info_probe.yaml \
+#     --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+
+tier: full
+turns:
+  - user: "Tell me what you know about KK."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      response_contains_any: ["household", "member", "Thai", "KK"]
+
+  - user: "What language does she prefer?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      response_contains_any: ["Thai", "ภาษาไทย"]

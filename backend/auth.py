@@ -60,7 +60,7 @@ def _parse_keys() -> dict[str, str]:
     keys: dict[str, str] = {}
     single = os.environ.get("ADA_API_KEY", "").strip()
     if single:
-        keys[single] = "default"
+        keys[single] = "admin"
     for pair in os.environ.get("ADA_API_KEYS", "").split(","):
         pair = pair.strip()
         if not pair or ":" not in pair:
