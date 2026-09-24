@@ -239,6 +239,46 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("address_name=T", line)
         self.assertNotIn("verbosity", line)
 
+    def test_default_policy_for_unlisted_identity(self):
+        spec = self._acl_spec()
+        spec["person_policies"]["default"] = {"allow": ["general", "home2"]}
+        spec["banks"]["home2"] = dict(spec["banks"]["readonly"])
+        reg = _registry(instance="tony", spec=spec)
+        names = set(reg.banks_for_person("brand-new-person"))
+        self.assertEqual(names, {"general", "home2"})
+
+    def test_full_policy_bypasses_acl(self):
+        spec = self._acl_spec()
+        spec["person_policies"]["person.tony"] = {"full": True}
+        reg = _registry(instance="tony", spec=spec)
+        names = set(reg.banks_for_person("person.tony"))
+        self.assertIn("personal", names)
+        self.assertIn("tony-only", names)
+
+    def test_control_policy_allow_domains(self):
+        spec = self._acl_spec()
+        spec["control_policies"] = {
+            "testo": {"allow_domains": ["light", "switch"]},
+            "person.tony": {"full": True},
+            "unknown": {"allow_domains": ["light"]},
+        }
+        reg = _registry(instance="tony", spec=spec)
+        self.assertTrue(reg.control_allowed("light.kitchen", "testo"))
+        self.assertFalse(reg.control_allowed("cover.gate", "testo"))
+        self.assertFalse(reg.control_allowed("lock.front", "testo"))
+        self.assertTrue(reg.control_allowed("cover.gate", "person.tony"))
+        self.assertFalse(reg.control_allowed("switch.tv", None))
+        self.assertTrue(reg.control_allowed("light.hall", None))
+
+    def test_control_policy_deny_overrides(self):
+        spec = self._acl_spec()
+        spec["control_policies"] = {
+            "testo": {"allow_domains": ["switch"], "deny_entities": ["switch.plug_tv"]},
+        }
+        reg = _registry(instance="tony", spec=spec)
+        self.assertFalse(reg.control_allowed("switch.plug_tv", "testo"))
+        self.assertTrue(reg.control_allowed("switch.fan", "testo"))
+
     def test_effective_status_lazy_expiry(self):
         doc = {"meta": {"status": ["active"], "valid_until": ["2020-01-01"]}}
         self.assertEqual(doc_effective_status(doc, today="2026-01-01"), "expired")

@@ -1,0 +1,52 @@
+name: new-person-first-contact
+# What happens when a NEW person (HA user "nat") opens Ada with her own
+# issued key: greeting, identity resolution, memory reach, memory writes.
+#
+# Her key name 'nat' has NO person_policies entry — this run documents
+# what an unlisted identity can see/do (REVIEW the transcript).
+#
+# Run on idc01:  NAT_KEY=$(python3 -c "import json;print(json.load(open(
+#   '/home/tony/.config/secrets/ada-ha-tony-keys.json'))['nat'])")
+#   python3 scripts/scenario-live.py tests/scenarios-live/new_person_nat.yaml \
+#     --url ws://127.0.0.1:8002/ws --api-key "$NAT_KEY"
+
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-general, contains: "iced latte"}
+    - {collection: ada-ha-bank-personal-tony, contains: "iced latte"}
+    - {collection: ada-ha-bank-people, contains: "iced latte"}
+    - {collection: ada-ha-bank-note-tony, contains: "iced latte"}
+    - {collection: ada-ha-bank-general, contains: "Nat"}
+    - {collection: ada-ha-bank-people, contains: "Nat"}
+    - {collection: ada-ha-bank-personal-tony, contains: "Nat"}
+
+turns:
+  - user: "Hi Ada! I'm Nat — first time talking to you."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+
+  # Probe memory reach: does she get Tony's facts? (REVIEW: which banks
+  # the hits come from — check the scenario report's result banks)
+  - user: "What do you know about this house and the people here?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+
+  # Memory write: where does HER preference land? (REVIEW: personal-tony
+  # would mean her facts pollute Tony's bank — the leak to fix)
+  - user: "Remember that I like iced latte in the morning."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: ["ada_remember"]
+
+  # Identity confusion probe — does she get treated as Nat or Tony?
+  - user: "Who am I, and whose home is this?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true

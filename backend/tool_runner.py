@@ -547,6 +547,15 @@ class ToolRunner:
             )
         entity_id = str(args.get("entity_id") or "")
         if entity_id:
+            ident = self._memory_identity()
+            if not self.banks.control_allowed(entity_id, ident):
+                logger.warning(
+                    "denied %s on %r for identity %r: control policy",
+                    name, entity_id, ident,
+                )
+                raise PermissionError(
+                    f"'{entity_id}' is outside this session's control policy"
+                )
             calls = self._control_entity_calls.setdefault(entity_id, [])
             calls[:] = [t for t in calls if now - t < CONTROL_RATE_WINDOW_S]
             if len(calls) >= CONTROL_MAX_PER_ENTITY:

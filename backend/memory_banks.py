@@ -111,6 +111,7 @@ class MemoryBankRegistry:
         self._banks: dict[str, MemoryBank] = {}
         self.person_policies: dict[str, dict[str, Any]] = {}
         self.persona: dict[str, Any] = {}
+        self.control_policies: dict[str, dict[str, Any]] = {}
         self._load(explicit=bool(path or explicit))
 
     def _load(self, explicit: bool) -> None:
@@ -131,6 +132,9 @@ class MemoryBankRegistry:
         ) or {}
         self.persona = (
             data.get("persona") if isinstance(data, dict) else None
+        ) or {}
+        self.control_policies = (
+            data.get("control_policies") if isinstance(data, dict) else None
         ) or {}
         if isinstance(data, dict) and isinstance(data.get("schema"), dict):
             self.schema_fields = set(data["schema"].get("fields") or {})
@@ -265,12 +269,42 @@ class MemoryBankRegistry:
         if not self.person_policies:
             return None
         if person_entity:
-            return self.person_policies.get(person_entity)
+            # Restricted-by-default: unlisted named identities fall back to
+            # the 'default' policy when one is declared (else full access).
+            return self.person_policies.get(person_entity) or self.person_policies.get("default")
         return self.person_policies.get("unknown")
 
     def bank_allowed(self, name: str, person_entity: str | None) -> bool:
         """Whether this speaker may access the named bank at all."""
         return name in self.banks_for_person(person_entity)
+
+    # ---------- actuation ACL ----------
+
+    def control_policy_for(self, person_entity: str | None) -> dict[str, Any] | None:
+        """Same identity resolution as bank policies, over control_policies."""
+        if not self.control_policies:
+            return None
+        if person_entity:
+            return self.control_policies.get(person_entity) or self.control_policies.get("default")
+        return self.control_policies.get("unknown")
+
+    def control_allowed(self, entity_id: str, person_entity: str | None) -> bool:
+        """Whether this identity may actuate entity_id under control_policies.
+        {full: true} bypasses; else allow_domains whitelists and
+        deny_domains/deny_entities always deny. The global danger-pattern
+        floor still applies on top — this is subtractive only."""
+        policy = self.control_policy_for(person_entity)
+        if not policy or policy.get("full"):
+            return True
+        domain = entity_id.split(".", 1)[0]
+        if entity_id in set(policy.get("deny_entities") or []):
+            return False
+        if domain in set(policy.get("deny_domains") or []):
+            return False
+        allow = set(policy.get("allow_domains") or [])
+        if allow and domain not in allow:
+            return False
+        return True
 
     def notebook_for(self, name: str) -> str | None:
         return self.bank(name).notebook(self.notebook_ids)
