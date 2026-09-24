@@ -1008,6 +1008,32 @@ class ToolRunner:
             person_entity=self._memory_identity(),
         )
 
+    async def ada_persona(
+        self, action: str, knob: str | None = None, value: Any = None
+    ) -> dict[str, Any]:
+        """Read or adjust the current speaker's stored style preferences."""
+        identity = self._memory_identity()
+        action = str(action or "show").lower()
+        if action == "show":
+            p = await memory_ops.get_persona(self.mddb, self.banks, identity)
+            return {"verb": "show", **p}
+        if action == "reset":
+            return await memory_ops.reset_persona(self.mddb, self.banks, identity)
+        if action == "set":
+            if not knob:
+                raise ValueError("set requires a knob name")
+            result = await memory_ops.set_persona(
+                self.mddb, self.banks, identity, str(knob), value
+            )
+            # Tell the model to apply it now — the persisted doc covers
+            # future sessions via the prime injection.
+            result["apply"] = (
+                f"Preference saved and active now: {knob}={value}. "
+                "Honor it in your next replies without announcing the mechanism."
+            )
+            return result
+        raise ValueError(f"unknown persona action {action!r} (set|show|reset)")
+
     async def ada_forget(self, bank: str, key: str, reason: str | None = None) -> dict[str, Any]:
         """Retract a memory: status becomes retracted; the doc stays auditable."""
         return await memory_ops.forget(

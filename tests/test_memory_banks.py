@@ -198,6 +198,47 @@ class RegistryTests(unittest.TestCase):
         self.assertNotIn("general", names)
         self.assertIn("personal", names)
 
+    def _persona_spec(self):
+        spec = self._acl_spec()
+        spec["persona"] = {
+            "doc_key": "persona/self",
+            "knobs": {
+                "tone": {"values": ["warm", "direct"], "default": "warm"},
+                "verbosity": {"values": ["brief", "normal", "detailed"], "default": "normal"},
+                "address_name": {"type": "string", "max": 40, "default": ""},
+                "emoji": {"type": "bool", "default": False},
+            },
+        }
+        return spec
+
+    def test_persona_bank_resolution_by_identity(self):
+        reg = _registry(instance="tony", spec=self._persona_spec())
+        from backend.memory_ops import persona_bank_for
+        self.assertEqual(persona_bank_for(reg, "person.tony").name, "personal")
+        self.assertEqual(persona_bank_for(reg, "testo").name, "personal-testo")
+        self.assertIsNone(persona_bank_for(reg, None))  # anon: general isn't personal
+
+    def test_persona_knob_validation(self):
+        reg = _registry(instance="tony", spec=self._persona_spec())
+        from backend.memory_ops import _validate_persona_knob
+        self.assertEqual(_validate_persona_knob(reg, "tone", "direct"), "direct")
+        self.assertTrue(_validate_persona_knob(reg, "emoji", "yes"))
+        with self.assertRaises(ValueError):
+            _validate_persona_knob(reg, "tone", "angry")
+        with self.assertRaises(ValueError):
+            _validate_persona_knob(reg, "nonsense", "x")
+
+    def test_persona_instruction_only_custom(self):
+        reg = _registry(instance="tony", spec=self._persona_spec())
+        from backend.memory_ops import persona_instruction
+        self.assertIsNone(persona_instruction(
+            {"tone": "warm", "verbosity": "normal", "address_name": "", "emoji": False}, reg))
+        line = persona_instruction(
+            {"tone": "direct", "verbosity": "normal", "address_name": "T", "emoji": False}, reg)
+        self.assertIn("tone=direct", line)
+        self.assertIn("address_name=T", line)
+        self.assertNotIn("verbosity", line)
+
     def test_effective_status_lazy_expiry(self):
         doc = {"meta": {"status": ["active"], "valid_until": ["2020-01-01"]}}
         self.assertEqual(doc_effective_status(doc, today="2026-01-01"), "expired")
@@ -523,6 +564,80 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
                 "ada_outcome",
                 {"bank": "personal", "key": "personal/none", "outcome": "good"},
             )
+
+    def _persona_registry(self):
+        spec = {
+            "banks": {
+                "general": {
+                    "scope": "shared", "instances": ["tony"],
+                    "mddb_collection": "ada-ha-bank-general",
+                    "writable": True, "status": "active",
+                },
+                "personal": {
+                    "scope": "instance", "instances": ["tony"],
+                    "mddb_collection": "ada-ha-bank-personal-{instance}",
+                    "writable": True, "status": "active",
+                },
+                "personal-testo": {
+                    "scope": "person", "instances": ["tony"],
+                    "mddb_collection": "ada-ha-bank-personal-testo",
+                    "writable": True, "status": "active",
+                    "person_scope": "person.testo_2",
+                },
+            },
+            "person_policies": {
+                "testo": {"allow": ["general", "personal-testo"]},
+                "unknown": {"allow": ["general"]},
+            },
+            "persona": {
+                "doc_key": "persona/self",
+                "knobs": {
+                    "tone": {"values": ["warm", "direct"], "default": "warm"},
+                    "verbosity": {"values": ["brief", "normal"], "default": "normal"},
+                },
+            },
+        }
+        return _registry(instance="tony", spec=spec)
+
+    async def test_persona_set_writes_to_personal_bank(self):
+        self.runner._banks = self._persona_registry()
+        self.runner.session_caller_name = "admin-device"
+        out = await self.runner.execute(
+            "ada_persona", {"action": "set", "knob": "tone", "value": "direct"}
+        )
+        self.assertEqual(out["verb"], "create")
+        args = self.runner.mddb.add_document.call_args.args
+        self.assertEqual(args[0], "ada-ha-bank-personal-tony")
+        self.assertEqual(args[1], "persona/self")
+        self.assertIn("tone: direct", args[3])
+        self.assertIn("apply", out)
+
+    async def test_persona_set_routes_to_scoped_bank_for_testo(self):
+        self.runner._banks = self._persona_registry()
+        self.runner.session_caller_name = "testo"
+        await self.runner.execute(
+            "ada_persona", {"action": "set", "knob": "verbosity", "value": "brief"}
+        )
+        args = self.runner.mddb.add_document.call_args.args
+        self.assertEqual(args[0], "ada-ha-bank-personal-testo")
+
+    async def test_persona_set_denied_for_anonymous(self):
+        self.runner._banks = self._persona_registry()
+        self.runner.session_caller_name = None
+        self.runner.current_speaker_ha_person = None
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "ada_persona", {"action": "set", "knob": "tone", "value": "direct"}
+            )
+
+    async def test_persona_show_returns_defaults(self):
+        self.runner._banks = self._persona_registry()
+        self.runner.session_caller_name = "admin-device"
+        out = await self.runner.execute(
+            "ada_persona", {"action": "show"}
+        )
+        self.assertEqual(out["verb"], "show")
+        self.assertEqual(out["knobs"]["tone"], "warm")
 
 
 if __name__ == "__main__":

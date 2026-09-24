@@ -421,6 +421,7 @@ async def _prime_session(
             summary=recent_summary(),
             away_seconds=away_s,
             last_tail=tail,
+            person_entity=tool_runner._memory_identity(),
         )
         if text:
             await provider.send_text_turn(text)

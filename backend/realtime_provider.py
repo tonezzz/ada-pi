@@ -381,6 +381,11 @@ class GeminiLiveProvider(RealtimeProvider):
             "instead of asking again. "
             "When the user reports how something turned out ('that worked', 'it failed'), call "
             "ada_outcome on the memory it applies to — find the key with ada_memory_search if needed. "
+            "ada_persona manages the current speaker's stored style preferences (tone, verbosity, "
+            "formality, language, address-name, emoji, proactiveness): when the user asks you to "
+            "change how you speak or address them, call ada_persona set — it persists across "
+            "sessions and applies immediately; saved preferences may also arrive as a (system) "
+            "note at session start — honor them without announcing the mechanism. "
             "When calling any search or recall tool, always write a fully self-contained query: "
             "resolve 'it', 'that one', 'the same service', and similar references using the "
             "conversation so far — never pass a bare pronoun as the query. "
@@ -1590,6 +1595,39 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["bank", "key", "outcome"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_persona",
+                    "description": (
+                        "Read or adjust the CURRENT speaker's stored style preferences "
+                        "(how you should talk to them: tone, verbosity, formality, "
+                        "language, what to call them, emoji use, proactiveness). "
+                        "Use when the user asks you to change how you speak — "
+                        "'call me T', 'be more concise', 'answer in Thai', 'be formal'. "
+                        "set persists to their personal memory and applies immediately; "
+                        "show returns the active settings; reset restores defaults."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["set", "show", "reset"],
+                            },
+                            "knob": {
+                                "type": "string",
+                                "enum": ["tone", "verbosity", "formality", "language",
+                                         "address_name", "emoji", "proactiveness"],
+                                "description": "Required for set. tone=warm/direct/professional/playful; verbosity=brief/normal/detailed; formality=casual/polite/formal; language=auto/en/th; proactiveness=minimal/normal/proactive.",
+                            },
+                            "value": {
+                                "type": "string",
+                                "description": "Required for set — the new value (address_name takes free text; emoji takes true/false).",
+                            },
+                        },
+                        "required": ["action"],
                         "additionalProperties": False,
                     },
                 }, {

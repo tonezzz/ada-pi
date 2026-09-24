@@ -660,6 +660,161 @@ async def forget(
     return {"verb": "retract", "bank": b.name, "key": str(key)}
 
 
+# ---------- conversational persona ----------
+
+PERSONA_DOC_KEY = "persona/self"
+
+
+def persona_bank_for(
+    registry: MemoryBankRegistry, identity: str | None
+) -> "MemoryBank | None":
+    """The writable personal-ish bank that stores this identity's persona
+    doc: their person-scoped bank, else the default 'personal' — but only
+    when the identity's policy actually allows writing there."""
+    name = registry.personal_bank_name(identity)
+    try:
+        b = registry.bank(name)
+        if b.writable and registry.bank_allowed(name, identity):
+            return b
+    except KeyError:
+        pass
+    for b in registry.banks_for_person(identity).values():
+        if b.scope == "person" and b.writable:
+            return b
+    return None
+
+
+def _persona_defaults(registry: MemoryBankRegistry) -> dict[str, Any]:
+    return {
+        k: v.get("default")
+        for k, v in (registry.persona.get("knobs") or {}).items()
+    }
+
+
+def _validate_persona_knob(registry: MemoryBankRegistry, knob: str, value: Any) -> Any:
+    defs = registry.persona.get("knobs") or {}
+    spec = defs.get(knob)
+    if spec is None:
+        raise ValueError(
+            f"unknown persona knob {knob!r} (allowed: {', '.join(defs) or 'none'})"
+        )
+    if spec.get("values") and str(value) not in spec["values"]:
+        raise ValueError(f"{knob} must be one of {', '.join(spec['values'])}")
+    if spec.get("type") == "bool":
+        return str(value).lower() in ("true", "1", "yes", "on")
+    if spec.get("type") == "string":
+        value = str(value).strip()
+        if len(value) > int(spec.get("max", 200)):
+            raise ValueError(f"{knob} exceeds {spec.get('max')} chars")
+        return value
+    return str(value)
+
+
+async def get_persona(
+    mddb: MddbClient, registry: MemoryBankRegistry, identity: str | None
+) -> dict[str, Any]:
+    """Effective persona: SSOT defaults overlaid with the speaker's stored
+    knobs (doc 'persona/self' in their personal bank)."""
+    knobs = _persona_defaults(registry)
+    bank = persona_bank_for(registry, identity)
+    result: dict[str, Any] = {
+        "knobs": knobs, "custom": [], "bank": bank.name if bank else None,
+    }
+    if bank is None:
+        return result
+    doc = await mddb.get_document(bank.mddb_collection, PERSONA_DOC_KEY)
+    if not doc:
+        return result
+    for line in str(doc.get("content_md") or "").splitlines():
+        k, sep, v = line.partition(":")
+        k, v = k.strip(), v.strip()
+        if sep and k in knobs and v != str(_persona_defaults(registry).get(k)):
+            knobs[k] = v
+            result["custom"].append(k)
+    return result
+
+
+async def set_persona(
+    mddb: MddbClient,
+    registry: MemoryBankRegistry,
+    identity: str | None,
+    knob: str,
+    value: Any,
+) -> dict[str, Any]:
+    """Set one persona knob for this identity; persists to 'persona/self'."""
+    value = _validate_persona_knob(registry, knob, value)
+    bank = persona_bank_for(registry, identity)
+    if bank is None:
+        raise PermissionError(
+            "persona needs a writable personal bank — this identity has none"
+        )
+    defs = registry.persona.get("knobs") or {}
+    cur = await get_persona(mddb, registry, identity)
+    cur["knobs"][knob] = value
+    lines = [
+        f"{k}: {v}"
+        for k, v in cur["knobs"].items()
+        if str(v) != str(defs.get(k, {}).get("default"))
+    ]
+    meta = {
+        "kind": ["preference"], "subject": ["persona"],
+        "status": ["active"], "scope": ["instance"],
+        "last_verified": [datetime.now(timezone.utc).date().isoformat()],
+    }
+    content = "\n".join(lines) or "# defaults"
+    if await mddb.get_document(bank.mddb_collection, PERSONA_DOC_KEY) is None:
+        _must(await mddb.add_document(
+            bank.mddb_collection, PERSONA_DOC_KEY, "en", content, meta),
+            f"add {bank.mddb_collection}/{PERSONA_DOC_KEY}")
+        verb = "create"
+    else:
+        _must(await mddb.update_document(
+            bank.mddb_collection, PERSONA_DOC_KEY, content_md=content, meta=meta),
+            f"update {bank.mddb_collection}/{PERSONA_DOC_KEY}")
+        verb = "correct"
+    return {"verb": verb, "bank": bank.name, "key": PERSONA_DOC_KEY,
+            "knob": knob, "value": value, "knobs": cur["knobs"]}
+
+
+async def reset_persona(
+    mddb: MddbClient, registry: MemoryBankRegistry, identity: str | None
+) -> dict[str, Any]:
+    """Clear stored knobs back to SSOT defaults."""
+    bank = persona_bank_for(registry, identity)
+    if bank is None:
+        raise PermissionError(
+            "persona needs a writable personal bank — this identity has none"
+        )
+    meta = {
+        "kind": ["preference"], "subject": ["persona"],
+        "status": ["active"], "scope": ["instance"],
+        "last_verified": [datetime.now(timezone.utc).date().isoformat()],
+    }
+    if await mddb.get_document(bank.mddb_collection, PERSONA_DOC_KEY) is not None:
+        _must(await mddb.update_document(
+            bank.mddb_collection, PERSONA_DOC_KEY, content_md="# defaults", meta=meta),
+            f"reset {bank.mddb_collection}/{PERSONA_DOC_KEY}")
+    return {"verb": "reset", "bank": bank.name,
+            "knobs": _persona_defaults(registry)}
+
+
+def persona_instruction(knobs: dict[str, Any], registry: MemoryBankRegistry) -> str | None:
+    """One-line prime text describing the speaker's non-default knobs."""
+    defs = registry.persona.get("knobs") or {}
+    custom = {
+        k: v for k, v in knobs.items()
+        if str(v) != str(defs.get(k, {}).get("default"))
+    }
+    if not custom:
+        return None
+    pairs = ", ".join(f"{k}={v}" for k, v in custom.items())
+    return (
+        f"(system) This speaker's saved style preferences: {pairs}. "
+        "Apply them to tone and format from the first reply; "
+        "use ada_persona to change them."
+    )
+
+
 async def session_prime_text(
     mddb: MddbClient,
     registry: MemoryBankRegistry,
@@ -668,6 +823,7 @@ async def session_prime_text(
     max_chars: int = 160,
     away_seconds: float | None = None,
     last_tail: str = "",
+    person_entity: str | None = None,
 ) -> str | None:
     """Build the session-start context injection: the rolling recent-sessions
     summary plus a few facts from the personal/general banks, so Ada starts
@@ -684,6 +840,16 @@ async def session_prime_text(
     # bank facts it injects stale threads that drown the live tail.
     if summary and not (directive and (away_seconds or 0) < 3600):
         parts.append(f"Recent sessions: {summary.strip()}")
+    # Speaker's saved style preferences — applies even on short reconnects
+    # (it's a style contract, not stale content).
+    if person_entity:
+        try:
+            persona = await get_persona(mddb, registry, person_entity)
+            line = persona_instruction(persona["knobs"], registry)
+            if line:
+                parts.append(line)
+        except Exception as exc:
+            logger.info("persona prime skipped: %s", exc)
     # Short reconnect (<1h): the conversation tail already carries the live
     # threads — bank facts would inject stale context and drown them.
     # First session or long gap: facts still prime cold-start awareness.

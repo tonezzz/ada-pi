@@ -110,6 +110,7 @@ class MemoryBankRegistry:
         self.schema_fields: set[str] = set()
         self._banks: dict[str, MemoryBank] = {}
         self.person_policies: dict[str, dict[str, Any]] = {}
+        self.persona: dict[str, Any] = {}
         self._load(explicit=bool(path or explicit))
 
     def _load(self, explicit: bool) -> None:
@@ -127,6 +128,9 @@ class MemoryBankRegistry:
         banks = data.get("banks", data) if isinstance(data, dict) else {}
         self.person_policies = (
             data.get("person_policies") if isinstance(data, dict) else None
+        ) or {}
+        self.persona = (
+            data.get("persona") if isinstance(data, dict) else None
         ) or {}
         if isinstance(data, dict) and isinstance(data.get("schema"), dict):
             self.schema_fields = set(data["schema"].get("fields") or {})
