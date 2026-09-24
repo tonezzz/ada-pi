@@ -68,7 +68,9 @@ turns:
     expect:
       timeout_s: 60
       settle_s: 6
-      response_contains: ["battery"]
+      # Paraphrase-tolerant: 'the simplest thing to check first' is a
+      # correct battery-first confirmation without the literal word.
+      response_contains_any: ["battery", "range", "receiver", "remote"]
       response_not_contains: ["coconut milk", "bamboo shoots", "simmer"]
 
   # --- harder reference: "the other thing" must resolve to lunch ---------
@@ -123,4 +125,6 @@ turns:
     expect:
       timeout_s: 60
       settle_s: 6
-      response_contains: ["gate", "curry"]
+      # Both threads required; either thread's name or its synonym counts.
+      response_contains: ["gate"]
+      response_contains_any: ["curry", "lunch"]

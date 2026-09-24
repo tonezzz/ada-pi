@@ -18,6 +18,7 @@ Turn expectations (all optional, all must pass):
   no_calls: true               no tools were invoked
   result_contains: [s, ...]    each substring appears in some tool_result
   response_contains: [s, ...]  each substring appears in the spoken transcript
+  response_contains_any: [s, ...]  at least one substring appears (paraphrase-tolerant)
   response_nonempty: true      any spoken transcript at all
   timeout_s: N                 per-turn hard timeout (default 90)
   settle_s: N                  quiet period after last response (default 5)
@@ -102,6 +103,11 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
             failures.append(
                 f"response_contains: {sub!r} not in transcript ({transcript[:160]!r})"
             )
+    any_subs = expect.get("response_contains_any") or []
+    if any_subs and not any(s.lower() in transcript.lower() for s in any_subs):
+        failures.append(
+            f"response_contains_any: none of {any_subs} in transcript ({transcript[:160]!r})"
+        )
     for sub in expect.get("response_not_contains") or []:
         if sub.lower() in transcript.lower():
             failures.append(f"response_not_contains: {sub!r} leaked into transcript")
