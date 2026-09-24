@@ -77,6 +77,21 @@ class ChabaMemory:
 
     def set_identity(self, session_id: str, kind: str, name: str) -> None:
         self.sessions[session_id] = {"kind": kind, "name": name}
+        if name:
+            self._stamp_seen(kind, name)
+
+    def _stamp_seen(self, kind: str, name: str) -> None:
+        """Presence record: first_seen/last_seen on the user/guest file —
+        creates the file on first contact so 'who appeared when' is
+        answerable from the store, not the journal."""
+        path = self.user_file(name) if kind == "user" else self.guest_file(name)
+        today = time.strftime("%Y-%m-%d")
+        doc = self._load_doc(path)
+        doc.setdefault("name", name)
+        doc.setdefault("entries", [])
+        doc.setdefault("first_seen", today)
+        doc["last_seen"] = today
+        self._save_doc(path, doc)
 
     def memory_file_for(self, session_id: str | None) -> Path:
         ident = self.identity(session_id)

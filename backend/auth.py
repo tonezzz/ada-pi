@@ -42,11 +42,13 @@ def _key_entries() -> dict[str, dict]:
     entries = {}
     for name, value in data.items():
         if isinstance(value, dict):
-            key, device = value.get("key"), value.get("device")
+            key, device, issued = (value.get("key"), value.get("device"),
+                                   value.get("issued"))
         else:
-            key, device = value, None
+            key, device, issued = value, None, None
         if name and key:
-            entries[str(name)] = {"key": str(key), "device": device or None}
+            entries[str(name)] = {"key": str(key), "device": device or None,
+                                  "issued": issued}
     return entries
 
 
@@ -96,7 +98,8 @@ def create_key(name: str) -> str | None:
     if name in data or name in env_names:
         return None
     key = f"ada-{secrets.token_urlsafe(24)}"
-    data[name] = key
+    data[name] = {"key": key, "device": None,
+                  "issued": time.strftime("%Y-%m-%d")}
     _save_file_keys(data)
     return key
 
@@ -123,6 +126,12 @@ def issued_key_bindings() -> dict[str, str | None]:
     return {n: e["device"] for n, e in _key_entries().items()}
 
 
+def issued_key_timeline() -> dict[str, dict]:
+    """{name: {issued, device}} — key issuance dates for reports/admin."""
+    return {n: {"issued": e["issued"], "device": e["device"]}
+            for n, e in _key_entries().items()}
+
+
 def bound_device(name: str) -> str | None:
     entry = _key_entries().get(name)
     return entry["device"] if entry else None
@@ -136,8 +145,12 @@ def bind_device(name: str, device_id: str) -> bool:
         return False
     if name not in data:
         return False
-    key = data[name]["key"] if isinstance(data[name], dict) else data[name]
+    old = data[name]
+    key = old["key"] if isinstance(old, dict) else old
+    issued = old.get("issued") if isinstance(old, dict) else None
     data[name] = {"key": key, "device": device_id}
+    if issued:
+        data[name]["issued"] = issued
     _save_file_keys(data)
     return True
 
@@ -157,7 +170,7 @@ def unbind_device(name: str) -> bool:
         return name in data
     if data[name].get("device") == "*":
         return True
-    data[name] = data[name]["key"]
+    data[name]["device"] = None
     _save_file_keys(data)
     return True
 
