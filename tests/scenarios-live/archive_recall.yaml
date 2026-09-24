@@ -1,0 +1,68 @@
+name: archive-recall-live
+# Does Ada recall distilled archive knowledge through the chaba-archive bank?
+#
+#   chaba0  — the "Super AI assistant" predecessor platform (pc1/pc2/idc1,
+#             WireGuard+CoreDNS, ~30 MCP prototypes)
+#   ada repo — A.D.A = Advanced Design Assistant: Gemini Native Audio voice
+#             + CAD + 3D printing + MediaPipe gesture UI + Kasa agents
+#
+# What this exercises:
+#   1. Read-only bank recall — chaba-archive is writable:false; search must
+#      still reach it
+#   2. Detail on demand — "tell me more" should pull specifics, not generic
+#      history
+#   3. Factual fidelity — the gesture meanings are exact (pinch/fist/palm);
+#      wrong mappings = distillation or recall failure
+#   4. Supersession framing — good answers connect old→current
+#      (pc1→tony-omen, wireguard→tailscale)
+#   5. Bilingual answers are CORRECT answers — assertions carry EN+TH terms
+#
+# Run on idc01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/archive_recall.yaml --url ws://127.0.0.1:8002/ws \
+#   --api-key "$ADA_API_KEY"
+#
+# REVIEW: turn 2 flaked once into HA state (answered about a TV plug after
+# 11 tool calls — session-context bleed). If it repeats, that's a real
+# context-isolation bug, not an archive-recall miss.
+
+turns:
+  # --- repo 1: chaba0 ---------------------------------------------------
+  - user: "Ada, what was the chaba0 project?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      calls_any: [ada_memory_search]
+      response_contains_any: ["assistant", "pc1", "idc1", "mcp", "predecessor", "ผู้ช่วย", "โปรเจกต์"]
+
+  - user: "Tell me more about its infrastructure — what hosts did it run on?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      # Good answer names the old hosts; better maps them to current ones.
+      # Host names are English tokens in both languages.
+      response_contains_any: ["pc1", "idc1", "node-1", "dev-host", "tony-omen", "tony-dell", "idc01"]
+
+  # --- repo 2: the ada repo ---------------------------------------------
+  - user: "There was also an older repo just called 'ada' — what was that?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains_any: ["advanced design assistant", "cad", "3d", "design", "ต้นตระกูล", "ออกแบบ"]
+
+  # --- the gesture test --------------------------------------------------
+  # Ground truth (ada-v2-platform.md): pinch = confirm/click,
+  # open palm = release window, closed fist = grab+drag window.
+  - user: "How did the gesture controls work in that version?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains_any: ["pinch", "จีบ"]
+      # fidelity: palm-release AND fist-drag must both appear (EN or TH)
+      response_contains_any: ["palm", "แบมือ", "fist", "กำหมัด"]
+
+  # --- supersession framing ---------------------------------------------
+  - user: "And what happened to all that — what replaced it?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains_any: ["ada-pi", "chaba", "superseded", "replaced", "tailscale", "home assistant", "แทนที่", "พัฒนา"]
