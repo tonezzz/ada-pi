@@ -51,11 +51,12 @@ turns:
       result_not_contains: ["matches enrolled speaker"]
 
   # --- same voice back in the buffer, then a second name -----------------
+  # Recognized voices produce no verbal reply — this turn only refills the
+  # enroll audio buffer; an empty transcript is correct.
   - audio: ../fixtures/voice-other.pcm
     expect:
       timeout_s: 60
       settle_s: 6
-      response_nonempty: true
 
   - user: "Actually, enroll my voice again but as guard-tester-two this time."
     expect:
