@@ -108,6 +108,20 @@ DEVIN_INSTRUCTIONS = (
     "be told to 'check the ada handoff'."
 )
 
+# Document archive tools — same constant pattern: ADA_EXCLUDED_TOOLS strips
+# the declarations and this instruction paragraph together.
+DOC_TOOLS = {"ada_doc_search", "ada_doc_get", "ada_doc_archive", "ada_doc_print"}
+
+DOC_INSTRUCTIONS = (
+    " You have a personal document archive (scans of deeds, IDs, passports, "
+    "receipts — เอกสาร). Questions about documents, scans, or archived papers — "
+    "including Thai words like เอกสาร/สำเนา/โฉนด — go to ada_doc_search to find "
+    "the archive slug, then ada_doc_get for details; NEVER search home devices "
+    "for documents. ada_doc_archive saves a newly uploaded document set into "
+    "the archive, and ada_doc_print prints archived pages on the DeskJet — both "
+    "need confirmed=true after restating what will be archived or printed."
+)
+
 
 # CHABA_MEMORY=1 guest mode: the instance serves visitors through the file-
 # backed chaba store instead of MDDB banks. Guest tools are appended and the
@@ -424,6 +438,7 @@ class GeminiLiveProvider(RealtimeProvider):
             + CALENDAR_INSTRUCTIONS
             + CMS_INSTRUCTIONS
             + DEVIN_INSTRUCTIONS
+            + DOC_INSTRUCTIONS
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -2131,6 +2146,116 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "ada_doc_search",
+                    "description": (
+                        "Searches the personal document archive (scans of deeds, ID cards, "
+                        "passports, house registrations, receipts — เอกสาร) indexed in the "
+                        "documents memory bank. Use for ANY question about stored/scanned "
+                        "documents — never search home devices for documents. Returns slugs "
+                        "to pass to ada_doc_get / ada_doc_print."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "What to find, e.g. 'A-68 deed', 'passport', 'ทะเบียนบ้าน'.",
+                            },
+                            "limit": {
+                                "type": "number",
+                                "description": "Max results (default 5).",
+                            },
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_doc_get",
+                    "description": (
+                        "Returns manifest + index metadata for one archived document set "
+                        "by slug (from ada_doc_search): page names, drive path, hashes, "
+                        "archive timestamp."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {
+                                "type": "string",
+                                "description": "Archive slug, e.g. 'A-68'.",
+                            },
+                        },
+                        "required": ["slug"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_doc_archive",
+                    "description": (
+                        "Archives a document set to gdrive:ada-documents and indexes it in "
+                        "the documents bank: from a just-uploaded intake result "
+                        "(intake_key, preferred — the upload panel returns it) or a "
+                        "directory of images on the Ada host (source_dir). Deduplicates "
+                        "against existing archives. Requires confirmed=true after "
+                        "restating the slug and contents."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {
+                                "type": "string",
+                                "description": "Archive slug, e.g. 'A-68' or 'visa-2026'.",
+                            },
+                            "doc_type": {
+                                "type": "string",
+                                "description": "Document type: deed, id_card, passport, contract, receipt, form, document.",
+                            },
+                            "intake_key": {
+                                "type": "string",
+                                "description": "Held intake key from /api/documents/intake (doc/...).",
+                            },
+                            "source_dir": {
+                                "type": "string",
+                                "description": "Directory of page images on the Ada host.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["slug"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_doc_print",
+                    "description": (
+                        "Prints pages of an archived document set on the HP DeskJet via "
+                        "tony-dell CUPS — renders each page onto A4 at 300dpi with the "
+                        "print-enhance pipeline. Requires confirmed=true after restating "
+                        "which pages will be printed."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {
+                                "type": "string",
+                                "description": "Archive slug, e.g. 'A-68'.",
+                            },
+                            "pages": {
+                                "type": "string",
+                                "description": "'all' (default), '1-3', or '2,4' — 1-based.",
+                            },
+                            "true_size_mm": {
+                                "type": "string",
+                                "description": "Print at real physical size, e.g. '85.6x54' for an ID-1 card. Omit for fit-to-A4.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["slug"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "ada_usage_summary",
                     "description": (
                         "Returns cumulative Gemini token usage for this Ada process: "
@@ -2193,6 +2318,10 @@ class GeminiLiveProvider(RealtimeProvider):
             if DEVIN_TOOLS <= excluded:
                 config["system_instruction"] = config["system_instruction"].replace(
                     DEVIN_INSTRUCTIONS, ""
+                )
+            if DOC_TOOLS <= excluded:
+                config["system_instruction"] = config["system_instruction"].replace(
+                    DOC_INSTRUCTIONS, ""
                 )
         if chaba_memory.enabled():
             # Guest mode: allowlist the tool surface, append chaba guest tools,

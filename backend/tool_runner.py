@@ -15,6 +15,7 @@ from typing import Any
 from backend import memory_ops
 from backend import chaba_memory
 from backend import devin_dispatch as devin_dispatch_mod
+from backend import doc_archive_client
 from backend.calendar_providers import CalendarService
 from backend.decision_check import DecisionCheckEngine
 from backend.event_recorder import HaEventRecorder
@@ -56,6 +57,11 @@ CMS_WRITE_TOOLS = {"cms_publish_page", "cms_delete_page"}
 # injecting a message into one (devin_followup) both cause autonomous code
 # changes, so they require confirmed=true. devin_status is read-only.
 DEVIN_CONFIRMED_TOOLS = {"devin_dispatch", "devin_followup"}
+
+# Document archive/print: ada_doc_archive writes pages to gdrive:ada-documents
+# and ada_doc_print sends real pages to the printer — both require
+# confirmed=true. ada_doc_search and ada_doc_get are read-only.
+DOC_CONFIRMED_TOOLS = {"ada_doc_archive", "ada_doc_print"}
 
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
@@ -512,6 +518,9 @@ class ToolRunner:
         elif name in DEVIN_CONFIRMED_TOOLS:
             confirmed = call_args.pop("confirmed", None)
             self._check_devin_confirmed(name, call_args, confirmed)
+        elif name in DOC_CONFIRMED_TOOLS:
+            confirmed = call_args.pop("confirmed", None)
+            self._check_doc_confirmed(name, call_args, confirmed)
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
         return await method(**call_args)
@@ -686,6 +695,80 @@ class ToolRunner:
     async def devin_followup(self, task_id: str, message: str) -> str:
         """Send a follow-up message into a dispatched session."""
         return await devin_dispatch_mod.followup(task_id, message)
+
+    def _check_doc_confirmed(
+        self, name: str, args: dict[str, Any], confirmed: Any,
+    ) -> None:
+        """Server-side gate for doc archive/print. Raises PermissionError on denial."""
+        if os.environ.get("ADA_READ_ONLY") == "true":
+            logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
+            raise PermissionError("document tools are disabled (ADA_READ_ONLY=true)")
+        if confirmed is not True:
+            logger.warning("denied %s %r: doc call without confirmed=true", name, args)
+            raise PermissionError(
+                f"{name} requires confirmation. Restate the archive/print "
+                "target, get an explicit yes, then call again with confirmed=true."
+            )
+
+    # -- Document archive tools (doc-archive service on idc01 + MDDB
+    #    `documents` collection — the shared Ada/Devin document index) --
+
+    async def ada_doc_search(self, query: str, limit: int = 5) -> Any:
+        """Search archived document sets (documents bank / MDDB index)."""
+        return await doc_archive_client.doc_search(query, limit=limit)
+
+    async def ada_doc_get(self, slug: str) -> dict[str, Any]:
+        """Manifest + index metadata for one archived document set."""
+        return await doc_archive_client.doc_get(slug)
+
+    async def ada_doc_archive(
+        self, slug: str, doc_type: str = "document",
+        intake_key: str | None = None, source_dir: str | None = None,
+    ) -> dict[str, Any]:
+        """Archive a document set: from a held intake result (intake_key) or
+        a directory of images on this host (source_dir)."""
+        pages: list[tuple[str, bytes]] = []
+        if intake_key:
+            import pwa_server  # lazy — avoids circular import at module load
+            held = pwa_server._get_document_engine().held(intake_key)
+            if held is None:
+                raise RuntimeError(
+                    f"unknown or expired intake key '{intake_key}' — "
+                    "upload the document again")
+            blob = (held.meta or {}).get("archive_jpg")
+            if not blob:
+                raise RuntimeError("held intake has no archive image")
+            pages.append(((held.meta or {}).get("filename") or f"{slug}.jpg",
+                          bytes(blob)))
+        elif source_dir:
+            d = os.path.expanduser(source_dir)
+            if not os.path.isdir(d):
+                raise RuntimeError(f"no such directory: {source_dir}")
+            for fn in sorted(os.listdir(d)):
+                if fn.lower().endswith((".jpg", ".jpeg", ".png")):
+                    with open(os.path.join(d, fn), "rb") as fh:
+                        pages.append((fn, fh.read()))
+            if not pages:
+                raise RuntimeError(f"no images found in {source_dir}")
+        else:
+            raise RuntimeError("need intake_key or source_dir")
+        return await doc_archive_client.doc_archive(slug, doc_type, pages)
+
+    async def ada_doc_print(
+        self, slug: str, pages: str | None = None,
+        true_size_mm: str | None = None,
+    ) -> dict[str, Any]:
+        """Print archived pages on the DeskJet via tony-dell CUPS.
+        pages: 'all' | '1-3' | '2'; true_size_mm: '85.6x54' for ID-1."""
+        ts = None
+        if true_size_mm:
+            try:
+                a, b = str(true_size_mm).lower().split("x", 1)
+                ts = (float(a), float(b))
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"bad true_size_mm '{true_size_mm}' — use '85.6x54'") from exc
+        return await doc_archive_client.doc_print_pdf(slug, pages, ts)
 
     # -- Token usage reporting (usage_tracker.py) --
 
