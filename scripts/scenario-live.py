@@ -156,6 +156,13 @@ async def run_turn(
         for off in range(0, len(audio), frame):
             await ws.send(audio[off: off + frame])
             await asyncio.sleep(0.05)
+        # Trailing silence: the server VAD measures silence_duration_ms on
+        # the incoming stream — with no frames after the utterance the turn
+        # never closes and the model never responds (learned 2026-09-24).
+        silence = bytes(frame)
+        for _ in range(30):  # ~1.5 s
+            await ws.send(silence)
+            await asyncio.sleep(0.05)
     deadline = time.monotonic() + timeout
     last_completed = 0.0
     completed = 0
