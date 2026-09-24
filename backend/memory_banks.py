@@ -278,6 +278,17 @@ class MemoryBankRegistry:
 
     # ---------- actuation ACL ----------
 
+    def identity_label(self, person_entity: str | None) -> str | None:
+        """Human-friendly display name for the model: policy 'label' if
+        declared, else the identity string itself."""
+        if not person_entity:
+            return None
+        for policies in (self.person_policies, self.control_policies):
+            p = policies.get(person_entity)
+            if p and p.get("label"):
+                return str(p["label"])
+        return person_entity
+
     def control_policy_for(self, person_entity: str | None) -> dict[str, Any] | None:
         """Same identity resolution as bank policies, over control_policies."""
         if not self.control_policies:
