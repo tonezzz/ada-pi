@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 from backend import devin_dispatch as dd
@@ -72,6 +73,55 @@ class DispatchDedupTests(unittest.IsolatedAsyncioTestCase):
             second = await dd.dispatch("chaba", "Check the Rika RK600 weather station battery.")
         self.assertEqual(second["task_id"], "task-b")
         self.assertNotIn("deduplicated", second)
+
+    def _status_line(self, task_id: str) -> str:
+        return (f"{task_id:<42} inactive success    repo=chaba          "
+                "transcript=2026-09-24 07:52:21\n")
+
+    async def test_remote_dupe_reuses_recent_task(self):
+        # Empty in-process cache (e.g. after a backend restart) — the remote
+        # status list still catches a retry of a recently-started task.
+        recent = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        tid = f"{recent}-investigate-why-the-nobito-pm2"
+        with patch.object(dd, "_run", new=AsyncMock(return_value=self._status_line(tid))):
+            res = await dd.dispatch(
+                "chaba", "Investigate stuck Nobito PM2.5 sensor reading.")
+        self.assertEqual(res["task_id"], tid)
+        self.assertTrue(res["deduplicated"])
+
+    async def test_remote_dupe_ignores_old_task(self):
+        old = (datetime.now(timezone.utc)
+               - timedelta(seconds=dd.DEDUP_WINDOW_S + 60)
+               ).strftime("%Y%m%d-%H%M%S")
+        tid = f"{old}-investigate-why-the-nobito-pm2"
+        calls = []
+
+        async def fake_run(*args):
+            calls.append(args)
+            return self._status_line(tid) if args[0] == "status" else "task-new\n"
+
+        with patch.object(dd, "_run", new=fake_run):
+            res = await dd.dispatch(
+                "chaba", "Investigate stuck Nobito PM2.5 sensor reading.")
+        self.assertEqual(res["task_id"], "task-new")
+        self.assertNotIn("deduplicated", res)
+        self.assertEqual(calls[1][0], "start")
+
+    async def test_remote_dupe_ignores_other_repo(self):
+        recent = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        tid = f"{recent}-investigate-why-the-nobito-pm2"
+        status_out = self._status_line(tid).replace("repo=chaba", "repo=ada-pi")
+        calls = []
+
+        async def fake_run(*args):
+            calls.append(args)
+            return status_out if args[0] == "status" else "task-new\n"
+
+        with patch.object(dd, "_run", new=fake_run):
+            res = await dd.dispatch(
+                "chaba", "Investigate stuck Nobito PM2.5 sensor reading.")
+        self.assertEqual(res["task_id"], "task-new")
+        self.assertNotIn("deduplicated", res)
 
 
 class StatusTrimTests(unittest.IsolatedAsyncioTestCase):

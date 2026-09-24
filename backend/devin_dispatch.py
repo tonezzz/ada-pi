@@ -17,6 +17,7 @@ import os
 import re
 import shlex
 import time
+from datetime import datetime, timezone
 
 logger = logging.getLogger("tools.devin_dispatch")
 
@@ -59,6 +60,55 @@ def _task_tokens(text: str) -> frozenset[str]:
 # repo -> [(tokens, task_id, monotonic_ts)]
 _recent_dispatches: dict[str, list[tuple[frozenset[str], str, float]]] = {}
 
+# devin-dispatch task ids: YYYYMMDD-HHMMSS-<30-char slug>
+_TASK_ID_RE = re.compile(r"^(\d{8})-(\d{6})-([a-z0-9-]+)$")
+
+
+def _dedup_result(task_id: str, repo: str) -> dict:
+    return {
+        "task_id": task_id,
+        "repo": repo,
+        "deduplicated": True,
+        "note": (
+            "A matching task was already dispatched recently; reusing "
+            "that session instead of starting a duplicate. Use "
+            "devin_status to check progress."
+        ),
+    }
+
+
+async def _remote_dupe(repo: str, toks: frozenset[str]) -> str | None:
+    """Check the dispatch host's task list for a same-intent task started
+    inside the dedup window. Covers retries after a backend restart, where
+    the in-process cache is empty."""
+    try:
+        out = await _run("status")
+    except Exception as exc:
+        logger.info("dedup remote check skipped: %s", exc)
+        return None
+    now = datetime.now(timezone.utc)
+    for line in out.splitlines():
+        fields = line.split()
+        if not fields or f"repo={repo}" not in fields:
+            continue
+        m = _TASK_ID_RE.match(fields[0])
+        if not m:
+            continue
+        try:
+            started = datetime.strptime(
+                m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(
+                tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if (now - started).total_seconds() > DEDUP_WINDOW_S:
+            continue
+        slug_toks = _task_tokens(m.group(3).replace("-", " "))
+        if toks and slug_toks:
+            sim = len(toks & slug_toks) / min(len(toks), len(slug_toks))
+            if sim >= DEDUP_MIN_SIM:
+                return fields[0]
+    return None
+
 
 async def _run(*args: str) -> str:
     """Run `devin-dispatch <args>` on the dispatch host. Returns stdout."""
@@ -91,23 +141,20 @@ async def dispatch(repo: str, task: str) -> dict:
     toks = _task_tokens(task)
     entries = _recent_dispatches.setdefault(repo, [])
     entries[:] = [e for e in entries if now - e[2] < DEDUP_WINDOW_S]
+    dupe = None
     for prev_toks, prev_id, _ in entries:
         if not toks or not prev_toks:
             continue
         sim = len(toks & prev_toks) / min(len(toks), len(prev_toks))
         if sim >= DEDUP_MIN_SIM:
-            logger.info(
-                "dedup: reusing %s for similar task (sim=%.2f)", prev_id, sim)
-            return {
-                "task_id": prev_id,
-                "repo": repo,
-                "deduplicated": True,
-                "note": (
-                    "A matching task was already dispatched recently; reusing "
-                    "that session instead of starting a duplicate. Use "
-                    "devin_status to check progress."
-                ),
-            }
+            dupe = prev_id
+            break
+    if dupe is None:
+        dupe = await _remote_dupe(repo, toks)
+    if dupe is not None:
+        logger.info("dedup: reusing %s for similar task", dupe)
+        entries.append((toks, dupe, now))
+        return _dedup_result(dupe, repo)
     task_id = (await _run("start", repo, task)).strip()
     entries.append((toks, task_id, now))
     return {
