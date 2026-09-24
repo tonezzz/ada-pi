@@ -1,0 +1,60 @@
+name: doc-recall-live
+tier: smoke
+# Regression for the A-68 misroute (2026-09-24): "มีข้อมูลเอกสารของ unit
+# A68 ไหม" made Ada hunt through search_home_devices/list_sensors and even
+# fire tv_action — she never touched document memory. The fix adds the
+# ada_doc_* toolset + prompt steering; this scenario replays the exact
+# failing utterance.
+#
+# What this exercises:
+#   1. Routing — document questions (incl. Thai) must reach ada_doc_search
+#      (or ada_memory_search, which covers the documents bank via
+#      bank='all'); ANY home-device tool call fails the turn
+#   2. Recall — the A-68 condo-sale set is indexed in the documents
+#      collection; the slug must appear in a tool result
+#   3. Detail on demand — follow-up should pull page/manifest contents
+#   4. Bilingual assertions — she may answer in Thai or English
+#
+# Read-only (ada_doc_search/ada_doc_get) — smoke tier, no cleanup needed.
+#
+# Run on idc01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/doc_recall.yaml --url ws://127.0.0.1:8002/ws \
+#   --api-key "$ADA_API_KEY"
+
+turns:
+  # --- the exact utterance that misrouted --------------------------------
+  - user: "มีข้อมูลเอกสารของ unit A68 ไหม"
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      calls_any: [ada_doc_search, ada_memory_search]
+      result_contains: ["A-68"]
+      # The failure mode: any home-device/control call means the document
+      # question misrouted again.
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - ada_doc_search
+        - ada_doc_get
+        - ada_memory_search
+        - ada_session_recall
+      response_contains_any:
+        - "A-68", "a68", "deed", "condo", "เอกสาร", "โฉนด",
+          "ทะเบียนบ้าน", "บัตรประชาชน", "พาสปอร์ต", "archive"
+
+  # --- detail follow-up ---------------------------------------------------
+  - user: "What files or pages does that document set have?"
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      calls_any: [ada_doc_get, ada_doc_search]
+      result_contains_any: ["deed", "page", "070547", "070548"]
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - ada_doc_search
+        - ada_doc_get
+        - ada_memory_search
+      response_contains_any:
+        - "deed", "passport", "id card", "house", "7",
+          "โฉนด", "พาสปอร์ต", "บัตร", "ทะเบียน"

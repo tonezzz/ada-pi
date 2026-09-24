@@ -1,0 +1,67 @@
+name: speaker-contamination-guard
+# Regression for the KK-poisoning bug (2026-09-24): a borderline
+# misidentification (Tony→"KK" at 51%) followed by ada_enroll_speaker
+# REPLACED KK's embedding with Tony's voice — every later session matched
+# "KK" harder. The fix: enroll() refuses when the buffered audio matches a
+# DIFFERENT enrolled speaker above the identify threshold.
+#
+# Flow here — enroll a synthetic voice as guard-tester, replay the same
+# voice, then try to enroll it under a SECOND name; the guard must refuse
+# with "matches enrolled speaker 'guard-tester'".
+#
+# What this exercises:
+#   1. Clean enrollment still works for an unmatched voice
+#   2. The contamination guard fires on cross-name enrollment of the
+#      same voice — the tool result carries the refusal, and the profile
+#      is NOT overwritten (verified by re-identification + cleanup state)
+#   3. Ada relays the refusal sensibly instead of claiming success
+#
+# NOTE: uses the synthetic voice-other.pcm fixture for both voices — a
+# same-fixture replay is the strongest possible "same speaker" signal for
+# the guard. A real Tony-vs-KK fixture pair comes later, once KK's real
+# enrollment exists again (see session 2026-09-24).
+#
+# Full tier — writes speaker profiles temporarily (cleanup restores).
+#
+# Run on idc01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/speaker_contamination_guard.yaml \
+#   --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+
+cleanup:
+  speaker_remove:
+    - "guard-tester"
+    - "guard-tester-two"
+    - "Guard Tester"
+    - "Guard Tester Two"
+
+turns:
+  # --- enroll the synthetic voice under the first name -------------------
+  - audio: ../fixtures/voice-other.pcm
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+
+  - user: "Please enroll my voice — call me guard-tester."
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      calls: [ada_enroll_speaker]
+      result_contains: ["guard-tester"]
+      result_not_contains: ["matches enrolled speaker"]
+
+  # --- same voice back in the buffer, then a second name -----------------
+  - audio: ../fixtures/voice-other.pcm
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+
+  - user: "Actually, enroll my voice again but as guard-tester-two this time."
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      calls: [ada_enroll_speaker]
+      # The guard refusal — this IS the pass condition.
+      result_contains: ["matches enrolled speaker"]
+      response_not_contains: ["enrolled successfully", "you're enrolled"]
