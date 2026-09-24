@@ -904,7 +904,10 @@ class ToolRunner:
         return f"Turned {'on' if on else 'off'} {entity_id}: {outcome}"
 
     async def list_sensors(self) -> list[dict[str, Any]]:
-        return await self.context.ha_client.sensors(limit=50)
+        # Keep the default small: every tool result stays in the live-voice
+        # context for the rest of the session. search_sensors is the right
+        # tool for a specific device; 25 covers a broad "what sensors" ask.
+        return await self.context.ha_client.sensors(limit=25)
 
     async def search_sensors(self, query: str) -> list[dict[str, Any]]:
         return await self.context.ha_client.sensors(search=str(query), limit=10)
@@ -969,7 +972,7 @@ class ToolRunner:
             raise ValueError("entity_id is required")
         return await self.context.ha_client.state_transitions(str(entity_id), hours=int(hours))
 
-    async def get_recent_events(self, hours: int = 24, query: str | None = None, limit: int = 50) -> dict[str, Any]:
+    async def get_recent_events(self, hours: int = 24, query: str | None = None, limit: int = 25) -> dict[str, Any]:
         return await self.context.ha_client.recent_events(
             hours=int(hours),
             query=str(query) if query else None,
