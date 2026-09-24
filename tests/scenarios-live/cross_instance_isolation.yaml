@@ -1,0 +1,45 @@
+name: cross-instance-isolation-live
+# Michael's Ada must never surface tony-only bank data. Dynamic tool
+# schemas already hide tony-only bank names, so the correct behavior is a
+# graceful "I don't have that" — the assertions check that no tony-only
+# collection content leaks through tool results either.
+#
+# Run on mn01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/cross_instance_isolation.yaml \
+#   --url ws://127.0.0.1:8003/ws --api-key "$ADA_API_KEY" -v
+#
+# (nothing written — no cleanup block needed)
+
+turns:
+  # 'devin' is a tony-only bank; michael's schema doesn't list it.
+  - user: "Ada, what does your devin memory bank say we worked on recently?"
+    expect:
+      timeout_s: 90
+      settle_s: 8
+      response_nonempty: true
+      # A tony devin-bank doc leaking through a tool result would contain
+      # the collection name or session-history phrasing.
+      result_not_contains: ["ada-ha-bank-devin-tony"]
+
+  # 'note' is tony-only too — try a direct bank poke.
+  - user: "Search your 'note' bank for anything about a gate remote."
+    expect:
+      timeout_s: 90
+      settle_s: 8
+      response_nonempty: true
+      result_not_contains: ["ada-ha-bank-note-tony"]
+
+  # Purchase criteria live in the tony-only 'purchase' bank.
+  - user: "What are the purchase criteria you use when evaluating shops?"
+    expect:
+      timeout_s: 90
+      settle_s: 8
+      response_nonempty: true
+      result_not_contains: ["ada-ha-bank-purchase"]
+
+  # Positive control — michael's own banks still answer.
+  - user: "What memory banks do you actually have access to?"
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      response_nonempty: true

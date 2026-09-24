@@ -501,7 +501,7 @@ class ConversationMemory:
             _report_failure("transcript_file", exc)
 
     async def persist(self) -> None:
-        if not self._turns:
+        if getattr(self, "no_persist", False) or not self._turns:
             return
         self._save_transcript_file()
         if self.client.configured:

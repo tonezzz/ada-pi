@@ -438,6 +438,11 @@ async def voice_socket(ws: WebSocket) -> None:
     # One ConversationMemory per websocket session, shared across provider
     # reconnects so the transcript survives a Gemini session swap.
     conversation = ConversationMemory(session_id)
+    # Test hook: ?no_persist=1 skips transcript persist, extraction,
+    # summaries and the session-end marker so scenario runs never pollute
+    # real memory (banks are unaffected — explicit ada_remember still writes).
+    no_persist = (ws.query_params.get("no_persist") or "").lower() in ("1", "true")
+    conversation.no_persist = no_persist
     _live_sessions[session_id] = {
         "conversation": conversation,
         "connected_at": time.time(),
@@ -650,8 +655,9 @@ async def voice_socket(ws: WebSocket) -> None:
             tool_runner.speaker_session = None
         with suppress(Exception):
             await ws.close()
-        with suppress(Exception):
-            await _mark_session_end(conversation)
+        if not no_persist:
+            with suppress(Exception):
+                await _mark_session_end(conversation)
         _live_sessions.pop(session_id, None)
         if CHABA_MODE:
             chaba.sessions.pop(session_id, None)

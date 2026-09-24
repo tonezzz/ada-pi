@@ -26,6 +26,22 @@ Reconnect step (tests/scenarios-live/reconnect_continuity.yaml):
   - reconnect: {away_s: 300}   closes the ws, reconnects with
                                ?simulate_away_s=N, then checks the greeting
                                turn with the same expect vocabulary.
+
+Isolation / negative assertions:
+  response_not_contains: [s, ...]  each substring must NOT appear in speech
+  result_not_contains: [s, ...]    each substring must NOT appear in results
+
+Persistence: the driver appends ?no_persist=1 so test sessions never write
+transcripts, extraction drafts, summaries, or session-end markers. Pass
+--persist to opt out (e.g. when the scenario itself exercises persistence).
+
+Cleanup (runs even when expectations fail):
+  cleanup:
+    mddb_delete:
+      - {collection: ada-ha-bank-general, key: "general/some-key"}
+      - {collection: ada-ha-bank-general, contains: "marker zeta-9917"}
+  'contains' lists the collection, deletes every doc whose content or key
+  matches the substring. MDDB base: $MDDB_BASE_URL or http://127.0.0.1:11023/v1
 """
 
 from __future__ import annotations
@@ -63,11 +79,17 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
     for sub in expect.get("result_contains") or []:
         if not any(sub in json.dumps(r.get("result") or {}, default=str) for r in results):
             failures.append(f"result_contains: {sub!r} not in any tool_result")
+    for sub in expect.get("result_not_contains") or []:
+        if any(sub in json.dumps(r.get("result") or {}, default=str) for r in results):
+            failures.append(f"result_not_contains: {sub!r} leaked into a tool_result")
     for sub in expect.get("response_contains") or []:
         if sub.lower() not in transcript.lower():
             failures.append(
                 f"response_contains: {sub!r} not in transcript ({transcript[:160]!r})"
             )
+    for sub in expect.get("response_not_contains") or []:
+        if sub.lower() in transcript.lower():
+            failures.append(f"response_not_contains: {sub!r} leaked into transcript")
     if expect.get("response_nonempty") and not transcript.strip():
         failures.append("response_nonempty: empty transcript")
     return failures
@@ -121,11 +143,56 @@ async def run_turn(
     return events, check_turn(events, expect)
 
 
+def run_cleanup(spec: dict, mddb_url: str, verbose: bool) -> None:
+    """Best-effort post-run cleanup — deletes test docs from MDDB."""
+    import urllib.request
+
+    def post(path: str, payload: dict) -> Any:
+        req = urllib.request.Request(
+            f"{mddb_url}{path}",
+            data=json.dumps(payload).encode(),
+            headers={"content-type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+
+    for item in (spec.get("cleanup") or {}).get("mddb_delete") or []:
+        col = item.get("collection")
+        if not col:
+            continue
+        keys: list[str] = []
+        if item.get("key"):
+            keys = [item["key"]]
+        elif item.get("contains"):
+            sub = str(item["contains"]).lower()
+            try:
+                docs = post("/search", {"collection": col, "limit": 300})
+            except Exception as exc:
+                print(f"  cleanup: list {col} failed: {exc}")
+                continue
+            keys = [
+                d["key"] for d in docs
+                if sub in (str(d.get("key") or "") + (d.get("contentMd") or "")).lower()
+            ]
+        for key in keys:
+            try:
+                post("/delete", {"collection": col, "key": key, "lang": "en"})
+                if verbose:
+                    print(f"  cleanup: deleted {col}/{key}")
+            except Exception as exc:
+                print(f"  cleanup: delete {col}/{key} failed: {exc}")
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("scenario", type=Path)
     ap.add_argument("--url", default=None)
     ap.add_argument("--api-key", default=None)
+    ap.add_argument("--persist", action="store_true",
+                    help="allow the test session to persist transcripts/markers "
+                         "(default: appends no_persist=1)")
+    ap.add_argument("--no-cleanup", action="store_true",
+                    help="skip the scenario's cleanup block")
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("-t", "--timing", action="store_true",
                     help="print per-turn event timeline (send->event offsets)")
@@ -138,6 +205,9 @@ async def main() -> int:
     if api_key:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}api_key={api_key}"
+    if not args.persist:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}no_persist=1"
 
     async def connect(target: str) -> Any:
         ws = await websockets.connect(target, max_size=8 * 1024 * 1024)
@@ -205,6 +275,9 @@ async def main() -> int:
     finally:
         if ws is not None:
             await ws.close()
+        if not args.no_cleanup:
+            mddb_url = os.environ.get("MDDB_BASE_URL") or "http://127.0.0.1:11023/v1"
+            run_cleanup(spec, mddb_url.rstrip("/"), args.verbose)
 
     print(f"{'PASS' if total_fail == 0 else 'FAIL'}: {total_fail} failed expectations")
     return 0 if total_fail == 0 else 1

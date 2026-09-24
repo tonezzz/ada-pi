@@ -7,6 +7,13 @@ name: michael-technician-live
 # Expectations are soft (live LLM behavior varies) — they check that Ada
 # consults memory, holds context across short follow-ups, and writes back.
 
+# The scenario writes one fictional fact ('restarting ada-ha-michael fixed
+# the blank screen') via ada_remember — remove it after the run so real
+# recall isn't polluted.
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-general, contains: "ada-ha-michael service"}
+
 turns:
   - user: "Hey Ada, the dashboard is not loading again."
     expect:
