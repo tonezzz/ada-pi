@@ -1,0 +1,52 @@
+name: kk-first-contact
+# What happens when KK (household member, HA user) connects to Ada with
+# her own issued key: greeting, identity, memory reach, memory writes.
+#
+# KK posture today:
+#   - key 'user-kk' + 'person.kk' are {full: true} (trusted household member)
+#   - she has personal-kk (person-scoped) BUT no voiceprint enrolled —
+#     identity resolves to the key name, so bank='personal' resolves to
+#     Tony's 'personal' bank. REVIEW where her remember lands.
+#
+# Run on idc01:  KK_KEY=$(python3 -c "import json;print(json.load(open(
+#   '/home/tony/.config/secrets/ada-ha-tony-keys.json'))['user-kk'])")
+#   python3 scripts/scenario-live.py tests/scenarios-live/kk_first_contact.yaml \
+#     --url ws://127.0.0.1:8002/ws --api-key "$KK_KEY"
+
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-personal-tony, contains: "matcha"}
+    - {collection: ada-ha-bank-personal-kk, contains: "matcha"}
+    - {collection: ada-ha-bank-general, contains: "matcha"}
+    - {collection: ada-ha-bank-people, contains: "matcha"}
+    - {collection: ada-ha-bank-note-tony, contains: "matcha"}
+
+turns:
+  - user: "Hi Ada, it's KK."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+
+  # Does she get Tony's personal facts? (full policy → yes by design;
+  # REVIEW whether that's acceptable for a household member)
+  - user: "What do you remember about the family?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+
+  # THE probe: her write should go to personal-kk (scoped) — if it lands
+  # in personal-tony that's the unenrolled-speaker leak.
+  - user: "Remember that I prefer matcha over coffee."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: ["ada_remember"]
+
+  - user: "Who am I to you?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true

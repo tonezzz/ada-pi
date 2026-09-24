@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -84,6 +84,7 @@ class MemoryBank:
     allowed_tools: list[str]
     status: str
     person_scope: str | None = None  # "default" for instance owner, "person.<id>" for person-scoped
+    key_scope: list[str] = field(default_factory=list)  # issued-key names that also route to this person bank
     prompt_hidden: bool = False  # excluded from {writable_banks} in tool schemas — callable but never suggested
 
     def notebook(self, notebook_ids: dict[str, str]) -> str | None:
@@ -189,6 +190,7 @@ class MemoryBankRegistry:
             allowed_tools=list(spec.get("allowed_tools") or []),
             status=str(spec.get("status") or "planned"),
             person_scope=spec.get("person_scope") or None,
+            key_scope=list(spec.get("key_scope") or []),
             prompt_hidden=bool(spec.get("prompt_hidden")),
         )
 
@@ -209,22 +211,26 @@ class MemoryBankRegistry:
                 f"(available for {self.instance}: {available})"
             ) from None
 
+    def _scoped_bank_name(self, identity: str | None) -> str | None:
+        """Person-scoped bank for this identity: person_scope match first,
+        then key_scope (issued-key names that route to the same bank)."""
+        if not identity:
+            return None
+        for name, b in self._banks.items():
+            if b.scope == "person" and (
+                b.person_scope == identity or identity in b.key_scope
+            ):
+                return name
+        return None
+
     def personal_bank_name(self, person_entity: str | None) -> str:
         """Resolve the effective personal bank name for a speaker.
 
-        If a person-scoped bank exists whose person_scope matches the
-        speaker's HA person entity, return that bank's name. Otherwise
-        return the default 'personal' bank (the instance owner's).
+        If a person-scoped bank claims this identity (person_scope, or
+        key_scope for unenrolled speakers using their own key), return
+        that bank's name. Otherwise return the default 'personal' bank.
         """
-        if person_entity:
-            for name, b in self._banks.items():
-                if (
-                    b.scope == "person"
-                    and b.person_scope
-                    and b.person_scope == person_entity
-                ):
-                    return name
-        return "personal"
+        return self._scoped_bank_name(person_entity) or "personal"
 
     def banks_for_person(self, person_entity: str | None) -> dict[str, MemoryBank]:
         """All banks visible to this instance, with the personal bank
@@ -237,15 +243,7 @@ class MemoryBankRegistry:
         """
         result = dict(self._banks)
         if person_entity:
-            scoped_name = None
-            for name, b in self._banks.items():
-                if (
-                    b.scope == "person"
-                    and b.person_scope
-                    and b.person_scope == person_entity
-                ):
-                    scoped_name = name
-                    break
+            scoped_name = self._scoped_bank_name(person_entity)
             if scoped_name and scoped_name in result:
                 # Remove the default personal bank — the scoped one replaces it
                 result.pop("personal", None)
