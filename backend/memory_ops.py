@@ -664,7 +664,9 @@ async def session_prime_text(
     directive = reconnect_directive(away_seconds, last_tail)
     if directive:
         parts.append(directive)
-    if summary:
+    # Short reconnect (<1h): skip the recent-sessions summary too — like
+    # bank facts it injects stale threads that drown the live tail.
+    if summary and not (directive and (away_seconds or 0) < 3600):
         parts.append(f"Recent sessions: {summary.strip()}")
     # Short reconnect (<1h): the conversation tail already carries the live
     # threads — bank facts would inject stale context and drown them.
