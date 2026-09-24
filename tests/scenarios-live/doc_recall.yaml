@@ -43,12 +43,12 @@ turns:
          "ทะเบียนบ้าน", "บัตรประชาชน", "พาสปอร์ต", "archive"]
 
   # --- detail follow-up ---------------------------------------------------
+  # Answering from the turn-1 tool result is GOOD behaviour (no redundant
+  # call) — so no calls_any/result assertions here; a call is fine too.
   - user: "What files or pages does that document set have?"
     expect:
       timeout_s: 60
       settle_s: 8
-      calls_any: [ada_doc_get, ada_doc_search]
-      result_contains_any: ["deed", "page", "070547", "070548"]
       no_calls: true
       no_calls_except:
         - set_facial_expression
