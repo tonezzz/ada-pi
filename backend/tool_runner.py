@@ -558,7 +558,7 @@ class ToolRunner:
             else:
                 await self.memory._ensure_confidence()
             safety = self.memory._safety.get(entity_id) if self.memory is not None else None
-            if safety != "dangerous":
+            if safety != "dangerous" and self.memory is not None:
                 # A related entity can inherit danger: button.gate_motor_my_position
                 # physically jogs the dangerous cover.gate_motor.
                 object_id = entity_id.split(".", 1)[-1]
