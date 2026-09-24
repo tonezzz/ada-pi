@@ -29,9 +29,13 @@ cleanup:
     - {collection: ada-ha-bank-general, contains: "gate remote"}
     - {collection: ada-ha-bank-home, contains: "gate remote"}
     - {collection: ada-ha-bank-note-tony, contains: "gate remote"}
+    - {collection: ada-ha-bank-personal-tony, contains: "gate remote"}
+    - {collection: ada-ha-bank-people, contains: "gate remote"}
     - {collection: ada-ha-bank-general, contains: "green curry"}
     - {collection: ada-ha-bank-people, contains: "green curry"}
     - {collection: ada-ha-bank-personal-tony, contains: "green curry"}
+    - {collection: ada-ha-bank-personal-kk, contains: "green curry"}
+    - {collection: ada-ha-bank-note-tony, contains: "green curry"}
 
 turns:
   # --- setup: declare both threads, start with the gate ------------------
@@ -41,12 +45,15 @@ turns:
       settle_s: 6
       response_nonempty: true
 
+  # NOTE: acknowledging the parked thread ("we can do lunch after") is
+  # GOOD multi-focus behaviour — the not_contains checks only fail on
+  # detailed cross-content (recipe specifics inside a gate answer).
   - user: "The remote only works when I'm right next to the gate. Is that the battery dying or the receiver going bad?"
     expect:
       timeout_s: 60
       settle_s: 6
-      response_nonempty: true
-      response_not_contains: ["lunch", "curry"]
+      response_contains: ["battery"]
+      response_not_contains: ["curry", "coconut", "recipe"]
 
   # --- hard switch to lunch ----------------------------------------------
   - user: "OK, switching topics — for lunch I'm thinking something Thai. What about a green curry, is that doable on a weeknight?"
@@ -62,7 +69,7 @@ turns:
       timeout_s: 60
       settle_s: 6
       response_contains: ["battery"]
-      response_not_contains: ["curry", "lunch"]
+      response_not_contains: ["curry", "coconut", "recipe"]
 
   # --- harder reference: "the other thing" must resolve to lunch ---------
   # REVIEW: she should name the lunch/curry thread. If she answers the gate
