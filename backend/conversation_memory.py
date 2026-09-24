@@ -42,6 +42,12 @@ _SUMMARY_MAX_TRANSCRIPT_CHARS = int(
 )
 _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 _SUMMARY_MODEL = os.environ.get("ADA_SUMMARY_MODEL", "gemini-3.5-flash-lite")
+_REPORT_MODEL = os.environ.get("ADA_REPORT_MODEL", _SUMMARY_MODEL)
+_SESSION_REPORT = os.environ.get("ADA_SESSION_REPORT", "1").lower() not in (
+    "0", "false", "no")
+# Rolling session-memory.md keeps at most this many '## ' entries —
+# mirrors chaba_memory's rolling log cap.
+_SESSION_LOG_KEEP = int(os.environ.get("ADA_SESSION_LOG_KEEP", "30"))
 
 # Raw transcript archive — local-only. Transcripts can contain private
 # details and credential-shaped text, so they are never pushed to git or
@@ -300,6 +306,72 @@ async def _summarize_session(transcript: str) -> str | None:
         return None
 
 
+async def _session_report(transcript: str, date: str, session_id: str) -> dict | None:
+    """Structured per-session report — the L1 layer feeding
+    session-memory.md (rolling log) and offline focus rollups.
+    Canonical English per the ada-memory-banks language_policy."""
+    if not _GEMINI_API_KEY:
+        return None
+    try:
+        from google import genai
+        prompt = (
+            "You are auditing one Ada voice-assistant session transcript.\n\n"
+            "SESSION META (authoritative — use exactly in memory_block "
+            f"heading): date={date} session_id={session_id}\n\n"
+            "Reply with ONE JSON object only, no prose, matching:\n"
+            "{summary, focus, topics, actions_taken, "
+            "actions_proposed_pending, open_loops, people, "
+            "audit{missed_actions, recall_failures, tool_issues, "
+            "prompt_gaps, noise_or_asr_issues, notes}, memory_block}\n"
+            "- focus: 1-3 emergent kebab-case thread tags reused across "
+            "sessions for rollup grouping.\n"
+            "- Write ALL fields in English even when the transcript is "
+            "Thai (canonical index layer).\n"
+            "- memory_block starts with exactly "
+            f"'## {date} {session_id}' then 3-6 short lines — what was "
+            "discussed, done, and left open — for an assistant reading "
+            "it cold in a later session.\n"
+            "- audit: only findings actually visible in the text; flag "
+            "foreign-script/ambient-noise turns in noise_or_asr_issues.\n\n"
+            f"TRANSCRIPT:\n{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}"
+        )
+        resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
+            model=_REPORT_MODEL,
+            contents=prompt,
+            config={"response_mime_type": "application/json",
+                    "temperature": 0.2},
+        )
+        return json.loads(resp.text)
+    except Exception as exc:
+        _report_failure("session_report", exc)
+        return None
+
+
+def _save_session_report_files(report: dict, date: str, session_id: str) -> None:
+    """Write the report JSON and append memory_block to session-memory.md
+    (rolling '## ' log, capped — same format chaba_memory uses)."""
+    try:
+        base = Path(TRANSCRIPT_DIR).parent
+        rdir = base / "reports"
+        rdir.mkdir(parents=True, exist_ok=True)
+        (rdir / f"{date}-{session_id}.json").write_text(
+            json.dumps(report, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+        block = str(report.get("memory_block") or "").strip()
+        if not block:
+            return
+        body = block.split("\n", 1)[1] if "\n" in block else ""
+        entry = f"## {date} {session_id}\n{body}".rstrip()
+        log = base / "session-memory.md"
+        prev = log.read_text(encoding="utf-8") if log.exists() else ""
+        entries = [e for e in re.split(r"\n(?=## )", prev) if e.strip()]
+        entries.append(entry)
+        log.write_text("\n\n".join(entries[-_SESSION_LOG_KEEP:]) + "\n",
+                       encoding="utf-8")
+    except Exception as exc:
+        _report_failure("session_report_file", exc)
+
+
 async def _save_session_summary(session_id: str, text: str) -> None:
     today = datetime.now(timezone.utc).date().isoformat()
     key = f"session-{today}-{session_id}"
@@ -524,6 +596,11 @@ class ConversationMemory:
         session_text = await _summarize_session(transcript)
         if session_text:
             await _save_session_summary(self.session_id, session_text)
+        if _SESSION_REPORT:
+            day = datetime.now(timezone.utc).date().isoformat()
+            report = await _session_report(transcript, day, self.session_id)
+            if report:
+                _save_session_report_files(report, day, self.session_id)
         await self._extract_candidates(transcript)
         await self._extract_actions(transcript)
 
