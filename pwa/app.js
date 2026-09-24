@@ -172,7 +172,9 @@ async function startMicrophone() {
   captureNode.onaudioprocess = (event) => {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     const samples = event.inputBuffer.getChannelData(0);
-    if (micMuted) return;
+    // Muted: the disabled track already delivers zeros — keep streaming
+    // them so the server VAD sees silence and closes the turn in ~500ms.
+    // Withholding frames instead leaves the turn open and Ada "holds".
     let power = 0;
     for (const sample of samples) power += sample * sample;
     const rms = Math.sqrt(power / samples.length);
