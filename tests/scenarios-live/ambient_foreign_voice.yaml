@@ -1,0 +1,43 @@
+name: ambient-foreign-voice
+# Foreign voice / TV-like speech while a real user session is open.
+#
+# What this exercises:
+#   1. Speaker-ID fires speaker_unrecognized for a non-enrolled voice
+#   2. Ada does NOT run action tools or answer the foreign voice as if
+#      it were the session user (the model gets UNRECOGNIZED_SPEAKER_NOTE
+#      and should hold or at most acknowledge; set_facial_expression is
+#      cosmetic and exempt)
+#   3. The parked user thread survives — a follow-up text turn still
+#      resolves to THIS session's context
+#
+# voice-other.pcm is a synthetic non-Tony speaker signature (~5s voiced
+# harmonic signal — stands in for TV/background speech energy).
+#
+# 2026-09-24 first run: turn 2 passed — she said "I don't recognize your
+# voice, may I ask your name" (enrollment offer per the note) and made no
+# action calls; turn 3 was ambiguous ("previous question" could mean the
+# older parked Unit-A68 thread — reworded probe below).
+
+turns:
+  # greeting absorbs the welcome line
+  - user: "Ada, quick check — what is two plus two?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains_any: ["four", "4"]
+
+  - audio: ../fixtures/voice-other.pcm
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      events_contain: [{type: speaker_unrecognized}]
+      no_calls: true
+      no_calls_except: [set_facial_expression]
+      response_not_contains: ["two plus two", "2+2"]
+
+  # probe THIS session's context explicitly — "just now" not "previously"
+  - user: "what did I just ask you a moment ago — the math question or something else?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains_any: ["two plus two", "2 + 2", "2+2", "math"]

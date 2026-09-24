@@ -611,10 +611,21 @@ async def voice_socket(ws: WebSocket) -> None:
             closed.set()
 
     async def provider_to_browser() -> None:
+        # In-flight assistant text the browser already heard. When the Gemini
+        # stream dies mid-response we reconnect with the resumption handle and
+        # the server REPLAYS the whole response — suppress the heard prefix so
+        # the user doesn't hear Ada stop mid-sentence then respeak it all.
+        live_turn_text = ""
+        suppress_target = ""   # heard prefix to swallow after a resume
+        replayed = ""          # replayed text seen so far post-resume
+        suppressing = False
+
         async def pump() -> None:
+            nonlocal live_turn_text, suppress_target, replayed, suppressing
             async for event in provider_ref[0].events():
                 if event.type == "audio":
-                    await ws.send_bytes(event.data["pcm16"])
+                    if not suppressing:
+                        await ws.send_bytes(event.data["pcm16"])
                 elif event.type in (
                     "speech_started",
                     "speech_stopped",
@@ -629,6 +640,30 @@ async def voice_socket(ws: WebSocket) -> None:
                 ):
                     if event.type == "speech_started" or event.type == "response_interrupted":
                         await ws.send_text(json.dumps({"type": "clear_audio"}))
+                    if event.type == "response_started":
+                        live_turn_text = ""
+                        if suppressing:
+                            continue   # replay's start marker — swallow it
+                    elif event.type == "assistant_transcript_delta":
+                        delta = str(event.data.get("text") or "")
+                        if suppressing:
+                            replayed += delta
+                            if suppress_target.startswith(replayed):
+                                continue   # still inside the heard prefix
+                            suppressing = False
+                            if replayed.startswith(suppress_target):
+                                delta = replayed[len(suppress_target):]
+                                replayed = ""
+                                if not delta:
+                                    continue   # exact catch-up, nothing new
+                            else:
+                                # Diverged — model regenerated; forward it all.
+                                delta = replayed
+                                replayed = ""
+                        live_turn_text += delta
+                    elif event.type in ("response_completed", "response_interrupted"):
+                        live_turn_text = ""
+                        suppressing = False
                     await ws.send_text(json.dumps({"type": event.type, **event.data}))
                 elif event.type == "go_away":
                     return
@@ -647,6 +682,9 @@ async def voice_socket(ws: WebSocket) -> None:
                 # last resumption handle instead of killing the browser socket.
                 old = provider_ref[0]
                 handle = old.resumption_handle
+                suppress_target = live_turn_text if handle else ""
+                replayed = ""
+                suppressing = bool(suppress_target)
                 with suppress(Exception):
                     await old.close()
                 with suppress(Exception):

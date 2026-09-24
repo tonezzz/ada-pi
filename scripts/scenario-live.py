@@ -16,6 +16,7 @@ Turn expectations (all optional, all must pass):
   calls_any: [tool, ...]       at least one of these tools was invoked
   calls: [tool, ...]           all of these tools were invoked
   no_calls: true               no tools were invoked
+  no_calls_except: [tool, ...] no_calls, but these tools don't count (e.g. set_facial_expression)
   result_contains: [s, ...]    each substring appears in some tool_result
   response_contains: [s, ...]  each substring appears in the spoken transcript
   response_contains_any: [s, ...]  at least one substring appears (paraphrase-tolerant)
@@ -90,8 +91,11 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
     for want in expect.get("calls") or []:
         if want not in names:
             failures.append(f"calls: {want!r} not in {sorted(names)}")
-    if expect.get("no_calls") and calls:
-        failures.append(f"no_calls: got {sorted(names)}")
+    if expect.get("no_calls"):
+        exempt = set(expect.get("no_calls_except") or [])
+        unexpected = sorted(names - exempt)
+        if unexpected:
+            failures.append(f"no_calls: got {unexpected} (exempt: {sorted(exempt)})")
     for sub in expect.get("result_contains") or []:
         if not any(sub in json.dumps(r.get("result") or {}, default=str) for r in results):
             failures.append(f"result_contains: {sub!r} not in any tool_result")
