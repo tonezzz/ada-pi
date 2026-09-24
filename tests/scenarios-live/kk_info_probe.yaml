@@ -7,7 +7,7 @@ name: kk-info-probe
 #   python3 scripts/scenario-live.py tests/scenarios-live/kk_info_probe.yaml \
 #     --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
 
-tier: full
+tier: smoke
 turns:
   - user: "Tell me what you know about KK."
     expect:

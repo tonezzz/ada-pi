@@ -1,3 +1,4 @@
+tier: smoke
 name: new-person-first-contact
 # What happens when a NEW person (HA user "nat") opens Ada with her own
 # issued key: greeting, identity resolution, memory reach, memory writes.
@@ -19,6 +20,8 @@ cleanup:
     - {collection: ada-ha-bank-general, contains: "Nat"}
     - {collection: ada-ha-bank-people, contains: "Nat"}
     - {collection: ada-ha-bank-personal-tony, contains: "Nat"}
+
+key_name: nat
 
 turns:
   - user: "Hi Ada! I'm Nat — first time talking to you."

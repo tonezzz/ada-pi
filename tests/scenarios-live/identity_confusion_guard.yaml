@@ -8,7 +8,7 @@ name: identity-confusion-guard
 #   python3 scripts/scenario-live.py tests/scenarios-live/identity_confusion_guard.yaml \
 #     --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
 
-tier: full
+tier: smoke
 turns:
   - user: "Who am I?"
     expect:

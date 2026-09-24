@@ -1,3 +1,4 @@
+tier: smoke
 name: kk-first-contact
 # What happens when KK (household member, HA user) connects to Ada with
 # her own issued key: greeting, identity, memory reach, memory writes.
@@ -20,6 +21,8 @@ cleanup:
     - {collection: ada-ha-bank-general, contains: "matcha"}
     - {collection: ada-ha-bank-people, contains: "matcha"}
     - {collection: ada-ha-bank-note-tony, contains: "matcha"}
+
+key_name: user-kk
 
 turns:
   - user: "Hi Ada, it's KK."
