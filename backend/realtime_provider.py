@@ -367,6 +367,11 @@ class GeminiLiveProvider(RealtimeProvider):
             "and ada_outcome to record how a memory or check turned out when the user reports back "
             "(e.g. 'that shop was fine', 'the fix worked', 'I skipped it') — outcomes update confidence "
             "so future recall trusts knowledge with a good track record. "
+            "You can enroll the current speaker's voice with ada_enroll_speaker — "
+            "it captures audio already buffered from their speech, no separate recording needed. "
+            "When an unrecognized speaker talks for a while, or when the user asks to enroll "
+            "their voice, offer to enroll them by name. If they agree, call ada_enroll_speaker "
+            "with their name and optionally their Home Assistant person entity (e.g. person.tony). "
             "When the user states a durable fact, preference, or a fix that worked, offer to "
             "remember it, then call ada_remember — pass confirmed=true only after the user agrees. "
             "But when the user explicitly asks you to remember something ('remember that…', "
@@ -1571,6 +1576,36 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["bank", "key", "outcome"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_enroll_speaker",
+                    "description": (
+                        "Enroll the current speaker's voice so Ada can recognize them "
+                        "by name in future sessions. Uses the audio already buffered "
+                        "from their speech — no separate recording needed. Call this "
+                        "when the user asks to enroll their voice or when Ada offers "
+                        "enrollment and they agree. Pass their name and optionally "
+                        "their Home Assistant person entity."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Speaker name (e.g. 'Tony', 'KK').",
+                            },
+                            "ha_person": {
+                                "type": "string",
+                                "description": "Home Assistant person entity for this speaker (e.g. 'person.tony').",
+                            },
+                            "display_name": {
+                                "type": "string",
+                                "description": "Display name for personalization (defaults to name).",
+                            },
+                        },
+                        "required": ["name"],
                         "additionalProperties": False,
                     },
                 }, {

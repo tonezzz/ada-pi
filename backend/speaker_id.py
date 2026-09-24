@@ -316,6 +316,32 @@ class SpeakerSession:
     def current_speaker(self) -> str | None:
         return self._last_name
 
+    def enroll_from_buffer(
+        self,
+        name: str,
+        ha_person: str | None = None,
+        display_name: str | None = None,
+        seconds: float = 3.5,
+    ) -> dict[str, Any]:
+        """Capture the last *seconds* of buffered audio and enroll *name*.
+
+        Uses whatever audio is currently in the buffer — the user's voice
+        that was just speaking is already there. Returns the enroll result
+        dict from SpeakerIdentifier.enroll().
+        """
+        # Cap at available buffer
+        max_bytes = min(len(self._buffer), int(seconds * SAMPLE_RATE * 2))
+        if max_bytes < MIN_CHUNK_BYTES // 2:
+            raise ValueError(
+                f"not enough audio buffered ({max_bytes / (SAMPLE_RATE * 2):.1f}s); "
+                "speak for a few seconds first"
+            )
+        pcm16 = bytes(self._buffer[-max_bytes:])
+        result = self._identifier.enroll(
+            name, pcm16, ha_person=ha_person, display_name=display_name
+        )
+        return result
+
     async def close(self) -> None:
         self._closed = True
         if self._task is not None and not self._task.done():

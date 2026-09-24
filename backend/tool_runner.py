@@ -451,6 +451,10 @@ class ToolRunner:
         # provider from speaker ID). Used to route personal memory to the
         # speaker's person-scoped bank instead of the instance default.
         self.current_speaker_ha_person: str | None = None
+        # Active SpeakerSession for voice enrollment — set by pwa_server
+        # when the WebSocket session opens. Used by ada_enroll_speaker to
+        # capture the user's voice from the buffered audio.
+        self.speaker_session: Any | None = None
         self._banks: MemoryBankRegistry | None = None
         self._decision_engine: DecisionCheckEngine | None = None
         self._calendar: CalendarService | None = None
@@ -1008,6 +1012,43 @@ class ToolRunner:
             session_id=self.session_id,
             person_entity=self.current_speaker_ha_person,
         )
+
+    async def ada_enroll_speaker(
+        self,
+        name: str,
+        ha_person: str | None = None,
+        display_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Enroll the current speaker's voice from buffered audio.
+
+        Captures the last ~3.5 seconds of audio from the active
+        SpeakerSession buffer — the user was just speaking, so their voice
+        is already captured. Call this when the user asks to enroll their
+        voice or when Ada offers enrollment.
+        """
+        if self.speaker_session is None:
+            return {
+                "error": "speaker identification is not active on this session "
+                "(speaker ID may be disabled or not configured)"
+            }
+        try:
+            result = self.speaker_session.enroll_from_buffer(
+                str(name),
+                ha_person=ha_person or None,
+                display_name=display_name or None,
+            )
+            return {
+                "status": "enrolled",
+                "name": result.get("name"),
+                "ha_person": result.get("ha_person"),
+                "display_name": result.get("display_name"),
+                "duration_s": result.get("duration_s"),
+            }
+        except ValueError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            logger.warning("voice enrollment failed: %s", exc)
+            return {"error": f"enrollment failed: {exc}"}
 
     # -- Chaba guest tools (CHABA_MEMORY=1 instances only) ------------------
     # File-backed public memory under ~/.local/share/chaba/. No MDDB, no

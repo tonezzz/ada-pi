@@ -487,6 +487,9 @@ async def voice_socket(ws: WebSocket) -> None:
                         f"unless the user asks who you are talking to."
                     )
             speaker_session = SpeakerSession(identifier, _on_speaker)
+            # Link to tool_runner so ada_enroll_speaker can capture
+            # enrollment audio from the session buffer.
+            tool_runner.speaker_session = speaker_session
             logger.info("session=%s speaker identification enabled", session_id)
         except Exception as exc:
             logger.warning("session=%s speaker ID disabled: %s", session_id, exc)
@@ -644,6 +647,7 @@ async def voice_socket(ws: WebSocket) -> None:
         if speaker_session is not None:
             with suppress(Exception):
                 await speaker_session.close()
+            tool_runner.speaker_session = None
         with suppress(Exception):
             await ws.close()
         with suppress(Exception):
