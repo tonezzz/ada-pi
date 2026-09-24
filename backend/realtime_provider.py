@@ -598,9 +598,12 @@ class GeminiLiveProvider(RealtimeProvider):
             return ""
         parts: list[str] = []
         try:
-            plan = await asyncio.wait_for(svc.plan_day("today"), timeout=4.0)
+            # Google calendar+tasks round-trips from remote hosts routinely
+            # exceed 4s on cold token refresh; TimeoutError logs an empty
+            # message, which made this failure silent until now.
+            plan = await asyncio.wait_for(svc.plan_day("today"), timeout=12.0)
         except Exception as exc:
-            logger.info("session=%s agenda prefetch failed: %s",
+            logger.info("session=%s agenda prefetch failed: %r",
                         self.session_id, exc)
         else:
             lines = ["Today's agenda (snapshot from session start; call "
@@ -623,7 +626,7 @@ class GeminiLiveProvider(RealtimeProvider):
                 pending_action_proposals(), timeout=4.0
             )
         except Exception as exc:
-            logger.info("session=%s proposals prefetch failed: %s",
+            logger.info("session=%s proposals prefetch failed: %r",
                         self.session_id, exc)
             proposals = []
         if proposals:
