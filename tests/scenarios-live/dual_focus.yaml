@@ -1,0 +1,119 @@
+name: dual-focus-live
+# Two interleaved conversation threads — can Ada keep them separate?
+#
+#   Thread A (home):  gate remote only works up close — battery or receiver?
+#   Thread B (food):  what to cook for lunch — green curry plan
+#
+# What this exercises:
+#   1. Hard topic switches — no bleed between unrelated threads
+#   2. Ambiguous references — "the first thing" / "the other thing" must
+#      resolve to the correct parked thread, not the most recent one
+#   3. Memory-write isolation — ada_remember for each thread must not
+#      contaminate the other doc (bank choice is left to Ada — review it)
+#   4. Reconnect survival — the ~800-char reconnect tail may not carry
+#      both threads; the "what were we working on" answer is the probe
+#
+# Run on mn01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/dual_focus.yaml --url ws://127.0.0.1:8002/ws \
+#   --api-key "$ADA_API_KEY"
+#
+# Expectations are deliberately soft — the interesting failures are wrong
+# thread resolution and cross-contamination, which show in the transcript.
+# REVIEW points (marked) are judged by reading the transcript, not asserts.
+
+# The scenario writes two remembered facts ('gate remote … battery' and a
+# 'green curry' lunch plan) via ada_remember — cleanup sweeps them from
+# whichever banks Ada chose so real recall isn't polluted.
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-general, contains: "gate remote"}
+    - {collection: ada-ha-bank-home, contains: "gate remote"}
+    - {collection: ada-ha-bank-note-tony, contains: "gate remote"}
+    - {collection: ada-ha-bank-general, contains: "green curry"}
+    - {collection: ada-ha-bank-people, contains: "green curry"}
+    - {collection: ada-ha-bank-personal-tony, contains: "green curry"}
+
+turns:
+  # --- setup: declare both threads, start with the gate ------------------
+  - user: "Ada, two things on my mind today — the gate remote is acting up, and I need to figure out lunch. Let's do the gate first."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+
+  - user: "The remote only works when I'm right next to the gate. Is that the battery dying or the receiver going bad?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      response_not_contains: ["lunch", "curry"]
+
+  # --- hard switch to lunch ----------------------------------------------
+  - user: "OK, switching topics — for lunch I'm thinking something Thai. What about a green curry, is that doable on a weeknight?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      response_not_contains: ["gate", "remote", "battery"]
+
+  # --- ambiguous return: "the first thing" must resolve to the gate ------
+  - user: "Back to the first thing — you said check the battery first, right?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains: ["battery"]
+      response_not_contains: ["curry", "lunch"]
+
+  # --- harder reference: "the other thing" must resolve to lunch ---------
+  # REVIEW: she should name the lunch/curry thread. If she answers the gate
+  # here, that's the classic parked-thread resolution failure.
+  - user: "And the other thing — where did we land on that?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      response_not_contains: ["gate", "remote"]
+
+  # --- memory writes: Ada picks the banks — REVIEW her choices ------------
+  - user: "Remember that the gate remote problem is probably a dying battery — I'm ordering a CR2032."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      calls_any: [ada_remember]
+
+  - user: "And remember the lunch plan — green curry this weekend."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      calls_any: [ada_remember]
+
+  # --- reconnect spike: do both threads survive a session drop? -----------
+  # REVIEW: ideal answer names both threads (gate + lunch). Tail is ~800
+  # chars, so one may be lost — worth knowing which survives.
+  - reconnect: {away_s: 300}
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      response_nonempty: true
+
+  # --- isolated recall: each thread must surface without the other -------
+  - user: "What do you remember about the gate remote?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains: ["battery"]
+      response_not_contains: ["curry", "lunch"]
+
+  - user: "And what did I ask you to note about lunch?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains: ["curry"]
+      response_not_contains: ["gate", "remote", "battery"]
+
+  # --- final: one-line per thread, no merge -------------------------------
+  - user: "Give me a one-line summary of each thing we were working on."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains: ["gate", "curry"]
