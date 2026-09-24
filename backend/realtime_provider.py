@@ -394,6 +394,10 @@ class GeminiLiveProvider(RealtimeProvider):
             "'do you remember' questions — never for fact lookup, and never in the same "
             "turn as a confident ada_memory_search result; it can take up to 20 seconds, "
             "so keep the user informed while it runs. "
+            "Questions about THIS conversation — 'what were we working on', "
+            "'where did we land', 'what did we decide' — are answered from the "
+            "live transcript, not from memory search: the threads you just "
+            "discussed outrank stored facts even when a memory hit looks plausible. "
             "Use ada_ha_get_device_confidence when the user asks what is broken, new, needs setup, or trusted. "
             "For event history: get_logbook gives the friendly Home Assistant event log, "
             "get_recent_events answers what opened, closed, or changed recently across the home, "
@@ -452,7 +456,13 @@ class GeminiLiveProvider(RealtimeProvider):
             banks = {}
         all_names = ", ".join(sorted(banks)) or "none configured"
         writable = (
-            ", ".join(sorted(n for n, b in banks.items() if b.writable))
+            ", ".join(
+                sorted(
+                    n
+                    for n, b in banks.items()
+                    if b.writable and not b.prompt_hidden
+                )
+            )
             or "none configured"
         )
         return all_names, writable

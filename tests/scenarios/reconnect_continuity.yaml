@@ -25,15 +25,18 @@ steps:
         - '"tier": "resume"'
         - "pick up right where you left off"
         - "garage door sensor is offline again"
+      # <1h reconnect: bank facts are suppressed so the live tail wins
+      output_not_contains:
         - "Known facts"
 
-  # 15m-4h — welcome back + offer to resume.
+  # 15m-4h — welcome back + offer to resume; facts return on longer gaps.
   - say: "remind me where we were"
   - reconnect_after: 3h
     expect:
       output_contains:
         - '"tier": "return"'
         - "Welcome them back"
+        - "Known facts"
       output_not_contains: ["pick up right where"]
 
   # 4-24h — offer a one-line recap.

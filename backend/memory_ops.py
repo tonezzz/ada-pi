@@ -666,29 +666,33 @@ async def session_prime_text(
         parts.append(directive)
     if summary:
         parts.append(f"Recent sessions: {summary.strip()}")
+    # Short reconnect (<1h): the conversation tail already carries the live
+    # threads — bank facts would inject stale context and drown them.
+    # First session or long gap: facts still prime cold-start awareness.
     facts: list[str] = []
-    for name in ("personal", "general"):
-        try:
-            b = registry.bank(name)
-        except KeyError:
-            continue
-        try:
-            docs = await mddb.search_documents(
-                collection=b.mddb_collection,
-                filter_meta={"status": ["active"]},
-                limit=max_facts,
-            )
-        except Exception as exc:
-            logger.debug("session prime listing failed for %r: %s", name, exc)
-            continue
-        for doc in docs or []:
-            body = str(doc.get("contentMd") or doc.get("content_md") or "").strip()
-            if body:
-                facts.append(body[:max_chars])
+    if not (directive and (away_seconds or 0) < 3600):
+        for name in ("personal", "general"):
+            try:
+                b = registry.bank(name)
+            except KeyError:
+                continue
+            try:
+                docs = await mddb.search_documents(
+                    collection=b.mddb_collection,
+                    filter_meta={"status": ["active"]},
+                    limit=max_facts,
+                )
+            except Exception as exc:
+                logger.debug("session prime listing failed for %r: %s", name, exc)
+                continue
+            for doc in docs or []:
+                body = str(doc.get("contentMd") or doc.get("content_md") or "").strip()
+                if body:
+                    facts.append(body[:max_chars])
+                if len(facts) >= max_facts:
+                    break
             if len(facts) >= max_facts:
                 break
-        if len(facts) >= max_facts:
-            break
     if facts:
         parts.append("Known facts:\n" + "\n".join(f"- {f}" for f in facts))
     if not parts:

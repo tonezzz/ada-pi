@@ -84,6 +84,7 @@ class MemoryBank:
     allowed_tools: list[str]
     status: str
     person_scope: str | None = None  # "default" for instance owner, "person.<id>" for person-scoped
+    prompt_hidden: bool = False  # excluded from {writable_banks} in tool schemas — callable but never suggested
 
     def notebook(self, notebook_ids: dict[str, str]) -> str | None:
         """Resolve the deep-tier notebook id: literal id wins, else group."""
@@ -176,6 +177,7 @@ class MemoryBankRegistry:
             allowed_tools=list(spec.get("allowed_tools") or []),
             status=str(spec.get("status") or "planned"),
             person_scope=spec.get("person_scope") or None,
+            prompt_hidden=bool(spec.get("prompt_hidden")),
         )
 
     @property
@@ -187,7 +189,7 @@ class MemoryBankRegistry:
 
     def bank(self, name: str) -> MemoryBank:
         try:
-            return self._banks[name]
+            return self._banks[str(name).strip()]
         except KeyError:
             available = ", ".join(sorted(self._banks)) or "none"
             raise KeyError(
