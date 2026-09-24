@@ -1,0 +1,48 @@
+name: session-continuity-voice-live
+# Voice twin of session_continuity.yaml — same two questions delivered as
+# TTS PCM16 audio instead of text turns. Purpose: consistency check —
+# voice path (ASR transcription -> same model) should produce equivalent
+# behavior as the text path.
+#
+# SCORING NOTE (learned 2026-09-24): Gemini Live's output_audio_transcription
+# is best-effort — for audio-input turns it can emit ZERO transcript deltas
+# while still producing a full audio response (verified: 17s/556KB audio,
+# out_by_modality={'audio'} only). So voice turns are asserted on:
+#   - response_completed event present (she actually answered)
+#   - calls_any recall-ish tools (trajectory parity with text path)
+# Transcript assertions stay out — treat any transcript text as bonus.
+#
+# Fixtures: tests/fixtures/ask-recent-16k.pcm, ask-open-16k.pcm
+# (Gemini TTS 'Puck', 24kHz L16 -> resampled 16kHz s16le mono via ffmpeg)
+#
+# SPEAKER GATE NOTE: the TTS voice is not enrolled — with speaker-ID on,
+# person_policies sandboxes unknown voices (hold/no action calls). For a
+# pure voice-vs-text response comparison we disable speaker-ID via the
+# no_speaker_id test hook; identity falls back to the admin API key, same
+# trust level as the text run. Run WITHOUT params to test the real gate.
+#
+# Run on idc01:  .venv/bin/python3 scripts/scenario-live.py \
+#   tests/scenarios-live/session_continuity_voice.yaml \
+#   --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+
+params:
+  no_speaker_id: 1
+
+turns:
+  # "What did we discuss in our recent sessions?" — padded with 2.5s
+  # near-silence: server VAD measures silence on the STREAM; without
+  # trailing frames the end-of-speech never closes and no turn fires.
+  - audio: fixtures/ask-recent-16k-pad.pcm
+    expect:
+      timeout_s: 120
+      settle_s: 10
+      events_contain: [{type: response_completed}]
+      calls_any: [ada_memory_search, ada_session_recall, get_recent_events, tasks_list]
+
+  # "Is there anything left open or unfinished from those sessions?"
+  - audio: fixtures/ask-open-16k-pad.pcm
+    expect:
+      timeout_s: 120
+      settle_s: 10
+      events_contain: [{type: response_completed}]
+      calls_any: [ada_memory_search, ada_session_recall, get_recent_events, tasks_list]

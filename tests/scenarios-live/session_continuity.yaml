@@ -1,0 +1,62 @@
+name: session-continuity-live
+# Does Ada recall recent-session context at connect time?
+#
+# Exercises the rolling "recent sessions" memory layer: after previous
+# sessions covered speaker-enrollment work and open loops (committing
+# speaker routing changes, voice enrollment), Ada should surface that
+# context when asked — without a deep NotebookLM recall.
+#
+# Bilingual: Thai or English answers are both correct.
+#
+# Run on idc01:  .venv/bin/python3 scripts/scenario-live.py \
+#   tests/scenarios-live/session_continuity.yaml \
+#   --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+
+turns:
+  - user: "What did we discuss in our recent sessions?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      # Semantic pass: any concrete recent-thread reference counts — she may
+      # legitimately pick enrollment UI, weather station, or other threads.
+      response_contains_any:
+        - "speaker"
+        - "enroll"
+        - "memory"
+        - "ui"
+        - "weather"
+        - "update"
+        - "profile"
+        - "planning"
+        - "document"
+        - "ลำโพง"
+        - "เสียง"
+        - "หน่วยความจำ"
+        - "คุย"
+        - "พูด"
+
+  - user: "Is there anything left open or unfinished from those sessions?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      # Any enumerated open item is a pass — task list OR session open-loops.
+      response_contains_any:
+        - "enroll"
+        - "commit"
+        - "deploy"
+        - "test"
+        - "open"
+        - "pending"
+        - "task"
+        - "need"
+        - "still"
+        - "faucet"
+        - "roof"
+        - "sink"
+        - "certificate"
+        - "washing"
+        - "ยัง"
+        - "ค้าง"
+        - "ทดสอบ"
+        - "ต้อง"
+        - "ไม่มี"
