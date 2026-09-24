@@ -227,13 +227,14 @@ def run_cleanup(spec: dict, mddb_url: str, verbose: bool) -> None:
 
 def run_speaker_cleanup(spec: dict, http_base: str, api_key: str, verbose: bool) -> None:
     """DELETE /api/speakers/<name> for each cleanup.speaker_remove entry."""
+    import urllib.parse
     import urllib.request
 
     for name in (spec.get("cleanup") or {}).get("speaker_remove") or []:
         try:
             req = urllib.request.Request(
-                f"{http_base}/api/speakers/{name}", method="DELETE",
-                headers={"x-api-key": api_key},
+                f"{http_base}/api/speakers/{urllib.parse.quote(str(name), safe='')}",
+                method="DELETE", headers={"x-api-key": api_key},
             )
             urllib.request.urlopen(req, timeout=10).read()
             if verbose:
@@ -313,8 +314,9 @@ async def main() -> int:
             else:
                 audio_bytes = None
                 if turn.get("audio"):
-                    audio_path = (args.scenario.parent / ".." / ".." /
-                                  str(turn["audio"])).resolve()
+                    # Try tests/fixtures/<name> first (scenarios-live -> tests),
+                    # then a path relative to the scenario file itself.
+                    audio_path = (args.scenario.parent / ".." / str(turn["audio"])).resolve()
                     if not audio_path.exists():
                         audio_path = args.scenario.parent / str(turn["audio"])
                     audio_bytes = load_audio(audio_path)
