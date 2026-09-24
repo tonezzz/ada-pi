@@ -39,8 +39,8 @@ turns:
         - ada_memory_search
         - ada_session_recall
       response_contains_any:
-        - "A-68", "a68", "deed", "condo", "เอกสาร", "โฉนด",
-          "ทะเบียนบ้าน", "บัตรประชาชน", "พาสปอร์ต", "archive"
+        ["A-68", "a68", "deed", "condo", "เอกสาร", "โฉนด",
+         "ทะเบียนบ้าน", "บัตรประชาชน", "พาสปอร์ต", "archive"]
 
   # --- detail follow-up ---------------------------------------------------
   - user: "What files or pages does that document set have?"
@@ -56,5 +56,5 @@ turns:
         - ada_doc_get
         - ada_memory_search
       response_contains_any:
-        - "deed", "passport", "id card", "house", "7",
-          "โฉนด", "พาสปอร์ต", "บัตร", "ทะเบียน"
+        ["deed", "passport", "id card", "house", "7",
+         "โฉนด", "พาสปอร์ต", "บัตร", "ทะเบียน"]
