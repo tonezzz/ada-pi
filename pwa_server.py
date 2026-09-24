@@ -440,10 +440,13 @@ async def voice_socket(ws: WebSocket) -> None:
     logger.info("session=%s client connected", session_id)
     # Chaba guest mode: a ?name= query param binds the visitor's declared
     # name to this session so memory writes land under guests/<name>.yml.
+    # A matching users/<name>.yml upgrades to kind "user" so promoted users
+    # keep their private namespace across reconnects.
     if CHABA_MODE:
         guest_name = (ws.query_params.get("name") or "").strip()
         if guest_name:
-            chaba.set_identity(session_id, "guest", guest_name)
+            kind = "user" if chaba.user_file(guest_name).exists() else "guest"
+            chaba.set_identity(session_id, kind, guest_name)
     # One ConversationMemory per websocket session, shared across provider
     # reconnects so the transcript survives a Gemini session swap.
     conversation = ConversationMemory(session_id)
