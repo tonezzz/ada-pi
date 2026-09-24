@@ -144,24 +144,30 @@ def enhance_for_print(im: Image.Image,
                       binarize: bool | None = None) -> Image.Image:
     """B&W print path: flatten shading -> stretch levels -> unsharp.
 
-    Low-res scans (min side < 1600px) get a 2x Lanczos pre-upscale and, when
-    `binarize` is true, a local-threshold pass so faint text prints crisply.
-    `binarize=None` auto-enables it for low-res scans; callers should pass
-    False for documents with photos/halftones (id_card, passport, photo)."""
+    Low-res scans (min side < 1600px) get a 4x Lanczos pre-upscale and, when
+    `binarize` is true, a soft blend with a local-threshold pass (55% bilevel
+    + 45% gray): ink prints crisp black while the paper keeps its organic
+    texture. `binarize=None` auto-enables it for low-res scans; callers should
+    pass False for documents with photos/halftones (id_card, passport,
+    photo)."""
     w, h = im.size
     low_res = min(w, h) < 1600
     if binarize is None:
         binarize = low_res
     if low_res:
-        im = im.resize((w * 2, h * 2), Image.LANCZOS)
+        im = im.resize((w * 4, h * 4), Image.LANCZOS)
     g = _flat_field(_to_gray_array(im))
     g = _levels(g, lo_pct=2.0, hi_pct=98.0)
     out = Image.fromarray(g.astype(np.uint8), mode="L")
-    out = out.filter(ImageFilter.UnsharpMask(radius=2.5, percent=160,
+    out = out.filter(ImageFilter.UnsharpMask(radius=3.0, percent=140,
                                              threshold=3))
     if binarize:
+        bw = _binarize_local(np.asarray(out, dtype=np.float32),
+                             radius=30, factor=0.90)
         out = Image.fromarray(
-            _binarize_local(np.asarray(out, dtype=np.float32)), mode="L")
+            (0.55 * bw.astype(np.float32)
+             + 0.45 * np.asarray(out, dtype=np.float32)).astype(np.uint8),
+            mode="L")
     return out
 
 
