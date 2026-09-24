@@ -31,6 +31,20 @@ Isolation / negative assertions:
   response_not_contains: [s, ...]  each substring must NOT appear in speech
   result_not_contains: [s, ...]    each substring must NOT appear in results
 
+Event assertions (any ws event, e.g. speaker/speaker_unrecognized):
+  events_contain: [{type: speaker, name: "guest-tester"}, ...]
+  events_not_contain: [{type: speaker}, ...]
+
+Audio turns (speaker-ID / enrollment tests):
+  - audio: tests/fixtures/voice-guest.pcm   streamed as binary PCM16 frames
+    expect: {timeout_s: 120, settle_s: 10}
+  .wav files are converted to PCM16 16 kHz mono automatically.
+
+Extra connect params (top-level):
+  params: {simulate_unknown_speaker: 1}    appended to the ws URL on the
+                                           first connect (reconnects keep
+                                           their own params)
+
 Persistence: the driver appends ?no_persist=1 so test sessions never write
 transcripts, extraction drafts, summaries, or session-end markers. Pass
 --persist to opt out (e.g. when the scenario itself exercises persistence).
@@ -40,6 +54,7 @@ Cleanup (runs even when expectations fail):
     mddb_delete:
       - {collection: ada-ha-bank-general, key: "general/some-key"}
       - {collection: ada-ha-bank-general, contains: "marker zeta-9917"}
+    speaker_remove: ["guest-tester"]      DELETE /api/speakers/<name>
   'contains' lists the collection, deletes every doc whose content or key
   matches the substring. MDDB base: $MDDB_BASE_URL or http://127.0.0.1:11023/v1
 """
@@ -92,11 +107,32 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
             failures.append(f"response_not_contains: {sub!r} leaked into transcript")
     if expect.get("response_nonempty") and not transcript.strip():
         failures.append("response_nonempty: empty transcript")
+    for want in expect.get("events_contain") or []:
+        if not any(all(e.get(k) == v for k, v in want.items()) for e in events):
+            failures.append(f"events_contain: no event matching {want}")
+    for bad in expect.get("events_not_contain") or []:
+        if any(all(e.get(k) == v for k, v in bad.items()) for e in events):
+            failures.append(f"events_not_contain: matched {bad}")
     return failures
 
 
+def load_audio(path: Path) -> bytes:
+    """Return raw PCM16 16 kHz mono bytes from .pcm or .wav."""
+    if path.suffix.lower() == ".wav":
+        import wave
+        with wave.open(str(path), "rb") as w:
+            if w.getframerate() != 16000 or w.getsampwidth() != 2 or w.getnchannels() != 1:
+                raise ValueError(
+                    f"{path}: wav must be 16 kHz 16-bit mono "
+                    f"(got {w.getframerate()}Hz/{w.getsampwidth() * 8}bit/{w.getnchannels()}ch)"
+                )
+            return w.readframes(w.getnframes())
+    return path.read_bytes()
+
+
 async def run_turn(
-    ws: Any, text: str | None, expect: dict, verbose: bool
+    ws: Any, text: str | None, expect: dict, verbose: bool,
+    audio: bytes | None = None,
 ) -> tuple[list[dict], list[str]]:
     timeout = float(expect.get("timeout_s", 90))
     settle = float(expect.get("settle_s", 5))
@@ -104,6 +140,12 @@ async def run_turn(
     t0 = time.monotonic()
     if text is not None:
         await ws.send(json.dumps({"type": "text", "text": text}))
+    if audio is not None:
+        # ~50 ms frames — same cadence a real mic produces.
+        frame = 1600
+        for off in range(0, len(audio), frame):
+            await ws.send(audio[off: off + frame])
+            await asyncio.sleep(0.05)
     deadline = time.monotonic() + timeout
     last_completed = 0.0
     completed = 0
@@ -183,6 +225,23 @@ def run_cleanup(spec: dict, mddb_url: str, verbose: bool) -> None:
                 print(f"  cleanup: delete {col}/{key} failed: {exc}")
 
 
+def run_speaker_cleanup(spec: dict, http_base: str, api_key: str, verbose: bool) -> None:
+    """DELETE /api/speakers/<name> for each cleanup.speaker_remove entry."""
+    import urllib.request
+
+    for name in (spec.get("cleanup") or {}).get("speaker_remove") or []:
+        try:
+            req = urllib.request.Request(
+                f"{http_base}/api/speakers/{name}", method="DELETE",
+                headers={"x-api-key": api_key},
+            )
+            urllib.request.urlopen(req, timeout=10).read()
+            if verbose:
+                print(f"  cleanup: removed speaker '{name}'")
+        except Exception as exc:
+            print(f"  cleanup: speaker '{name}' remove failed: {exc}")
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("scenario", type=Path)
@@ -209,6 +268,11 @@ async def main() -> int:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}no_persist=1"
 
+    spec = yaml.safe_load(args.scenario.read_text())
+    for k, v in (spec.get("params") or {}).items():
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}{k}={v}"
+
     async def connect(target: str) -> Any:
         ws = await websockets.connect(target, max_size=8 * 1024 * 1024)
         while True:
@@ -216,7 +280,6 @@ async def main() -> int:
             if isinstance(raw, str) and json.loads(raw).get("type") == "ready":
                 return ws
 
-    spec = yaml.safe_load(args.scenario.read_text())
     turns = spec.get("turns") or []
     print(f"scenario: {spec.get('name') or args.scenario.stem} -> {url.split('?')[0]}")
 
@@ -248,9 +311,22 @@ async def main() -> int:
                 events, failures = await run_turn(ws, None, expect, args.verbose)
                 text = None
             else:
-                text = str(turn.get("user") or "")
-                print(f"turn {i + 1}: {text!r}")
-                events, failures = await run_turn(ws, text, expect, args.verbose)
+                audio_bytes = None
+                if turn.get("audio"):
+                    audio_path = (args.scenario.parent / ".." / ".." /
+                                  str(turn["audio"])).resolve()
+                    if not audio_path.exists():
+                        audio_path = args.scenario.parent / str(turn["audio"])
+                    audio_bytes = load_audio(audio_path)
+                    print(f"turn {i + 1}: audio {audio_path.name} "
+                          f"({len(audio_bytes) / 32000:.1f}s)")
+                    text = str(turn.get("user") or "") or None
+                else:
+                    text = str(turn.get("user") or "")
+                    print(f"turn {i + 1}: {text!r}")
+                events, failures = await run_turn(
+                    ws, text, expect, args.verbose, audio=audio_bytes
+                )
             if args.timing:
                 for e in events:
                     t = e.get("type")
@@ -278,6 +354,8 @@ async def main() -> int:
         if not args.no_cleanup:
             mddb_url = os.environ.get("MDDB_BASE_URL") or "http://127.0.0.1:11023/v1"
             run_cleanup(spec, mddb_url.rstrip("/"), args.verbose)
+            http_base = url.split("?")[0].replace("ws://", "http://").replace("wss://", "https://").rsplit("/ws", 1)[0]
+            run_speaker_cleanup(spec, http_base, api_key, args.verbose)
 
     print(f"{'PASS' if total_fail == 0 else 'FAIL'}: {total_fail} failed expectations")
     return 0 if total_fail == 0 else 1

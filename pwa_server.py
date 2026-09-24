@@ -41,6 +41,15 @@ from backend import auth
 from backend import chaba_memory
 from backend.speaker_id import SpeakerIdentifier, SpeakerSession
 
+# System note injected when a speaker's voice matches no enrolled profile.
+UNRECOGNIZED_SPEAKER_NOTE = (
+    "(system) The current speaker's voice does not match any enrolled "
+    "voice profile (voice identification ran on their speech). If the "
+    "moment is right, you may offer to enroll their voice with "
+    "ada_enroll_speaker — ask their name first. Do not announce this "
+    "unprompted mid-task."
+)
+
 # Speaker identification is opt-in via ADA_SPEAKER_ID=true.  When disabled
 # (or when speechbrain/torch are not installed), the voice path is unchanged.
 SPEAKER_ID_ENABLED = os.environ.get("ADA_SPEAKER_ID", "true").lower() == "true"
@@ -491,7 +500,19 @@ async def voice_socket(ws: WebSocket) -> None:
                         f"your response if appropriate, but do not announce it "
                         f"unless the user asks who you are talking to."
                     )
-            speaker_session = SpeakerSession(identifier, _on_speaker)
+            async def _on_unrecognized(best_score: float) -> None:
+                # Voice heard repeatedly but matches no enrolled profile —
+                # tell Gemini so it can offer ada_enroll_speaker.
+                with suppress(Exception):
+                    await ws.send_text(json.dumps({
+                        "type": "speaker_unrecognized",
+                        "best_score": round(best_score, 3),
+                    }))
+                with suppress(Exception):
+                    await provider_ref[0].send_text_turn(UNRECOGNIZED_SPEAKER_NOTE)
+            speaker_session = SpeakerSession(
+                identifier, _on_speaker, on_unrecognized=_on_unrecognized
+            )
             # Link to tool_runner so ada_enroll_speaker can capture
             # enrollment audio from the session buffer.
             tool_runner.speaker_session = speaker_session
@@ -507,6 +528,15 @@ async def voice_socket(ws: WebSocket) -> None:
             await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
             await ws.close(code=1011)
         return
+    # Test hook: ?simulate_unknown_speaker=1 injects the unrecognized-speaker
+    # note without real audio (text-driven scenario tests).
+    if (ws.query_params.get("simulate_unknown_speaker") or "").lower() in ("1", "true"):
+        with suppress(Exception):
+            await ws.send_text(json.dumps({
+                "type": "speaker_unrecognized", "best_score": 0.0, "simulated": True
+            }))
+        with suppress(Exception):
+            await provider_ref[0].send_text_turn(UNRECOGNIZED_SPEAKER_NOTE)
     # Send 'ready' as soon as Gemini is live; reconnect-context lookup and
     # memory priming can stall on MDDB, so they run in the background.
     try:
@@ -982,6 +1012,24 @@ async def enroll_speaker(request: Request) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         logger.warning("enroll speaker failed: %s", exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.delete("/api/speakers/{name}")
+async def delete_speaker(name: str, request: Request) -> dict:
+    """Remove an enrolled speaker voiceprint (used by test cleanup)."""
+    _require_api_key(request)
+    if not SPEAKER_ID_ENABLED:
+        raise HTTPException(status_code=503, detail="speaker ID is disabled")
+    try:
+        identifier = SpeakerIdentifier.get()
+        if not identifier.remove(name):
+            raise HTTPException(status_code=404, detail=f"speaker '{name}' not found")
+        return {"status": "ok", "removed": name}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("delete speaker failed: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 

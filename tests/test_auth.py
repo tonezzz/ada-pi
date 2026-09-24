@@ -25,7 +25,7 @@ KEYS_ENV = {"ADA_API_KEY": "single-key", "ADA_API_KEYS": "tony:tony-key,michael:
 
 class AuthTests(unittest.TestCase):
     def test_not_configured_allows_everything(self):
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": "/nonexistent-keys.json"}, clear=True):
             self.assertFalse(auth.configured())
             self.assertIsNone(auth.caller_name(_request()))
             self.assertTrue(auth.websocket_authorized(_ws()))

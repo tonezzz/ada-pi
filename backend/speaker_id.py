@@ -51,6 +51,9 @@ DEFAULT_THRESHOLD = 0.45
 # Drop the buffer if it grows beyond this (prevents unbounded growth when
 # identification is slower than audio arrival).
 MAX_BUFFER_BYTES = SAMPLE_RATE * 6 * 2  # 6 s
+# Consecutive failed identifications on real speech before the
+# on_unrecognized callback fires (once per session until a match).
+UNKNOWN_AFTER_MISSES = 2
 
 
 def _rms(float_samples: np.ndarray) -> float:
@@ -267,23 +270,34 @@ class SpeakerSession:
         identifier: SpeakerIdentifier,
         on_identified: Callable[[str, float], Awaitable[None]],
         threshold: float = DEFAULT_THRESHOLD,
+        on_unrecognized: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         self._identifier = identifier
         self._on_identified = on_identified
+        self._on_unrecognized = on_unrecognized
         self._threshold = threshold
         self._buffer = bytearray()
         self._identifying = False
         self._last_name: str | None = None
         self._closed = False
         self._task: asyncio.Task[None] | None = None
+        self._miss_count = 0
+        self._unrecognized_notified = False
+        # Rolling tail of ALL fed audio (not consumed by identification) —
+        # enroll_from_buffer needs the voice that was just speaking even
+        # after identify() consumed its chunk.
+        self._recent = bytearray()
 
     async def feed(self, pcm16: bytes) -> None:
         if self._closed:
             return
         self._buffer.extend(pcm16)
+        self._recent.extend(pcm16)
         # Drop excess if the buffer grew while identification was running.
         if len(self._buffer) > MAX_BUFFER_BYTES:
             del self._buffer[: len(self._buffer) - MAX_BUFFER_BYTES]
+        if len(self._recent) > MAX_BUFFER_BYTES:
+            del self._recent[: len(self._recent) - MAX_BUFFER_BYTES]
         if self._identifying or len(self._buffer) < MIN_CHUNK_BYTES:
             return
         # Quick energy check — skip near-silence buffers.
@@ -305,8 +319,24 @@ class SpeakerSession:
             )
             if name is not None and name != self._last_name:
                 self._last_name = name
+                self._miss_count = 0
+                self._unrecognized_notified = False
                 logger.info("speaker identified: %s (%.0f%%)", name, confidence * 100)
                 await self._on_identified(name, confidence)
+            elif name is None:
+                self._miss_count += 1
+                if (
+                    self._on_unrecognized is not None
+                    and self._miss_count >= UNKNOWN_AFTER_MISSES
+                    and not self._unrecognized_notified
+                    and self._last_name is None
+                ):
+                    self._unrecognized_notified = True
+                    logger.info(
+                        "speaker not recognized after %d attempts (best %.0f%%)",
+                        self._miss_count, confidence * 100,
+                    )
+                    await self._on_unrecognized(confidence)
         except Exception as exc:
             logger.warning("speaker identification failed: %s", exc)
         finally:
@@ -329,14 +359,14 @@ class SpeakerSession:
         that was just speaking is already there. Returns the enroll result
         dict from SpeakerIdentifier.enroll().
         """
-        # Cap at available buffer
-        max_bytes = min(len(self._buffer), int(seconds * SAMPLE_RATE * 2))
+        # Cap at available audio
+        max_bytes = min(len(self._recent), int(seconds * SAMPLE_RATE * 2))
         if max_bytes < MIN_CHUNK_BYTES // 2:
             raise ValueError(
                 f"not enough audio buffered ({max_bytes / (SAMPLE_RATE * 2):.1f}s); "
                 "speak for a few seconds first"
             )
-        pcm16 = bytes(self._buffer[-max_bytes:])
+        pcm16 = bytes(self._recent[-max_bytes:])
         result = self._identifier.enroll(
             name, pcm16, ha_person=ha_person, display_name=display_name
         )

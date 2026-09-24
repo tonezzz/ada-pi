@@ -1,0 +1,47 @@
+name: speaker-enrollment-live
+# AUDIO tier — the real path. Streams a deterministic synthetic voice
+# fixture as PCM16 frames; the server-side SpeakerSession identifies it,
+# finds no match twice, and fires speaker_unrecognized. Ada offers
+# enrollment; we accept; ada_enroll_speaker captures the buffered audio.
+# A reconnect + replay then proves the voiceprint actually matches.
+#
+# Requires: speechbrain installed in the service venv (true on idc01).
+# Fixture: tests/fixtures/voice-guest.pcm — regenerate with
+#   python3 tests/fixtures/gen_voice_fixture.py
+#
+# Run:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/speaker_enrollment.yaml \
+#   --url ws://127.0.0.1:8003/ws --api-key "$ADA_API_KEY" -v
+
+cleanup:
+  speaker_remove: ["guest-tester", "Guest Tester", "guest_tester", "guest tester"]
+
+turns:
+  # 5s of unenrolled voice — expect the speaker_unrecognized ws event once
+  # two identify attempts miss (2 chunks x 2s each).
+  - audio: fixtures/voice-guest.pcm
+    expect:
+      timeout_s: 120
+      settle_s: 12
+      events_contain: [{type: speaker_unrecognized}]
+
+  # Ada should have offered (or the user can just ask) — accept and name.
+  - user: "Yes please — enroll my voice as Guest Tester."
+    expect:
+      timeout_s: 90
+      settle_s: 10
+      calls: [ada_enroll_speaker]
+      result_contains: ["enrolled"]
+
+  # New session: replay the same voice — identification should now match.
+  - reconnect: {away_s: 60}
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      response_nonempty: true
+
+  - audio: fixtures/voice-guest.pcm
+    expect:
+      timeout_s: 120
+      settle_s: 12
+      events_contain: [{type: speaker}]

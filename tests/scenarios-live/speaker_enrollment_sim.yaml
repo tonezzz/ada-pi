@@ -1,0 +1,38 @@
+name: speaker-enrollment-sim
+# TEXT tier — no audio needed. ?simulate_unknown_speaker=1 injects the
+# unrecognized-speaker system note at connect, so we test Ada's behavior:
+# does she offer enrollment, and does ada_enroll_speaker degrade gracefully
+# when no voice audio has been buffered (a text-only session has none)?
+#
+# Run:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/speaker_enrollment_sim.yaml \
+#   --url ws://127.0.0.1:8003/ws --api-key "$ADA_API_KEY" -v
+
+params:
+  simulate_unknown_speaker: 1
+
+turns:
+  # The unrecognized note is already injected — a neutral hello may or may
+  # not trigger the offer; we only require she speaks (model-dependent).
+  - user: "Hi Ada, just saying hello."
+    expect:
+      timeout_s: 90
+      settle_s: 8
+      response_nonempty: true
+
+  # Direct request — must call the tool.
+  - user: "Can you enroll my voice? My name is Guest Tester."
+    expect:
+      timeout_s: 90
+      settle_s: 8
+      calls: [ada_enroll_speaker]
+      # Text-only session: no voice audio was buffered, so the tool must
+      # explain the graceful failure rather than crash or claim success.
+      result_contains: ["audio"]
+
+  # After the failure Ada should explain what went wrong / what's needed.
+  - user: "What happened?"
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      response_nonempty: true
