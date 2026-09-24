@@ -379,12 +379,15 @@ async def _reconnect_context(ws: WebSocket) -> tuple[float | None, str]:
     return time.time() - ts, tail
 
 
-async def _mark_session_end(conversation: ConversationMemory) -> None:
+async def _mark_session_end(conversation: ConversationMemory, session_id: str = "") -> None:
     global _last_session_end
     tail = conversation.recent_context(max_turns=6, max_chars=800)
     _last_session_end = {"ts": time.time(), "tail": tail}
     if tool_runner.mddb is not None:
         await record_session_end(tool_runner.mddb, tail)
+    if CHABA_MODE and chaba is not None:
+        with suppress(Exception):
+            chaba.append_session_log(session_id, tail)
 
 
 async def _prime_session_task(provider: Any, ws: WebSocket) -> None:
@@ -737,7 +740,7 @@ async def voice_socket(ws: WebSocket) -> None:
             await ws.close()
         if not no_persist:
             with suppress(Exception):
-                await _mark_session_end(conversation)
+                await _mark_session_end(conversation, session_id)
         _live_sessions.pop(session_id, None)
         if CHABA_MODE:
             chaba.sessions.pop(session_id, None)

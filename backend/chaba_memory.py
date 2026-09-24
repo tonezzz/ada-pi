@@ -18,6 +18,8 @@ import fcntl
 import logging
 import os
 import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -84,14 +86,80 @@ class ChabaMemory:
 
     # ---------- context ----------
 
+    def _refresh_rendered_context(self) -> None:
+        """Best-effort re-render of context-guest.md so each session starts
+        with current memory files. Local string rendering only — skipped
+        silently when the script is absent."""
+        cmd = os.environ.get("CHABA_RENDER_CMD")
+        if cmd is None:
+            script = Path.home() / "CascadeProjects/chaba/scripts/chaba/render-memory.py"
+            cmd = f"{sys.executable} {script} --profile guest" if script.exists() else ""
+        if not cmd:
+            return
+        try:
+            subprocess.run(
+                cmd, shell=True, timeout=15,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception as exc:
+            logger.info("context-guest re-render skipped: %s", exc)
+
+    def _session_log_entries(self, keep: int = 2, max_chars: int = 1200) -> list[str]:
+        """Last `keep` entries from the rolling session log ('## ' split)."""
+        path = self._path("session-memory.md")
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        entries = [e.strip() for e in re.split(r"\n(?=## )", text) if e.strip()]
+        tail = entries[-keep:]
+        while tail and sum(len(e) for e in tail) > max_chars:
+            tail = tail[1:]
+        return tail
+
+    def append_session_log(self, session_id: str | None, tail: str) -> None:
+        """Append a trimmed conversation tail to the rolling session log so
+        the next session can reference it. Entries: '## <ts> — <kind>:<name>'."""
+        tail = tail.strip()
+        if not tail:
+            return
+        ident = self.identity(session_id)
+        label = f"{ident['kind']}:{ident['name'] or 'anon'}"
+        path = self._path("session-memory.md")
+        try:
+            old = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+        except OSError:
+            old = ""
+        ts = time.strftime("%Y-%m-%d %H:%M")
+        text = (old + f"\n\n## {ts} — {label}\n{tail}\n").lstrip()
+        # Bound the file: keep the newest 30 '## ' entries.
+        entries = [e for e in re.split(r"\n(?=## )", text) if e.strip()]
+        if len(entries) > 30:
+            text = "\n\n".join(entries[-30:])
+        path.write_text(text, encoding="utf-8")
+        logger.info("session log appended for %s (%d chars)", label, len(tail))
+
     def system_context(self, session_id: str | None = None) -> str:
-        """Shared guest context + private namespace when the session belongs
-        to a promoted user."""
+        """Shared guest context + the session's own saved memories + recent
+        session log + private namespace when the session belongs to a
+        promoted user."""
+        self._refresh_rendered_context()
         parts = []
         ctx = self._path("context-guest.md")
         if ctx.exists():
             parts.append(ctx.read_text(encoding="utf-8", errors="replace"))
         ident = self.identity(session_id)
+        if ident["name"]:
+            mine = self._load_doc(self.memory_file_for(session_id))
+            entries = [e.get("text") for e in mine.get("entries", []) if e.get("text")]
+            if entries:
+                parts.append(
+                    f"## memories saved by {ident['name']}\n\n"
+                    + "\n".join(f"- {t}" for t in entries[-20:])
+                )
+        recent = self._session_log_entries()
+        if recent:
+            parts.append("## recent conversations\n\n" + "\n\n".join(recent))
         if ident["kind"] == "user" and ident["name"]:
             priv = self.private_file(ident["name"])
             if priv.exists():
