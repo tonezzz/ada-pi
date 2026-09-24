@@ -274,7 +274,11 @@ async def _summarize(prev: str | None, transcript: str) -> str | None:
             "Transcript of the latest session:\n"
             f"{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}\n\n"
             "Update the summary to cover the recent sessions in two or three "
-            "sentences. Keep it concise and factual."
+            "sentences. Keep it concise and factual. Attribute utterances, "
+            "never assert identity: write 'the user said/introduced themselves "
+            "as X' rather than 'the user is X' — names, roles, and claims "
+            "spoken aloud (including roleplay or language practice) are "
+            "claims, not facts about who the user is."
         )
         resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
             model=_SUMMARY_MODEL, contents=prompt
@@ -295,7 +299,11 @@ async def _summarize_session(transcript: str) -> str | None:
             "Transcript of one voice session:\n"
             f"{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}\n\n"
             "Summarize this session in two or three sentences. Include any "
-            "facts, decisions, preferences, or requests worth remembering."
+            "facts, decisions, preferences, or requests worth remembering. "
+            "Attribute utterances, never assert identity: 'the user said/"
+            "introduced themselves as X', not 'the user is X' — spoken "
+            "self-descriptions (including roleplay or practice) are claims, "
+            "not facts about the user's identity."
         )
         resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
             model=_SUMMARY_MODEL, contents=prompt
