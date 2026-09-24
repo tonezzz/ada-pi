@@ -109,6 +109,7 @@ class MemoryBankRegistry:
         self.errors: list[str] = []
         self.schema_fields: set[str] = set()
         self._banks: dict[str, MemoryBank] = {}
+        self.person_policies: dict[str, dict[str, Any]] = {}
         self._load(explicit=bool(path or explicit))
 
     def _load(self, explicit: bool) -> None:
@@ -124,6 +125,9 @@ class MemoryBankRegistry:
             self._error(f"cannot load registry {self.path}: {exc}")
             return
         banks = data.get("banks", data) if isinstance(data, dict) else {}
+        self.person_policies = (
+            data.get("person_policies") if isinstance(data, dict) else None
+        ) or {}
         if isinstance(data, dict) and isinstance(data.get("schema"), dict):
             self.schema_fields = set(data["schema"].get("fields") or {})
         if not isinstance(banks, dict):
@@ -237,7 +241,32 @@ class MemoryBankRegistry:
             if scoped_name and scoped_name in result:
                 # Remove the default personal bank — the scoped one replaces it
                 result.pop("personal", None)
+        # Per-speaker ACL: an allow list intersects the visible set, a deny
+        # list subtracts. No policy entry → full instance set (unchanged).
+        policy = self.policy_for(person_entity)
+        if policy:
+            allow = set(policy.get("allow") or [])
+            deny = set(policy.get("deny") or [])
+            if allow:
+                result = {n: b for n, b in result.items() if n in allow}
+            if deny:
+                result = {n: b for n, b in result.items() if n not in deny}
         return result
+
+    def policy_for(self, person_entity: str | None) -> dict[str, Any] | None:
+        """Resolve the ACL policy for an identity (person entity or key
+        name): exact match first; 'unknown' applies ONLY to anonymous
+        sessions (no identity at all). Unlisted named identities get no
+        policy — full instance access."""
+        if not self.person_policies:
+            return None
+        if person_entity:
+            return self.person_policies.get(person_entity)
+        return self.person_policies.get("unknown")
+
+    def bank_allowed(self, name: str, person_entity: str | None) -> bool:
+        """Whether this speaker may access the named bank at all."""
+        return name in self.banks_for_person(person_entity)
 
     def notebook_for(self, name: str) -> str | None:
         return self.bank(name).notebook(self.notebook_ids)

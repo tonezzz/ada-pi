@@ -451,6 +451,9 @@ class ToolRunner:
         # provider from speaker ID). Used to route personal memory to the
         # speaker's person-scoped bank instead of the instance default.
         self.current_speaker_ha_person: str | None = None
+        # Issued-key/caller name for this session (set by pwa_server at ws
+        # connect). Fallback memory-policy identity when speaker ID is off.
+        self.session_caller_name: str | None = None
         # Active SpeakerSession for voice enrollment — set by pwa_server
         # when the WebSocket session opens. Used by ada_enroll_speaker to
         # capture the user's voice from the buffered audio.
@@ -461,6 +464,11 @@ class ToolRunner:
         self._calendar_loaded = False
         self._control_calls: list[float] = []
         self._control_entity_calls: dict[str, list[float]] = {}
+
+    def _memory_identity(self) -> str | None:
+        """Memory-policy identity: identified speaker's HA person first,
+        then the session's issued-key/caller name, else None (anonymous)."""
+        return self.current_speaker_ha_person or self.session_caller_name
 
     @property
     def banks(self) -> MemoryBankRegistry:
@@ -587,6 +595,14 @@ class ToolRunner:
             bank = self.banks.bank(bank_name)
         except KeyError as exc:
             raise ValueError(str(exc)) from exc
+        if not self.banks.bank_allowed(bank.name, self._memory_identity()):
+            logger.warning(
+                "denied %s on %r for identity %r",
+                name, bank.name, self._memory_identity(),
+            )
+            raise PermissionError(
+                f"memory bank '{bank.name}' is not available for this speaker"
+            )
         if not bank.writable:
             logger.warning("denied %s on %r: bank not writable", name, bank_name)
             raise PermissionError(f"memory bank '{bank_name}' is read-only")
@@ -969,7 +985,7 @@ class ToolRunner:
         """Search a curated memory bank's MDDB collection."""
         return await memory_ops.memory_search(
             self.mddb, self.banks, bank, query, limit, include_inactive,
-            person_entity=self.current_speaker_ha_person,
+            person_entity=self._memory_identity(),
         )
 
     async def ada_remember(
@@ -989,14 +1005,14 @@ class ToolRunner:
             self.mddb, self.banks, self.memory.instance,
             bank, text, key, subject, attribute, kind, valid_until, applies_to,
             supersedes, session_id=self.session_id,
-            person_entity=self.current_speaker_ha_person,
+            person_entity=self._memory_identity(),
         )
 
     async def ada_forget(self, bank: str, key: str, reason: str | None = None) -> dict[str, Any]:
         """Retract a memory: status becomes retracted; the doc stays auditable."""
         return await memory_ops.forget(
             self.mddb, self.banks, bank, key, reason, session_id=self.session_id,
-            person_entity=self.current_speaker_ha_person,
+            person_entity=self._memory_identity(),
         )
 
     async def ada_outcome(
@@ -1010,7 +1026,7 @@ class ToolRunner:
         return await memory_ops.record_outcome(
             self.mddb, self.banks, bank, key, outcome, note,
             session_id=self.session_id,
-            person_entity=self.current_speaker_ha_person,
+            person_entity=self._memory_identity(),
         )
 
     async def ada_enroll_speaker(

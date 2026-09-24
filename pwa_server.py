@@ -437,7 +437,11 @@ async def voice_socket(ws: WebSocket) -> None:
         return
     await ws.accept()
     session_id = uuid.uuid4().hex[:10]
-    logger.info("session=%s client connected", session_id)
+    tool_runner.session_caller_name = auth.websocket_caller(ws) or None
+    logger.info(
+        "session=%s client connected (caller=%s)",
+        session_id, tool_runner.session_caller_name or "anonymous",
+    )
     # Chaba guest mode: a ?name= query param binds the visitor's declared
     # name to this session so memory writes land under guests/<name>.yml.
     # A matching users/<name>.yml upgrades to kind "user" so promoted users
@@ -1350,6 +1354,7 @@ async def call_tool(request: Request) -> dict:
     _require_api_key(request)
     client_ip = request.client.host if request.client else "unknown"
     caller = auth.caller_name(request) or "anonymous"
+    tool_runner.session_caller_name = auth.caller_name(request)
     logger.info("tool call: %s args=%r client=%s caller=%s", name, args, client_ip, caller)
     try:
         output = await tool_runner.execute(name, args)

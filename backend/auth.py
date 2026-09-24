@@ -286,15 +286,24 @@ def redeem_token(token: str) -> tuple[str, str, str, str | None] | None:
     return name, key, base_path, redirect
 
 
-def websocket_authorized(ws: Any) -> bool:
+def websocket_caller(ws: Any) -> str | None:
+    """Resolve the caller name for a websocket (api_key → name, else session
+    cookie → name). None when keys are configured and no identity resolves."""
     keys = _parse_keys()
     if not keys:
-        return True
+        return ""
     provided = ws.query_params.get("api_key") or ""
     name = keys.get(provided) if provided else None
     if name is None:
         session = ws.cookies.get(SESSION_COOKIE, "")
         name = _check_session(session, keys) if session else None
+    return name
+
+
+def websocket_authorized(ws: Any) -> bool:
+    if not _parse_keys():
+        return True
+    name = websocket_caller(ws)
     if name is None:
         return False
     return enforce_device(name, _presented_device({}, ws.query_params)) is not None

@@ -145,6 +145,59 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(reg.configured)
         self.assertEqual(reg.errors, [])
 
+    def _acl_spec(self):
+        spec = json.loads(json.dumps(REGISTRY))
+        spec["banks"]["personal-testo"] = {
+            "scope": "person",
+            "instances": ["tony"],
+            "mddb_collection": "ada-ha-bank-personal-testo",
+            "writable": True,
+            "allowed_tools": ["ada_remember"],
+            "person_scope": "person.testo_2",
+            "status": "active",
+        }
+        spec["person_policies"] = {
+            "person.testo_2": {"allow": ["general", "readonly", "personal-testo"]},
+            "testo": {"allow": ["general", "readonly", "personal-testo"]},
+            "unknown": {"allow": ["general"]},
+        }
+        return spec
+
+    def test_person_policy_allow_list(self):
+        reg = _registry(instance="tony", spec=self._acl_spec())
+        names = set(reg.banks_for_person("person.testo_2"))
+        self.assertEqual(names, {"general", "readonly", "personal-testo"})
+
+    def test_key_name_policy(self):
+        reg = _registry(instance="tony", spec=self._acl_spec())
+        names = set(reg.banks_for_person("testo"))
+        self.assertEqual(names, {"general", "readonly", "personal-testo"})
+
+    def test_unknown_policy_for_anonymous(self):
+        reg = _registry(instance="tony", spec=self._acl_spec())
+        names = set(reg.banks_for_person(None))
+        self.assertEqual(names, {"general"})
+
+    def test_unlisted_identity_gets_full_set(self):
+        reg = _registry(instance="tony", spec=self._acl_spec())
+        names = set(reg.banks_for_person("person.tony"))
+        self.assertIn("personal", names)
+        self.assertIn("tony-only", names)
+
+    def test_bank_allowed_helper(self):
+        reg = _registry(instance="tony", spec=self._acl_spec())
+        self.assertFalse(reg.bank_allowed("personal", "testo"))
+        self.assertTrue(reg.bank_allowed("general", "testo"))
+        self.assertTrue(reg.bank_allowed("personal", "person.tony"))
+
+    def test_deny_list_subtracts(self):
+        spec = self._acl_spec()
+        spec["person_policies"]["testo"] = {"deny": ["general"]}
+        reg = _registry(instance="tony", spec=spec)
+        names = set(reg.banks_for_person("testo"))
+        self.assertNotIn("general", names)
+        self.assertIn("personal", names)
+
     def test_effective_status_lazy_expiry(self):
         doc = {"meta": {"status": ["active"], "valid_until": ["2020-01-01"]}}
         self.assertEqual(doc_effective_status(doc, today="2026-01-01"), "expired")

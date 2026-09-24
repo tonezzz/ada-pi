@@ -312,6 +312,18 @@ async def _bank_docs(
     )
 
 
+def _check_bank_allowed(
+    registry: MemoryBankRegistry, bank: str, person_entity: str | None
+) -> None:
+    """Per-speaker bank ACL — raises PermissionError when the registry's
+    person_policies exclude this bank for this speaker."""
+    if not registry.bank_allowed(str(bank).strip(), person_entity):
+        logger.warning("denied bank %r for speaker %r", bank, person_entity)
+        raise PermissionError(
+            f"memory bank '{bank}' is not available for this speaker"
+        )
+
+
 async def memory_search(
     mddb: MddbClient,
     registry: MemoryBankRegistry,
@@ -368,6 +380,7 @@ async def memory_search(
     if str(bank) == "personal" and person_entity:
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
+    _check_bank_allowed(registry, b.name, person_entity)
     docs, degraded = await _bank_docs(mddb, b, q, limit, include_inactive)
     hits = []
     used_docs = []
@@ -452,6 +465,7 @@ async def record_outcome(
     if str(bank) == "personal" and person_entity:
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
+    _check_bank_allowed(registry, b.name, person_entity)
     outcome = str(outcome)
     delta = OUTCOME_CONFIDENCE_DELTA.get(outcome)
     if delta is None:
@@ -513,6 +527,7 @@ async def remember(
     if str(bank) == "personal" and person_entity:
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
+    _check_bank_allowed(registry, b.name, person_entity)
     if str(kind or "note") not in b.kinds:
         raise ValueError(
             f"kind {kind!r} not allowed in bank '{b.name}' (allowed: {', '.join(b.kinds)})"
@@ -629,6 +644,7 @@ async def forget(
     if str(bank) == "personal" and person_entity:
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
+    _check_bank_allowed(registry, b.name, person_entity)
     doc = await mddb.get_document(b.mddb_collection, str(key))
     if doc is None:
         raise ValueError(f"no such document {key!r} in bank '{b.name}'")
