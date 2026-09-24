@@ -127,12 +127,42 @@ def _levels(gray: np.ndarray, lo_pct: float = 1.0, hi_pct: float = 97.0) -> np.n
     return np.clip((gray - lo) / (hi - lo) * 255.0, 0, 255)
 
 
-def enhance_for_print(im: Image.Image) -> Image.Image:
-    """B&W print path: flatten shading -> stretch levels -> unsharp."""
+def _binarize_local(gray: np.ndarray, radius: int = 18,
+                    factor: float = 0.88) -> np.ndarray:
+    """Local-mean threshold: ink where the pixel sits below its local
+    background estimate. Turns faint grayscale text into clean black-on-white
+    that survives inkjet dithering."""
+    src = Image.fromarray(np.clip(gray, 0, 255).astype(np.uint8), mode="L")
+    mean = np.asarray(src.filter(ImageFilter.GaussianBlur(radius=radius)),
+                      dtype=np.float32)
+    bw = np.where(gray < mean * factor, 0, 255).astype(np.uint8)
+    return np.asarray(Image.fromarray(bw, mode="L")
+                      .filter(ImageFilter.MedianFilter(3)), dtype=np.uint8)
+
+
+def enhance_for_print(im: Image.Image,
+                      binarize: bool | None = None) -> Image.Image:
+    """B&W print path: flatten shading -> stretch levels -> unsharp.
+
+    Low-res scans (min side < 1600px) get a 2x Lanczos pre-upscale and, when
+    `binarize` is true, a local-threshold pass so faint text prints crisply.
+    `binarize=None` auto-enables it for low-res scans; callers should pass
+    False for documents with photos/halftones (id_card, passport, photo)."""
+    w, h = im.size
+    low_res = min(w, h) < 1600
+    if binarize is None:
+        binarize = low_res
+    if low_res:
+        im = im.resize((w * 2, h * 2), Image.LANCZOS)
     g = _flat_field(_to_gray_array(im))
-    g = _levels(g)
+    g = _levels(g, lo_pct=2.0, hi_pct=98.0)
     out = Image.fromarray(g.astype(np.uint8), mode="L")
-    return out.filter(ImageFilter.UnsharpMask(radius=1.5, percent=80, threshold=4))
+    out = out.filter(ImageFilter.UnsharpMask(radius=2.5, percent=160,
+                                             threshold=3))
+    if binarize:
+        out = Image.fromarray(
+            _binarize_local(np.asarray(out, dtype=np.float32)), mode="L")
+    return out
 
 
 def enhance_for_archive(im: Image.Image) -> Image.Image:
@@ -353,7 +383,9 @@ class DocumentCheckEngine:
                 pass
 
         trimmed = trim_border(im)
-        print_im = enhance_for_print(trimmed)
+        print_im = enhance_for_print(
+            trimmed,
+            binarize=result.doc_type not in ("id_card", "passport", "photo"))
         canvas, placement = render_a4(print_im, true_size)
         pdf = to_pdf_bytes(canvas)
         preview = to_jpeg_bytes(canvas)
