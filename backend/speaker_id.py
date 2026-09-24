@@ -54,6 +54,11 @@ MAX_BUFFER_BYTES = SAMPLE_RATE * 6 * 2  # 6 s
 # Consecutive failed identifications on real speech before the
 # on_unrecognized callback fires (once per session until a match).
 UNKNOWN_AFTER_MISSES = 2
+# Minimum margin between the best and runner-up cosine scores to accept an
+# identification. A winner-take-all match at ~0.5 between two enrolled
+# speakers is genuinely ambiguous — "unrecognized" (sandbox) is safer than
+# naming the wrong person (wrong memory banks, wrong name in conversation).
+MIN_MARGIN = 0.05
 
 
 def _rms(float_samples: np.ndarray) -> float:
@@ -217,8 +222,26 @@ class SpeakerIdentifier:
     def enroll(self, name: str, pcm16: bytes, sample_rate: int = SAMPLE_RATE,
                ha_person: str | None = None,
                display_name: str | None = None) -> dict[str, Any]:
-        """Compute and store an embedding for *name*."""
+        """Compute and store an embedding for *name*.
+
+        Contamination guard: if the buffered audio matches a DIFFERENT
+        enrolled speaker above the identify threshold, refuse — enrolling it
+        under *name* would poison that profile (this happened: Tony's voice
+        overwrote 'KK' after a borderline misidentification)."""
         emb = self._compute_embedding(pcm16, sample_rate)
+        best_other, best_other_score = None, 0.0
+        for other, ref in self._enrolled.items():
+            if other == name:
+                continue
+            score = _cosine_similarity(emb, ref)
+            if score > best_other_score:
+                best_other, best_other_score = other, score
+        if best_other is not None and best_other_score >= DEFAULT_THRESHOLD:
+            raise ValueError(
+                f"this voice matches enrolled speaker '{best_other}' "
+                f"({best_other_score:.0%}) — refusing to enroll it as '{name}'. "
+                "Confirm who is actually speaking, or remove the stale profile first."
+            )
         self._enrolled[name] = emb
         self._metadata[name] = {
             "ha_person": ha_person,
@@ -247,13 +270,23 @@ class SpeakerIdentifier:
         emb = self._compute_embedding(pcm16, sample_rate)
         best_name: str | None = None
         best_score = 0.0
+        second_score = 0.0
         for name, ref in self._enrolled.items():
             score = _cosine_similarity(emb, ref)
             if score > best_score:
+                second_score = best_score
                 best_name, best_score = name, score
-        if best_score >= threshold:
-            return best_name, best_score
-        return None, best_score
+            elif score > second_score:
+                second_score = score
+        if best_score < threshold:
+            return None, best_score
+        if best_score - second_score < MIN_MARGIN:
+            logger.info(
+                "identify ambiguous: %s=%.2f vs runner-up %.2f (margin %.2f < %.2f) — unrecognized",
+                best_name, best_score, second_score,
+                best_score - second_score, MIN_MARGIN)
+            return None, best_score
+        return best_name, best_score
 
 
 class SpeakerSession:
