@@ -143,13 +143,20 @@ def bind_device(name: str, device_id: str) -> bool:
 
 
 def unbind_device(name: str) -> bool:
-    """Drop a key's device binding (re-pair resets it so a device can re-register)."""
+    """Drop a key's device binding (re-pair resets it so a device can re-register).
+
+    A '*' binding means the key is deliberately shared (e.g. the cms-viewer
+    iframe key) — re-pair must NOT collapse it back to TOFU or the next
+    browser silently re-binds it. Preserve '*' across re-pairs.
+    """
     try:
         data = json.loads(open(_keys_file()).read())
     except (OSError, ValueError):
         return False
     if not isinstance(data.get(name), dict):
         return name in data
+    if data[name].get("device") == "*":
+        return True
     data[name] = data[name]["key"]
     _save_file_keys(data)
     return True
