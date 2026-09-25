@@ -1,0 +1,35 @@
+name: michael-infra-interrogation
+# Michael grills Ada about the home-infra projects — the Rika weather
+# station and the ESP32: history, issues, and where the work stands.
+# Runs against ada-ha-michael (8003) with that instance's own env for the
+# API key (mounted in the scenario-runner container as /secrets/michael.env).
+#
+# Expectations are soft (live LLM behavior varies) — assert a memory/recall
+# tool fires and the answer mentions the right systems. Shared banks
+# (general/home/infrastructure-ssot) hold the project knowledge; the
+# read-only bank facts are what a real Michael session can reach.
+tier: smoke
+url: ws://127.0.0.1:8003/ws
+env_file: /secrets/michael.env
+
+turns:
+  - user: "Ada, catch me up on the weather station project — what have we done with it and what problems did we hit?"
+    expect:
+      calls_any: [ada_memory_search, ada_session_recall, ada_ha_recall]
+      response_contains_any: ["rk600", "rika", "weather"]
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "And the ESP32 — what issues have we had with it, and where did we leave off?"
+    expect:
+      calls_any: [ada_memory_search, ada_session_recall, ada_ha_recall]
+      response_contains_any: ["esp32", "esphome", "mqtt"]
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Is the weather station actually reporting right now? Give me the current numbers."
+    expect:
+      calls_any: [get_rk600_weather, ada_ha_get_state, ada_ha_search_sensors, ada_memory_search]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8

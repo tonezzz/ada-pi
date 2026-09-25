@@ -7,6 +7,11 @@ bank registry — never reaches ada_memory_search).
 
 Scenario yaml fields used here:
   tier: smoke|full   (default 'full' — only 'smoke' runs under --tier smoke)
+  url: <ws url>      per-scenario ws target (e.g. ws://127.0.0.1:8003/ws for
+                     michael); absent → --url / ADA_LIVE_URL.
+  env_file: <path>   dotenv file to read ADA_API_KEY from (e.g. another
+                     instance's env mounted under /secrets). Overridden by
+                     key_name when both are set.
   key_name: <issued key>  resolved from the keys file (--keys-file);
                         dict entries may carry 'device' → passed as
                         device_id ws param. Absent → --api-key env/flag.
@@ -51,6 +56,20 @@ def _key_entry(keys: dict, name: str) -> tuple[str, str | None]:
     if isinstance(entry, dict):
         return str(entry.get("key") or ""), entry.get("device")
     return str(entry or ""), None
+
+
+def _env_value(path: str, name: str) -> str:
+    """Read NAME=value from a dotenv file (tolerates 'export ' prefix)."""
+    try:
+        for line in open(path):
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            if line.startswith(name + "="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
 
 
 def _post(url: str, payload: dict) -> bool:
@@ -109,9 +128,11 @@ def main() -> int:
         if args.tier == "smoke" and tier != "smoke":
             continue
 
-        url = args.url
+        url = spec.get("url") or args.url
         api_key = args.api_key
         params = dict(spec.get("params") or {})
+        if spec.get("env_file"):
+            api_key = _env_value(str(spec["env_file"]), "ADA_API_KEY") or api_key
         if spec.get("key_name"):
             api_key, device = _key_entry(keys, spec["key_name"])
             if device and "device_id" not in params:

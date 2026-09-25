@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 
-from backend import chaba_memory
+from backend import chaba_memory, voice_config
 from backend.conversation_memory import ConversationMemory
 from backend.tool_runner import ToolRunner
 from backend.usage_tracker import usage_ledger
@@ -348,7 +348,7 @@ class GeminiLiveProvider(RealtimeProvider):
         self._recall_gate_window = float(os.environ.get("ADA_RECALL_GATE_WINDOW_S", "60"))
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
-        self.voice = os.environ.get("GEMINI_LIVE_VOICE", "Kore")
+        self.voice = voice_config.current_voice()
         self.video_resolution = os.environ.get("GEMINI_VIDEO_RESOLUTION", "high").lower()
         base_instructions = instructions or os.environ.get("GEMINI_LIVE_INSTRUCTIONS") or DEFAULT_ADA_INSTRUCTIONS
         self.instructions = (
@@ -422,6 +422,9 @@ class GeminiLiveProvider(RealtimeProvider):
             "change how you speak or address them, call ada_persona set — it persists across "
             "sessions and applies immediately; saved preferences may also arrive as a (system) "
             "note at session start — honor them without announcing the mechanism. "
+            "ada_set_voice changes your actual speaking voice — a different preference from "
+            "persona style: 'show'/'list' report the active voice and options, 'set' persists "
+            "the choice and applies it after a brief reconnect with a short pause. "
             "When calling any search or recall tool, always write a fully self-contained query: "
             "resolve 'it', 'that one', 'the same service', and similar references using the "
             "conversation so far — never pass a bare pronoun as the query. "
@@ -568,6 +571,51 @@ class GeminiLiveProvider(RealtimeProvider):
         return ("The purchase check is running — it usually takes 30-60 "
                 "seconds. Briefly tell the user you're verifying it and will "
                 "report back.")
+
+    # --- ada_set_voice: persisted voice + idle-gated session swap ---
+
+    def _set_voice(self, args: dict) -> str:
+        """ada_set_voice — persist a new Gemini Live voice, then apply it by
+        reconnecting this session once the spoken acknowledgement finishes."""
+        action = str(args.get("action") or "set").strip() or "set"
+        if action in ("show", "list"):
+            return (
+                f"Current voice: {voice_config.current_voice()}. "
+                f"Available voices: {', '.join(voice_config.GEMINI_VOICES)}."
+            )
+        name = voice_config.canonical_voice(args.get("voice"))
+        if not name:
+            return (
+                f"Unknown voice {args.get('voice')!r}. Available voices: "
+                f"{', '.join(voice_config.GEMINI_VOICES)}."
+            )
+        previous = voice_config.current_voice()
+        if name == previous:
+            return f"Already using {name} — no switch needed."
+        try:
+            voice_config.set_voice(name)
+        except Exception as exc:
+            return f"Could not save the voice preference: {exc}"
+        task = asyncio.create_task(self._voice_switch_when_idle())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        return (
+            f"Voice saved: {previous} -> {name}. Tell the user you're "
+            "switching voices now and to expect a short pause — then greet "
+            "them briefly in the new voice once you're back."
+        )
+
+    async def _voice_switch_when_idle(self) -> None:
+        # Let the acknowledgement finish speaking first, then drop the live
+        # session. pwa_server's reconnect path builds a fresh provider, which
+        # resolves the new voice from the preference file at connect.
+        await self._wait_for_idle(timeout=20.0)
+        await asyncio.sleep(1.5)
+        self.resumption_handle = None  # fresh session — a resumed one may keep the old voice
+        try:
+            await self.close()
+        except Exception as exc:
+            logger.warning("session=%s voice-switch close failed: %s", self.session_id, exc)
 
     async def _run_decision_check(self, product: str, url: str, mode: str) -> None:
         filler = asyncio.create_task(self._check_slow_filler(mode))
@@ -1672,6 +1720,35 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "ada_set_voice",
+                    "description": (
+                        "Change Ada's actual speaking voice (the Gemini Live voice). "
+                        "Use when the user asks to change your voice, pick a different "
+                        "voice, or asks which voices you can use. 'set' persists the "
+                        "choice for future sessions and applies it after a brief "
+                        "reconnect — expect a short pause, then continue in the new "
+                        "voice. 'show' returns the active voice, 'list' the options. "
+                        "For speaking STYLE (tone, verbosity, language) use "
+                        "ada_persona instead — this tool changes the voice itself."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["set", "show", "list"],
+                            },
+                            "voice": {
+                                "type": "string",
+                                "enum": list(voice_config.GEMINI_VOICES),
+                                "description": "Required for set — the Gemini Live voice name.",
+                            },
+                        },
+                        "required": ["action"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "ada_enroll_speaker",
                     "description": (
                         "Enroll the current speaker's voice so Ada can recognize them "
@@ -2607,6 +2684,8 @@ class GeminiLiveProvider(RealtimeProvider):
                                     on_slow=self._on_recall_slow,
                                 )
                                 result = {"output": recall_status}
+                        elif call.name == "ada_set_voice":
+                            result = {"output": self._set_voice(dict(call.args or {}))}
                         elif call.name == "ada_decision_check" and self.tool_runner is not None:
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
                         else:

@@ -1,0 +1,40 @@
+name: change-voice
+# Two aspects of "change your voice": a style request must route to
+# ada_persona, and a literal voice request to ada_set_voice — which persists
+# the preference and applies it via a provider reconnect (live_reconnecting
+# + ready). Then switch back so the run leaves no trace.
+# Runs as testo so the persona write lands in ada-ha-bank-personal-testo.
+tier: full
+key_name: user-testo
+
+cleanup:
+  voice_restore: tony           # restore ~/.config/ada/voice-tony.json to pre-run state
+  mddb_delete:
+    - {collection: ada-ha-bank-personal-testo, key: "persona/self"}
+
+turns:
+  - user: "Ada, from now on talk to me more formally — polite and concise, please."
+    expect:
+      calls: [ada_persona]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  - user: "Actually — can you change your voice itself? Pick a different voice for me."
+    expect:
+      calls: [ada_set_voice]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  # The voice switch closes the live session and reconnects; the buffered
+  # live_reconnecting/ready frames arrive inside this turn's event window.
+  - sleep_s: 18
+    user: "Thanks — switch your voice back to Kore, please."
+    expect:
+      calls: [ada_set_voice]
+      result_contains: ["Kore"]
+      events_contain: [{type: ready}]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8

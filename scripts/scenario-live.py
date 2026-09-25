@@ -59,6 +59,14 @@ Cleanup (runs even when expectations fail):
     speaker_remove: ["guest-tester"]      DELETE /api/speakers/<name>
   'contains' lists the collection, deletes every doc whose content or key
   matches the substring. MDDB base: $MDDB_BASE_URL or http://127.0.0.1:11023/v1
+
+  'voice_restore: <instance|path>' restores the voice-preference file to its
+  pre-run state — snapshot taken before the first turn (missing file is
+  restored as absent). Use for scenarios that call ada_set_voice.
+
+Turn fields:
+  sleep_s: N         wait N seconds before running this turn — lets a pending
+                     server-side reconnect (e.g. a voice switch) settle.
 """
 
 from __future__ import annotations
@@ -202,6 +210,14 @@ async def run_turn(
     return events, check_turn(events, expect)
 
 
+def _voice_file_for(value: str) -> Path:
+    """Resolve cleanup.voice_restore — an instance name ('tony') or a path."""
+    v = str(value or "").strip()
+    if "/" in v or v.endswith(".json"):
+        return Path(os.path.expanduser(v))
+    return Path.home() / ".config" / "ada" / f"voice-{v}.json"
+
+
 def run_cleanup(spec: dict, mddb_url: str, verbose: bool) -> None:
     """Best-effort post-run cleanup — deletes test docs from MDDB."""
     import urllib.request
@@ -301,6 +317,13 @@ async def main() -> int:
     turns = spec.get("turns") or []
     print(f"scenario: {spec.get('name') or args.scenario.stem} -> {url.split('?')[0]}")
 
+    # voice_restore: snapshot the preference file before any turn can change it.
+    voice_restore = (spec.get("cleanup") or {}).get("voice_restore")
+    voice_snapshot: tuple[Path, bytes | None] | None = None
+    if voice_restore:
+        vf = _voice_file_for(str(voice_restore))
+        voice_snapshot = (vf, vf.read_bytes() if vf.exists() else None)
+
     total_fail = 0
     ws = None
     try:
@@ -315,6 +338,8 @@ async def main() -> int:
             expect = dict(turn.get("expect") or {})
             expect.setdefault("timeout_s", turn.get("timeout_s", 90))
             expect.setdefault("settle_s", turn.get("settle_s", 5))
+            if turn.get("sleep_s"):
+                await asyncio.sleep(float(turn["sleep_s"]))
             if "reconnect" in turn:
                 away = (turn.get("reconnect") or {}).get("away_s")
                 rurl = url
@@ -375,6 +400,18 @@ async def main() -> int:
             run_cleanup(spec, mddb_url.rstrip("/"), args.verbose)
             http_base = url.split("?")[0].replace("ws://", "http://").replace("wss://", "https://").rsplit("/ws", 1)[0]
             run_speaker_cleanup(spec, http_base, api_key, args.verbose)
+            if voice_snapshot is not None:
+                vf, data = voice_snapshot
+                try:
+                    if data is None:
+                        vf.unlink(missing_ok=True)
+                    else:
+                        vf.parent.mkdir(parents=True, exist_ok=True)
+                        vf.write_bytes(data)
+                    if args.verbose:
+                        print(f"  cleanup: restored voice file {vf}")
+                except Exception as exc:
+                    print(f"  cleanup: voice restore failed: {exc}")
 
     print(f"{'PASS' if total_fail == 0 else 'FAIL'}: {total_fail} failed expectations")
     return 0 if total_fail == 0 else 1
