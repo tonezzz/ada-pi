@@ -2418,7 +2418,14 @@ class GeminiLiveProvider(RealtimeProvider):
                             "repo": {
                                 "type": "string",
                                 "enum": ["chaba", "ada-pi", "sunsynk-card"],
-                                "description": "Repository the session works in.",
+                                "description": (
+                                    "Repository the session works in. 'chaba' = web apps under "
+                                    "/apps/* (incl. the vcast virtual-display receiver page), the "
+                                    "input-bridge relay, Caddy stack, HA dashboard cards, SSOT docs. "
+                                    "'ada-pi' = Ada's own backend tools, pwa_server, auth, scenarios. "
+                                    "'sunsynk-card' = the sunsynk power-flow card project. Pick the "
+                                    "repo where the code to change lives, not the service it affects."
+                                ),
                             },
                             "task": {
                                 "type": "string",
