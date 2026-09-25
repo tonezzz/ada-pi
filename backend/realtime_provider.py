@@ -954,62 +954,6 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "yt_cast",
-                    "description": (
-                        "Cast a YouTube video to the living-room TV with subtitles burned in. "
-                        "This is THE tool for any 'play/watch/cast a YouTube video on the TV' request "
-                        "AND for any subtitle/caption request — it always renders the video's "
-                        "original-language subtitle on top with a translated line below "
-                        "(English is added automatically for non-English sources). "
-                        "Do NOT search for a different video that already has subtitles or try "
-                        "generic media playback — this tool generates subtitles for any video. "
-                        "Pass a YouTube URL or a search phrase (video title + channel name works best). "
-                        "The video starts after a short pipeline (~1-2 min for a typical clip)."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "YouTube URL or search phrase, e.g. 'the egg kurzgesagt'.",
-                            },
-                            "language": {
-                                "type": "string",
-                                "description": (
-                                    "Target subtitle language code shown below the original-language "
-                                    "line (default 'th' for Thai)."
-                                ),
-                            },
-                        },
-                        "required": ["query"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "yt_cast_status",
-                    "description": (
-                        "Returns the current YouTube-to-TV cast progress: whether transcoding is still "
-                        "running, segment count, and whether subtitles were generated."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "yt_cast_stop",
-                    "description": (
-                        "Stops the YouTube video currently casting to the TV. Use when the user asks "
-                        "to stop the video or stop casting."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
                     "name": "list_sensors",
                     "description": (
                         "Lists available Home Assistant sensor entities with their current state, unit, and friendly name. "
@@ -1126,9 +1070,16 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "tv_action",
                     "description": (
-                        "Send a command to the LG TV through the Home Assistant rest_command.tv_action service. "
-                        "Use this for casting or navigation commands such as cmd='nav' with text='screenlive:workspace:1' or 'tony-omen:workspace:1'. "
-                        "The cmd and text values are passed straight to the TV action REST command."
+                        "Send a command to the TV casting controller (cast-browser) through the Home Assistant rest_command.tv_action service. "
+                        "Cast targets via cmd='nav': text='<URL>' shows a page in the TV's browser (fully controllable afterwards), "
+                        "text='screenlive:workspace:N[:pad|crop]' casts this host's live desktop workspace N, "
+                        "text='tony-omen:workspace:N' casts Tony's desktop workspace N (switches his live workspace too). "
+                        "While a nav'd page is on the TV you can control it: cmd='scroll' text='up|down' (optionally dx/dy/factor), "
+                        "cmd='click' text='<visible text>' or role='<role>' or selector='<css>', cmd='type' text='<text>', "
+                        "cmd='press' text='<key e.g. Enter|Escape|Backspace>', cmd='back' to go back, "
+                        "cmd='shot' text='<name>' for a screenshot, cmd='viewport' text='WxH'. "
+                        "A streamed desktop (screenlive/tony-omen) is one-way video — control is limited to switching workspaces; "
+                        "for interactive control prefer nav'ing the page itself."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -1136,12 +1087,14 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "cmd": {
                                 "type": "string",
-                                "description": "Command key, e.g. 'nav' or 'power'.",
+                                "description": "Command key: nav|scroll|click|type|press|back|shot|viewport|power.",
                             },
                             "text": {
                                 "type": "string",
-                                "description": "Command text/payload, e.g. 'screenlive:workspace:1' or 'tony-omen:workspace:1'.",
+                                "description": "Command text/payload: nav target (URL, 'screenlive:workspace:N[:pad|crop]', 'tony-omen:workspace:N'), scroll direction, visible text to click, text to type, or shot/viewport args.",
                             },
+                            "selector": {"type": "string", "description": "CSS selector for click."},
+                            "role": {"type": "string", "description": "ARIA role for click (e.g. 'button')."},
                         },
                         "required": ["cmd"],
                         "additionalProperties": False,

@@ -990,10 +990,13 @@ class ToolRunner:
             raise ValueError("entity_id and action are required")
         return await self.context.ha_client.control_media_player(entity_id, action, source)
 
-    async def tv_action(self, cmd: str, text: str = "") -> dict[str, Any]:
+    async def tv_action(self, cmd: str, text: str = "",
+                        selector: str = "", role: str = "") -> dict[str, Any]:
         if not cmd:
             raise ValueError("cmd is required")
-        return await self.context.ha_client.tv_action(cmd, text)
+        return await self.context.ha_client.tv_action(
+            cmd, text, selector=selector or None, role=role or None,
+        )
 
     async def get_battery_status(self) -> dict[str, Any]:
         return await self.context.ha_client.battery_status()

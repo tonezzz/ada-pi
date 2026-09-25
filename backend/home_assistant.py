@@ -268,12 +268,18 @@ class HomeAssistantClient:
         response.raise_for_status()
         return {"entity_id": entity_id, "action": action, "source": source}
 
-    async def tv_action(self, cmd: str, text: str = "") -> dict[str, Any]:
-        """Call the Home Assistant rest_command.tv_action service."""
+    async def tv_action(self, cmd: str, text: str = "", **extra: Any) -> dict[str, Any]:
+        """Call the Home Assistant rest_command.tv_action service.
+
+        Extra fields (selector/role/key/dx/dy/factor) forward to the
+        cast-browser /cmd API — the rest_command payload template passes
+        through whatever the service call carries."""
         client = await self._http_client()
-        response = await client.post("/api/services/rest_command/tv_action", json={"cmd": cmd, "text": text})
+        payload = {"cmd": cmd, "text": text}
+        payload.update({k: v for k, v in extra.items() if v is not None})
+        response = await client.post("/api/services/rest_command/tv_action", json=payload)
         response.raise_for_status()
-        return {"cmd": cmd, "text": text}
+        return {"cmd": cmd, "text": text, **extra}
 
     async def get_state(self, entity_id: str) -> dict[str, Any]:
         client = await self._http_client()
