@@ -62,6 +62,12 @@ DEVIN_CONFIRMED_TOOLS = {"devin_dispatch", "devin_followup"}
 # and ada_doc_print sends real pages to the printer — both require
 # confirmed=true. ada_doc_search and ada_doc_get are read-only.
 DOC_CONFIRMED_TOOLS = {"ada_doc_archive", "ada_doc_print"}
+# ALL doc tools (incl. read-only) are scoped to identities that can see the
+# `documents` bank — the tools hit MDDB/the archive service directly and
+# would otherwise bypass person_policies (e.g. a KK/guest session reading
+# document metadata for an ID card).
+DOC_TOOLS = DOC_CONFIRMED_TOOLS | {"ada_doc_search", "ada_doc_get"}
+DOC_BANK = "documents"
 
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
@@ -460,6 +466,10 @@ class ToolRunner:
         # Issued-key/caller name for this session (set by pwa_server at ws
         # connect). Fallback memory-policy identity when speaker ID is off.
         self.session_caller_name: str | None = None
+        # Shared L0 doc-work log — the provider assigns this to the
+        # conversation's doc_items list so ada_doc_* calls land in the
+        # session report timeline. None = doc actions not recorded.
+        self.doc_log: list[dict[str, Any]] | None = None
         # Active SpeakerSession for voice enrollment — set by pwa_server
         # when the WebSocket session opens. Used by ada_enroll_speaker to
         # capture the user's voice from the buffered audio.
@@ -518,9 +528,17 @@ class ToolRunner:
         elif name in DEVIN_CONFIRMED_TOOLS:
             confirmed = call_args.pop("confirmed", None)
             self._check_devin_confirmed(name, call_args, confirmed)
-        elif name in DOC_CONFIRMED_TOOLS:
-            confirmed = call_args.pop("confirmed", None)
-            self._check_doc_confirmed(name, call_args, confirmed)
+        elif name in DOC_TOOLS:
+            ident = self._memory_identity()
+            if not self.banks.bank_allowed(DOC_BANK, ident):
+                logger.warning(
+                    "denied %s for identity %r: documents bank policy",
+                    name, ident)
+                raise PermissionError(
+                    "document tools are outside this session's access policy")
+            if name in DOC_CONFIRMED_TOOLS:
+                confirmed = call_args.pop("confirmed", None)
+                self._check_doc_confirmed(name, call_args, confirmed)
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
         return await method(**call_args)
@@ -717,33 +735,58 @@ class ToolRunner:
     # -- Document archive tools (doc-archive service on idc01 + MDDB
     #    `documents` collection — the shared Ada/Devin document index) --
 
+    def _doc_record(self, action: str, **fields: Any) -> None:
+        """Append to the session's L0 doc-work timeline (conversation
+        report substrate); no-op when no conversation is attached."""
+        if self.doc_log is None:
+            return
+        self.doc_log.append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "action": action, **fields,
+        })
+
     async def ada_doc_search(self, query: str, limit: int = 5) -> Any:
         """Search archived document sets (documents bank / MDDB index)."""
-        return await doc_archive_client.doc_search(query, limit=limit)
+        hits = await doc_archive_client.doc_search(query, limit=limit)
+        self._doc_record("search", query=query,
+                         found=[h.get("slug") for h in hits])
+        return hits
 
     async def ada_doc_get(self, slug: str) -> dict[str, Any]:
         """Manifest + index metadata for one archived document set."""
-        return await doc_archive_client.doc_get(slug)
+        out = await doc_archive_client.doc_get(slug)
+        self._doc_record("get", slug=slug)
+        return out
 
     async def ada_doc_archive(
         self, slug: str, doc_type: str = "document",
-        intake_key: str | None = None, source_dir: str | None = None,
+        intake_key: str | None = None,
+        intake_keys: list[str] | None = None,
+        source_dir: str | None = None,
     ) -> dict[str, Any]:
-        """Archive a document set: from a held intake result (intake_key) or
-        a directory of images on this host (source_dir)."""
+        """Archive a document set: from held intake results (intake_key or
+        intake_keys for multi-page sets) or a directory (source_dir)."""
         pages: list[tuple[str, bytes]] = []
+        keys = list(intake_keys or [])
         if intake_key:
-            import pwa_server  # lazy — avoids circular import at module load
-            held = pwa_server._get_document_engine().held(intake_key)
-            if held is None:
-                raise RuntimeError(
-                    f"unknown or expired intake key '{intake_key}' — "
-                    "upload the document again")
-            blob = (held.meta or {}).get("archive_jpg")
-            if not blob:
-                raise RuntimeError("held intake has no archive image")
-            pages.append(((held.meta or {}).get("filename") or f"{slug}.jpg",
-                          bytes(blob)))
+            keys.insert(0, intake_key)
+        if keys:
+            from backend import document_check
+            engine = document_check.engine()
+            for i, k in enumerate(keys, 1):
+                held = engine.held(k)
+                if held is None:
+                    raise RuntimeError(
+                        f"unknown or expired intake key '{k}' — "
+                        "upload the document again")
+                blob = (held.meta or {}).get("archive_jpg")
+                if not blob:
+                    raise RuntimeError(f"held intake {k} has no archive image")
+                name = (held.meta or {}).get("filename") or f"{slug}-p{i}.jpg"
+                if len(keys) > 1:
+                    stem, dot, ext = name.rpartition(".")
+                    name = f"{stem or name}-p{i}.{ext or 'jpg'}"
+                pages.append((name, bytes(blob)))
         elif source_dir:
             d = os.path.expanduser(source_dir)
             if not os.path.isdir(d):
@@ -756,7 +799,12 @@ class ToolRunner:
                 raise RuntimeError(f"no images found in {source_dir}")
         else:
             raise RuntimeError("need intake_key or source_dir")
-        return await doc_archive_client.doc_archive(slug, doc_type, pages)
+        out = await doc_archive_client.doc_archive(slug, doc_type, pages)
+        self._doc_record("archive", slug=slug, doc_type=doc_type,
+                         pages=len(pages), keys=keys,
+                         duplicates=(out.get("duplicates") or
+                                     out.get("dupe_pages")))
+        return out
 
     async def ada_doc_print(
         self, slug: str, pages: str | None = None,
@@ -772,7 +820,10 @@ class ToolRunner:
             except ValueError as exc:
                 raise RuntimeError(
                     f"bad true_size_mm '{true_size_mm}' — use '85.6x54'") from exc
-        return await doc_archive_client.doc_print_pdf(slug, pages, ts)
+        out = await doc_archive_client.doc_print_pdf(slug, pages, ts)
+        self._doc_record("print", slug=slug, pages=out.get("pages"),
+                         queue=out.get("queue"))
+        return out
 
     # -- Token usage reporting (usage_tracker.py) --
 

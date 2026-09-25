@@ -506,6 +506,11 @@ class ConversationMemory:
         self.client = client or NotebooklmClient()
         self._turns: list[dict[str, str]] = []
         self._recall_task: asyncio.Task | None = None
+        # L0 structured doc-work log — shared with ToolRunner (provider
+        # assigns tool_runner.doc_log = conversation.doc_items); appended
+        # by ada_doc_* calls, folded into the session report timeline and
+        # the unclosed-work proposal at session end.
+        self.doc_items: list[dict[str, Any]] = []
         self.warm_summary()
 
     def add_user(self, text: str) -> None:
@@ -608,9 +613,79 @@ class ConversationMemory:
             day = datetime.now(timezone.utc).date().isoformat()
             report = await _session_report(transcript, day, self.session_id)
             if report:
+                self._fold_doc_items(report)
                 _save_session_report_files(report, day, self.session_id)
         await self._extract_candidates(transcript)
         await self._extract_actions(transcript)
+        await self._doc_followups()
+
+    def _fold_doc_items(self, report: dict) -> None:
+        """L0→L1 fold: append the deterministic doc-work timeline to the
+        session report — the LLM summary can't misstate which actions ran."""
+        items = self.doc_items
+        if not items:
+            return
+        report["documents"] = items
+        bits = []
+        for it in items:
+            hhmm = str(it.get("ts") or "")[11:16]
+            act = it.get("action") or "?"
+            target = (it.get("slug") or it.get("filename") or
+                      it.get("query") or "")
+            extra = ""
+            if act == "archive" and it.get("pages"):
+                extra = f" {it['pages']}p"
+            elif act == "print" and it.get("pages"):
+                extra = f" pages {it['pages']}"
+            bits.append(f"{hhmm} {act} {target}{extra}".strip())
+        block = str(report.get("memory_block") or "").rstrip()
+        report["memory_block"] = (
+            block + "\n- documents: " + "; ".join(bits)).strip()
+
+    async def _doc_followups(self) -> None:
+        """Unclosed doc work → pending action-proposal: uploads that were
+        assessed but never archived/printed this session resurface in the
+        next session's context tail (immediate memory while in focus)."""
+        try:
+            from backend import document_check
+            eng = document_check.engine()
+        except Exception:
+            return
+        archived = {k for it in self.doc_items if it.get("action") == "archive"
+                    for k in (it.get("keys") or [])}
+        first_ts = (self._turns[0]["ts"] if self._turns
+                    else time.time() - 3600)
+        today = datetime.now(timezone.utc).date().isoformat()
+        made = 0
+        for key, held in list(getattr(eng, "_held", {}).items()):
+            meta = held.meta or {}
+            try:
+                cts = datetime.fromisoformat(str(meta.get("created") or "")).timestamp()
+            except (TypeError, ValueError):
+                continue
+            if cts < first_ts or key in archived:
+                continue
+            fn = meta.get("filename") or key
+            dt = meta.get("doc_type") or "document"
+            line = (f"task: uploaded document '{fn}' ({dt}) was assessed "
+                    f"but not archived or printed — intake key {key} held")
+            m = {
+                "kind": ["action-proposal"], "status": ["pending"],
+                "action_type": ["task"], "source": ["doc-intake"],
+                "written_by": ["conversation_memory"],
+                "session_id": [self.session_id], "date": [today],
+            }
+            try:
+                await _mddb().add_document(
+                    collection=_actions_collection(),
+                    key=f"doc-followup-{today}-{self.session_id}-{made}",
+                    lang="en", content_md=line, meta=m)
+                made += 1
+            except Exception as exc:
+                _report_failure("doc_followup", exc)
+        if made:
+            logger.info("session %s: %d unclosed doc upload(s) proposed",
+                        self.session_id, made)
 
     async def _extract_candidates(self, transcript: str) -> None:
         """Auto-distill durable facts/decisions from the session into bank

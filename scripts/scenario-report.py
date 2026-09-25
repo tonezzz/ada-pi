@@ -85,22 +85,56 @@ def _post(url: str, payload: dict) -> bool:
         return False
 
 
+def _timeline_md(events: dict | None) -> str:
+    """Render per-turn records from scenario-live --events-json as a
+    markdown table — the human/Ada-readable timeline of what happened."""
+    if not events:
+        return ""
+    turns = events.get("turns") or []
+    if not turns:
+        return ""
+    lines = ["## Timeline", "",
+             "| time | turn | action | tools | verdict |",
+             "|---|---|---|---|---|"]
+    for t in turns:
+        tools = ", ".join(t.get("tools") or []) or "—"
+        verdict = "ok" if t.get("ok") else "FAIL"
+        action = t.get("prompt") or t.get("kind") or ""
+        if len(action) > 60:
+            action = action[:57] + "…"
+        lines.append(f"| {t.get('wall','')} | {t.get('n','')} | {action} "
+                     f"| {tools} | {verdict} |")
+        for f in (t.get("failures") or []):
+            lines.append(f"| | | | | ↳ {f} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _report(mddb: str, scenario: str, status: str, tier: str,
-            transcript: str, runs: int) -> bool:
+            transcript: str, runs: int, events: dict | None = None) -> bool:
     key = f"report/{scenario}-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
     valid_until = (
         datetime.date.today() + datetime.timedelta(days=REPORT_TTL_DAYS)
     ).isoformat()
+    meta = {
+        "kind": ["report"], "subject": ["scenario-live"],
+        "scenario": [scenario], "status": [status], "tier": [tier],
+        "runs": [str(runs)],
+        "last_verified": [datetime.date.today().isoformat()],
+        "valid_until": [valid_until],
+    }
+    if events:
+        turns = events.get("turns") or []
+        meta["turns"] = [str(len(turns))]
+        meta["duration_s"] = [str(events.get("duration_s") or "")]
+        failed = [str(t.get("n")) for t in turns if not t.get("ok")]
+        if failed:
+            meta["failed_turns"] = failed
+    content = (f"# {scenario} — {status}\n\n" + _timeline_md(events)
+               + "\n## Runner output\n\n" + transcript)
     return _post(f"{mddb.rstrip('/')}/add", {
         "collection": COLLECTION, "key": key, "lang": "en",
-        "contentMd": f"# {scenario} — {status}\n\n{transcript}",
-        "meta": {
-            "kind": ["report"], "subject": ["scenario-live"],
-            "scenario": [scenario], "status": [status], "tier": [tier],
-            "runs": [str(runs)],
-            "last_verified": [datetime.date.today().isoformat()],
-            "valid_until": [valid_until],
-        },
+        "contentMd": content, "meta": meta,
     })
 
 
@@ -146,23 +180,31 @@ def main() -> int:
             sep = "&" if "?" in url else "?"
             url += sep + urllib.parse.urlencode(params)
 
-        status, out, runs = "fail", "", 0
+        status, out, runs, events = "fail", "", 0, None
         for attempt in (1, 2):
             runs = attempt
-            cmd = [sys.executable, driver, path, "--url", url]
+            ev_path = os.path.join(
+                os.environ.get("TMPDIR", "/tmp"),
+                f"scenario-events-{name}-{attempt}.json")
+            cmd = [sys.executable, driver, path, "--url", url,
+                   "--events-json", ev_path]
             if api_key:
                 cmd += ["--api-key", api_key]
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=900,
             )
             out = proc.stdout + proc.stderr
+            try:
+                events = json.loads(open(ev_path).read())
+            except (OSError, ValueError):
+                events = None
             if proc.returncode == 0:
                 status = "flaky" if attempt == 2 else "pass"
                 break
 
         print(f"== {name}: {status} ({runs} run{'s' if runs > 1 else ''})")
         if not args.dry_run:
-            _report(args.mddb, name, status, tier, out[-6000:], runs)
+            _report(args.mddb, name, status, tier, out[-6000:], runs, events)
         try:
             from backend.event_log import log_event
             log_event("scenario-run", name, args.tier,

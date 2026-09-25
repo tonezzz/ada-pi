@@ -289,6 +289,10 @@ async def main() -> int:
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("-t", "--timing", action="store_true",
                     help="print per-turn event timeline (send->event offsets)")
+    ap.add_argument("--events-json", default=None,
+                    help="write per-turn records [{n,ts,kind,prompt,tools,"
+                         "transcript,ok,failures}] to this path — the "
+                         "scenario-report runner renders them as a timeline")
     args = ap.parse_args()
 
     import os
@@ -325,6 +329,8 @@ async def main() -> int:
         voice_snapshot = (vf, vf.read_bytes() if vf.exists() else None)
 
     total_fail = 0
+    turn_log: list[dict[str, Any]] = []
+    run_started = time.time()
     ws = None
     try:
         try:
@@ -340,6 +346,8 @@ async def main() -> int:
             expect.setdefault("settle_s", turn.get("settle_s", 5))
             if turn.get("sleep_s"):
                 await asyncio.sleep(float(turn["sleep_s"]))
+            turn_t0 = time.time()
+            kind, prompt = "text", ""
             if "reconnect" in turn:
                 away = (turn.get("reconnect") or {}).get("away_s")
                 rurl = url
@@ -347,6 +355,7 @@ async def main() -> int:
                     sep = "&" if "?" in rurl else "?"
                     rurl = f"{rurl}{sep}simulate_away_s={away}"
                 print(f"turn {i + 1}: reconnect (away_s={away})")
+                kind, prompt = "reconnect", f"away_s={away}"
                 await ws.close()
                 ws = await connect(rurl)
                 # The reconnect prime triggers the greeting turn unprompted —
@@ -362,11 +371,14 @@ async def main() -> int:
                     if not audio_path.exists():
                         audio_path = args.scenario.parent / str(turn["audio"])
                     audio_bytes = load_audio(audio_path)
+                    kind = "audio"
+                    prompt = audio_path.name
                     print(f"turn {i + 1}: audio {audio_path.name} "
                           f"({len(audio_bytes) / 32000:.1f}s)")
                     text = str(turn.get("user") or "") or None
                 else:
                     text = str(turn.get("user") or "")
+                    prompt = text[:120]
                     print(f"turn {i + 1}: {text!r}")
                 events, failures = await run_turn(
                     ws, text, expect, args.verbose, audio=audio_bytes
@@ -384,6 +396,17 @@ async def main() -> int:
                 for e in events
                 if e.get("type") == "assistant_transcript_delta"
             )
+            turn_log.append({
+                "n": i + 1,
+                "ts": round(turn_t0 - run_started, 1),
+                "wall": time.strftime("%H:%M:%S", time.localtime(turn_t0)),
+                "kind": kind, "prompt": prompt,
+                "tools": [str(e.get("name")) for e in events
+                          if e.get("type") == "tool_call"],
+                "transcript": transcript[:200],
+                "ok": not failures,
+                "failures": [str(f) for f in (failures or [])],
+            })
             if failures:
                 total_fail += len(failures)
                 print(f"  FAIL ({n_tools} tool calls)")
@@ -413,6 +436,18 @@ async def main() -> int:
                 except Exception as exc:
                     print(f"  cleanup: voice restore failed: {exc}")
 
+    if args.events_json:
+        try:
+            Path(args.events_json).write_text(json.dumps({
+                "scenario": spec.get("name") or args.scenario.stem,
+                "started": time.strftime(
+                    "%Y-%m-%d %H:%M:%S", time.localtime(run_started)),
+                "duration_s": round(time.time() - run_started, 1),
+                "turns": turn_log,
+                "passed": total_fail == 0,
+            }, ensure_ascii=False, indent=1), encoding="utf-8")
+        except OSError as exc:
+            print(f"events-json write failed: {exc}")
     print(f"{'PASS' if total_fail == 0 else 'FAIL'}: {total_fail} failed expectations")
     return 0 if total_fail == 0 else 1
 

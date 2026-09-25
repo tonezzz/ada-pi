@@ -142,7 +142,13 @@ DOC_INSTRUCTIONS = (
     "the archive slug, then ada_doc_get for details; NEVER search home devices "
     "for documents. ada_doc_archive saves a newly uploaded document set into "
     "the archive, and ada_doc_print prints archived pages on the DeskJet — both "
-    "need confirmed=true after restating what will be archived or printed."
+    "need confirmed=true after restating what will be archived or printed. "
+    "When a document was just uploaded (the system note carries an intake "
+    "key), propose a slug from the filename and assessment, and confirm the "
+    "slug and action before archiving — intake keys are held in RAM only, so "
+    "archive promptly rather than deferring. If ada_doc_archive reports "
+    "duplicates or near-duplicates, say so plainly and ask whether it's a "
+    "re-scan or a new version before proceeding."
 )
 
 
@@ -340,6 +346,10 @@ class GeminiLiveProvider(RealtimeProvider):
         # Callers may share one ConversationMemory across provider reconnects
         # so the server-side transcript survives a Gemini session swap.
         self.conversation = conversation or ConversationMemory(session_id or "unknown")
+        if self.tool_runner is not None:
+            # Share the L0 doc-work log: ada_doc_* calls append here, the
+            # session-end report folds it into the L1 timeline.
+            self.tool_runner.doc_log = self.conversation.doc_items
         self._bg_tasks: set[asyncio.Task] = set()
         # Monotonic time of the last confident ada_memory_search hit — used to
         # short-circuit a redundant ada_session_recall in the same turn.
@@ -2316,6 +2326,11 @@ class GeminiLiveProvider(RealtimeProvider):
                             "intake_key": {
                                 "type": "string",
                                 "description": "Held intake key from /api/documents/intake (doc/...).",
+                            },
+                            "intake_keys": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Multiple held intake keys — one set spanning several uploads/pages.",
                             },
                             "source_dir": {
                                 "type": "string",

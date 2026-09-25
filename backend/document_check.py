@@ -34,7 +34,7 @@ from google import genai
 from google.genai import types
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageOps
 
 logger = logging.getLogger("documents.check")
 
@@ -342,6 +342,7 @@ class DocumentCheckEngine:
         result = DocumentResult(durations_ms=durations)
         try:
             im = Image.open(io.BytesIO(image))
+            im = ImageOps.exif_transpose(im)  # phone shots carry EXIF orientation
             im.load()
         except Exception as exc:
             result.error = f"cannot decode image: {exc}"
@@ -464,3 +465,17 @@ def decode_image(payload: dict[str, Any]) -> tuple[bytes | None, str]:
     if not mime.startswith("image/"):
         raise ValueError("image_mime must be image/*")
     return data, mime
+
+
+_engine_singleton: "DocumentCheckEngine | None" = None
+
+
+def engine() -> "DocumentCheckEngine":
+    """Process-wide intake engine — held results live in RAM only, so the
+    PWA endpoint, ToolRunner (ada_doc_archive intake_key resolution) and
+    ConversationMemory (unclosed-upload proposals) must all see the same
+    instance. Replaces the pwa_server-local singleton."""
+    global _engine_singleton
+    if _engine_singleton is None:
+        _engine_singleton = DocumentCheckEngine()
+    return _engine_singleton

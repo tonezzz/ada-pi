@@ -12,6 +12,24 @@ from backend import doc_archive_client  # noqa: E402
 class DocConfirmedGateTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.runner = ToolRunner(AsyncMock(), instance_id="test")
+        # Default: documents bank allowed for this identity (Tony's keys are
+        # {full: true} in person_policies). Individual tests override.
+        self._allow = unittest.mock.patch.object(
+            self.runner.banks, "bank_allowed", return_value=True)
+        self._allow.start()
+        self.addCleanup(self._allow.stop)
+
+    async def test_all_doc_tools_denied_when_bank_not_allowed(self):
+        self._allow.stop()
+        with unittest.mock.patch.object(
+                self.runner.banks, "bank_allowed", return_value=False):
+            for tool in ("ada_doc_search", "ada_doc_get",
+                         "ada_doc_archive", "ada_doc_print"):
+                with self.assertRaises(PermissionError, msg=tool):
+                    await self.runner.execute(
+                        tool, {"query": "x", "slug": "x",
+                               "source_dir": "/tmp", "confirmed": True})
+        self._allow.start()
 
     async def test_archive_denied_without_confirmed(self):
         with self.assertRaises(PermissionError):
@@ -26,6 +44,24 @@ class DocConfirmedGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_search_and_get_are_read_only(self):
         self.assertNotIn("ada_doc_search", DOC_CONFIRMED_TOOLS)
         self.assertNotIn("ada_doc_get", DOC_CONFIRMED_TOOLS)
+
+    async def test_doc_log_records_search_and_archive(self):
+        self.runner.doc_log = []
+        with patch.object(doc_archive_client, "doc_search",
+                          new=AsyncMock(return_value=[{"slug": "A-68"}])):
+            await self.runner.execute("ada_doc_search", {"query": "deed"})
+        with patch.object(doc_archive_client, "doc_archive",
+                          new=AsyncMock(return_value={"archive_id": "x"})), \
+             patch("os.path.isdir", return_value=True), \
+             patch("os.listdir", return_value=["p1.jpg"]), \
+             patch("builtins.open", unittest.mock.mock_open(read_data=b"\xff\xd8jpeg")):
+            await self.runner.execute(
+                "ada_doc_archive",
+                {"slug": "x", "source_dir": "/tmp/d", "confirmed": True})
+        self.assertEqual([i["action"] for i in self.runner.doc_log],
+                         ["search", "archive"])
+        self.assertEqual(self.runner.doc_log[0]["found"], ["A-68"])
+        self.assertEqual(self.runner.doc_log[1]["pages"], 1)
 
     async def test_archive_passes_confirmed(self):
         with patch.object(doc_archive_client, "doc_archive",

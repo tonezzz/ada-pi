@@ -1305,16 +1305,12 @@ async def decision_check(request: Request) -> dict:
     return result.to_dict()
 
 
-_document_engine: DocumentCheckEngine | None = None
-
-
 def _get_document_engine() -> DocumentCheckEngine:
-    """Lazy — document intake keeps rendered artifacts in RAM only;
-    printing/archive are separate confirmed tools (P2/P3)."""
-    global _document_engine
-    if _document_engine is None:
-        _document_engine = DocumentCheckEngine()
-    return _document_engine
+    """Process-wide intake engine (backend.document_check.engine()) —
+    held results are RAM-only, so the REST endpoints, ToolRunner and
+    session-end reporting share one instance."""
+    from backend import document_check
+    return document_check.engine()
 
 
 @app.post("/api/documents/intake")
