@@ -18,7 +18,7 @@ turns:
   - user: "Put the apps index page on screen one — that's the slash apps slash page on tony-dell."
     expect:
       calls: [cast_to_screen]
-      result_contains: ["'screen': 1", "'delivered': 1"]
+      result_contains: ["'room': 'vcast-1'", "'delivered': 1"]
       response_nonempty: true
       timeout_s: 90
       settle_s: 6
@@ -26,7 +26,7 @@ turns:
   - user: "Play the mux dot dev HLS test stream on screen one."
     expect:
       calls: [cast_to_screen]
-      result_contains: ["'screen': 1", "'delivered': 1"]
+      result_contains: ["'room': 'vcast-1'", "'delivered': 1"]
       timeout_s: 120
       settle_s: 8
       response_nonempty: true
