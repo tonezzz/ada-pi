@@ -1263,7 +1263,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     "description": (
                         "Cast content to a numbered vcast virtual display (a browser/PWA screen — NOT the physical TV; "
                         "for the TV use tv_action or yt_cast). action='nav' url='<URL>' shows a web page, "
-                        "'play' url='<m3u8 or video URL>' plays video (HLS supported), 'image' url='<png/jpg>' "
+                        "'play' url='<m3u8, video, or YouTube/Vimeo page URL>' plays video (HLS supported, "
+                        "YouTube/Vimeo links auto-embed on the display), 'image' url='<png/jpg>' "
                         "shows a snapshot, 'audio' url plays sound or TTS, 'stop' returns it to idle. "
                         "Screens are numbered — call vcast_list first if you need to pick one."
                     ),
