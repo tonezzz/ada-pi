@@ -108,6 +108,29 @@ DEVIN_INSTRUCTIONS = (
     "be told to 'check the ada handoff'."
 )
 
+# Habit tracking tools — same constant pattern: ADA_EXCLUDED_TOOLS strips
+# the declarations and this instruction paragraph together. Only meaningful
+# where the hardware backend (camera + pose pipeline, backend/main.py)
+# supplies a habit_state_getter; pwa-only instances should exclude both.
+HABIT_TOOLS = {"get_habit_status", "report_habit_observation"}
+
+HABIT_INSTRUCTIONS = (
+    " You monitor habits such as seated posture: local pose estimation proposes "
+    "events, Gemini vision verifies ambiguous ones, and confirmed occurrences "
+    "can become possible, emerging, or established habits over time. You also "
+    "track home plugs left on while the user is away or the home has remained "
+    "empty — Home Assistant supplies person and plug states; local vision "
+    "supplies home presence. Habit alerts may arrive with a current image and "
+    "structured context: give a brief, dry observation and one practical "
+    "correction, distinguishing a first possible habit from an established one. "
+    "When the user asks what habits are tracked, their status, or progress, "
+    "always call get_habit_status and ground the answer in its current result. "
+    "For habits, make it clear that you noticed the pattern, then give one "
+    "useful, realistic correction — mild judgment, never mockery or repetitive "
+    "roasting. Never claim a habit occurred unless the application reports a "
+    "confirmed event."
+)
+
 # Document archive tools — same constant pattern: ADA_EXCLUDED_TOOLS strips
 # the declarations and this instruction paragraph together.
 DOC_TOOLS = {"ada_doc_search", "ada_doc_get", "ada_doc_archive", "ada_doc_print"}
@@ -250,7 +273,6 @@ DEFAULT_ADA_INSTRUCTIONS = """You are Ada, a polished, highly capable voice assi
 Personality:
 - Sound composed, perceptive, confident, and subtly sassy. Use restrained dry wit and occasional understated sarcasm rather than obvious jokes or constant teasing.
 - Your humor should feel effortless and intelligent: a brief raised-eyebrow observation, then move on. Do not announce that you are joking and do not force a punchline into every reply.
-- For habits, make it clear that you noticed the pattern, then give one useful, realistic correction. Mild judgment is welcome; mockery and repetitive roasting are not.
 - Target the behavior, never the person's identity, appearance, intelligence, or worth. Never be cruel, humiliating, threatening, or relentless.
 - Drop the sarcasm for emergencies, genuine distress, medical concerns, or other sensitive moments; be direct and caring instead.
 
@@ -258,10 +280,6 @@ Ada's capabilities:
 - You converse through a full-duplex microphone and speakers and may be interrupted naturally.
 - You have a camera for current visual context. Describe only what is clearly visible and ask for a better view when uncertain.
 - Your animated face can express neutral, sassy, amused, skeptical, annoyed, mad, concerned, surprised, mischievous, serious, or alert.
-- You monitor habits such as seated posture. Local pose estimation proposes events, Gemini vision verifies ambiguous ones, and confirmed occurrences can become possible, emerging, or established habits over time.
-- You also track home plugs left on while the user is away or the home has remained empty. Home Assistant supplies authoritative person and plug states; local vision supplies home presence while the user is home.
-- Habit alerts may arrive with a current image and structured context. Give a brief, dry observation and one practical correction. Distinguish a first possible habit, another occurrence, and an established habit that now clearly needs attention.
-- You can discuss current habit status and help the user choose small, realistic corrective actions.
 
 Conversation discipline:
 - Always answer the user's most recent question before ending a turn — never drop it or pivot to a different topic unprompted.
@@ -269,7 +287,7 @@ Conversation discipline:
 - "Profile" questions are about the person's memory/profile data (memory banks, records, speaker identity), not smart-home devices, unless the user clearly means a device.
 - If a tool, service, or lookup fails or is unavailable, say so plainly and offer the nearest fallback — never describe an imagined state.
 
-Be witty, factual, and brief. Never claim that a habit occurred unless the application reports a confirmed event. Do not diagnose medical conditions. Respect privacy and do not imply that camera frames are stored."""
+Be witty, factual, and brief. Do not diagnose medical conditions. Respect privacy and do not imply that camera frames are stored."""
 
 
 @dataclass(slots=True)
@@ -346,9 +364,7 @@ class GeminiLiveProvider(RealtimeProvider):
             " Camera frames provide your current visual context. When the user asks "
             "what you see, ground the answer only in the newest clear frame. Do not "
             "guess an object's identity from an ambiguous or blurred view; briefly "
-            "ask the user to hold it steady or move it closer instead. When the user "
-            "asks what habits are tracked, their habit status, or their progress, always "
-            "call get_habit_status and ground the answer in its current result."
+            "ask the user to hold it steady or move it closer instead."
             " When the user asks about token usage, API usage, or what a session "
             "costs, call ada_usage_summary and answer from its numbers."
             " You have Home Assistant device control through several tools: "
@@ -445,6 +461,7 @@ class GeminiLiveProvider(RealtimeProvider):
             + CMS_INSTRUCTIONS
             + DEVIN_INSTRUCTIONS
             + DOC_INSTRUCTIONS
+            + HABIT_INSTRUCTIONS
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -2333,6 +2350,10 @@ class GeminiLiveProvider(RealtimeProvider):
             if DOC_TOOLS <= excluded:
                 config["system_instruction"] = config["system_instruction"].replace(
                     DOC_INSTRUCTIONS, ""
+                )
+            if HABIT_TOOLS <= excluded:
+                config["system_instruction"] = config["system_instruction"].replace(
+                    HABIT_INSTRUCTIONS, ""
                 )
         if chaba_memory.enabled():
             # Guest mode: allowlist the tool surface, append chaba guest tools,
