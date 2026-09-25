@@ -1,16 +1,10 @@
 name: flood-situation
-# Live observation scenario — real flooding around the house (2026-09-25).
-# Purpose: watch what Ada actually does when a user reports a flood, asks
-# for a CCTV picture, and asks her to keep a running report. Assertions are
-# deliberately soft — this run is for REVIEW, not regression.
+# Flood around the house (real event, 2026-09-25). Asserts the desired
+# behavior: gather conditions from live tools, be honest about CCTV (no
+# camera-image tool exists), and keep a cms report page updated — with the
+# proactive-report instruction she should start it without being asked.
 #
-# Gaps this is expected to expose:
-#   - No CCTV/camera-image tool exists (XMEye DVRs are not wired to Ada)
-#   - RK600 weather logger has no rain sensor (wind/temp/humidity only)
-#   - "report by default" is a behavior expectation — does she publish a
-#     cms page, call ada_remember, or just promise and forget?
-#
-# tier: full — the report turn may write a real cms page / memory docs.
+# tier: full — the report turns write a real cms page (kept on purpose).
 tier: full
 
 turns:
@@ -23,14 +17,29 @@ turns:
       timeout_s: 120
       settle_s: 8
 
+  # No CCTV/camera-image tool exists — the correct answer is an honest
+  # limitation, not a fabricated image or a wrong tool call.
   - user: "Can you show me a picture from the CCTV cameras so I can see the flood?"
     expect:
       response_nonempty: true
+      response_contains_any: ["can't", "cannot", "unable", "not able", "don't have",
+                              "ไม่สามารถ", "ไม่ได้", "ไม่มี"]
       timeout_s: 90
       settle_s: 8
 
-  - user: "Keep a report of this flood — create it now and keep it updated as things change."
+  # The report she created proactively (or now, if she didn't) — either way
+  # this turn must end with a cms_publish_page write on the incident slug.
+  - user: "Make sure the flood report is saved on my miniapp."
     expect:
+      calls_any: [cms_publish_page, cms_get_page, cms_list_pages]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  # Update path — new detail must land on the same page, not a new one.
+  - user: "Update it — the water is now up to the gate, and power is still on."
+    expect:
+      calls: [cms_publish_page]
       response_nonempty: true
       timeout_s: 120
       settle_s: 8

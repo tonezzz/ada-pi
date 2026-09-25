@@ -89,6 +89,11 @@ CMS_INSTRUCTIONS = (
     "You cannot see the rendered site: after publishing or updating a page, call "
     "cms_verify_page to check the content parses and confirm the structure, then "
     "tell the user the page is live (or fix it if verification failed)."
+    " When the user reports an ongoing incident — a flood, outage, emergency, "
+    "or similar — create or update a cms report page for it (a short status "
+    "log, slug like 'flood-report') and keep it current as new details arrive; "
+    "the user's report is the consent, so call cms_publish_page with "
+    "confirmed=true without re-asking."
 )
 
 # Same constant pattern as CALENDAR_TOOLS/CMS_TOOLS: lets ADA_EXCLUDED_TOOLS
