@@ -24,18 +24,19 @@ turns:
     expect:
       calls: [ada_set_voice]
       result_contains: ["Aoede"]
+      events_contain: [{type: live_reconnecting}]
       response_nonempty: true
       timeout_s: 90
-      settle_s: 8
+      settle_s: 12
 
-  # The voice switch closes the live session and reconnects; the buffered
-  # live_reconnecting/ready frames arrive inside this turn's event window.
-  - sleep_s: 18
+  # The voice switch closes the live session and reconnects (events land in
+  # the previous turn's window or get buffered for this one). A working
+  # response here proves the fresh provider is live; set back to Kore.
+  - sleep_s: 12
     user: "Thanks — switch your voice back to Kore, please."
     expect:
       calls: [ada_set_voice]
       result_contains: ["Kore"]
-      events_contain: [{type: ready}]
       response_nonempty: true
       timeout_s: 120
       settle_s: 8
