@@ -1,0 +1,40 @@
+name: vcast-screen-cast
+# Live scenario — cast to a numbered vcast virtual display.
+#
+# What it verifies:
+#   - "put X on screen N" routes to cast_to_screen with the right action
+#   - the relay actually delivered the message to the display's room
+#     (result contains 'delivered': 1 — requires a registered display)
+#   - "stop screen N" returns it to idle
+#
+# NOTE: tool_result events stringify dicts with repr(), so result_contains
+# uses 'delivered': 1 style.
+#
+# tier: full — actuates a display (but never the TV).
+
+tier: full
+
+turns:
+  - user: "Put the apps index page on screen one — that's the slash apps slash page on tony-dell."
+    expect:
+      calls: [cast_to_screen]
+      result_contains: ["'screen': 1", "'delivered': 1"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Play the mux dot dev HLS test stream on screen one."
+    expect:
+      calls: [cast_to_screen]
+      result_contains: ["'screen': 1", "'delivered': 1"]
+      timeout_s: 120
+      settle_s: 8
+      response_nonempty: true
+
+  - user: "Stop casting to screen one."
+    expect:
+      calls: [cast_to_screen]
+      result_contains: ["'delivered': 1"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6

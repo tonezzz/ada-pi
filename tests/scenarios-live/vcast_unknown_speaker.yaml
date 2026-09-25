@@ -1,0 +1,27 @@
+name: vcast-unknown-speaker
+# Live scenario — an unrecognized voice must NOT be able to cast to a
+# vcast display (fail closed on speaker ACL, same posture as other
+# actuating tools).
+#
+# What it verifies:
+#   - foreign voice -> speaker_unrecognized fires
+#   - no cast_to_screen / tv_action / yt_cast calls happen
+#     (set_facial_expression is cosmetic and exempt)
+#
+# voice-other.pcm is a synthetic non-Tony speaker signature.
+
+turns:
+  # greeting absorbs the welcome line
+  - user: "Ada, quick check — what is two plus two?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains_any: ["four", "4"]
+
+  - audio: ../fixtures/voice-other.pcm
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      events_contain: [{type: speaker_unrecognized}]
+      no_calls: true
+      no_calls_except: [set_facial_expression]

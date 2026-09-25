@@ -1,0 +1,24 @@
+name: vcast-list
+# Live scenario — Ada can enumerate vcast virtual displays.
+#
+# What it verifies:
+#   - "what screens are available" triggers vcast_list
+#   - she reports the numbered screens (screen-test display must be
+#     registered before running: see vcast-headless.mjs helper)
+#
+# tier: smoke — read-only tool call.
+
+turns:
+  - user: "Ada, what virtual screens are available for casting?"
+    expect:
+      calls: [vcast_list]
+      timeout_s: 90
+      settle_s: 6
+      response_nonempty: true
+
+  - user: "Is screen one online?"
+    expect:
+      calls_any: [vcast_list]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
