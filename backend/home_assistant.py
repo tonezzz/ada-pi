@@ -277,7 +277,10 @@ class HomeAssistantClient:
         client = await self._http_client()
         payload = {"cmd": cmd, "text": text}
         payload.update({k: v for k, v in extra.items() if v is not None})
-        response = await client.post("/api/services/rest_command/tv_action", json=payload)
+        # nav/cast commands take 5-30s server-side (page load + screenshot +
+        # playlist wait + cast handshake) — far past the shared 5s default.
+        response = await client.post(
+            "/api/services/rest_command/tv_action", json=payload, timeout=45.0)
         response.raise_for_status()
         return {"cmd": cmd, "text": text, **extra}
 

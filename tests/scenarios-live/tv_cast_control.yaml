@@ -1,0 +1,57 @@
+name: tv-cast-control
+# Live scenario — exercises the tv_action vocabulary against the real TV
+# (cast-browser on tony-dell :8799, TONY-TV Cast).
+#
+# What it verifies:
+#   - nav <URL> casts a controllable page
+#   - scroll / press verbs reach the cast-browser API
+#     (press carries its key name in text -> mapped to key by the
+#     rest_command payload template)
+#   - tony-omen:workspace:N / screenlive:workspace:N desktop casting
+#     (side effect: switches the live workspace — run when that's OK)
+#
+# NOTE: tool_result events stringify nested dicts with repr() (single
+# quotes), so result_contains substrings must use 'cmd': 'nav' style.
+#
+# tier: full — real TV actuation.
+tier: full
+
+turns:
+  - user: "Put google dot com on the TV."
+    expect:
+      calls: [tv_action]
+      result_contains: ["'cmd': 'nav'"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Scroll down on the TV."
+    expect:
+      calls: [tv_action]
+      result_contains: ["'cmd': 'scroll'", "down"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 5
+
+  - user: "Press the escape key on the TV."
+    expect:
+      calls: [tv_action]
+      result_contains: ["'cmd': 'press'", "Escape"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 5
+
+  - user: "Now cast my desktop on the TV — workspace one."
+    expect:
+      calls: [tv_action]
+      result_contains: ["'cmd': 'nav'", "workspace"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Stop casting my desktop — put the TV back to normal."
+    expect:
+      calls_any: [tv_action, yt_cast_stop, control_media_player]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
