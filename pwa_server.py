@@ -442,6 +442,11 @@ async def voice_socket(ws: WebSocket) -> None:
     await ws.accept()
     session_id = uuid.uuid4().hex[:10]
     tool_runner.session_caller_name = auth.websocket_caller(ws) or None
+    # tool_runner is shared across sessions — speaker identity must NOT
+    # bleed over from the previous session (a Tony-identified session would
+    # otherwise grant the next caller person.tony's full bank/policy scope).
+    # Speaker ID re-sets this once it identifies the voice in THIS session.
+    tool_runner.current_speaker_ha_person = None
     logger.info(
         "session=%s client connected (caller=%s)",
         session_id, tool_runner.session_caller_name or "anonymous",
@@ -747,6 +752,9 @@ async def voice_socket(ws: WebSocket) -> None:
             with suppress(Exception):
                 await speaker_session.close()
             tool_runner.speaker_session = None
+        # Drop the identified-speaker binding with the session — it must
+        # not carry into the next session on this shared runner.
+        tool_runner.current_speaker_ha_person = None
         with suppress(Exception):
             await ws.close()
         if not no_persist:

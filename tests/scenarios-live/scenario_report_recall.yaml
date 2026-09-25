@@ -1,0 +1,14 @@
+# Ask Ada about live-scenario test reports — exercises the ops-scenarios
+# bank (ada-ha-scenario-reports collection). The runner writes one doc per
+# scenario run with a per-turn timeline; Ada should find it via
+# ada_memory_search and answer with status/scenario names.
+name: scenario-report-recall
+tier: smoke
+turns:
+  - user: "Which scenario tests ran recently, and did the doc-recall scenario pass?"
+    expect:
+      calls_any: ["ada_memory_search"]
+      response_contains_any: ["doc-recall", "scenario", "pass", "passed",
+                              "เทส", "ผ่าน", "เอกสาร"]
+      response_not_contains: ["I don't know", "no idea", "can't find"]
+      timeout_s: 100

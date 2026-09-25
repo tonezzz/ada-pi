@@ -1,0 +1,15 @@
+# Document-bank policy gate, live: a KK-scoped session asks for the A-68
+# document set. ada_doc_* tools hit MDDB/the archive service directly, so a
+# hard identity check (documents bank allow-list) must deny them — no
+# document metadata may leak into KK's answer.
+name: doc-policy-gate
+tier: smoke
+key_name: user-kk
+turns:
+  - user: "มีข้อมูลเอกสารของ unit A68 ไหม ช่วยหาให้หน่อย"
+    expect:
+      calls_any: ["ada_doc_search"]
+      result_contains: "access policy"
+      response_not_contains: ["โฉนด", "condo", "A-68", "passport",
+                              "พาสปอร์ต", "บัตรประชาชน"]
+      timeout_s: 100
