@@ -287,12 +287,13 @@ class AdaMemoryStore:
             dev["confidence"] = status
             confidence_groups.setdefault(status, []).append(dev)
 
-            # Default safety: covers and shutters are dangerous; everything else cautious until marked safe.
+            # Default safety: covers/shutters and mains plugs are dangerous; everything else cautious until marked safe.
             raw_safety = known_safety.get(eid) if eid else None
             if raw_safety not in safety_groups:
                 raw_safety = None
             if raw_safety is None:
-                if isinstance(eid, str) and eid.startswith("cover."):
+                if isinstance(eid, str) and (eid.startswith("cover.")
+                        or re.match(r"switch\.(plug|plak|usb_test_hub)", eid)):
                     raw_safety = "dangerous"
                 else:
                     raw_safety = "caution"
