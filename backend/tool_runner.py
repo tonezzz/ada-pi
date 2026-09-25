@@ -36,7 +36,7 @@ logger = logging.getLogger("tools")
 # are blocked entirely when ADA_READ_ONLY=true.
 CONTROL_TOOLS = {
     "control_entity", "control_cover", "press_button",
-    "control_media_player", "tv_action",
+    "control_media_player", "tv_action", "cast_to_screen",
 }
 
 # Tools that mutate curated memory banks. Each bank's write_policy decides
@@ -1517,3 +1517,54 @@ class ToolRunner:
         """Stop the currently casting YouTube video on the TV."""
         import asyncio
         return await asyncio.to_thread(self._yt_api, "/stop", {})
+
+    # -- vcast virtual displays (input-bridge relay on tony-dell :3010) --
+
+    @staticmethod
+    def _vcast_api(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        import urllib.request
+        base = os.environ.get(
+            "VCAST_API", "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(
+            base + path, data=data,
+            headers={"Content-Type": "application/json"} if data else {})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.load(r)
+
+    async def vcast_list(self) -> dict[str, Any]:
+        """List registered vcast virtual displays (screen number, device,
+        online/offline, current state)."""
+        import asyncio
+        data = await asyncio.to_thread(self._vcast_api, "/displays")
+        return {
+            "screens": [
+                {
+                    "screen": s["screen"],
+                    "name": s["name"],
+                    "device": s.get("label") or s["name"],
+                    "online": s.get("connected", False),
+                    "state": s.get("state") or "idle",
+                }
+                for s in data.get("screens", [])
+            ],
+            "pending": len(data.get("pending", [])),
+        }
+
+    async def cast_to_screen(self, screen: int, action: str = "nav",
+                             url: str = "") -> dict[str, Any]:
+        """Cast to a numbered vcast virtual display (NOT the TV).
+        action: nav|play|image|audio|stop. url required except for stop."""
+        import asyncio
+        action = str(action or "nav").lower()
+        screen = int(screen)
+        if action == "stop":
+            msg: dict[str, Any] = {"type": "stop"}
+        else:
+            if action not in {"nav", "play", "image", "audio"}:
+                raise ValueError(f"unknown action {action!r} (nav|play|image|audio|stop)")
+            if not url:
+                raise ValueError("url is required for " + action)
+            msg = {"type": action, "url": url}
+        return await asyncio.to_thread(
+            self._vcast_api, "/pub", {"screen": screen, "msg": msg})

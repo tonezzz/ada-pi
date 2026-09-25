@@ -101,6 +101,7 @@ DEVIN_TOOLS = {"devin_dispatch", "devin_status", "devin_followup"}
 ACTUATING_TOOLS = frozenset({
     "control_entity", "control_cover", "control_media_player",
     "press_button", "tv_action", "yt_cast", "yt_cast_stop",
+    "cast_to_screen",
     "ada_doc_archive", "ada_doc_print", "ada_set_voice",
     "devin_dispatch",
     "calendar_create_event", "calendar_delete_event",
@@ -1186,6 +1187,49 @@ class GeminiLiveProvider(RealtimeProvider):
                             "role": {"type": "string", "description": "ARIA role for click (e.g. 'button')."},
                         },
                         "required": ["cmd"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "vcast_list",
+                    "description": (
+                        "List the vcast virtual displays (numbered software cast targets — iPad/iPhone/browser "
+                        "running the vcast app, NOT the TV). Returns screen number, name, device, online/offline, "
+                        "and what is playing. Use when the user refers to 'screen 1/2/...' or asks which screens "
+                        "are available; call before cast_to_screen if unsure."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "cast_to_screen",
+                    "description": (
+                        "Cast content to a numbered vcast virtual display (a browser/PWA screen — NOT the physical TV; "
+                        "for the TV use tv_action or yt_cast). action='nav' url='<URL>' shows a web page, "
+                        "'play' url='<m3u8 or video URL>' plays video (HLS supported), 'image' url='<png/jpg>' "
+                        "shows a snapshot, 'audio' url plays sound or TTS, 'stop' returns it to idle. "
+                        "Screens are numbered — call vcast_list first if you need to pick one."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "screen": {
+                                "type": "integer",
+                                "description": "Screen number (the # shown on the display and in vcast_list).",
+                            },
+                            "action": {
+                                "type": "string",
+                                "description": "nav | play | image | audio | stop (default nav).",
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "Target URL for nav/play/image/audio. Not needed for stop.",
+                            },
+                        },
+                        "required": ["screen"],
                         "additionalProperties": False,
                     },
                 }, {
