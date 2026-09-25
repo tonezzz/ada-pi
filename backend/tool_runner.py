@@ -618,8 +618,12 @@ class ToolRunner:
                 "denied %s on %r for identity %r",
                 name, bank.name, self._memory_identity(),
             )
+            allowed = ", ".join(
+                self.banks.banks_for_person(self._memory_identity())
+            )
             raise PermissionError(
                 f"memory bank '{bank.name}' is not available for this speaker"
+                + (f" — allowed banks: {allowed}" if allowed else "")
             )
         if not bank.writable:
             logger.warning("denied %s on %r: bank not writable", name, bank_name)

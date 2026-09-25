@@ -319,8 +319,10 @@ def _check_bank_allowed(
     person_policies exclude this bank for this speaker."""
     if not registry.bank_allowed(str(bank).strip(), person_entity):
         logger.warning("denied bank %r for speaker %r", bank, person_entity)
+        allowed = ", ".join(registry.banks_for_person(person_entity))
         raise PermissionError(
             f"memory bank '{bank}' is not available for this speaker"
+            + (f" — allowed banks: {allowed}" if allowed else "")
         )
 
 

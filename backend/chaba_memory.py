@@ -93,7 +93,25 @@ class ChabaMemory:
         # keep their true first-contact date
         doc.setdefault("first_seen", doc.get("created") or today)
         doc["last_seen"] = today
+        first = not path.exists()
         self._save_doc(path, doc)
+        if first:
+            self._log_event("first-contact", name, kind, "first session connect")
+
+    def _log_event(self, kind: str, actor: str, subject: str, text: str) -> None:
+        """Append one structured event to the rolling events.md timeline —
+        '## <ts> — <kind>: <actor> (<subject>)' + detail line. Bounded log."""
+        path = self._path("events.md")
+        stamp = time.strftime("%Y-%m-%d %H:%M")
+        entry = f"## {stamp} — {kind}: {actor} ({subject})\n{text[:200]}\n"
+        try:
+            old = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            old = ""
+        entries = [e.strip() for e in re.split(r"\n(?=## )", old) if e.strip()]
+        entries.append(entry.strip())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n\n".join(entries[-120:]) + "\n", encoding="utf-8")
 
     def memory_file_for(self, session_id: str | None) -> Path:
         ident = self.identity(session_id)
@@ -292,6 +310,7 @@ class ChabaMemory:
             **(extra or {}),
         }
         self._save_doc(self.pending_file(name), doc)
+        self._log_event("registration", name, "guest", "promotion requested")
         # Claim the name for this session immediately — memory writes before
         # promotion already land under guests/<name>.yml.
         if session_id:
@@ -340,6 +359,8 @@ class ChabaMemory:
             if _slug(ident.get("name", "")) == slug:
                 self.set_identity(sid, "user", doc.get("name", name))
                 upgraded.append(sid)
+        self._log_event("promotion", doc.get("name", name), "user",
+                        f"guest→user{'; bound ' + doc['ha_person'] if doc.get('ha_person') else ''}")
         logger.info("promoted %s -> user (ha_person=%s, sessions=%s)",
                     name, doc["ha_person"], upgraded)
         return {"ok": True, "name": doc.get("name", name), "slug": slug,
