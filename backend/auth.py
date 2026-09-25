@@ -101,6 +101,11 @@ def create_key(name: str) -> str | None:
     data[name] = {"key": key, "device": None,
                   "issued": time.strftime("%Y-%m-%d")}
     _save_file_keys(data)
+    try:
+        from backend.event_log import log_event
+        log_event("key-issued", name, "key", "device key created")
+    except Exception:
+        pass
     return key
 
 

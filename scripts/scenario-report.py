@@ -33,6 +33,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, REPO)  # so 'backend.event_log' resolves from any cwd
 COLLECTION = "ada-ha-scenario-reports"
 REPORT_TTL_DAYS = 14
 
@@ -141,6 +142,12 @@ def main() -> int:
         print(f"== {name}: {status} ({runs} run{'s' if runs > 1 else ''})")
         if not args.dry_run:
             _report(args.mddb, name, status, tier, out[-6000:], runs)
+        try:
+            from backend.event_log import log_event
+            log_event("scenario-run", name, args.tier,
+                      f"{status} in {runs} run{'s' if runs > 1 else ''}")
+        except Exception:
+            pass
         results.append((name, status))
 
     failed = [n for n, s in results if s == "fail"]

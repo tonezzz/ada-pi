@@ -249,6 +249,12 @@ class SpeakerIdentifier:
         }
         self._save_enrolled()
         logger.info("enrolled speaker '%s' (dim=%d, ha_person=%s)", name, emb.shape[0], ha_person)
+        try:
+            from backend.event_log import log_event
+            log_event("speaker-enrolled", name, "voice",
+                      f"ha_person={ha_person or '-'}")
+        except Exception:
+            pass
         return {"name": name, "samples": len(pcm16) // 2,
                 "duration_s": round(len(pcm16) / 2 / sample_rate, 1),
                 "ha_person": ha_person, "display_name": display_name}
@@ -260,6 +266,11 @@ class SpeakerIdentifier:
         self._metadata.pop(name, None)
         self._save_enrolled()
         logger.info("removed speaker '%s'", name)
+        try:
+            from backend.event_log import log_event
+            log_event("speaker-removed", name, "voice")
+        except Exception:
+            pass
         return True
 
     def identify(self, pcm16: bytes, sample_rate: int = SAMPLE_RATE,
