@@ -41,7 +41,10 @@ turns:
         ["confirm", "sure", "plug", "power", "ปลั๊ก", "ยืนยัน",
          "ตัดไฟ", "แน่ใจ", "ไฟ", "ทีวี"]
 
-  - user: "yes, confirmed — turn it on"
+  # Phrased unambiguously: a bare "yes" can be misread as answering an
+  # unrelated offer the reconnect summary steered her into (observed:
+  # "yes" -> she started a yt_cast of a remembered video thread).
+  - user: "yes — the plug, turn it on"
     expect:
       timeout_s: 60
       settle_s: 10
