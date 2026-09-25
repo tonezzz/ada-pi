@@ -18,6 +18,7 @@ from google import genai
 from google.genai import types
 
 from backend import chaba_memory, voice_config
+from backend.instance import ada_instance_id
 from backend.conversation_memory import ConversationMemory
 from backend.tool_runner import ToolRunner
 from backend.usage_tracker import usage_ledger
@@ -522,11 +523,56 @@ class GeminiLiveProvider(RealtimeProvider):
         self.session_id = session_id or "-"
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
+        self._ops_events_sent = 0
+        try:
+            self._ops_collection = f"ada-ha-events-{ada_instance_id()}"
+        except RuntimeError:
+            self._ops_collection = None
         self._response_active = False
         self.usage_input_tokens = 0
         self.usage_output_tokens = 0
         self.usage_input_by_modality: dict[str, int] = {}
         self.usage_output_by_modality: dict[str, int] = {}
+
+    def _emit_ops_event(self, ev_type: str, detail: str,
+                        tool: str | None = None) -> None:
+        """Fire-and-forget ops event to ada-ha-events-<instance> — the
+        hourly chaba report feed surfaces these. Capped per session so a
+        storm can't spam the index."""
+        if self._ops_collection is None or self._ops_events_sent >= 5:
+            return
+        runner = self.tool_runner
+        if runner is None or getattr(runner, "mddb", None) is None:
+            return
+        self._ops_events_sent += 1
+        collection = self._ops_collection
+        session_id = self.session_id
+
+        async def _post() -> None:
+            try:
+                now = datetime.now().astimezone()
+                meta: dict[str, list[str]] = {
+                    "kind": ["ops-event"],
+                    "type": [ev_type],
+                    "instance": [collection.rsplit("-", 1)[-1]],
+                    "session_id": [session_id],
+                    "ts": [now.isoformat(timespec="seconds")],
+                }
+                if tool:
+                    meta["tool"] = [str(tool)]
+                await runner.mddb.add_document(
+                    collection=collection,
+                    key=(f"ops-{session_id}-{ev_type}-"
+                         f"{now:%Y%m%d%H%M%S%f}"),
+                    lang="en",
+                    content_md=detail,
+                    meta=meta,
+                    timeout=30,
+                )
+            except Exception:
+                logger.debug("ops event emit failed", exc_info=True)
+
+        asyncio.create_task(_post())
 
     def _user_confirmed(self, input_transcript: str) -> bool:
         """True when the user's own recent speech affirms — `confirmed=true`
@@ -2735,6 +2781,12 @@ class GeminiLiveProvider(RealtimeProvider):
                         if call.name in ACTUATING_TOOLS:
                             actuations_this_turn += 1
                         if tool_calls_this_turn > tool_budget:
+                            if not budget_hit:
+                                self._emit_ops_event(
+                                    "tool_storm",
+                                    f"Turn exceeded the tool-call budget "
+                                    f"({tool_budget}) — further calls refused.",
+                                    tool=str(call.name))
                             budget_hit = True
                             logger.warning(
                                 "session=%s per-turn tool-call budget %d exhausted — refusing %s",
@@ -2744,6 +2796,14 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "Tool budget for this turn exhausted — stop calling tools "
                                 "and answer the user from what you already have.")}
                         elif actuations_this_turn > actuation_budget:
+                            if actuations_this_turn == actuation_budget + 1:
+                                self._emit_ops_event(
+                                    "actuation_cap",
+                                    f"Turn exceeded the actuation budget "
+                                    f"({actuation_budget}) — refused "
+                                    f"{call.name}.",
+                                    tool=str(call.name))
+                            budget_hit = True
                             logger.warning(
                                 "session=%s per-turn actuation budget %d exhausted — refusing %s",
                                 self.session_id, actuation_budget, call.name,
@@ -2894,6 +2954,11 @@ class GeminiLiveProvider(RealtimeProvider):
                         elif call.name == "ada_decision_check" and self.tool_runner is not None:
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
                         elif call.name == "ada_remember" and budget_hit:
+                            self._emit_ops_event(
+                                "remember_block",
+                                "ada_remember refused — turn hit the tool "
+                                "budget, content may be confabulated.",
+                                tool="ada_remember")
                             # The plan/summary the model wants to save never
                             # survived the storm — refuse rather than persist
                             # confabulated content.
@@ -2912,6 +2977,12 @@ class GeminiLiveProvider(RealtimeProvider):
                                             self.session_id, call.name,
                                         )
                                         call_args.pop("confirmed", None)
+                                        self._emit_ops_event(
+                                            "confirm_strip",
+                                            f"Stripped model-asserted "
+                                            f"confirmed=true on {call.name} — "
+                                            f"no user affirmation found.",
+                                            tool=str(call.name))
                                     if call.name == "ada_memory_search":
                                         q = call_args.get("query")
                                         if q:
