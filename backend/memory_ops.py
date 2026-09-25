@@ -405,7 +405,6 @@ async def memory_search(
         record_use_bg(mddb, b.mddb_collection, used_docs)
     return {
         "bank": b.name,
-        "collection": b.mddb_collection,
         "count": len(hits),
         "hits": hits,
         "degraded": degraded,
