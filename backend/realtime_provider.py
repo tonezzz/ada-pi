@@ -291,6 +291,9 @@ Conversation discipline:
 - Always answer the user's most recent question before ending a turn — never drop it or pivot to a different topic unprompted.
 - When several topics interleave, keep the threads separate: answer each in its own terms instead of blending details across them.
 - "Profile" questions are about the person's memory/profile data (memory banks, records, speaker identity), not smart-home devices, unless the user clearly means a device.
+- Questions about ongoing work, development, projects, or "where we left off" are memory questions — search memory first with ada_memory_search (bank='all') or ada_session_recall. Calendar/task tools (plan_day, tasks_list) are only for schedules and todos, never for project status.
+- Gather the minimum tool data needed, then answer — never enumerate devices, sensors, or settings to answer a memory or planning question.
+- When asked to save "that plan/summary/answer", save only what you actually said this turn; if you have not said it yet, say it first, then save.
 - If a tool, service, or lookup fails or is unavailable, say so plainly and offer the nearest fallback — never describe an imagined state.
 
 Be witty, factual, and brief. Do not diagnose medical conditions. Respect privacy and do not imply that camera frames are stored."""
@@ -2596,6 +2599,9 @@ class GeminiLiveProvider(RealtimeProvider):
         response_started_at = 0.0
         response_audio_chunks = 0
         response_audio_bytes = 0
+        tool_calls_this_turn = 0
+        tool_budget = int(os.environ.get("ADA_TOOL_CALL_BUDGET", "20"))
+        budget_hit = False
 
         while not self._closed:
             async for message in self._session.receive():
@@ -2622,7 +2628,17 @@ class GeminiLiveProvider(RealtimeProvider):
                             "args": _safe_args(call.args),
                         })
                         requested = (call.args or {}).get("expression")
-                        if call.name == "set_facial_expression" and requested in EXPRESSION_NAMES:
+                        tool_calls_this_turn += 1
+                        if tool_calls_this_turn > tool_budget:
+                            budget_hit = True
+                            logger.warning(
+                                "session=%s per-turn tool-call budget %d exhausted — refusing %s",
+                                self.session_id, tool_budget, call.name,
+                            )
+                            result = {"error": (
+                                "Tool budget for this turn exhausted — stop calling tools "
+                                "and answer the user from what you already have.")}
+                        elif call.name == "set_facial_expression" and requested in EXPRESSION_NAMES:
                             yield ProviderEvent("expression", {"name": requested})
                             result = {"output": f"Ada is now {requested}"}
                         elif call.name == "get_home_state" and self.home_assistant_client is not None:
@@ -2764,6 +2780,14 @@ class GeminiLiveProvider(RealtimeProvider):
                             result = {"output": self._set_voice(dict(call.args or {}))}
                         elif call.name == "ada_decision_check" and self.tool_runner is not None:
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
+                        elif call.name == "ada_remember" and budget_hit:
+                            # The plan/summary the model wants to save never
+                            # survived the storm — refuse rather than persist
+                            # confabulated content.
+                            result = {"error": (
+                                "The tool budget was exhausted this turn, so the earlier "
+                                "part of the answer may be missing — restate the content "
+                                "aloud and save it on the next turn.")}
                         else:
                             if self.tool_runner is not None:
                                 try:
@@ -2822,6 +2846,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         response_audio_bytes, input_transcript.strip(),
                     )
                     self._response_active = False
+                    tool_calls_this_turn = 0
+                    budget_hit = False
                     yield ProviderEvent("response_interrupted", {})
                     # Gemini 3.1 can include several content parts in one event.
                     # Any audio/transcript accompanying an interruption belongs
@@ -2867,6 +2893,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         self.conversation.add_user(transcript)
                         yield ProviderEvent("user_transcript", {"text": transcript})
                     input_transcript = ""
+                    tool_calls_this_turn = 0
+                    budget_hit = False
                     if assistant_turn_text.strip():
                         self.conversation.add_assistant(assistant_turn_text)
                         assistant_turn_text = ""
