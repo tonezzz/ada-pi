@@ -20,9 +20,10 @@ turns:
       timeout_s: 90
       settle_s: 8
 
-  - user: "Actually — can you change your voice itself? Pick a different voice for me."
+  - user: "Actually — can you change your voice itself? Switch to the Aoede voice, please."
     expect:
       calls: [ada_set_voice]
+      result_contains: ["Aoede"]
       response_nonempty: true
       timeout_s: 90
       settle_s: 8
