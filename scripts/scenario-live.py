@@ -43,6 +43,17 @@ Audio turns (speaker-ID / enrollment tests):
     expect: {timeout_s: 120, settle_s: 10}
   .wav files are converted to PCM16 16 kHz mono automatically.
 
+Upload turns (card attach flow — ada-voice-card/ada-chat-card 📎):
+  - upload: tests/fixtures/doc-receipt.png
+    filename: receipt.png   # optional override (default: basename)
+    mode: both              # intake mode (default 'both', matching the cards)
+    expect: {response_nonempty: true}
+  The driver POSTs the image to {http_base}/api/documents/intake (with the
+  scenario api key), then sends the same "[document uploaded via card]"
+  session note the cards send — filename, intake_key, doc_type, size,
+  warnings — as a ws text turn. The normal expect vocabulary checks Ada's
+  response; the intake result lands in the turn log prompt.
+
 Extra connect params (top-level):
   params: {simulate_unknown_speaker: 1}    appended to the ws URL on the
                                            first connect (reconnects keep
@@ -138,6 +149,45 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
         if any(all(e.get(k) == v for k, v in bad.items()) for e in events):
             failures.append(f"events_not_contain: matched {bad}")
     return failures
+
+
+def intake_upload(http_base: str, api_key: str, path: Path,
+                  filename: str, mode: str) -> dict:
+    """Mirror of the cards' _uploadDoc: POST the image to
+    /api/documents/intake and return the parsed intake result."""
+    import base64
+    import urllib.request
+
+    mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+    req = urllib.request.Request(
+        f"{http_base}/api/documents/intake",
+        data=json.dumps({
+            "image_b64": base64.b64encode(path.read_bytes()).decode(),
+            "image_mime": mime,
+            "filename": filename,
+            "mode": mode,
+        }).encode(),
+        headers={"Content-Type": "application/json", "x-api-key": api_key},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        return json.loads(resp.read())
+
+
+def doc_upload_note(filename: str, out: dict) -> str:
+    """The exact session note the cards inject after a successful intake —
+    keep byte-identical semantics with ada-voice-card/ada-chat-card."""
+    measured = out.get("measured") or {}
+    w = measured.get("width") or "?"
+    h = measured.get("height") or "?"
+    warns = [str(x) for x in (out.get("warnings") or [])]
+    return (
+        f"[document uploaded via card] file={filename} "
+        f"intake_key={out.get('key')} type={out.get('doc_type')} size={w}x{h}"
+        + (f" warnings={'; '.join(warns)}" if warns else "")
+        + " — ask what to do with it (archive/print);"
+          " the intake key is held in RAM only."
+    )
 
 
 def load_audio(path: Path) -> bytes:
@@ -316,6 +366,9 @@ async def main() -> int:
     for k, v in (spec.get("params") or {}).items():
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}{k}={v}"
+    http_base = (url.split("?")[0]
+                 .replace("ws://", "http://").replace("wss://", "https://")
+                 .rsplit("/ws", 1)[0])
 
     async def connect(target: str) -> Any:
         ws = await websockets.connect(target, max_size=8 * 1024 * 1024)
@@ -370,6 +423,7 @@ async def main() -> int:
                 text = None
             else:
                 audio_bytes = None
+                upload_error = None
                 if turn.get("audio"):
                     # Try tests/fixtures/<name> first (scenarios-live -> tests),
                     # then a path relative to the scenario file itself.
@@ -382,13 +436,36 @@ async def main() -> int:
                     print(f"turn {i + 1}: audio {audio_path.name} "
                           f"({len(audio_bytes) / 32000:.1f}s)")
                     text = str(turn.get("user") or "") or None
+                elif turn.get("upload"):
+                    kind = "upload"
+                    img_path = (args.scenario.parent / ".." / str(turn["upload"])).resolve()
+                    if not img_path.exists():
+                        img_path = args.scenario.parent / str(turn["upload"])
+                    fname = str(turn.get("filename") or img_path.name)
+                    print(f"turn {i + 1}: upload {fname}")
+                    try:
+                        out = await asyncio.to_thread(
+                            intake_upload, http_base, api_key, img_path,
+                            fname, str(turn.get("mode") or "both"),
+                        )
+                        text = doc_upload_note(fname, out)
+                        prompt = f"{fname} → {out.get('doc_type')} ({out.get('key')})"
+                        if args.verbose:
+                            print(f"      intake: {prompt}")
+                    except Exception as exc:
+                        upload_error = str(exc)
+                        text = None
+                        prompt = f"{fname} (intake failed)"
                 else:
                     text = str(turn.get("user") or "")
                     prompt = text[:120]
                     print(f"turn {i + 1}: {text!r}")
-                events, failures = await run_turn(
-                    ws, text, expect, args.verbose, audio=audio_bytes
-                )
+                if upload_error:
+                    events, failures = [], [f"upload: {upload_error}"]
+                else:
+                    events, failures = await run_turn(
+                        ws, text, expect, args.verbose, audio=audio_bytes
+                    )
             if args.timing:
                 for e in events:
                     t = e.get("type")
@@ -427,7 +504,6 @@ async def main() -> int:
         if not args.no_cleanup:
             mddb_url = os.environ.get("MDDB_BASE_URL") or "http://127.0.0.1:11023/v1"
             run_cleanup(spec, mddb_url.rstrip("/"), args.verbose)
-            http_base = url.split("?")[0].replace("ws://", "http://").replace("wss://", "https://").rsplit("/ws", 1)[0]
             run_speaker_cleanup(spec, http_base, api_key, args.verbose)
             if voice_snapshot is not None:
                 vf, data = voice_snapshot
