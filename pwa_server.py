@@ -427,7 +427,10 @@ async def _prime_session(
             person_entity=tool_runner._memory_identity(),
         )
         if text:
+            t0 = time.monotonic()
             await provider.send_text_turn(text)
+            logger.info("session=%s prime injected (%d chars, %.1fs)",
+                        provider.session_id, len(text), time.monotonic() - t0)
     except Exception as exc:
         logger.warning("session prime failed: %s", exc)
 
