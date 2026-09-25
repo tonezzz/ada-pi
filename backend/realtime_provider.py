@@ -2654,6 +2654,7 @@ class GeminiLiveProvider(RealtimeProvider):
         actuations_this_turn = 0
         actuation_budget = int(os.environ.get("ADA_ACTUATION_BUDGET", "6"))
         budget_hit = False
+        budget_nudged = False
 
         while not self._closed:
             async for message in self._session.receive():
@@ -2901,6 +2902,25 @@ class GeminiLiveProvider(RealtimeProvider):
                         "session=%s function_call responses sent count=%d",
                         self.session_id, len(function_responses),
                     )
+                    if budget_hit and not budget_nudged:
+                        # Refused results alone don't stop a storm — the model
+                        # keeps emitting calls. Inject an explicit user-turn
+                        # nudge so the turn has to produce an answer.
+                        budget_nudged = True
+                        try:
+                            async with self._send_lock:
+                                await self._session.send_client_content(
+                                    turns=types.Content(
+                                        role="user",
+                                        parts=[types.Part.from_text(text=(
+                                            "[system] Tool-call limit reached for this turn — "
+                                            "stop calling tools and answer the user now, "
+                                            "briefly, from what you already have."))],
+                                    ),
+                                    turn_complete=True,
+                                )
+                        except Exception:
+                            logger.debug("budget nudge send failed", exc_info=True)
 
                 content = message.server_content
                 if content is None:
@@ -2918,6 +2938,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     tool_calls_this_turn = 0
                     actuations_this_turn = 0
                     budget_hit = False
+                    budget_nudged = False
                     yield ProviderEvent("response_interrupted", {})
                     # Gemini 3.1 can include several content parts in one event.
                     # Any audio/transcript accompanying an interruption belongs
@@ -2966,6 +2987,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     tool_calls_this_turn = 0
                     actuations_this_turn = 0
                     budget_hit = False
+                    budget_nudged = False
                     if assistant_turn_text.strip():
                         self.conversation.add_assistant(assistant_turn_text)
                         assistant_turn_text = ""
