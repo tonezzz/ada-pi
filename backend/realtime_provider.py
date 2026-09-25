@@ -2907,7 +2907,8 @@ class GeminiLiveProvider(RealtimeProvider):
 def create_provider(instructions: str | None = None, tool_runner: Any = None,
                     home_assistant_client: Any = None, habit_state_getter: Any = None,
                     session_id: str | None = None,
-                    conversation: ConversationMemory | None = None) -> RealtimeProvider:
+                    conversation: ConversationMemory | None = None,
+                    caller_name: str | None = None) -> RealtimeProvider:
     return GeminiLiveProvider(
         instructions=instructions,
         tool_runner=tool_runner,
@@ -2915,4 +2916,5 @@ def create_provider(instructions: str | None = None, tool_runner: Any = None,
         habit_state_getter=habit_state_getter,
         session_id=session_id,
         conversation=conversation,
+        caller_name=caller_name,
     )
