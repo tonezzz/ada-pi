@@ -160,6 +160,7 @@ def memory_meta(
     valid_until: str | None,
     applies_to: list[str],
     session_id: str | None = None,
+    prime: bool | None = None,
 ) -> dict[str, list[str]]:
     meta: dict[str, list[str]] = {
         "bank": [bank.name],
@@ -181,6 +182,8 @@ def memory_meta(
         meta["applies_to"] = [str(a) for a in applies_to]
     if session_id and session_id != "unknown":
         meta["session_id"] = [session_id]
+    if prime:
+        meta["prime"] = ["true"]
     return meta
 
 
@@ -520,8 +523,12 @@ async def remember(
     supersedes: str | None = None,
     session_id: str | None = None,
     person_entity: str | None = None,
+    prime: bool | None = None,
 ) -> dict[str, Any]:
     """Write a memory to a bank: create, correct-in-place, or supersede.
+
+    *prime*: when true the fact is injected into every new session's context
+    (see session_prime_text); when None an existing doc's flag is preserved.
 
     When *person_entity* is set and bank is 'personal', the write is routed
     to the speaker's person-scoped bank (e.g. personal-kk) so personal
@@ -553,7 +560,7 @@ async def remember(
             while await mddb.get_document(b.mddb_collection, new_key) is not None:
                 new_key = f"{base}-{n}"
                 n += 1
-        meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies, session_id)
+        meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies, session_id, prime=prime)
         _warn_unknown_meta(registry, meta)
         meta["supersedes"] = [str(supersedes)]
         _must(await mddb.add_document(
@@ -611,13 +618,15 @@ async def remember(
                 str(text)[:60], target_key, sims[0].get("score") or 0,
             )
 
-    meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies, session_id)
+    meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies, session_id, prime=prime)
     _warn_unknown_meta(registry, meta)
     if existing is not None:
         old_meta = dict(existing.get("meta") or {})
         for keep in ("valid_from", "supersedes", "superseded_by"):
             if keep in old_meta:
                 meta[keep] = old_meta[keep]
+        if prime is None and "prime" in old_meta:
+            meta["prime"] = old_meta["prime"]
         if kind is None and "kind" in old_meta:
             meta["kind"] = old_meta["kind"]
         _must(await mddb.update_document(
@@ -879,6 +888,36 @@ async def session_prime_text(
     # First session or long gap: facts still prime cold-start awareness.
     facts: list[str] = []
     if not (directive and (away_seconds or 0) < 3600):
+        # Opt-in facts: docs flagged prime:true surface at every session
+        # start regardless of bank fill order — device-name mappings and
+        # other high-traffic facts that would otherwise need a tool call.
+        prime_seen: set[str] = set()
+        prime_banks = list(dict.fromkeys(
+            [registry.personal_bank_name(person_entity), "general", "home"]))
+        for name in prime_banks:
+            try:
+                b = registry.bank(name)
+            except KeyError:
+                continue
+            try:
+                docs = await mddb.search_documents(
+                    collection=b.mddb_collection,
+                    filter_meta={"status": ["active"], "prime": ["true"]},
+                    limit=4,
+                )
+            except Exception as exc:
+                logger.debug("prime-flag fetch failed for %r: %s", name, exc)
+                continue
+            for doc in docs or []:
+                body = str(doc.get("contentMd") or doc.get("content_md") or "").strip()
+                key = str(doc.get("key") or "")
+                if body and key not in prime_seen:
+                    prime_seen.add(key)
+                    facts.append(body[:max_chars])
+                if len(facts) >= max_facts:
+                    break
+            if len(facts) >= max_facts:
+                break
         for name in ("personal", "general"):
             try:
                 b = registry.bank(name)
@@ -895,7 +934,9 @@ async def session_prime_text(
                 continue
             for doc in docs or []:
                 body = str(doc.get("contentMd") or doc.get("content_md") or "").strip()
-                if body:
+                key = str(doc.get("key") or "")
+                if body and key not in prime_seen:
+                    prime_seen.add(key)
                     facts.append(body[:max_chars])
                 if len(facts) >= max_facts:
                     break

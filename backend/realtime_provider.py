@@ -1695,6 +1695,14 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "boolean",
                                 "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
                             },
+                            "prime": {
+                                "type": "boolean",
+                                "description": (
+                                    "Set true only for facts worth injecting into every new "
+                                    "session's context, e.g. durable device-name mappings. "
+                                    "Use sparingly — primed facts cost tokens every turn."
+                                ),
+                            },
                         },
                         "required": ["bank", "text"],
                         "additionalProperties": False,

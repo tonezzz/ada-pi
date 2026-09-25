@@ -1160,13 +1160,14 @@ class ToolRunner:
         valid_until: str | None = None,
         applies_to: list[str] | str | None = None,
         supersedes: str | None = None,
+        prime: bool | None = None,
     ) -> dict[str, Any]:
         """Write a memory to a bank: create, correct-in-place, or supersede."""
         return await memory_ops.remember(
             self.mddb, self.banks, self.memory.instance,
             bank, text, key, subject, attribute, kind, valid_until, applies_to,
             supersedes, session_id=self.session_id,
-            person_entity=self._memory_identity(),
+            person_entity=self._memory_identity(), prime=prime,
         )
 
     async def ada_persona(

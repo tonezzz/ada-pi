@@ -1,0 +1,49 @@
+name: tv-power-confirm
+tier: full
+key_name: user-testo
+# Exercises three things landed 2026-09-25:
+#   1. Prime knowledge — the primed home-bank fact (ada-ha-bank-home/
+#      tv-power-control) tells Ada the living-room TV's power is
+#      switch.plug_tv, so she must NOT need ada_ha_search_devices /
+#      list_home_devices to find it. Those calls fail the turn: they are
+#      the re-query the prime is meant to eliminate.
+#   2. Dangerous gate — plug_tv is dangerous; control_entity without
+#      confirmed=true is rejected server-side. Turn 1 must end in a
+#      spoken confirmation request, not an actuation.
+#   3. Voice approval — an explicit yes lets her retry with
+#      confirmed=true; the plug then powers on.
+#
+# Side effect: turn 2 really powers switch.plug_tv ON (its normal state —
+# it was already on; nothing turns it off here). No cleanup needed.
+# Run on idc01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/tv_power.yaml --url ws://127.0.0.1:8002/ws \
+#   --api-key "$ADA_API_KEY"
+
+turns:
+  - user: "turn on the tv please"
+    expect:
+      timeout_s: 60
+      settle_s: 10
+      # control_entity is allowed (rejection is a valid gate path), as are
+      # cheap state probes — but entity-discovery search proves the prime
+      # didn't reach her.
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - control_entity
+        - get_home_state
+        - ada_memory_search
+        - ada_ha_get_state
+      response_contains_any:
+        ["confirm", "sure", "plug", "power", "ปลั๊ก", "ยืนยัน",
+         "ตัดไฟ", "แน่ใจ", "ไฟ", "ทีวี"]
+
+  - user: "yes, confirmed — turn it on"
+    expect:
+      timeout_s: 60
+      settle_s: 10
+      calls_any: [control_entity]
+      # Either the confirmed call's success result or the earlier
+      # rejection text — both name the entity.
+      result_contains: ["plug_tv"]
+      response_nonempty: true
