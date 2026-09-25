@@ -89,7 +89,9 @@ class ChabaMemory:
         doc = self._load_doc(path)
         doc.setdefault("name", name)
         doc.setdefault("entries", [])
-        doc.setdefault("first_seen", today)
+        # backfill from the legacy 'created' field so pre-timeline files
+        # keep their true first-contact date
+        doc.setdefault("first_seen", doc.get("created") or today)
         doc["last_seen"] = today
         self._save_doc(path, doc)
 
