@@ -572,7 +572,10 @@ class GeminiLiveProvider(RealtimeProvider):
             except Exception:
                 logger.debug("ops event emit failed", exc_info=True)
 
-        asyncio.create_task(_post())
+        try:
+            asyncio.get_running_loop().create_task(_post())
+        except RuntimeError:
+            return  # no loop (unit tests, shutdown) — nothing to schedule
 
     def _user_confirmed(self, input_transcript: str) -> bool:
         """True when the user's own recent speech affirms — `confirmed=true`
