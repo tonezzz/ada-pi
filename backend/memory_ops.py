@@ -887,10 +887,14 @@ async def session_prime_text(
     # threads — bank facts would inject stale context and drown them.
     # First session or long gap: facts still prime cold-start awareness.
     facts: list[str] = []
+    rules: list[str] = []
     if not (directive and (away_seconds or 0) < 3600):
         # Opt-in facts: docs flagged prime:true surface at every session
         # start regardless of bank fill order — device-name mappings and
         # other high-traffic facts that would otherwise need a tool call.
+        # They render under a directive header ("apply these"), not the
+        # passive "Known facts" list — background framing makes the model
+        # treat mappings as trivia and still run entity searches.
         prime_seen: set[str] = set()
         prime_banks = list(dict.fromkeys(
             [registry.personal_bank_name(person_entity), "general", "home"]))
@@ -913,10 +917,10 @@ async def session_prime_text(
                 key = str(doc.get("key") or "")
                 if body and key not in prime_seen:
                     prime_seen.add(key)
-                    facts.append(body[:max_chars])
-                if len(facts) >= max_facts:
+                    rules.append(body[:max_chars])
+                if len(rules) >= 4:
                     break
-            if len(facts) >= max_facts:
+            if len(rules) >= 4:
                 break
         for name in ("personal", "general"):
             try:
@@ -944,6 +948,11 @@ async def session_prime_text(
                 break
     if facts:
         parts.append("Known facts:\n" + "\n".join(f"- {f}" for f in facts))
+    if rules:
+        parts.append(
+            "Standing guidance — apply these directly when the user mentions "
+            "the topic; do not look the entities up again:\n"
+            + "\n".join(f"- {r}" for r in rules))
     if anon_note and parts:
         parts.insert(1 if directive else 0, anon_note)
     if not parts:
