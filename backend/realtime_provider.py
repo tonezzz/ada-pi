@@ -946,6 +946,62 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "yt_cast",
+                    "description": (
+                        "Cast a YouTube video to the living-room TV with subtitles burned in. "
+                        "This is THE tool for any 'play/watch/cast a YouTube video on the TV' request "
+                        "AND for any subtitle/caption request — it always renders the video's "
+                        "original-language subtitle on top with a translated line below "
+                        "(English is added automatically for non-English sources). "
+                        "Do NOT search for a different video that already has subtitles or try "
+                        "generic media playback — this tool generates subtitles for any video. "
+                        "Pass a YouTube URL or a search phrase (video title + channel name works best). "
+                        "The video starts after a short pipeline (~1-2 min for a typical clip)."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "YouTube URL or search phrase, e.g. 'the egg kurzgesagt'.",
+                            },
+                            "language": {
+                                "type": "string",
+                                "description": (
+                                    "Target subtitle language code shown below the original-language "
+                                    "line (default 'th' for Thai)."
+                                ),
+                            },
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "yt_cast_status",
+                    "description": (
+                        "Returns the current YouTube-to-TV cast progress: whether transcoding is still "
+                        "running, segment count, and whether subtitles were generated."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "yt_cast_stop",
+                    "description": (
+                        "Stops the YouTube video currently casting to the TV. Use when the user asks "
+                        "to stop the video or stop casting."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "list_sensors",
                     "description": (
                         "Lists available Home Assistant sensor entities with their current state, unit, and friendly name. "

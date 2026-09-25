@@ -1453,3 +1453,34 @@ class ToolRunner:
             ]
             report["summary"] = {"headings": headings[:20]}
         return report
+
+    # -- YouTube -> TV casting (yt-live shim on tony-dell) --
+
+    @staticmethod
+    def _yt_api(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        import urllib.request
+        base = os.environ.get("YT_LIVE_API", "http://tony-dell:8791")
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(
+            base + path, data=data,
+            headers={"Content-Type": "application/json"} if data else {})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.load(r)
+
+    async def yt_cast(self, query: str, language: str = "th") -> dict[str, Any]:
+        """Cast a YouTube video to the living-room TV with translated
+        subtitles. `query` is a YouTube URL or a search phrase — prefer the
+        video title plus channel name for accuracy."""
+        import asyncio
+        return await asyncio.to_thread(
+            self._yt_api, "/cast", {"q": query, "lang": language})
+
+    async def yt_cast_status(self) -> dict[str, Any]:
+        """Progress of the current YouTube cast (transcode state, segments)."""
+        import asyncio
+        return await asyncio.to_thread(self._yt_api, "/status")
+
+    async def yt_cast_stop(self) -> dict[str, Any]:
+        """Stop the currently casting YouTube video on the TV."""
+        import asyncio
+        return await asyncio.to_thread(self._yt_api, "/stop", {})
