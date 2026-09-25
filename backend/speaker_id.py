@@ -60,6 +60,12 @@ UNKNOWN_AFTER_MISSES = 2
 # naming the wrong person (wrong memory banks, wrong name in conversation).
 MIN_MARGIN = 0.05
 
+# Placeholder names that must never become enrolled profiles — the model
+# once enrolled a real speaker (KK) under "Guest" when she didn't state a
+# name, which then identified her as a sandbox guest instead of prompting
+# for her real name.
+RESERVED_NAMES = {"guest", "unknown", "someone", "anon", "anonymous", "test", "tester"}
+
 
 def _rms(float_samples: np.ndarray) -> float:
     if float_samples.size == 0:
@@ -228,6 +234,11 @@ class SpeakerIdentifier:
         enrolled speaker above the identify threshold, refuse — enrolling it
         under *name* would poison that profile (this happened: Tony's voice
         overwrote 'KK' after a borderline misidentification)."""
+        if name.strip().lower() in RESERVED_NAMES:
+            raise ValueError(
+                f"'{name}' is a placeholder, not a real name — ask the "
+                "speaker for their name first, then enroll under that."
+            )
         emb = self._compute_embedding(pcm16, sample_rate)
         best_other, best_other_score = None, 0.0
         for other, ref in self._enrolled.items():

@@ -1661,8 +1661,10 @@ class GeminiLiveProvider(RealtimeProvider):
                         "by name in future sessions. Uses the audio already buffered "
                         "from their speech — no separate recording needed. Call this "
                         "when the user asks to enroll their voice or when Ada offers "
-                        "enrollment and they agree. Pass their name and optionally "
-                        "their Home Assistant person entity."
+                        "enrollment and they agree. Pass the speaker's real name — "
+                        "never a placeholder like 'Guest'. If their name matches a "
+                        "Home Assistant person entity (e.g. name 'KK' -> 'person.kk'), "
+                        "pass it as ha_person so their identity and memory banks follow."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {

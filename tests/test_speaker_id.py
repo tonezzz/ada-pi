@@ -90,6 +90,16 @@ class EnrollContaminationGuardTest(unittest.TestCase):
             out = self.ident.enroll("Tony", b"\x00" * 2000)
         self.assertEqual(out["name"], "Tony")
 
+    def test_enroll_refuses_placeholder_name(self):
+        # Regression: the model enrolled a real speaker (KK) as 'Guest'
+        # when she didn't state a name — she then matched the sandbox
+        # guest identity instead of being asked her name.
+        for placeholder in ("Guest", "guest", "Unknown", "Test"):
+            with patch.object(self.ident, "_compute_embedding", return_value=_vec(15)), \
+                 self.assertRaises(ValueError):
+                self.ident.enroll(placeholder, b"\x00" * 1000)
+        self.assertNotIn("Guest", self.ident._enrolled)
+
     def test_enroll_unknown_voice_ok(self):
         self.ident._enrolled = {"Tony": _vec(13)}
         with patch.object(self.ident, "_compute_embedding", return_value=_vec(14)), \
