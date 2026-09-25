@@ -1,0 +1,36 @@
+name: flood-situation
+# Live observation scenario — real flooding around the house (2026-09-25).
+# Purpose: watch what Ada actually does when a user reports a flood, asks
+# for a CCTV picture, and asks her to keep a running report. Assertions are
+# deliberately soft — this run is for REVIEW, not regression.
+#
+# Gaps this is expected to expose:
+#   - No CCTV/camera-image tool exists (XMEye DVRs are not wired to Ada)
+#   - RK600 weather logger has no rain sensor (wind/temp/humidity only)
+#   - "report by default" is a behavior expectation — does she publish a
+#     cms page, call ada_remember, or just promise and forget?
+#
+# tier: full — the report turn may write a real cms page / memory docs.
+tier: full
+
+turns:
+  - user: "It's flooding around my house right now — what can you tell me about the conditions?"
+    expect:
+      calls_any: [get_rk600_weather, ada_ha_search_sensors, search_sensors, list_sensors,
+                  ada_ha_get_state, get_recent_events, get_logbook,
+                  ada_memory_search, ada_session_recall]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Can you show me a picture from the CCTV cameras so I can see the flood?"
+    expect:
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  - user: "Keep a report of this flood — create it now and keep it updated as things change."
+    expect:
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8

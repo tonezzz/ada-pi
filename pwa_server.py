@@ -475,7 +475,8 @@ async def voice_socket(ws: WebSocket) -> None:
         "ws": ws,
     }
     provider_ref = [create_provider(
-        tool_runner=tool_runner, session_id=session_id, conversation=conversation
+        tool_runner=tool_runner, session_id=session_id, conversation=conversation,
+        caller_name=tool_runner.session_caller_name
     )]
     closed = asyncio.Event()
 
@@ -715,6 +716,7 @@ async def voice_socket(ws: WebSocket) -> None:
                         new_provider = create_provider(
                             tool_runner=tool_runner, session_id=session_id,
                             conversation=conversation,
+                            caller_name=tool_runner.session_caller_name,
                         )
                         await new_provider.connect(resumption_handle=handle)
                         provider_ref[0] = new_provider

@@ -328,7 +328,8 @@ class GeminiLiveProvider(RealtimeProvider):
     def __init__(self, instructions: str | None = None, tool_runner: Any = None,
                  home_assistant_client: Any = None, habit_state_getter: Any = None,
                  session_id: str | None = None,
-                 conversation: ConversationMemory | None = None) -> None:
+                 conversation: ConversationMemory | None = None,
+                 caller_name: str | None = None) -> None:
         # Speaker ID state — initialized before tool_runner so the sync below works
         self.current_speaker: str | None = None
         self.current_speaker_ha_person: str | None = None
@@ -341,6 +342,10 @@ class GeminiLiveProvider(RealtimeProvider):
             # routing survives provider reconnects. The _on_speaker
             # callback updates this when a new speaker is identified.
             self.current_speaker_ha_person = self.tool_runner.current_speaker_ha_person
+        # Session-bound caller identity (issued-key name) — the tool_runner
+        # is shared across sessions so its caller/speaker fields can race;
+        # dispatch passes this identity explicitly for policy checks.
+        self.caller_name = caller_name
         self.home_assistant_client = home_assistant_client
         self.habit_state_getter = habit_state_getter
         # Callers may share one ConversationMemory across provider reconnects
@@ -2767,7 +2772,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                         q = call_args.get("query")
                                         if q:
                                             call_args["query"] = self.conversation.expand_query(str(q))
-                                    output = await self.tool_runner.execute(str(call.name), call_args)
+                                    output = await self.tool_runner.execute(
+                                        str(call.name), call_args,
+                                        identity=(self.current_speaker_ha_person
+                                                  or self.caller_name))
                                     result = {"output": output}
                                     if call.name == "ada_memory_search":
                                         self._note_search_result(output)

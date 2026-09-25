@@ -68,6 +68,9 @@ DOC_CONFIRMED_TOOLS = {"ada_doc_archive", "ada_doc_print"}
 # document metadata for an ID card).
 DOC_TOOLS = DOC_CONFIRMED_TOOLS | {"ada_doc_search", "ada_doc_get"}
 DOC_BANK = "documents"
+# Sentinel: identity unset → fall back to runner-level _memory_identity();
+# None is a real identity (anonymous) and must be distinguishable.
+_IDENTITY_UNSET = object()
 
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
@@ -509,11 +512,16 @@ class ToolRunner:
             )
         return self._decision_engine
 
-    async def execute(self, name: str, args: dict[str, Any] | None = None) -> Any:
+    async def execute(self, name: str, args: dict[str, Any] | None = None,
+                      *, identity: Any = _IDENTITY_UNSET) -> Any:
         method = getattr(self, name, None)
         if not method:
             raise KeyError(f"Unknown tool: {name}")
         call_args = dict(args or {})
+        # Per-call identity override: the provider passes the SESSION's
+        # resolved identity — the runner is shared across sessions, so its
+        # mutable identity fields can race when sessions overlap.
+        ident = self._memory_identity() if identity is _IDENTITY_UNSET else identity
         if name in CONTROL_TOOLS:
             confirmed = call_args.pop("confirmed", None)
             await self._check_control_allowed(name, call_args, confirmed)
@@ -530,7 +538,6 @@ class ToolRunner:
             confirmed = call_args.pop("confirmed", None)
             self._check_devin_confirmed(name, call_args, confirmed)
         elif name in DOC_TOOLS:
-            ident = self._memory_identity()
             if not self.banks.bank_allowed(DOC_BANK, ident):
                 logger.warning(
                     "denied %s for identity %r: documents bank policy",
