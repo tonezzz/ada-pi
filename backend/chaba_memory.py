@@ -15,9 +15,11 @@ All access is string-level YAML — no embeddings, no AI, no network.
 from __future__ import annotations
 
 import fcntl
+import inspect
 import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -100,10 +102,17 @@ class ChabaMemory:
 
     def _log_event(self, kind: str, actor: str, subject: str, text: str) -> None:
         """Append one structured event to the rolling events.md timeline —
-        '## <ts> — <kind>: <actor> (<subject>)' + detail line. Bounded log."""
+        '## <ts> — <kind>: <actor> (<subject>)' + detail line carrying
+        auto-derived where=hostname / how=caller. Bounded log."""
         path = self._path("events.md")
         stamp = time.strftime("%Y-%m-%d %H:%M")
-        entry = f"## {stamp} — {kind}: {actor} ({subject})\n{text[:200]}\n"
+        where = socket.gethostname()
+        try:
+            how = inspect.stack()[1].function
+        except Exception:
+            how = "?"
+        detail = f"{text[:180]} · {where}/{how}" if text else f"{where}/{how}"
+        entry = f"## {stamp} — {kind}: {actor} ({subject})\n{detail}\n"
         try:
             old = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
