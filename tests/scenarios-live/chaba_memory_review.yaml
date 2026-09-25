@@ -29,7 +29,8 @@ turns:
       # She may answer from session context instead of naming the memory
       # machinery — accept topic words, not just literal 'memory'.
       response_contains_any: ["memory", "mddb", "bank", "recall",
-                              "chaba", "artifact", "session", "project"]
+                              "chaba", "artifact", "session", "project",
+                              "memo", "development", "dev"]
       no_calls: true
       no_calls_except:
         - set_facial_expression
