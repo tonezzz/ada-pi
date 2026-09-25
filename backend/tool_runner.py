@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import contextvars
 import os
 import re
 import time
@@ -71,6 +72,14 @@ DOC_BANK = "documents"
 # Sentinel: identity unset → fall back to runner-level _memory_identity();
 # None is a real identity (anonymous) and must be distinguishable.
 _IDENTITY_UNSET = object()
+
+# Per-call identity propagated through a ContextVar: the runner is shared
+# across concurrent sessions, so every policy/memory check inside a tool
+# call must see the SESSION's identity, not the runner's mutable fields
+# (which can be overwritten by another session's speaker-ID callback mid-
+# call). execute() sets it; _memory_identity() prefers it.
+_CALLER_IDENTITY: contextvars.ContextVar = contextvars.ContextVar(
+    "ada_caller_identity", default=None)
 
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
@@ -486,8 +495,12 @@ class ToolRunner:
         self._control_entity_calls: dict[str, list[float]] = {}
 
     def _memory_identity(self) -> str | None:
-        """Memory-policy identity: identified speaker's HA person first,
-        then the session's issued-key/caller name, else None (anonymous)."""
+        """Memory-policy identity: the in-flight call's identity first
+        (ContextVar set by execute()), then the identified speaker's HA
+        person, then the session's issued-key/caller name, else None."""
+        v = _CALLER_IDENTITY.get()
+        if v is not None:
+            return v
         return self.current_speaker_ha_person or self.session_caller_name
 
     @property
@@ -522,6 +535,15 @@ class ToolRunner:
         # resolved identity — the runner is shared across sessions, so its
         # mutable identity fields can race when sessions overlap.
         ident = self._memory_identity() if identity is _IDENTITY_UNSET else identity
+        _ident_token = _CALLER_IDENTITY.set(ident)
+        try:
+            return await self._execute_gated(name, call_args, ident)
+        finally:
+            _CALLER_IDENTITY.reset(_ident_token)
+
+    async def _execute_gated(self, name: str, call_args: dict[str, Any],
+                             ident: str | None) -> Any:
+        method = getattr(self, name, None)
         if name in CONTROL_TOOLS:
             confirmed = call_args.pop("confirmed", None)
             await self._check_control_allowed(name, call_args, confirmed)

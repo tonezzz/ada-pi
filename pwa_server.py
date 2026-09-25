@@ -466,6 +466,9 @@ async def voice_socket(ws: WebSocket) -> None:
     # One ConversationMemory per websocket session, shared across provider
     # reconnects so the transcript survives a Gemini session swap.
     conversation = ConversationMemory(session_id)
+    # Fallback identity for memory routing/extraction until speaker ID
+    # identifies the voice (then _on_speaker updates this).
+    conversation.speaker_identity = tool_runner.session_caller_name
     # Test hook: ?no_persist=1 skips transcript persist, extraction,
     # summaries and the session-end marker so scenario runs never pollute
     # real memory (banks are unaffected — explicit ada_remember still writes).
@@ -503,6 +506,7 @@ async def voice_socket(ws: WebSocket) -> None:
                 provider = provider_ref[0]
                 provider.current_speaker = name
                 provider.current_speaker_ha_person = ha_person
+                provider.conversation.speaker_identity = ha_person
                 # Sync to tool_runner so memory ops route to the speaker's
                 # person-scoped bank (e.g. personal-kk instead of personal).
                 if provider.tool_runner is not None:

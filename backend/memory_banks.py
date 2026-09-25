@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -333,6 +334,18 @@ class MemoryBankRegistry:
             "bank_count": len(self._banks),
             "errors": list(self.errors),
         }
+
+
+# Content markers that force a memory into the writer's personal bank —
+# private documents, identity papers and named persons in a document
+# context must not land in shared banks (they are visible to
+# non-admin speakers like KK/guest). Shared by ada_remember (memory_ops)
+# and session-end auto-extraction (conversation_memory).
+SENSITIVE_MEMORY_RE = re.compile(
+    r"\b(document|documents|deed|deeds|title deed|passport|id card|"
+    r"identification|visa|bank account|contract|invoice|receipt|"
+    r"เอกสาร|โฉนด|พาสปอร์ต|บัตรประชาชน|ทะเบียนบ้าน|หนังสือ|สัญญา)\b",
+    re.IGNORECASE)
 
 
 _registry: MemoryBankRegistry | None = None

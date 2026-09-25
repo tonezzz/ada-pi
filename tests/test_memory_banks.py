@@ -327,6 +327,29 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[0], "ada-ha-bank-personal-tony")
         self.assertEqual(args[4]["scope"], ["test"])
 
+    async def test_sensitive_write_rerouted_to_personal(self):
+        out = await self.runner.execute(
+            "ada_remember",
+            {"bank": "general", "confirmed": True,
+             "text": "Mr Mano's passport and ID card copies are in A-68"},
+            identity="person.kk",
+        )
+        self.assertEqual(out["verb"], "create")
+        self.assertEqual(out["bank"], "personal")
+        self.assertEqual(out["rerouted_from"], "general")
+        args = self.runner.mddb.add_document.call_args.args
+        self.assertEqual(args[0], "ada-ha-bank-personal-tony")
+
+    async def test_nonsensitive_shared_write_not_rerouted(self):
+        out = await self.runner.execute(
+            "ada_remember",
+            {"bank": "general", "confirmed": True,
+             "text": "the hallway light bulb is 60W"},
+            identity="person.kk",
+        )
+        self.assertEqual(out["bank"], "general")
+        self.assertNotIn("rerouted_from", out)
+
     async def test_mddb_write_failure_propagates(self):
         self.runner.mddb.add_document.return_value = None
         with self.assertRaises(RuntimeError):

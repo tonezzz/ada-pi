@@ -18,6 +18,7 @@ from backend.mddb_client import MddbClient
 from backend.memory_banks import (
     MemoryBank,
     MemoryBankRegistry,
+    SENSITIVE_MEMORY_RE,
     _meta_first,
     _slug,
     doc_effective_status,
@@ -532,10 +533,19 @@ async def remember(
 
     When *person_entity* is set and bank is 'personal', the write is routed
     to the speaker's person-scoped bank (e.g. personal-kk) so personal
-    memories never cross person boundaries."""
+    memories never cross person boundaries.
+
+    Sensitive content (documents, IDs, passports, named persons' private
+    details) targeting a shared bank is rerouted to the writer's personal
+    bank — shared banks are visible to every household speaker."""
+    rerouted_from: str | None = None
     if str(bank) == "personal" and person_entity:
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
+    if (b.scope == "shared" and person_entity
+            and SENSITIVE_MEMORY_RE.search(f"{text} {subject or ''}")):
+        rerouted_from = b.name
+        b = registry.bank(registry.personal_bank_name(person_entity))
     _check_bank_allowed(registry, b.name, person_entity)
     if str(kind or "note") not in b.kinds:
         raise ValueError(
@@ -632,11 +642,17 @@ async def remember(
         _must(await mddb.update_document(
             b.mddb_collection, target_key, content_md=str(text), meta=meta
         ), f"correct {b.mddb_collection}/{target_key}")
-        return {"verb": "correct", "bank": b.name, "key": target_key}
-    _must(await mddb.add_document(
-        b.mddb_collection, target_key, "en", str(text), meta),
-        f"add {b.mddb_collection}/{target_key}")
-    return {"verb": "create", "bank": b.name, "key": target_key}
+        out = {"verb": "correct", "bank": b.name, "key": target_key}
+    else:
+        _must(await mddb.add_document(
+            b.mddb_collection, target_key, "en", str(text), meta),
+            f"add {b.mddb_collection}/{target_key}")
+        out = {"verb": "create", "bank": b.name, "key": target_key}
+    if rerouted_from:
+        out["rerouted_from"] = rerouted_from
+        out["note"] = (f"sensitive content kept in {b.name} "
+                       f"(your personal bank) instead of shared '{rerouted_from}'")
+    return out
 
 
 async def forget(
