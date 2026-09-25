@@ -1,0 +1,78 @@
+name: chaba-memory-review
+# Team workflow probe: a user asks Ada to summarize the ongoing
+# development of the Chaba memory system, interrogates the details, asks
+# for an improvement plan, and has her save the plan as a note.
+#
+# What this exercises:
+#   1. Memory recall — chaba/memory questions must reach
+#      ada_memory_search / ada_session_recall (bank='all' or tony-projects)
+#   2. Detail interrogation — follow-up on pending jobs/issues must not
+#      misroute into home-device tools
+#   3. Planning — Ada proposes improvements from her own view
+#   4. Memory write — the plan is persisted via ada_remember so it can be
+#      recalled later (the note IS the report; kept intentionally)
+#
+# Run on idc01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/chaba_memory_review.yaml \
+#   --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+#
+# Expectations are soft — LLM phrasing varies; the hard checks are tool
+# routing (memory tools fire, no device/control calls) and the write.
+tier: full
+
+turns:
+  - user: "Ada, summarize the ongoing development of our Chaba memory system — where are we with it?"
+    expect:
+      timeout_s: 120
+      settle_s: 8
+      calls_any: [ada_memory_search, ada_session_recall, ada_ha_recall]
+      response_contains_any: ["memory", "mddb", "bank", "recall"]
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - ada_memory_search
+        - ada_session_recall
+        - ada_ha_recall
+        - ada_doc_search
+        - ada_doc_get
+
+  - user: "What are the current issues or pending jobs in that work?"
+    expect:
+      timeout_s: 90
+      settle_s: 8
+      response_nonempty: true
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - ada_memory_search
+        - ada_session_recall
+        - ada_ha_recall
+        - ada_doc_search
+        - ada_doc_get
+
+  - user: "Propose a concrete improvement plan — a few prioritized items."
+    expect:
+      timeout_s: 90
+      settle_s: 8
+      response_nonempty: true
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - ada_memory_search
+        - ada_session_recall
+        - ada_ha_recall
+        - ada_doc_search
+        - ada_doc_get
+
+  - user: "Save that plan — remember it as a note in the tony-projects bank, subject chaba-memory-review."
+    expect:
+      timeout_s: 90
+      settle_s: 8
+      calls_any: [ada_remember]
+      response_nonempty: true
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - ada_remember
+        - ada_memory_search
+        - ada_session_recall
