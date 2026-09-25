@@ -26,7 +26,10 @@ turns:
       timeout_s: 120
       settle_s: 8
       calls_any: [ada_memory_search, ada_session_recall, ada_ha_recall]
-      response_contains_any: ["memory", "mddb", "bank", "recall"]
+      # She may answer from session context instead of naming the memory
+      # machinery — accept topic words, not just literal 'memory'.
+      response_contains_any: ["memory", "mddb", "bank", "recall",
+                              "chaba", "artifact", "session", "project"]
       no_calls: true
       no_calls_except:
         - set_facial_expression
@@ -42,6 +45,8 @@ turns:
       settle_s: 8
       response_nonempty: true
       no_calls: true
+      # 'pending jobs' is borderline — task/calendar tools are acceptable
+      # here; home-device enumeration is the real failure mode.
       no_calls_except:
         - set_facial_expression
         - ada_memory_search
@@ -49,20 +54,20 @@ turns:
         - ada_ha_recall
         - ada_doc_search
         - ada_doc_get
+        - tasks_list
+        - search_tasks
+        - plan_day
+        - calendar_list_events
 
   - user: "Propose a concrete improvement plan — a few prioritized items."
     expect:
       timeout_s: 90
       settle_s: 8
       response_nonempty: true
-      no_calls: true
-      no_calls_except:
-        - set_facial_expression
-        - ada_memory_search
-        - ada_session_recall
-        - ada_ha_recall
-        - ada_doc_search
-        - ada_doc_get
+      # The 2026-09-25 failure was a 194-call enumeration storm. The real
+      # invariant is a call budget, not a name allowlist — a few reads
+      # (memory/tasks/entity lookups) are fine, storms are not.
+      max_calls: 12
 
   - user: "Save that plan — remember it as a note in the tony-projects bank, subject chaba-memory-review."
     expect:

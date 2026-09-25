@@ -94,6 +94,28 @@ CMS_INSTRUCTIONS = (
 # strip the devin declarations and their instruction paragraph together.
 DEVIN_TOOLS = {"devin_dispatch", "devin_status", "devin_followup"}
 
+# Tools with real-world side effects — they share a tighter per-turn cap
+# (ADA_ACTUATION_BUDGET) than the generic tool-call budget so a runaway
+# planning/status turn can't mass-actuate devices or spawn work.
+ACTUATING_TOOLS = frozenset({
+    "control_entity", "control_cover", "control_media_player",
+    "press_button", "tv_action", "yt_cast", "yt_cast_stop",
+    "ada_doc_archive", "ada_doc_print", "ada_set_voice",
+    "devin_dispatch",
+    "calendar_create_event", "calendar_delete_event",
+    "tasks_add", "tasks_complete",
+})
+
+# 'confirmed=true' in a tool arg is only honored when the user's own
+# speech affirms — otherwise the model could self-certify past the
+# dangerous-device and write-policy gates (observed during the
+# 2026-09-25 tool storm: plug_tv switched on with zero user consent).
+_CONFIRM_RE = re.compile(
+    r"\b(yes|yeah|yep|yup|confirmed?|go ahead|do it|sure|okay?|"
+    r"approved?|proceed|absolutely)\b|ใช่|ยืนยัน|ตกลง|เอาเลย|ทำเลย|ได้เลย|ทำได้",
+    re.IGNORECASE,
+)
+
 DEVIN_INSTRUCTIONS = (
     " You can dispatch unattended Devin coding sessions on tony-dell: "
     "devin_dispatch starts one in a dedicated git worktree (repos: chaba, ada-pi, "
@@ -497,6 +519,17 @@ class GeminiLiveProvider(RealtimeProvider):
         self.usage_output_tokens = 0
         self.usage_input_by_modality: dict[str, int] = {}
         self.usage_output_by_modality: dict[str, int] = {}
+
+    def _user_confirmed(self, input_transcript: str) -> bool:
+        """True when the user's own recent speech affirms — `confirmed=true`
+        tool args are honored only when this is true."""
+        text = input_transcript
+        if not text.strip() and self.conversation is not None:
+            for t in reversed(self.conversation.turns()):
+                if t.get("role") == "user":
+                    text = str(t.get("text") or "")
+                    break
+        return bool(_CONFIRM_RE.search(text or ""))
 
     def _recall_gated(self) -> bool:
         """True when a confident ada_memory_search hit is fresh enough that
@@ -2617,6 +2650,8 @@ class GeminiLiveProvider(RealtimeProvider):
         response_audio_bytes = 0
         tool_calls_this_turn = 0
         tool_budget = int(os.environ.get("ADA_TOOL_CALL_BUDGET", "20"))
+        actuations_this_turn = 0
+        actuation_budget = int(os.environ.get("ADA_ACTUATION_BUDGET", "6"))
         budget_hit = False
 
         while not self._closed:
@@ -2645,6 +2680,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         })
                         requested = (call.args or {}).get("expression")
                         tool_calls_this_turn += 1
+                        if call.name in ACTUATING_TOOLS:
+                            actuations_this_turn += 1
                         if tool_calls_this_turn > tool_budget:
                             budget_hit = True
                             logger.warning(
@@ -2654,6 +2691,14 @@ class GeminiLiveProvider(RealtimeProvider):
                             result = {"error": (
                                 "Tool budget for this turn exhausted — stop calling tools "
                                 "and answer the user from what you already have.")}
+                        elif actuations_this_turn > actuation_budget:
+                            logger.warning(
+                                "session=%s per-turn actuation budget %d exhausted — refusing %s",
+                                self.session_id, actuation_budget, call.name,
+                            )
+                            result = {"error": (
+                                "Actuation limit for this turn reached — stop and tell the "
+                                "user what you were trying to control instead of retrying.")}
                         elif call.name == "set_facial_expression" and requested in EXPRESSION_NAMES:
                             yield ProviderEvent("expression", {"name": requested})
                             result = {"output": f"Ada is now {requested}"}
@@ -2808,6 +2853,13 @@ class GeminiLiveProvider(RealtimeProvider):
                             if self.tool_runner is not None:
                                 try:
                                     call_args = dict(call.args or {})
+                                    if call_args.get("confirmed") and not self._user_confirmed(input_transcript):
+                                        logger.warning(
+                                            "session=%s %s self-asserted confirmed=true "
+                                            "without user affirmation — stripping",
+                                            self.session_id, call.name,
+                                        )
+                                        call_args.pop("confirmed", None)
                                     if call.name == "ada_memory_search":
                                         q = call_args.get("query")
                                         if q:
@@ -2863,6 +2915,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     )
                     self._response_active = False
                     tool_calls_this_turn = 0
+                    actuations_this_turn = 0
                     budget_hit = False
                     yield ProviderEvent("response_interrupted", {})
                     # Gemini 3.1 can include several content parts in one event.
@@ -2910,6 +2963,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         yield ProviderEvent("user_transcript", {"text": transcript})
                     input_transcript = ""
                     tool_calls_this_turn = 0
+                    actuations_this_turn = 0
                     budget_hit = False
                     if assistant_turn_text.strip():
                         self.conversation.add_assistant(assistant_turn_text)

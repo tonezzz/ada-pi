@@ -17,6 +17,7 @@ Turn expectations (all optional, all must pass):
   calls: [tool, ...]           all of these tools were invoked
   no_calls: true               no tools were invoked
   no_calls_except: [tool, ...] no_calls, but these tools don't count (e.g. set_facial_expression)
+  max_calls: N                 fail if more than N tool_call events fired this turn
   result_contains: [s, ...]    each substring appears in some tool_result
   response_contains: [s, ...]  each substring appears in the spoken transcript
   response_contains_any: [s, ...]  at least one substring appears (paraphrase-tolerant)
@@ -104,6 +105,11 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
         unexpected = sorted(names - exempt)
         if unexpected:
             failures.append(f"no_calls: got {unexpected} (exempt: {sorted(exempt)})")
+    max_calls = expect.get("max_calls")
+    if max_calls is not None and len(calls) > int(max_calls):
+        failures.append(
+            f"max_calls: {len(calls)} tool calls exceed limit {max_calls} "
+            f"({sorted(names)})")
     for sub in expect.get("result_contains") or []:
         if not any(sub in json.dumps(r.get("result") or {}, default=str) for r in results):
             failures.append(f"result_contains: {sub!r} not in any tool_result")
