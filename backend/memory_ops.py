@@ -835,6 +835,7 @@ async def session_prime_text(
     if os.environ.get("ADA_SESSION_PRIME", "1") in ("0", "false", "no"):
         return None
     parts: list[str] = []
+    anon_note: str | None = None
     directive = reconnect_directive(away_seconds, last_tail)
     if directive:
         parts.append(directive)
@@ -850,6 +851,16 @@ async def session_prime_text(
             f"({person_entity}). If a speaker-identification event names a "
             "different person, the identified speaker takes precedence — "
             "names in memory and session archives may refer to other people."
+        )
+    else:
+        # Anonymous device — only worth noting when other injected content
+        # (summary, facts, tail) could carry names the model might mistake
+        # for the current speaker; an empty prime stays None.
+        anon_note = (
+            "(system) No confirmed speaker identity — names in memory and "
+            "session archives may refer to other people; greet neutrally "
+            "and do not address anyone by name unless a speaker-"
+            "identification event confirms who is speaking."
         )
     if summary and not (directive and (away_seconds or 0) < 3600):
         parts.append(f"Recent sessions: {summary.strip()}")
@@ -892,6 +903,8 @@ async def session_prime_text(
                 break
     if facts:
         parts.append("Known facts:\n" + "\n".join(f"- {f}" for f in facts))
+    if anon_note and parts:
+        parts.insert(1 if directive else 0, anon_note)
     if not parts:
         return None
     header = (

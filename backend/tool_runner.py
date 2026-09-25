@@ -1172,6 +1172,19 @@ class ToolRunner:
                 "error": "speaker identification is not active on this session "
                 "(speaker ID may be disabled or not configured)"
             }
+        if not ha_person:
+            # Auto-resolve 'Name' -> person.<slug> so the enrollment maps to
+            # the speaker's HA person (memory banks + actuation ACL follow)
+            # even when the model doesn't pass ha_person explicitly.
+            slug = re.sub(r"[^a-z0-9]+", "_", str(name).strip().lower()).strip("_")
+            if slug:
+                candidate = f"person.{slug}"
+                try:
+                    state = await self.context.ha_client.get_state(candidate)
+                    if state.get("entity_id") == candidate:
+                        ha_person = candidate
+                except Exception:
+                    pass
         try:
             result = self.speaker_session.enroll_from_buffer(
                 str(name),

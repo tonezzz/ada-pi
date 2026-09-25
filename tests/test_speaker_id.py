@@ -108,6 +108,33 @@ class EnrollContaminationGuardTest(unittest.TestCase):
         self.assertEqual(out["name"], "KK")
         self.assertIn("KK", self.ident._enrolled)
 
+    def test_reenroll_merges_samples(self):
+        tony = _vec(20)
+        self.ident._enrolled = {"Tony": tony.copy()}
+        self.ident._metadata = {"Tony": {"samples": 1}}
+        near = tony + 0.02 * _vec(21)
+        near /= np.linalg.norm(near)
+        with patch.object(self.ident, "_compute_embedding", return_value=near), \
+             patch.object(self.ident, "_save_enrolled"):
+            out = self.ident.enroll("Tony", b"\x00" * 2000)
+        self.assertEqual(out["samples"], 2)
+        # Merged print stays unit-norm and closer to the new sample than
+        # the old print alone was.
+        merged = self.ident._enrolled["Tony"]
+        self.assertAlmostEqual(float(np.linalg.norm(merged)), 1.0, places=4)
+        self.assertGreater(
+            speaker_id._cosine_similarity(merged, near),
+            speaker_id._cosine_similarity(tony, near),
+        )
+
+    def test_reenroll_refuses_foreign_voice(self):
+        self.ident._enrolled = {"Tony": _vec(22)}
+        self.ident._metadata = {"Tony": {"samples": 1}}
+        with patch.object(self.ident, "_compute_embedding", return_value=_vec(23)), \
+             self.assertRaises(ValueError):
+            self.ident.enroll("Tony", b"\x00" * 2000)
+        self.assertEqual(self.ident._metadata["Tony"]["samples"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -170,6 +170,7 @@ class SpeakerIdentifier:
                 self._metadata[name] = {
                     "ha_person": entry.get("ha_person"),
                     "display_name": entry.get("display_name"),
+                    "samples": entry.get("samples") or 1,
                 }
         logger.info("loaded %d enrolled speaker profiles from %s", len(self._enrolled), self._profiles_path)
 
@@ -183,6 +184,7 @@ class SpeakerIdentifier:
                 "dim": int(emb.shape[0]),
                 "ha_person": meta.get("ha_person"),
                 "display_name": meta.get("display_name"),
+                "samples": meta.get("samples") or 1,
             }
         self._profiles_path.write_text(json.dumps(data, indent=2))
 
@@ -198,6 +200,7 @@ class SpeakerIdentifier:
                 "name": name,
                 "ha_person": self._metadata.get(name, {}).get("ha_person"),
                 "display_name": self._metadata.get(name, {}).get("display_name"),
+                "samples": self._metadata.get(name, {}).get("samples") or 1,
             }
             for name in sorted(self._enrolled)
         ]
@@ -253,22 +256,46 @@ class SpeakerIdentifier:
                 f"({best_other_score:.0%}) — refusing to enroll it as '{name}'. "
                 "Confirm who is actually speaking, or remove the stale profile first."
             )
-        self._enrolled[name] = emb
-        self._metadata[name] = {
-            "ha_person": ha_person,
-            "display_name": display_name,
-        }
+        if name in self._enrolled:
+            own = _cosine_similarity(emb, self._enrolled[name])
+            if own < DEFAULT_THRESHOLD:
+                raise ValueError(
+                    f"this voice does not match the existing '{name}' profile "
+                    f"({own:.0%}) — refusing to merge a foreign voice. If this "
+                    f"really is {name}, the stored print may be stale; remove "
+                    "it first, then enroll fresh."
+                )
+        prev = self._metadata.get(name, {})
+        if name in self._enrolled:
+            # Multi-sample merge: running average of past samples + this one
+            # keeps the voiceprint stable while letting later enrollments
+            # strengthen it (single ~4s captures score ~0.5; merged prints
+            # hold a higher margin over time).
+            n = int(prev.get("samples") or 1)
+            merged = self._enrolled[name] * n + emb
+            norm = np.linalg.norm(merged)
+            self._enrolled[name] = merged / norm if norm else merged
+            prev["samples"] = n + 1
+        else:
+            self._enrolled[name] = emb
+            prev["samples"] = 1
+        prev["ha_person"] = ha_person if ha_person is not None else prev.get("ha_person")
+        prev["display_name"] = (
+            display_name if display_name is not None else prev.get("display_name")
+        )
+        self._metadata[name] = prev
         self._save_enrolled()
-        logger.info("enrolled speaker '%s' (dim=%d, ha_person=%s)", name, emb.shape[0], ha_person)
+        logger.info("enrolled speaker '%s' (dim=%d, ha_person=%s, samples=%d)",
+                    name, emb.shape[0], prev.get("ha_person"), prev["samples"])
         try:
             from backend.event_log import log_event
             log_event("speaker-enrolled", name, "voice",
-                      f"ha_person={ha_person or '-'}")
+                      f"ha_person={prev.get('ha_person') or '-'}")
         except Exception:
             pass
-        return {"name": name, "samples": len(pcm16) // 2,
+        return {"name": name, "samples": prev["samples"],
                 "duration_s": round(len(pcm16) / 2 / sample_rate, 1),
-                "ha_person": ha_person, "display_name": display_name}
+                "ha_person": prev.get("ha_person"), "display_name": prev.get("display_name")}
 
     def remove(self, name: str) -> bool:
         if name not in self._enrolled:
@@ -406,7 +433,7 @@ class SpeakerSession:
         name: str,
         ha_person: str | None = None,
         display_name: str | None = None,
-        seconds: float = 3.5,
+        seconds: float = 5.0,
     ) -> dict[str, Any]:
         """Capture the last *seconds* of buffered audio and enroll *name*.
 
