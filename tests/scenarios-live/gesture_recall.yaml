@@ -1,0 +1,67 @@
+name: gesture-recall-live
+tier: smoke
+# Does Ada recall the gesture-UI assessment doc (docs/kb/gesture-ui-options.md
+# -> kb-system collection, synced 2026-09-25) plus the archive report's
+# gesture meanings?
+#
+# Ground truth:
+#   - ada_v2 used MediaPipe HandLandmarker (21 landmarks, browser WASM/GPU)
+#   - pinch = click, fist = grab+drag, non-fist = release
+#   - YOLO assessment: wrong-shaped output (boxes, not landmarks) for a
+#     pointer UI; viable for room-scale "hand raised" wake gestures
+#
+# What this exercises:
+#   1. Read-only bank recall — kb-system/chaba-archive are writable:false;
+#      search must still reach them
+#   2. Cross-bank synthesis — flow answer needs chaba-archive; YOLO answer
+#      needs kb-system; good runs search both
+#   3. Factual fidelity — pinch/fist/palm mappings are exact
+#   4. Bilingual answers are CORRECT answers — assertions carry EN+TH terms
+#
+# KNOWN MISROUTE (2026-09-25): jumping straight in with "in the old ada
+# version two app" routes to ada_session_recall (session history) instead of
+# ada_memory_search — same class of bug as the A-68 doc_recall regression.
+# Turn 1 therefore establishes knowledge context first, mirroring
+# archive_recall.yaml.
+#
+# Read-only (ada_memory_search) — smoke tier, no cleanup needed.
+#
+# Run on idc01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/gesture_recall.yaml --url ws://127.0.0.1:8002/ws \
+#   --api-key "$ADA_API_KEY"
+
+turns:
+  # --- context: the old ada repo (knowledge question -> memory banks) -----
+  # Content assertion lives on turn 2+ — this turn can flake on a session
+  # greeting bleeding into the transcript window; its real job is routing
+  # (ada_memory_search) + context priming.
+  - user: "Ada, there was an old repo just called 'ada' — what was that project?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      calls_any: [ada_memory_search]
+      response_nonempty: true
+
+  # --- recall the flow (chaba-archive + kb-system both carry this) --------
+  - user: "How did the hand gesture controls work in that app?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains_any: ["pinch", "จีบ", "fist", "กำหมัด", "palm", "แบมือ", "drag", "ลาก"]
+
+  # --- model detail (kb-system doc has this; archive has it too) ---------
+  - user: "What did it use to actually detect the hand?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains_any: ["mediapipe", "landmark", "มือ", "โมเดล"]
+
+  # --- the YOLO assessment (only kb-system/gesture-ui-options.md has this)
+  - user: "Could we rebuild that gesture control using YOLO instead?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_contains_any: ["yolo", "โยโล่"]
+      # fidelity: the assessment's core point — boxes vs landmarks, or the
+      # room-scale niche — must surface in some form
+      response_contains_any: ["landmark", "bounding", "box", "กรอบ", "pointer", "mediapipe", "ตรวจจับ"]
