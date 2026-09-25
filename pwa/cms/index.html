@@ -10,6 +10,10 @@
   <script src="vendor/marked.umd.js"></script>
   <script src="vendor/purify.min.js"></script>
   <style>
+    /* tailwind .flex utility outranks [hidden] (same specificity, later in
+       source order) — the unlock overlay would render permanently without
+       this id-scoped override. */
+    #unlock-overlay[hidden] { display: none; }
     .prose-ada h1 { font-size: 1.6rem; font-weight: 700; color: #fff; margin: 1rem 0 .5rem; }
     .prose-ada h2 { font-size: 1.3rem; font-weight: 600; color: #fff; margin: 1rem 0 .5rem; }
     .prose-ada h3 { font-size: 1.1rem; font-weight: 600; color: #e2e8f0; margin: .75rem 0 .4rem; }
