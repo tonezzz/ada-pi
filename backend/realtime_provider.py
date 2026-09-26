@@ -1071,7 +1071,11 @@ class GeminiLiveProvider(RealtimeProvider):
                         "Do NOT search for a different video that already has subtitles or try "
                         "generic media playback — this tool generates subtitles for any video. "
                         "Pass a YouTube URL or a search phrase (video title + channel name works best). "
-                        "The video starts after a short pipeline (~1-2 min for a typical clip)."
+                        "The tool returns as soon as preparation starts — the video itself takes ~1-3 min "
+                        "(download + subtitle translation + transcode; replays are much faster). "
+                        "Acknowledge immediately in one short sentence, e.g. 'getting it ready, about a "
+                        "minute, I'll let you know when it's on' — never claim it is already playing. "
+                        "The system will notify you when playback actually starts."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -1116,6 +1120,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {},
                         "additionalProperties": False,
                     },
+                }, {
                     "name": "list_sensors",
                     "description": (
                         "Lists available Home Assistant sensor entities with their current state, unit, and friendly name. "

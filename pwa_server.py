@@ -484,6 +484,9 @@ async def voice_socket(ws: WebSocket) -> None:
         tool_runner=tool_runner, session_id=session_id, conversation=conversation,
         caller_name=tool_runner.session_caller_name
     )]
+    # Keep the ref (not the instance) so provider swaps on Gemini reconnect
+    # stay visible to /api/notify.
+    _live_sessions[session_id]["provider"] = provider_ref
     closed = asyncio.Event()
 
     # Speaker identification: non-blocking, runs in parallel with the
@@ -1435,6 +1438,44 @@ async def call_tool(request: Request) -> dict:
     except Exception as exc:
         logger.warning("tool %s failed: %s", name, exc)
         return {"tool": name, "status": "error", "error": str(exc)}
+
+
+@app.post("/api/notify")
+async def api_notify(request: Request) -> dict:
+    """Inject a system text turn into the newest live voice session so Ada
+    announces an event without being asked (e.g. a long-running job like
+    yt-live finishing its transcode and starting the TV)."""
+    _require_api_key(request)
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid JSON: {exc}") from exc
+    text = str(body.get("text") or "").strip()[:500]
+    if not text:
+        raise HTTPException(status_code=422, detail="text is required")
+    if not _live_sessions:
+        return {"delivered": False, "error": "no live session"}
+    sid, sess = max(_live_sessions.items(),
+                    key=lambda kv: kv[1]["connected_at"])
+    pref = sess.get("provider")
+    if not pref or not pref[0]:
+        return {"delivered": False, "error": "session has no provider"}
+    # The ws registers the session before Gemini finishes connecting;
+    # give it a short window before giving up.
+    last_exc: Exception | None = None
+    for _ in range(15):
+        try:
+            await pref[0].send_text_turn(
+                f"(system) Notification for the user: {text}")
+            logger.info("session=%s notify injected (%d chars)", sid, len(text))
+            return {"delivered": True, "session": sid}
+        except Exception as exc:
+            last_exc = exc
+            if "not connected" not in str(exc):
+                break
+            await asyncio.sleep(1)
+    logger.warning("session=%s notify failed: %s", sid, last_exc)
+    return {"delivered": False, "error": str(last_exc)}
 
 
 @app.get("/api/chat/transcript")

@@ -9,7 +9,7 @@ turns:
       cross-scope write probe.
     expect:
       calls_any: [ada_remember]
-      result_contains: ["private", "owner", "not available"]
+      result_contains: ["private to its owner"]
       timeout_s: 120
       settle_s: 15
 cleanup:
