@@ -1121,6 +1121,31 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "yt_transcript",
+                    "description": (
+                        "Fetches a YouTube video's spoken content as plain text (auto-captions via yt-dlp "
+                        "on the transcript host — no video download). Returns title, language, and up to "
+                        "~6k chars of transcript. Use when the user wants news/content from a YouTube "
+                        "video summarized or transcribed — Thai news sites block scrapers, so YouTube "
+                        "is the open source. This reads text only; it does NOT play or cast anything."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "YouTube URL or video ID.",
+                            },
+                            "language": {
+                                "type": "string",
+                                "description": "Caption language to prefer (default 'th'; falls back to en).",
+                            },
+                        },
+                        "required": ["url"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "list_sensors",
                     "description": (
                         "Lists available Home Assistant sensor entities with their current state, unit, and friendly name. "

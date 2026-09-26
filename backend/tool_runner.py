@@ -1647,6 +1647,40 @@ class ToolRunner:
         import asyncio
         return await asyncio.to_thread(self._yt_api, "/stop", {})
 
+    # -- YouTube transcript (yt-dlp on mn01 — Thai news sites block scrapers,
+    #    YouTube auto-captions are the open lane) --
+
+    async def yt_transcript(self, url: str, language: str = "th") -> dict[str, Any]:
+        """Fetch a YouTube video's auto-captions as plain text. `url` is a
+        YouTube URL or video ID. The extraction runs on the transcript host
+        (mn01) via `yt-transcript.sh`. Returns title, language and up to ~6k
+        chars of transcript text — enough to summarize for a spoken report.
+        Thai news sites block scrapers; this is the news-source fallback."""
+        import asyncio
+        import subprocess
+        host = os.environ.get("ADA_YT_TRANSCRIPT_HOST", "mn01")
+        script = os.environ.get(
+            "ADA_YT_TRANSCRIPT_BIN", "~/.local/bin/yt-transcript.sh")
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+             host, script, url, language],
+            capture_output=True, text=True, timeout=90)
+        out = (proc.stdout or "").strip()
+        if out.startswith("NO_CAPTIONS"):
+            return {"ok": False, "error": "no captions available",
+                    "title": out[11:].strip() or url}
+        lines = out.splitlines()
+        title = next((l[7:] for l in lines if l.startswith("TITLE: ")), url)
+        lang = next((l[6:] for l in lines if l.startswith("LANG: ")), language)
+        text = "\n".join(
+            l for l in lines
+            if not l.startswith(("TITLE:", "LANG:"))).strip()
+        if not text:
+            return {"ok": False, "error": "empty transcript", "title": title}
+        return {"ok": True, "title": title, "language": lang,
+                "transcript": text, "chars": len(text)}
+
     # -- vcast virtual displays (input-bridge relay on tony-dell :3010) --
 
     @staticmethod
