@@ -27,8 +27,8 @@ turns:
   - user: "Now cast google dot com to screen one."
     expect:
       calls: [cast_to_screen]
-      result_contains: ["'screen': 1"]
-      result_not_contains: ["denied"]
+      # /pub replies {ok:true} — no screen echo in the result
+      result_not_contains: ["denied", "error"]
       response_nonempty: true
       timeout_s: 90
       settle_s: 6
