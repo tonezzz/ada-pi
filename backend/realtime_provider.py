@@ -2661,6 +2661,8 @@ class GeminiLiveProvider(RealtimeProvider):
         tool_budget = int(os.environ.get("ADA_TOOL_CALL_BUDGET", "20"))
         budget_hit = False
         barge_pending = False  # a barge-in's transcript arrives next turn_complete
+        input_done_ts = 0.0  # last input_transcription chunk ≈ end of user speech
+        n_tools_this_turn = 0
 
         while not self._closed:
             async for message in self._session.receive():
@@ -2688,6 +2690,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         })
                         requested = (call.args or {}).get("expression")
                         tool_calls_this_turn += 1
+                        tool_t0 = time.monotonic()
                         if tool_calls_this_turn > tool_budget:
                             budget_hit = True
                             logger.warning(
@@ -2888,6 +2891,11 @@ class GeminiLiveProvider(RealtimeProvider):
                                     result = {"error": f"{call.name} failed: {exc}"}
                             else:
                                 result = {"error": "Unsupported or unavailable function"}
+                        self.conversation.log_event(
+                            "tool_call", tool=str(call.name),
+                            dur_ms=int((time.monotonic() - tool_t0) * 1000),
+                            ok=("error" not in result
+                                if isinstance(result, dict) else True))
                         yield ProviderEvent("tool_result", {
                             "name": str(call.name),
                             "result": _safe_args(result) if isinstance(result, dict) else {"value": str(result)[:500]},
@@ -2944,6 +2952,7 @@ class GeminiLiveProvider(RealtimeProvider):
                 transcription = content.input_transcription
                 if transcription and transcription.text:
                     input_transcript += transcription.text
+                    input_done_ts = time.monotonic()
 
                 output_transcription = content.output_transcription
                 if output_transcription and output_transcription.text:
@@ -2991,6 +3000,7 @@ class GeminiLiveProvider(RealtimeProvider):
                                                 {"text": transcript})
                     barge_pending = False
                     input_transcript = ""
+                    n_tools_this_turn = tool_calls_this_turn
                     tool_calls_this_turn = 0
                     budget_hit = False
                     if assistant_turn_text.strip():
@@ -3002,7 +3012,17 @@ class GeminiLiveProvider(RealtimeProvider):
                             "session=%s assistant response completed duration_ms=%d audio_chunks=%d audio_bytes=%d",
                             self.session_id, elapsed * 1000, response_audio_chunks, response_audio_bytes,
                         )
+                        # TTFT ≈ last user-speech transcription chunk → first
+                        # model output. Feeds the latency benchmark rollup.
+                        self.conversation.log_event(
+                            "turn_latency",
+                            ttft_ms=(int((response_started_at - input_done_ts)
+                                         * 1000) if input_done_ts else None),
+                            dur_ms=int(elapsed * 1000),
+                            audio_bytes=response_audio_bytes,
+                            tools=n_tools_this_turn)
                         yield ProviderEvent("response_completed", {})
+                    input_done_ts = 0.0
                     self._response_active = False
 
     async def close(self) -> None:

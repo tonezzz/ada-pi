@@ -85,6 +85,18 @@ SECONDARY_BLOCKED_TOOLS = (
     }
 )
 
+# Group tokens accepted in rendered `session_security.secondary_blocked`
+# config — SSOT declares groups, code owns the tool-name expansion.
+# "persona_write" is a pseudo-token gating ada_persona set/reset only.
+_SECONDARY_BLOCKED_GROUPS = {
+    "control": CONTROL_TOOLS,
+    "memory_write": MEMORY_WRITE_TOOLS,
+    "calendar_write": CALENDAR_WRITE_TOOLS,
+    "cms_write": CMS_WRITE_TOOLS,
+    "devin_confirmed": DEVIN_CONFIRMED_TOOLS,
+    "doc": DOC_TOOLS,
+}
+
 
 def _slug(text: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(text or "").lower()).strip("_")
@@ -542,6 +554,23 @@ class ToolRunner:
         aliases = {owner, caller, f"person.{_slug(caller)}" if caller else None}
         return speaker not in aliases
 
+    def _secondary_blocked_tools(self) -> set[str]:
+        """Blocked tool set for secondary turns. Rendered SSOT config
+        (`session_security.secondary_blocked`) overrides the default when a
+        list is present; absent/malformed config fails closed to the
+        default. Entries may be group names or literal tool names."""
+        try:
+            spec = self.banks.session_security.get("secondary_blocked")
+        except Exception:
+            spec = None
+        if not isinstance(spec, list):
+            return SECONDARY_BLOCKED_TOOLS | {"persona_write"}
+        blocked: set[str] = set()
+        for tok in spec:
+            tok = str(tok)
+            blocked |= _SECONDARY_BLOCKED_GROUPS.get(tok, {tok})
+        return blocked
+
     def _log_session_event(self, kind: str, **fields: Any) -> None:
         if self.event_log is not None:
             self.event_log.append({
@@ -583,8 +612,10 @@ class ToolRunner:
         policy_ident = self.policy_identity()
         if self._is_secondary_turn():
             action = str(call_args.get("action") or "").lower()
-            if name in SECONDARY_BLOCKED_TOOLS or (
+            blocked = self._secondary_blocked_tools()
+            if name in blocked or (
                 name == "ada_persona" and action in ("set", "reset")
+                and "persona_write" in blocked
             ):
                 self._log_session_event(
                     "tool_denied", tool=name,

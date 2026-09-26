@@ -1,0 +1,176 @@
+status: done
+
+# Investigation: why Ada cannot view HA users / manage KK's persona
+
+## Root cause (two distinct gaps)
+
+1. **No user/person listing surface.** `HomeAssistantClient` only exposes
+   `/api/states`, `/api/services/*`, `/api/history`, `/api/logbook` (REST)
+   and `lovelace/config`, `person/create`, `config/auth/list` (WS). The
+   only *user* list — `config/auth/list` — is `@require_admin` in HA core;
+   a non-admin token gets `{"error": "unauthorized"}` → `RuntimeError`
+   (used server-side only, pwa_server.py `_ha_guest_user_id`). No tool
+   exposed person listing to the model (`DISCOVERABLE_DOMAINS` excludes
+   `person`), so Ada could not even verify `person.kk` exists.
+
+2. **`ada_persona` was current-speaker-only.** Identity came from
+   `current_speaker_ha_person` or the key name (`session_caller_name`).
+   There was no way to target another user's profile, and no way for a
+   key (e.g. `user-kk`) to carry its HA person — unenrolled speakers fell
+   back to the default `personal` bank (the KK leak noted in
+   `tests/scenarios-live/kk_first_contact.yaml`).
+
+## Changes
+
+### backend/home_assistant.py
+- `persons()` — lists `person.*` entities via `/api/states` (works with
+  ANY valid token; no admin needed).
+- `resolve_person(name_or_entity)` — 'KK' / 'person.kk' → person entity.
+
+### backend/tool_runner.py
+- `ada_persona` gains `action="list"` (HA people + persona bank + custom
+  knobs) and `person` param for show/set/reset of another person's
+  profile, gated by `_persona_admin` (name `admin` or `{full: true}` in
+  person/control policies) or same-bank self-resolution.
+- `session_caller_ha_person` field; `_memory_identity()` is now
+  voiceprint → key-bound ha_person → key name.
+- `ada_enroll_speaker` uses `resolve_person` (get_state fallback kept).
+
+### backend/realtime_provider.py
+- `ada_persona` schema: `list` action + `person` param; instructions updated.
+- `caller_person` kwarg threads the key's bound person into tool dispatch.
+
+### backend/auth.py — invite rewrite
+- Key entries carry optional `ha_person`; `create_key(name, ha_person=)`,
+  `ha_person_for_key(name)`, `set_key_ha_person(name, hp)`,
+  `issued_key_details()`; `bind_device` now preserves extra fields.
+
+### pwa_server.py — invite endpoints
+- `POST /api/auth/invites` — create per-user key + one-time redeem URL/QR
+  in one call (`{name, ha_person?, path?, redirect?, qr?, origin?}`).
+- `GET /api/auth/invites` — list users (issued, device bound, ha_person).
+- `POST /api/auth/invites/{name}` — re-mint re-pair link (resets binding).
+- `PUT /api/auth/invites/{name}` — bind/clear ha_person on a key.
+- Legacy `/api/auth/keys*` + `/api/auth/redeem-token` kept as aliases;
+  `GET /redeem/{token}` unchanged (burn-once → cookie + key handoff).
+- `/ws` connect resolves key→ha_person into `session_caller_ha_person`,
+  auto-resolving bare key names to `person.<slug>`; invite create/update
+  responses report `ha_person_exists` (warn-only).
+- Keys-file writes are serialized with a process lock (`_KEYS_LOCK`).
+
+## Session-security policy (docs/session-security-policy.md) — implemented
+
+Per the reviewed plan, sessions now pin authorization to the connecting
+key; voice identity only personalizes:
+
+- `ToolRunner.session_owner_identity` + `policy_identity()` — owner set
+  once at `/ws` connect; control/bank/doc/persona gates all evaluate the
+  owner. `session_prime_text` uses the owner too.
+- `SECONDARY_BLOCKED_TOOLS` + `_is_secondary_turn()` — a positively
+  identified non-owner voice (person != owner, modulo `person.<slug>`
+  alias of the key name) turns the turn "secondary": writes, actuation,
+  doc/memory search, enrollment, persona set/reset raise PermissionError
+  telling the model to propose to the owner aloud. Persona `show`/`list`
+  and ambient reads still work.
+- `_on_speaker` classifies owner vs guest: emits
+  `secondary_speaker`/`speaker_identified` events, sends `{secondary:
+  true}` to the browser, and injects a guest-rules system note for
+  non-owners.
+- Provider-side tools that bypass `execute()` (`ada_session_recall`,
+  `ada_decision_check`, `ada_set_voice`) enforce the same gate; tool
+  dispatch passes the owner identity.
+- Barge-in noise gate (P6): `content.interrupted` logs a `barge_in`
+  event; if the next turn's transcript is obvious noise
+  (`_looks_like_noise` — empty/punct/filler only), it's kept out of the
+  transcript, logged `barge_noise`, and Ada is told to resume. Plausible
+  speech always gets through.
+- Cross-person persona writes fail closed: `ada_persona set/reset` with
+  `person=` refuses when the target has no person-scoped bank instead of
+  silently filing under `personal`.
+- `ConversationMemory.session_items` + `log_event()` record connect
+  identity, speaker matches, barge-ins, denials, reconnects; folded into
+  the L1 report (`report["session_events"]` + one-line summary in
+  `memory_block`). Dead `speech_started`/`speech_stopped` forwarding
+  removed.
+
+## Verify
+
+- Full offline suite in a venv (`/tmp/ada-venv`, google-genai etc.
+  installed): `python -m unittest discover -s tests` → **329 tests, 3
+  errors** — all `ai_edge_litert` ModuleNotFoundError (pose/hailo vision
+  env gap, pre-existing, unrelated).
+- New offline scenarios encode the policy:
+  `tests/scenarios/session-owner-policy.yaml` (guest voice → every
+  write/control/doc/search denied "session owner"; owner voice restores)
+  and `tests/scenarios/persona-cross-target.yaml` (admin + scoped bank ok,
+  no-bank fail-closed, non-admin cross-target denied).
+- `tests.test_memory_banks`: 7 new unit tests for pinning/secondary/alias/
+  fail-closed semantics.
+
+## Report hierarchy + benchmarks (memory-hierarchy-plan.md §F, items 3–8)
+
+- **L0 drill-down refs**: every `session_items` event now carries `turn`
+  (index into the raw transcript); transcript files get a
+  `<!-- ref: transcript:<date>-<sid> -->` header; `session-memory.md`
+  entries get `- ref: report:<date>-<sid>`. Top→bottom navigation is
+  live: rollup → report → event → transcript turn.
+- **Latency instrumentation**: provider logs `tool_call` events with
+  `dur_ms` per call and `turn_latency` events (`ttft_ms` = last
+  input-transcription chunk → first model output, `dur_ms`,
+  `audio_bytes`, `tools`) per completed turn — lands in every L1 report
+  automatically.
+- **`scripts/report-rollup.py`** — daily L2 rollup over session reports +
+  run records; aggregates owners, event-kind counts, ttft p50/p95, and
+  escalates {tool_denied, secondary_speaker, speaker_unrecognized,
+  barge_noise, reconnect} + propagated run escalations with refs intact.
+  Writes `runs/daily/<date>.json`, optional `--mddb` write to
+  `ada-ha-reports-<instance>`. Smoke-tested end-to-end.
+- **`scripts/identify_eval.py`** — speaker-ID benchmark: held-out clips
+  (`<speaker>-<n>.pcm`) → score/margin/confusion vs enrolled profiles;
+  emits a run record. Needs speechbrain (runs on the live host).
+- **`scripts/recall-bench.py`** — Devin recall benchmark: probes YAML
+  times the local-summaries scan vs MDDB vector_search, p50 + hit_rate,
+  emits a run record. Verified offline (MDDB path needs the service up).
+- **`scripts/devin-memory-bridge.py`** — publish dispatch-outcome.md /
+  backfill `summaries/history_*.md` into the MDDB reports collection with
+  `ref: file:<path>` meta — the Devin↔Ada shared-recall bridge. MDDB was
+  down on this host at test time; publish path is same MddbClient API as
+  conversation_memory.
+- **`session_security.secondary_blocked`** — rendered config override:
+  `memory-banks.json` gains a `session_security` block; tool_runner
+  resolves group tokens (control/memory_write/calendar_write/cms_write/
+  devin_confirmed/doc/persona_write) + literal names; absent/malformed
+  fails closed to the built-in default. SSOT tightening no longer needs
+  a deploy.
+- **SSOT drafts staged** in `docs/ssot-drafts/` (not yet applied to
+  chaba): `ssot.apps.ada-reports.yml`, `ssot.policy.memory-hierarchy.yml`
+  (P-R1–R5 + collaboration pact), `PATCHES.md` with the values/
+  terminology/memory-banks deltas and the rules one-liner. Approval-gated
+  — outside this worktree.
+
+## Follow-ups
+
+- Deployed `~/.config/ada/memory-banks.json` should either give
+  `personal-kk` `key_scope: ["user-kk"]` OR rely on the new invite
+  `ha_person` binding (re-issue KK's key with ha_person=person.kk).
+- If Ada's HA token is non-admin, `config/auth/list` stays unusable —
+  `persons()` via `/api/states` is the supported path now.
+- Live behavior (VAD noise classification, speaker-ID confidence on
+  owner-vs-guest) needs on-device scenario runs — `tests/scenarios-live/`
+  has the harness; add barge-in cases with the voice fixtures.
+- An *unrecognized* voice still carries owner rights by design (can't
+  lock out unenrolled owners); only positively-identified foreign voices
+  become secondary. Documented as the accepted v1 edge.
+- `scripts/enroll_speakers.py` — bulk pre-enrollment from .pcm/.wav
+  files (~1 KB per voiceprint; real enroll needs speechbrain on the
+  host). `tests/fixtures/gen_voice_fixture.py --voice name=hz:seed`
+  mints extra synthetic voices for multi-guest scenario fixtures.
+- MDDB, live HA, and speechbrain weren't reachable on this host — the
+  MDDB writes (`report-rollup --mddb`, `devin-memory-bridge`,
+  `recall-bench --collection`) and `identify_eval` need a run on the
+  live host.
+- Apply `docs/ssot-drafts/` to chaba + write `devin-kb/docs/
+  work-policy.md` when approved; add the one-liner to
+  `ssot.windsurf.common.md`, ada `AGENTS.md`, and `global_rules.md`.
+- Open decision: explicit `tests/baselines.yaml` (recommended, seeded
+  from ssot.values) vs trailing-median baselines for `escalate_when`.

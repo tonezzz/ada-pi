@@ -1,0 +1,60 @@
+title: Memory Hierarchy Policy
+subtitle: How Tony, Ada, and Devin share durable memory — one canonical definition, multiple read paths, facts vs derived views, mutual checking
+icon: 🧠
+sections:
+  - title: Layers
+    icon: "🧱"
+    layout: list
+    items:
+      - label: Facts (L0)
+        text: "Append-only evidence: transcripts, session_items events, run-event lists. Never rewritten, never edited retroactively."
+      - label: Reports (L1-L3)
+        text: "Derived views over L0: session reports, daily/weekly rollups. Regeneratable — a rollup is rebuilt by re-reading lower levels, never hand-patched."
+      - label: Durable concepts
+        text: "Decisions, policies, terminology. Canonical form lives in chaba SSOT (and devin-kb for user-level facts); synced to MDDB for Ada/Devin retrieval."
+      - label: Working context
+        text: "Session prime blocks, memory_block summaries, rolling session-memory.md — last-N compressed context, always derived, never canonical."
+  - title: Principles
+    icon: "📐"
+    layout: list
+    items:
+      - label: P-R1 Canonical once
+        text: "Each concept has exactly one canonical definition (SSOT YAML for cross-system terms; devin-kb for Tony's facts). Everything else is a sync target or read path — never an independent copy that can drift."
+      - label: P-R2 Refs not copies
+        text: "Reports link downward by stable refs (report:/transcript:/mddb://), upward by verbatim escalations. Summaries store distillation + refs, not duplicated raw data."
+      - label: P-R3 Regeneratable derived
+        text: "Any level above L0 can be deleted and rebuilt. If a rollup and the raw data disagree, the raw data wins and the rollup is regenerated."
+      - label: P-R4 Runtime vs spec
+        text: "Dynamic SSOT references (${ssot(...)}, __ref__, !ssot_ref) are for spec/config consumed by resolvers. Runtime report data uses plain-string refs — its consumers (MDDB, JSON files, session-memory.md) don't resolve SSOT tags."
+      - label: P-R5 Three memories, one source
+        text: "'Dynamic SSOT in all three memories' = one canonical definition (chaba ssot.terminology.yml etc.) + sync to MDDB + agents read via their native paths (Ada: ada_memory_search/prime; Devin: mcp_query_ssot/mddb MCP + continuation summaries; Tony: the YAML itself). It is never three hand-maintained copies."
+  - title: Collaboration Pact
+    icon: "🤝"
+    layout: list
+    items:
+      - label: Mutual checking
+        text: "Human and AI both make mistakes — the design stacks layers so errors don't align (Swiss-cheese model). Either party may flag a suspected policy violation; the response is to check the SSOT file, not argue from memory (crew-resource-management challenge-and-check)."
+      - label: Change by exception
+        text: "This hierarchy is the default working method. Deviating requires an explicit request, recorded as a focus decision — not a silent workaround."
+      - label: Enforcement
+        text: "Policy lives at three altitudes: prose here (intent), rendered config (runtime knobs like session_security.secondary_blocked), and executable gates (server-side denials + scenario tests). Prompts alone are not enforcement."
+      - label: Auditability
+        text: "Every significant change records: source of truth touched, raw evidence produced (refs), derived outputs, validation run, and escalation/rollback path."
+  - title: Continuous Improvement
+    icon: "🔁"
+    layout: list
+    items:
+      - label: One run envelope
+        text: "Voice sessions, scenario tests, benchmarks, and dispatch tasks all emit run:<kind>/<date>-<id> records with metrics, events, escalations, summary — same pipeline, same drill-down."
+      - label: Baselines and escalation
+        text: "Regressions are computed against audited baselines (tests/baselines.yaml): latency p95, identification accuracy, denial counts, test failures. Deltas surface to daily/weekly rollups as escalations."
+      - label: Closing the loop
+        text: "Escalation → action-proposal doc → fix → next run proves it → proposal closed. Unresolved escalations carry into every higher rollup until closed."
+  - title: Ownership
+    icon: "🏠"
+    layout: list
+    items:
+      - label: Canonical home
+        text: "This file in chaba docs/ssot/ is the canonical policy. Ada repo keeps docs/memory-hierarchy-plan.md as the implementation view; devin-kb docs/work-policy.md links here for the user-level copy. Do not fork the content — link."
+      - label: Auto-load surfaces
+        text: "chaba .windsurfrules → ssot.windsurf.common.md one-liner; ada repo AGENTS.md; Devin global_rules.md; Ada policy/memory-hierarchy doc primed each session. Each surface holds a pointer + the pact, not the full policy."

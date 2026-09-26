@@ -369,7 +369,10 @@ def _save_session_report_files(report: dict, date: str, session_id: str) -> None
         if not block:
             return
         body = block.split("\n", 1)[1] if "\n" in block else ""
-        entry = f"## {date} {session_id}\n{body}".rstrip()
+        entry = (
+            f"## {date} {session_id}\n"
+            f"- ref: report:{date}-{session_id}\n{body}"
+        ).rstrip()
         log = base / "session-memory.md"
         prev = log.read_text(encoding="utf-8") if log.exists() else ""
         entries = [e for e in re.split(r"\n(?=## )", prev) if e.strip()]
@@ -520,9 +523,11 @@ class ConversationMemory:
 
     def log_event(self, kind: str, **fields: Any) -> None:
         """Record a session-mechanics event for the session report."""
+        # `turn` = index of the last recorded transcript turn at event time —
+        # the drill-down link into the raw transcript (transcript:...#t<turn>).
         self.session_items.append({
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "kind": str(kind), **fields})
+            "kind": str(kind), "turn": len(self._turns), **fields})
 
     def add_user(self, text: str) -> None:
         if text.strip():
@@ -591,7 +596,8 @@ class ConversationMemory:
             day = datetime.now(timezone.utc).date().isoformat()
             safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", self.session_id)
             (d / f"{day}-{safe}.md").write_text(
-                self.transcript(), encoding="utf-8"
+                f"<!-- ref: transcript:{day}-{safe} -->\n" + self.transcript(),
+                encoding="utf-8",
             )
         except Exception as exc:
             _report_failure("transcript_file", exc)
