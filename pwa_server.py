@@ -199,7 +199,8 @@ async def mint_redeem(request: Request) -> dict:
 async def list_keys(request: Request) -> dict:
     """List issued (file-backed) device key names."""
     name, _ = await _auth_payload(request)
-    return {"caller": name, "issued": auth.issued_key_names(), "bindings": auth.issued_key_bindings()}
+    return {"caller": name, "issued": auth.issued_key_names(),
+            "bindings": auth.issued_key_bindings(), "apps": auth.issued_key_apps()}
 
 
 @app.post("/api/auth/keys")
@@ -211,7 +212,7 @@ async def create_key(request: Request) -> dict:
     """
     _, payload = await _auth_payload(request)
     key_name = str(payload.get("name") or "").strip()
-    key = auth.create_key(key_name)
+    key = auth.create_key(key_name, payload.get("apps"))
     if key is None:
         raise HTTPException(status_code=409, detail="invalid or taken name")
     logger.info("issued device key name=%s", key_name)
