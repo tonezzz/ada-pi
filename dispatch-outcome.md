@@ -174,13 +174,25 @@ key; voice identity only personalizes:
   files (~1 KB per voiceprint; real enroll needs speechbrain on the
   host). `tests/fixtures/gen_voice_fixture.py --voice name=hz:seed`
   mints extra synthetic voices for multi-guest scenario fixtures.
-- MDDB writes need idc01 (primary) reachable — currently timing out, so
-  `report-rollup --mddb`, `devin-memory-bridge`, and the bench MDDB path
-  are untested against a live service. Consider fixing the sync service's
-  idc01 endpoint or checking idc01 health.
-- `ADA_*` services on tony-dell should point `MDDB_BASE_URL` at the
-  Tailscale IP (`http://100.68.142.13:11023/v1`) for reads, or the
-  follower should also listen on loopback.
+- MDDB incident (resolved mid-session): tony-dell's MDDB is a read-only
+  follower bound to Tailscale `100.68.142.13:11023` (loopback doesn't
+  work — fix `MDDB_BASE_URL` consumers). The idc01 primary
+  (`100.74.146.0:11023`) was in an OOM restart loop: each startup the
+  follower re-streamed ~18M binlog LSNs, ballooned memory past the cgroup
+  cap (`MemoryHigh=5G/Max=6.5G`, host has only 7G), died with
+  `219/CGROUP`, repeat. Fix applied: stopped the follower on tony-dell +
+  restarted mddb on idc01 → primary healthy (`/v1/search` 200 in 1.7s).
+  `devin-summaries-sync.service` then ran green: 35 synced / 66 unchanged
+  / 0 failed — this thread's own summary is now in
+  `ada-ha-bank-devin-tony`. Vector-search still warming (503 "index
+  loading") at handoff.
+- **Permanent fix pending**: reseed the follower by copying `mddb.db`
+  from idc01 → tony-dell while both are stopped (the 18M-LSN binlog
+  catch-up OOMs the primary every time the follower connects). Until
+  then the follower is DOWN — local reads at 100.68.142.13 unavailable.
+- Yesterday's session (`dispatch-wt-20260925-215808`) already repointed
+  all stale MDDB defaults to idc01 (chaba `72d9bc3`) — merged; the
+  leftover worktree is clean to remove.
 - Live HA + speechbrain need the Pi/host for `identify_eval` and real
   enrollment.
 - Apply `docs/ssot-drafts/` to chaba + write `devin-kb/docs/
