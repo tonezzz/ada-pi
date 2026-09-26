@@ -157,6 +157,24 @@ key; voice identity only personalizes:
   terminology/memory-banks deltas and the rules one-liner. Approval-gated
   — outside this worktree.
 
+## idc01 provider-reboot prep (RAM upgrade)
+
+- Verified boot-persistent: `Linger=yes`, all 8 quadlets have
+  `WantedBy=default.target` → auto-start after provider reboot.
+- Post-reboot verify (one command):
+  `ssh idc01 'systemctl --user is-active mddb ollama gemini-ollama-proxy
+  mddb-panel && systemctl --user show mddb -p NRestarts'` then
+  `curl http://100.74.146.0:11023/v1/health`.
+- Expected: mddb ~5 min silent init before binding; follower streams
+  only deltas now (LSN is current after the reseed) so no OOM storm.
+- With the new RAM, consider raising `mem.conf` (5G/6.5G cap) — that cap
+  was today's OOM trigger; also lets the vector index load faster.
+- Failed oneshots to ignore/recheck after: `ada-scenario-full`,
+  `ada-scenario-smoke` (failed during the outage window).
+- Store design decision noted: keep L0/events as files + MDDB; Postgres
+  would add a hard idc01 dependency to every write — today's outage
+  would have blocked all reporting.
+
 ## Follow-ups
 
 - Deployed `~/.config/ada/memory-banks.json` should either give
