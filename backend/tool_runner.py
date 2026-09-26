@@ -1160,6 +1160,44 @@ class ToolRunner:
         await self.memory._ensure_confidence()
         return self.memory.confidence_groups()
 
+    async def web_search(self, query: str) -> dict[str, Any]:
+        """Grounded web search via Gemini's google_search tool.
+
+        The live audio model cannot ground itself (and silently prefers
+        cast tools for news-shaped requests), so search runs through the
+        regular generate API on a flash model and returns a short grounded
+        answer plus source links. Billed by Google per grounded query.
+        """
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise RuntimeError("web search unavailable: GEMINI_API_KEY not set")
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key)
+        model = os.environ.get("ADA_WEB_SEARCH_MODEL", "gemini-2.5-flash")
+        resp = await client.aio.models.generate_content(
+            model=model,
+            contents=str(query),
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())]),
+        )
+        text = (resp.text or "").strip()
+        if not text:
+            raise RuntimeError("web search returned no answer")
+        sources = []
+        try:
+            gm = resp.candidates[0].grounding_metadata
+            for ch in (gm.grounding_chunks or [])[:5]:
+                w = getattr(ch, "web", None)
+                if w is not None:
+                    sources.append({
+                        "title": getattr(w, "title", "") or "",
+                        "uri": getattr(w, "uri", "") or "",
+                    })
+        except Exception:
+            pass
+        return {"answer": text, "sources": sources, "model": model}
+
     async def ada_ha_set_device_confidence(self, entity_id: str, status: str, safety: str | None = None) -> str:
         """Set a device's confidence and/or safety status."""
         return await self.memory.set_confidence(str(entity_id), str(status), str(safety) if safety is not None else None)

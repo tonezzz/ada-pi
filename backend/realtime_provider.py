@@ -1789,6 +1789,27 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "web_search",
+                    "description": (
+                        "Search the public internet for current facts — news, events, prices, "
+                        "forecasts, anything needing up-to-date information outside this home. "
+                        "Returns a grounded answer plus source links. Use this when the user asks "
+                        "about news or to 'check online'; answer the question yourself in 2-3 "
+                        "lines and cite the source — never cast the search to a screen instead."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search question, e.g. 'Bangkok flood road closures latest'.",
+                            },
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "ada_remember",
                     "description": (
                         "Store or update a curated memory in a bank when the user says "

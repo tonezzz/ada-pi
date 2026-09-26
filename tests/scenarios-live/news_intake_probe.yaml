@@ -37,11 +37,18 @@ turns:
       # either is fine for the probe; no hard assertion.
 
   # --- internet-search probe ----------------------------------------------
-  # With google_search grounding enabled she should fetch fresh info rather
-  # than only checking local sensors. Observe: does the answer contain NEW
-  # facts (dates, road counts, source names) vs. just the forwarded text?
+  # web_search grounds on Google via generate-API (the live model can't
+  # ground itself — it kept casting a Google search page to the TV instead).
+  # Assert: the web_search tool is called AND no cast/TV tool fires.
   - user: "Search the internet for the latest on this Bangkok flood and tell me what's new."
     expect:
+      calls_any: [web_search]
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - web_search
+        - ada_memory_search
+        - ada_remember
       response_nonempty: true
       timeout_s: 120
       settle_s: 8
