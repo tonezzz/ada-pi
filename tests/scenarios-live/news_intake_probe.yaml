@@ -1,0 +1,44 @@
+name: news-intake-probe
+# PROBE — not a regression. The user forwards a received news item (Thai
+# traffic/flood bulletin). We're observing Ada's raw reaction BEFORE
+# designing a news-report pipeline: does she summarize? File it? Offer to
+# track? Cross-reference home? The transcript is the deliverable.
+#
+# Design question being probed: user pastes news -> Ada should (a) give a
+# 2-3 line crisp brief, (b) flag relevance to household (home is in the
+# Bangna/On Nut corridor — several listed roads are commute-relevant),
+# (c) offer to save/track rather than dump the whole list back.
+#
+# tier: smoke — read-only expectation. If she asks to remember/track,
+# that's the desired product behaviour; no assertion requires it.
+tier: smoke
+
+turns:
+  # --- raw forward --------------------------------------------------------
+  - user: "I just got this news, take a look: UPDATE: กทม. แนะหลีกเลี่ยงถนน 18 เส้นทาง ระวังขับช้า 3 เส้นทาง — วันนี้ (26 กันยายน) เวลา 07.00 น. ถนนวิภาวดีรังสิต จตุจักร-หลักสี่-ดอนเมือง, ถนนพหลโยธิน ห้าแยกลาดพร้าว-ม.เกษตร, ถนนพัฒนาการ, ถนนรัชดาภิเษก, ถนนศรีนครินทร์ บางกะปิ-บางนา, ถนนสุขุมวิท บางนา-อุดมสุข, ถนนอ่อนนุช อ่อนนุช17-ประเวศ, ถนนลาดพร้าว ปิดหลายจุด และอีก 10 สาย — ขับช้า: ถนนพระราม 2, พหลโยธินช่วงใน, รามอินทรา. #TheStandardNews"
+    expect:
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+      # Probe assertions stay loose — we want to see the reaction, but any
+      # of these tells us she understood the domain rather than echoing.
+      response_contains_any:
+        ["flood", "น้ำ", "road", "traffic", "ถนน", "Bangna", "บางนา",
+         "on nut", "อ่อนนุช", "avoid", "เลี่ยง"]
+
+  # --- relevance probe ----------------------------------------------------
+  - user: "Does any of this affect us or our area?"
+    expect:
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+      # Right behaviour: she recognizes commute-relevant roads near home
+      # (Bangna/On Nut/Srinakarin corridor) OR honestly asks where we are —
+      # either is fine for the probe; no hard assertion.
+
+  # --- tracking probe -----------------------------------------------------
+  - user: "Keep an eye on this flood situation for me."
+    expect:
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
