@@ -111,7 +111,7 @@ DEVIN_TOOLS = {
 ACTUATING_TOOLS = frozenset({
     "control_entity", "control_cover", "control_media_player",
     "press_button", "tv_action", "yt_cast", "yt_cast_stop",
-    "cast_to_screen",
+    "cast_to_screen", "cctv_snapshot",
     "ada_doc_archive", "ada_doc_print", "ada_set_voice",
     "devin_dispatch",
     "calendar_create_event", "calendar_delete_event",
@@ -1118,6 +1118,36 @@ class GeminiLiveProvider(RealtimeProvider):
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "cctv_snapshot",
+                    "description": (
+                        "Grabs ONE snapshot frame from a home CCTV camera and shows it on a screen. "
+                        "Cameras: 'coffee corner' (coffee corner cam), 'c201', 'c100' (Xiaomi cams). "
+                        "target='tv' shows it on the living-room TV; target='screen' with screen=N sends "
+                        "it to a vcast display. Use when the user asks to see/check a camera or show a "
+                        "camera picture on a screen — a single image, not live video."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "camera": {
+                                "type": "string",
+                                "description": "Camera name: 'coffee corner', 'c201', 'c100'.",
+                            },
+                            "target": {
+                                "type": "string",
+                                "enum": ["tv", "screen"],
+                                "description": "'tv' (default) or 'screen' for a vcast display.",
+                            },
+                            "screen": {
+                                "type": "integer",
+                                "description": "vcast screen number when target='screen'.",
+                            },
+                        },
+                        "required": ["camera"],
                         "additionalProperties": False,
                     },
                 }, {

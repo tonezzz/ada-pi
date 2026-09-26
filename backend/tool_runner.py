@@ -1650,6 +1650,75 @@ class ToolRunner:
     # -- YouTube transcript (yt-dlp on mn01 — Thai news sites block scrapers,
     #    YouTube auto-captions are the open lane) --
 
+    # -- CCTV peek: single frame via go2rtc on tony-dell, saved to the HA
+    #    /local/ static dir so the TV/vcast browsers can load it without auth --
+
+    _CCTV_CAMS = {
+        # go2rtc stream -> HA camera / friendly label (tony-dell :1984)
+        "coffee corner": "ip_cam_65_hd", "coffee": "ip_cam_65_hd",
+        "c201": "xiaomi_c201_hd", "xiaomi c201": "xiaomi_c201_hd",
+        "c100": "xiaomi_c100_hd", "xiaomi c100": "xiaomi_c100_hd",
+        "ip_cam_65": "ip_cam_65_hd", "ip_cam_65_hd": "ip_cam_65_hd",
+        "ip_cam_65_low": "ip_cam_65_low",
+        "xiaomi_c201": "xiaomi_c201_hd", "xiaomi_c201_hd": "xiaomi_c201_hd",
+        "xiaomi_c100": "xiaomi_c100_hd", "xiaomi_c100_hd": "xiaomi_c100_hd",
+        "xiaomi_c201_sd": "xiaomi_c201", "xiaomi_c100_sd": "xiaomi_c100",
+    }
+
+    @staticmethod
+    def _cctv_grab(camera: str) -> dict[str, Any]:
+        """Fetch one JPEG via go2rtc on tony-dell into the HA /local/ dir.
+        Returns {"ok", "url"|"error"}."""
+        import subprocess
+        import time
+        src = ToolRunner._CCTV_CAMS.get(camera.strip().lower())
+        if not src:
+            return {"ok": False,
+                    "error": f"unknown camera {camera!r} — try c100, c201, coffee corner"}
+        name = f"snap-{src}-{int(time.time())}.jpg"
+        host = os.environ.get("ADA_CCTV_SSH", "tony-dell-m2m")
+        cmd = (
+            f"mkdir -p ~/.config/home-assistant/www/cam && "
+            f"curl -sf -m 20 -o ~/.config/home-assistant/www/cam/{name} "
+            f"'http://127.0.0.1:1984/api/frame.jpeg?src={src}' "
+            f"&& [ -s ~/.config/home-assistant/www/cam/{name} ] && echo ok"
+        )
+        proc = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, cmd],
+            capture_output=True, text=True, timeout=45)
+        if proc.stdout.strip() != "ok":
+            return {"ok": False,
+                    "error": f"no frame from {src} (camera may be offline)"}
+        base = os.environ.get(
+            "ADA_CCTV_PUBLIC_BASE",
+            "https://tony-dell.taila0626a.ts.net:8123/local/cam/")
+        return {"ok": True, "url": base + name, "camera": src}
+
+    async def cctv_snapshot(self, camera: str, target: str = "tv",
+                            screen: int = 0) -> dict[str, Any]:
+        """Grab a single frame from a CCTV camera and show it on a screen.
+        camera: c100|c201|coffee corner (or a go2rtc stream name).
+        target: 'tv' (living-room TV) or 'screen' (vcast display number).
+        Pulls ONE frame — no live stream, minimal bandwidth/CPU."""
+        import asyncio
+        shot = await asyncio.to_thread(self._cctv_grab, camera)
+        if not shot.get("ok"):
+            return shot
+        url = shot["url"]
+        t = (target or "tv").strip().lower()
+        if t == "screen" or t.startswith("vcast"):
+            n = int(screen or 1)
+            await self._check_screen_owner(n, self._memory_identity())
+            out = await asyncio.to_thread(
+                self._vcast_api, "/pub",
+                {"screen": n, "msg": {"type": "image", "url": url}})
+            out.update({"url": url, "camera": shot["camera"], "screen": n})
+            return out
+        out = await self.tv_action(cmd="nav", text=url)
+        if isinstance(out, dict):
+            out.update({"url": url, "camera": shot["camera"]})
+        return out
+
     async def yt_transcript(self, url: str, language: str = "th") -> dict[str, Any]:
         """Fetch a YouTube video's auto-captions as plain text. `url` is a
         YouTube URL or video ID. The extraction runs on the transcript host
