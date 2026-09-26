@@ -1,0 +1,16 @@
+name: lab_stack_review
+turns:
+- expect:
+    calls_any:
+    - ada_memory_search
+    - ada_session_recall
+    response_contains_any:
+    - pod
+    - ollama
+    - idc01
+    - quadlet
+    response_nonempty: true
+    settle_s: 20
+    timeout_s: 180
+  user: Please review the pros and cons of my lab stack plan in the tony-projects
+    memory bank, then give me your suggestion.

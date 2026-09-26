@@ -1,0 +1,22 @@
+# Lab-stack ideas — asks Ada to research the lab-stack plan (memory banks +
+# her own knowledge) and write her review back into tony-projects via
+# ada_remember as a doc with subject lab-stack-ideas-ada.
+name: lab_stack_ideas
+turns:
+  - user: >-
+      Research additional ideas for my lab stack plan. Search the
+      tony-projects and general memory banks for related lessons, and use
+      your own knowledge of Home Assistant and container testing. Then
+      write your review into the tony-projects bank with ada_remember,
+      using subject lab-stack-ideas-ada, covering your pros, cons, and
+      any new ideas.
+    expect:
+      calls: [ada_memory_search, ada_remember]
+      response_nonempty: true
+      timeout_s: 180
+      settle_s: 20
+  - user: "Summarize the key ideas you just wrote."
+    expect:
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 15

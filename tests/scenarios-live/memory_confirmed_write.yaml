@@ -1,0 +1,19 @@
+# Memory write gate: the happy path — a write to a confirmed-policy
+# bank AFTER explicit user affirmation must land in the requested bank.
+name: memory_confirmed_write
+turns:
+  - user: >-
+      Please save this to tony-projects: marker zeta-write-4419 —
+      Chaba Voice is the chosen name for the Ada estate.
+    expect:
+      calls_any: [ada_remember]
+      timeout_s: 120
+      settle_s: 15
+  - user: "Yes, go ahead and save it."
+    expect:
+      result_contains: ["tony-projects"]
+      timeout_s: 120
+      settle_s: 15
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-projects-tony, contains: "zeta-write-4419"}

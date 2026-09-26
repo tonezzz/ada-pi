@@ -462,6 +462,73 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kw["meta"]["retracted_reason"], ["wrong"])
         self.assertEqual(kw["meta"]["kind"], ["note"])  # preserved
 
+    def _person_scope_registry(self):
+        spec = json.loads(json.dumps(REGISTRY))
+        spec["banks"]["personal-testo"] = {
+            "scope": "person",
+            "instances": ["tony"],
+            "mddb_collection": "ada-ha-bank-personal-testo",
+            "kinds": ["note"],
+            "writable": True,
+            "write_policy": "direct",
+            "allowed_tools": ["ada_remember", "ada_forget"],
+            "person_scope": "person.testo_2",
+            "key_scope": ["testo", "user-testo"],
+            "status": "active",
+        }
+        return _registry(instance="tony", spec=spec)
+
+    async def test_person_scope_write_denied_for_other_identity(self):
+        self.runner._banks = self._person_scope_registry()
+        with self.assertRaises(PermissionError) as ctx:
+            await self.runner.execute(
+                "ada_remember",
+                {"bank": "personal-testo", "text": "not his note"},
+                identity="person.tony",
+            )
+        self.assertIn("private to its owner", str(ctx.exception))
+        self.runner.mddb.add_document.assert_not_called()
+
+    async def test_person_scope_write_denied_for_anonymous(self):
+        self.runner._banks = self._person_scope_registry()
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "ada_remember",
+                {"bank": "personal-testo", "text": "anon note"},
+                identity=None,
+            )
+        self.runner.mddb.add_document.assert_not_called()
+
+    async def test_person_scope_write_allowed_for_owner(self):
+        self.runner._banks = self._person_scope_registry()
+        out = await self.runner.execute(
+            "ada_remember",
+            {"bank": "personal-testo", "text": "his own note"},
+            identity="person.testo_2",
+        )
+        self.assertEqual(out["verb"], "create")
+        args = self.runner.mddb.add_document.call_args.args
+        self.assertEqual(args[0], "ada-ha-bank-personal-testo")
+
+    async def test_person_scope_write_allowed_for_key_scope(self):
+        self.runner._banks = self._person_scope_registry()
+        out = await self.runner.execute(
+            "ada_remember",
+            {"bank": "personal-testo", "text": "his own note"},
+            identity="testo",
+        )
+        self.assertEqual(out["verb"], "create")
+
+    async def test_person_scope_forget_denied_for_other_identity(self):
+        self.runner._banks = self._person_scope_registry()
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "ada_forget",
+                {"bank": "personal-testo", "key": "personal-testo/x"},
+                identity="person.kk",
+            )
+        self.runner.mddb.update_document.assert_not_called()
+
     async def test_search_filters_expired(self):
         self.runner.mddb.vector_search.return_value = [
             {"key": "a", "contentMd": "old", "meta": {"status": ["active"], "valid_until": ["2020-01-01"]}},

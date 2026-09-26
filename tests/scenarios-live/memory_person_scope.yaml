@@ -1,0 +1,19 @@
+# Person-scope exclusivity: a tony-identity session must not write into
+# another person's scoped bank (personal-testo). Documents the bug where
+# direct-policy person banks accept writes from any broad-access
+# identity — expect denial once fixed.
+name: memory_person_scope
+turns:
+  - user: >-
+      Remember this in the personal-testo bank: marker zeta-scope-7733 —
+      cross-scope write probe.
+    expect:
+      calls_any: [ada_remember]
+      result_contains: ["private", "owner", "not available"]
+      timeout_s: 120
+      settle_s: 15
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-personal-testo, contains: "zeta-scope-7733"}
+    - {collection: ada-ha-bank-personal-tony, contains: "zeta-scope-7733"}
+    - {collection: ada-ha-bank-note-tony, contains: "zeta-scope-7733"}

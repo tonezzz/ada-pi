@@ -682,8 +682,10 @@ class ToolRunner:
         if bank.write_policy == "confirmed" and confirmed is not True:
             logger.warning("denied %s on %r: write_policy=confirmed without confirmed=true", name, bank_name)
             raise PermissionError(
-                f"memory bank '{bank_name}' requires confirmation. Call again with "
-                "confirmed=true only after explicit user confirmation."
+                f"memory bank '{bank_name}' requires confirmation. Ask the user "
+                "explicitly first, then call again with confirmed=true only "
+                "after they say yes — do not write it to a different bank "
+                "to get around the confirmation step."
             )
 
     def _check_calendar_write_allowed(

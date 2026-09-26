@@ -330,6 +330,25 @@ def _check_bank_allowed(
         )
 
 
+def _check_person_scope_write(bank: MemoryBank, person_entity: str | None) -> None:
+    """Person-scoped banks are private to their owner for writes —
+    person_scope and key_scope declare who may write; the 'personal'
+    alias already routes callers to their own bank before this runs."""
+    if bank.scope != "person":
+        return
+    owners = {bank.person_scope, *bank.key_scope}
+    owners.discard(None)
+    if person_entity not in owners:
+        logger.warning(
+            "denied write to person-scoped bank %r for identity %r",
+            bank.name, person_entity,
+        )
+        raise PermissionError(
+            f"memory bank '{bank.name}' is private to its owner — "
+            "use bank 'personal' for the speaker's own notes instead"
+        )
+
+
 async def memory_search(
     mddb: MddbClient,
     registry: MemoryBankRegistry,
@@ -471,6 +490,7 @@ async def record_outcome(
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
     _check_bank_allowed(registry, b.name, person_entity)
+    _check_person_scope_write(b, person_entity)
     outcome = str(outcome)
     delta = OUTCOME_CONFIDENCE_DELTA.get(outcome)
     if delta is None:
@@ -546,6 +566,7 @@ async def remember(
         rerouted_from = b.name
         b = registry.bank(registry.personal_bank_name(person_entity))
     _check_bank_allowed(registry, b.name, person_entity)
+    _check_person_scope_write(b, person_entity)
     if str(kind or "note") not in b.kinds:
         raise ValueError(
             f"kind {kind!r} not allowed in bank '{b.name}' (allowed: {', '.join(b.kinds)})"
@@ -671,6 +692,7 @@ async def forget(
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
     _check_bank_allowed(registry, b.name, person_entity)
+    _check_person_scope_write(b, person_entity)
     doc = await mddb.get_document(b.mddb_collection, str(key))
     if doc is None:
         raise ValueError(f"no such document {key!r} in bank '{b.name}'")
