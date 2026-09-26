@@ -112,5 +112,56 @@ class AuthTests(unittest.TestCase):
             os.unlink(path)
 
 
+class InviteKeyTests(unittest.TestCase):
+    def _keys_file(self, data=None):
+        import json
+        import tempfile
+        f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump(data or {}, f)
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def test_create_key_with_ha_person(self):
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            key = auth.create_key("user-kk", ha_person="person.kk")
+            self.assertIsNotNone(key)
+            self.assertEqual(auth.ha_person_for_key("user-kk"), "person.kk")
+            self.assertIn("user-kk", auth.issued_key_names())
+            details = auth.issued_key_details()["user-kk"]
+            self.assertEqual(details["ha_person"], "person.kk")
+            self.assertIsNone(details["device"])
+
+    def test_create_key_without_ha_person(self):
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            self.assertIsNotNone(auth.create_key("user-testo"))
+            self.assertIsNone(auth.ha_person_for_key("user-testo"))
+
+    def test_bind_device_preserves_ha_person(self):
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            auth.create_key("user-kk", ha_person="person.kk")
+            self.assertTrue(auth.bind_device("user-kk", "dev-1"))
+            self.assertEqual(auth.ha_person_for_key("user-kk"), "person.kk")
+
+    def test_set_key_ha_person_updates_and_clears(self):
+        path = self._keys_file({"user-kk": {"key": "k1", "device": None}})
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            self.assertTrue(auth.set_key_ha_person("user-kk", "person.kk"))
+            self.assertEqual(auth.ha_person_for_key("user-kk"), "person.kk")
+            self.assertTrue(auth.set_key_ha_person("user-kk", None))
+            self.assertIsNone(auth.ha_person_for_key("user-kk"))
+            self.assertFalse(auth.set_key_ha_person("ghost", "person.x"))
+
+    def test_create_key_rejects_duplicates_and_bad_names(self):
+        path = self._keys_file({"user-kk": {"key": "k1"}})
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path, "ADA_API_KEY": "adm"}, clear=True):
+            self.assertIsNone(auth.create_key("user-kk"))
+            self.assertIsNone(auth.create_key("admin"))  # env name is taken
+            self.assertIsNone(auth.create_key("bad name!"))
+
+
 if __name__ == "__main__":
     unittest.main()
