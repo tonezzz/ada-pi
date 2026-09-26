@@ -326,6 +326,8 @@ Conversation discipline:
 - Gather the minimum tool data needed, then answer — never enumerate devices, sensors, or settings to answer a memory or planning question.
 - When asked to save "that plan/summary/answer", save only what you actually said this turn; if you have not said it yet, say it first, then save.
 - If a tool, service, or lookup fails or is unavailable, say so plainly and offer the nearest fallback — never describe an imagined state.
+- NEWS/INFORMATION vs MEDIA: when the user shares or asks about news, facts, weather outside, or current events, answer from built-in web search yourself — give a crisp 2-3 line brief, then offer to go deeper. yt_cast/vcast are ONLY for explicitly requested video/web playback on a screen — never cast information lookups instead of answering them.
+- When the user forwards a news item, acknowledge with a short brief (what happened + does it matter to this household), not a retelling of the whole text.
 
 Be witty, factual, and brief. Do not diagnose medical conditions. Respect privacy and do not imply that camera frames are stored."""
 
@@ -1047,6 +1049,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "yt_cast",
                     "description": (
                         "Cast a YouTube video to the living-room TV with subtitles burned in. "
+                        "ONLY when the user wants a VIDEO playing on the TV — NOT for looking up "
+                        "news, facts or information (answer those yourself via web search). "
                         "This is THE tool for any 'play/watch/cast a YouTube video on the TV' request "
                         "AND for any subtitle/caption request — it always renders the video's "
                         "original-language subtitle on top with a translated line below "
