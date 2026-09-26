@@ -186,10 +186,15 @@ key; voice identity only personalizes:
   / 0 failed — this thread's own summary is now in
   `ada-ha-bank-devin-tony`. Vector-search still warming (503 "index
   loading") at handoff.
-- **Permanent fix pending**: reseed the follower by copying `mddb.db`
-  from idc01 → tony-dell while both are stopped (the 18M-LSN binlog
-  catch-up OOMs the primary every time the follower connects). Until
-  then the follower is DOWN — local reads at 100.68.142.13 unavailable.
+- **Reseed done**: copied idc01's `mddb.db` (2.3G, LSN ~18.3M) over the
+  follower's stale file (backup kept as `mddb.db.stale-20260926` in
+  `~/.config/containers/mddb/data/`; delete when verified). Follower no
+  longer requests the 18M-LSN backlog — the OOM loop is broken (primary
+  NRestarts=0 since, `search` 200 in ~200ms, `get`/`metrics` healthy;
+  vector-search 503 while its index warms — self-recovering).
+  Follower itself is still initializing — tony-dell disk was at ~96%
+  util under unrelated load; expect it to bind within minutes once I/O
+  frees. Local reads at 100.68.142.13 return when it does.
 - Yesterday's session (`dispatch-wt-20260925-215808`) already repointed
   all stale MDDB defaults to idc01 (chaba `72d9bc3`) — merged; the
   leftover worktree is clean to remove.
