@@ -2728,12 +2728,10 @@ class GeminiLiveProvider(RealtimeProvider):
             config["tools"][0]["function_declarations"] = _fill_bank_placeholders(
                 config["tools"][0]["function_declarations"], all_banks, writable_banks
             )
-        # Google Search grounding — lets Ada verify/expand news and answer
-        # "check the internet" requests server-side, on demand only (no
-        # scheduled fetching). Grounded queries are billed by Google; the
-        # grounding metadata arrives on the model's response.
-        if os.environ.get("ADA_GOOGLE_SEARCH", "1") not in ("0", "false", "no"):
-            config["tools"].append({"google_search": {}})
+        # NOTE: live-session google_search grounding is NOT enabled — the
+        # API key's plan rejects it with a 1011 quota error at connect,
+        # taking down every session. Web search goes through the explicit
+        # web_search tool (generate-API grounding) instead.
         self._session_context = self._client.aio.live.connect(
             model=self.model,
             config=config,
