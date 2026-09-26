@@ -1220,6 +1220,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "tv_action",
                     "description": (
                         "Send a command to the TV casting controller (cast-browser) through the Home Assistant rest_command.tv_action service. "
+                        "ONLY when the user wants something shown on a screen — never use this to answer "
+                        "questions or display search results unprompted (answer via web_search instead). "
                         "Cast targets via cmd='nav': text='<URL>' shows a page in the TV's browser (fully controllable afterwards), "
                         "text='screenlive:workspace:N[:pad|crop]' casts this host's live desktop workspace N, "
                         "text='tony-omen:workspace:N' casts Tony's desktop workspace N (switches his live workspace too). "
