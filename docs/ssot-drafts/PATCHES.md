@@ -88,3 +88,14 @@ argue from memory."
 
 Short doc: the collaboration pact + links to chaba SSOT + ada repo docs.
 Commit so it syncs to other machines.
+
+## 6. Existing bridge — don't duplicate
+
+`scripts/ada/sync-devin-summaries.py` + `devin-summaries-sync.timer`
+already index `~/.local/share/devin/{cli/summaries,summaries}` into
+`ada-ha-bank-devin-tony` hourly. The ada-repo `devin-memory-bridge.py`
+only publishes dispatch outcomes/run records. NOTE: the sync service is
+currently FAILED — it posts to idc01 (`100.74.146.0:11023`) which times
+out; the tony-dell MDDB is a read-only follower on `100.68.142.13:11023`
+(no loopback, no embedding provider). Worth an SSOT note in
+`ssot.values.yml`: `mddb.primary` vs `mddb.local_follower`.

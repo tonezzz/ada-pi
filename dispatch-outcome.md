@@ -131,11 +131,20 @@ key; voice identity only personalizes:
 - **`scripts/recall-bench.py`** — Devin recall benchmark: probes YAML
   times the local-summaries scan vs MDDB vector_search, p50 + hit_rate,
   emits a run record. Verified offline (MDDB path needs the service up).
-- **`scripts/devin-memory-bridge.py`** — publish dispatch-outcome.md /
-  backfill `summaries/history_*.md` into the MDDB reports collection with
-  `ref: file:<path>` meta — the Devin↔Ada shared-recall bridge. MDDB was
-  down on this host at test time; publish path is same MddbClient API as
-  conversation_memory.
+- **`scripts/devin-memory-bridge.py`** — publish dispatch-outcome.md and
+  run records into the `devin` bank (`ada-ha-bank-devin-<instance>`) with
+  `ref: file:<path>` meta. Continuation-summary backfill was dropped —
+  it already exists: `chaba/scripts/ada/sync-devin-summaries.py` runs
+  hourly via `devin-summaries-sync.timer` into the same bank.
+- **MDDB topology discovered**: tony-dell runs a **read-only follower**
+  bound to Tailscale `100.68.142.13:11023` (not loopback — the default
+  `MDDB_BASE_URL=127.0.0.1:11023` misses it). Follower answers
+  `/v1/search` but has **no embedding provider** → vector-search 400.
+  Writes and semantic search need the **idc01 primary**
+  (`100.74.146.0:11023`), which was unreachable (connect timeout) —
+  that's also why `devin-summaries-sync.service` is in failed state.
+  recall-bench verified the local read path (summaries p50=114ms,
+  hit=1.0; mddb path times out cleanly and is reported per-path).
 - **`session_security.secondary_blocked`** — rendered config override:
   `memory-banks.json` gains a `session_security` block; tool_runner
   resolves group tokens (control/memory_write/calendar_write/cms_write/
@@ -165,10 +174,15 @@ key; voice identity only personalizes:
   files (~1 KB per voiceprint; real enroll needs speechbrain on the
   host). `tests/fixtures/gen_voice_fixture.py --voice name=hz:seed`
   mints extra synthetic voices for multi-guest scenario fixtures.
-- MDDB, live HA, and speechbrain weren't reachable on this host — the
-  MDDB writes (`report-rollup --mddb`, `devin-memory-bridge`,
-  `recall-bench --collection`) and `identify_eval` need a run on the
-  live host.
+- MDDB writes need idc01 (primary) reachable — currently timing out, so
+  `report-rollup --mddb`, `devin-memory-bridge`, and the bench MDDB path
+  are untested against a live service. Consider fixing the sync service's
+  idc01 endpoint or checking idc01 health.
+- `ADA_*` services on tony-dell should point `MDDB_BASE_URL` at the
+  Tailscale IP (`http://100.68.142.13:11023/v1`) for reads, or the
+  follower should also listen on loopback.
+- Live HA + speechbrain need the Pi/host for `identify_eval` and real
+  enrollment.
 - Apply `docs/ssot-drafts/` to chaba + write `devin-kb/docs/
   work-policy.md` when approved; add the one-liner to
   `ssot.windsurf.common.md`, ada `AGENTS.md`, and `global_rules.md`.

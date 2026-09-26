@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
 """Bridge Devin session artifacts into Ada's MDDB memory — the recall path
-that makes dispatch outcomes and continuation summaries searchable from
-both Ada (ada_memory_search) and Devin (mddb MCP).
+that makes dispatch outcomes searchable from both Ada (ada_memory_search)
+and Devin (mddb MCP).
 
-Modes:
-  publish <md-file> — index one artifact (e.g. dispatch-outcome.md) as a
-      doc keyed devin/<kind>/<date>-<tag>.
-  --backfill <dir>  — index every history_*.md continuation summary in a
-      directory (one-shot catch-up for the ~98 unindexed summaries).
+NOTE: continuation-summary sync is already covered — chaba
+scripts/ada/sync-devin-summaries.py runs hourly (devin-summaries-sync.
+timer) and writes both summary dirs into ada-ha-bank-devin-<instance>.
+This script only PUBLISHES artifacts that sync doesn't see:
+dispatch-outcome.md, run records, ad-hoc reports.
 
-Docs carry meta: kind, date, ref (file: or report:), source=devin — so
-upper-level reports can link back to the raw file.
+Writes go to the MDDB PRIMARY (idc01); local tony-dell instance is a
+read-only follower — reads/search work locally, writes need the primary
+reachable.
 
 Usage:
-  python3 scripts/devin-memory-bridge.py publish dispatch-outcome.md \
-      --collection ada-ha-reports-tony --tag e155f30
-  python3 scripts/devin-memory-bridge.py --backfill \
-      ~/.local/share/devin/cli/summaries --collection ada-ha-reports-tony
+  python3 scripts/devin-memory-bridge.py dispatch-outcome.md --tag e155f30
 """
 
 from __future__ import annotations
@@ -52,19 +50,6 @@ async def _main(args) -> int:
     today = datetime.now(timezone.utc).date().isoformat()
     ok = fail = 0
 
-    if args.backfill:
-        files = sorted(args.backfill.glob("*.md"))
-        for p in files:
-            key = f"devin/session-summary/{p.stem}"
-            if await _publish(client, args.collection, p, key,
-                              "session-summary"):
-                ok += 1
-            else:
-                fail += 1
-                print(f"  FAILED {p.name}", file=sys.stderr)
-        print(f"backfill: {ok} indexed, {fail} failed "
-              f"-> mddb://{args.collection}/devin/session-summary/*")
-
     for f in args.files or []:
         tag = args.tag or f.stem.replace("_", "-")[:32]
         key = f"devin/{args.kind}/{today}-{tag}"
@@ -81,20 +66,18 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("files", nargs="*", type=Path)
     ap.add_argument("--collection", default=None,
-                    help="MDDB collection (default: ada-ha-reports-"
-                         "$ADA_INSTANCE_ID)")
+                    help="MDDB collection (default: ada-ha-bank-devin-"
+                         "$ADA_INSTANCE_ID — the 'devin' bank)")
     ap.add_argument("--tag", default=None, help="key suffix for publish")
     ap.add_argument("--kind", default="report",
                     help="doc kind for publish (report, session-summary)")
-    ap.add_argument("--backfill", type=Path, default=None,
-                    help="directory of history_*.md summaries to index")
     args = ap.parse_args()
 
     if not args.collection:
         from backend.instance import ada_instance_id
-        args.collection = f"ada-ha-reports-{ada_instance_id()}"
-    if not args.files and not args.backfill:
-        ap.error("give files to publish or --backfill <dir>")
+        args.collection = f"ada-ha-bank-devin-{ada_instance_id()}"
+    if not args.files:
+        ap.error("give files to publish")
     return asyncio.run(_main(args))
 
 
