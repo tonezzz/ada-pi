@@ -1013,11 +1013,21 @@ class ToolRunner:
         return await self.context.ha_client.control_media_player(entity_id, action, source)
 
     async def tv_action(self, cmd: str, text: str = "",
-                        selector: str = "", role: str = "") -> dict[str, Any]:
+                        selector: str = "", role: str = "",
+                        key: str = "", dx: float | None = None,
+                        dy: float | None = None,
+                        factor: float | None = None) -> dict[str, Any]:
         if not cmd:
             raise ValueError("cmd is required")
+        # Screen-ownership ACL: personal desktop sources are owner-locked.
+        # Deny non-owners here (rest_command swallows the controller's 403)
+        # and pass the speaker so cast-browser enforces as backstop too.
+        target = text or " ".join(str(cmd).split()[1:])
+        self._check_tv_source_owner(target, self._memory_identity())
         return await self.context.ha_client.tv_action(
             cmd, text, selector=selector or None, role=role or None,
+            key=key or None, dx=dx, dy=dy, factor=factor,
+            speaker=self._memory_identity() or "",
         )
 
     async def get_battery_status(self) -> dict[str, Any]:
@@ -1551,6 +1561,70 @@ class ToolRunner:
             "pending": len(data.get("pending", [])),
         }
 
+    @staticmethod
+    def _cast_screens_cfg() -> dict[str, Any]:
+        """vcast screen-ownership registry (screen -> person.*|'shared',
+        speaker aliases -> person). Missing file = no gating."""
+        import json as _json
+        try:
+            with open(os.path.expanduser(
+                    os.environ.get("ADA_CAST_SCREENS",
+                                   "~/.local/share/ada-pi/cast-screens.json"))) as f:
+                return _json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    async def _check_screen_owner(self, screen: int, ident: str | None) -> None:
+        """vcast screens are owner-locked: a speaker may only cast to their
+        own screen unless the screen is 'shared'."""
+        cfg = self._cast_screens_cfg()
+        if not cfg:
+            return  # no registry — don't gate
+        owner = (cfg.get("screens") or {}).get(str(int(screen)), "shared")
+        s = (ident or "").strip()
+        person = (s if s.startswith("person.")
+                  else (cfg.get("aliases") or {}).get(s, "anonymous"))
+        if owner == "shared" or owner == person:
+            return
+        who = owner.replace("person.", "")
+        if person == "anonymous":
+            raise PermissionError(
+                f"denied: screen {screen} is {who}'s private screen — "
+                "identify the speaker first")
+        raise PermissionError(
+            f"denied: screen {screen} is {who}'s private screen")
+
+    def _check_tv_source_owner(self, target: str, ident: str | None) -> None:
+        """Gate personal desktop streams in tv_action nav targets
+        (screenlive:* / workspace:* / screen:* = the tony-dell seat,
+        tony-omen:* = Tony's desktop). HA's rest_command swallows the
+        controller's 403, so deny here before the call ever leaves.
+        cast-browser still enforces as the authoritative backstop."""
+        cfg = self._cast_screens_cfg()
+        if not cfg:
+            return
+        t = (target or "").lower()
+        source = None
+        if re.match(r"^(screenlive|screen:|workspace)", t):
+            source = "seat"
+        elif t.startswith("tony-omen:"):
+            source = "omen"
+        if not source:
+            return  # plain URL / named page — no personal screen involved
+        owner = (cfg.get("sources") or {}).get(source, "shared")
+        s = (ident or "").strip()
+        person = (s if s.startswith("person.")
+                  else (cfg.get("aliases") or {}).get(s, "anonymous"))
+        if owner == "shared" or owner == person:
+            return
+        who = owner.replace("person.", "")
+        if person == "anonymous":
+            raise PermissionError(
+                f"denied: {source} is {who}'s private screen — "
+                "identify the speaker first")
+        raise PermissionError(
+            f"denied: {source} is {who}'s private screen")
+
     async def cast_to_screen(self, screen: int, action: str = "nav",
                              url: str = "") -> dict[str, Any]:
         """Cast to a numbered vcast virtual display (NOT the TV).
@@ -1558,6 +1632,7 @@ class ToolRunner:
         import asyncio
         action = str(action or "nav").lower()
         screen = int(screen)
+        await self._check_screen_owner(screen, self._memory_identity())
         if action == "stop":
             msg: dict[str, Any] = {"type": "stop"}
         else:

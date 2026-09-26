@@ -1,0 +1,44 @@
+name: vcast-owner-denied
+# Live scenario — screen ownership ACL, non-owner path.
+#
+# Run with a NON-OWNER issued api key (e.g. --api-key <scenariok key>):
+# the caller name resolves to 'anonymous', so personal screens deny.
+#
+# What it verifies:
+#   - anonymous/non-owner cannot cast Tony's desktop source
+#     (screenlive:* / workspace:* / tony-omen:* → 403-style denial)
+#   - non-owner cannot cast to a private vcast screen (screen-1)
+#   - shared resources still work: a plain URL nav to the living-room
+#     TV succeeds for the same caller
+#
+# NOTE: tool errors arrive as tool_result 'error': "...denied..." —
+#       the denial text must reach Ada so she can explain it aloud.
+#
+# tier: full — real TV actuation on the allow turn.
+tier: full
+
+turns:
+  - user: "Ada, cast my desktop to the TV — workspace one."
+    expect:
+      calls: [tv_action]
+      result_contains: ["denied"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Cast a youtube video to screen one."
+    expect:
+      calls: [cast_to_screen]
+      result_contains: ["denied", "private"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "OK, just put google dot com on the TV."
+    expect:
+      calls: [tv_action]
+      result_contains: ["'cmd': 'nav'"]
+      result_not_contains: ["denied"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8

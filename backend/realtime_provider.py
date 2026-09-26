@@ -1224,7 +1224,9 @@ class GeminiLiveProvider(RealtimeProvider):
                         "cmd='press' text='<key e.g. Enter|Escape|Backspace>', cmd='back' to go back, "
                         "cmd='shot' text='<name>' for a screenshot, cmd='viewport' text='WxH'. "
                         "A streamed desktop (screenlive/tony-omen) is one-way video — control is limited to switching workspaces; "
-                        "for interactive control prefer nav'ing the page itself."
+                        "for interactive control prefer nav'ing the page itself. "
+                        "Personal screens are owner-locked: 'cast my screen' only works for the screen's owner — "
+                        "the living-room TV is shared and available to everyone."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -1240,6 +1242,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "selector": {"type": "string", "description": "CSS selector for click."},
                             "role": {"type": "string", "description": "ARIA role for click (e.g. 'button')."},
+                            "key": {"type": "string", "description": "Key name for press (e.g. 'Enter', 'Escape')."},
+                            "dx": {"type": "number", "description": "Horizontal scroll amount (px)."},
+                            "dy": {"type": "number", "description": "Vertical scroll amount (px)."},
+                            "factor": {"type": "number", "description": "Scroll amount as fraction of viewport height."},
                         },
                         "required": ["cmd"],
                         "additionalProperties": False,
@@ -1266,7 +1272,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         "'play' url='<m3u8, video, or YouTube/Vimeo page URL>' plays video (HLS supported, "
                         "YouTube/Vimeo links auto-embed on the display), 'image' url='<png/jpg>' "
                         "shows a snapshot, 'audio' url plays sound or TTS, 'stop' returns it to idle. "
-                        "Screens are numbered — call vcast_list first if you need to pick one."
+                        "Screens are numbered — call vcast_list first if you need to pick one. "
+                        "Some screens are private to their owner — casting to another person's screen is denied."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {

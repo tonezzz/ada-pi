@@ -1,0 +1,42 @@
+name: vcast-owner-allow
+# Live scenario — screen ownership ACL, owner path.
+#
+# Run with the admin api key → identity resolves to person.tony.
+#
+# What it verifies:
+#   - the owner CAN cast their own desktop source (screenlive/tony-omen)
+#   - the owner CAN cast to their own vcast screen (screen-1 = person.tony)
+#   - nothing leaks: no 'denied' appears in tool results
+#
+# NOTE: T1 streams the real desktop to the TV — run when that's OK.
+#       screen-1 must exist in the input-bridge registry (offline OK).
+#
+# tier: full — real TV + cast actuation.
+tier: full
+
+turns:
+  - user: "Ada, cast my desktop to the TV — workspace one."
+    expect:
+      calls: [tv_action]
+      result_contains: ["'cmd': 'nav'", "workspace"]
+      result_not_contains: ["denied"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Now cast google dot com to screen one."
+    expect:
+      calls: [cast_to_screen]
+      result_contains: ["'screen': 1"]
+      result_not_contains: ["denied"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Stop screen one and put the TV back to normal."
+    expect:
+      calls_any: [cast_to_screen, tv_action, yt_cast_stop, control_media_player]
+      result_not_contains: ["denied"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
