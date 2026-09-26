@@ -81,6 +81,46 @@ class AuthTests(unittest.TestCase):
             self.assertFalse(auth.websocket_authorized(_ws(query={"api_key": "bad"})))
             self.assertFalse(auth.websocket_authorized(_ws()))
 
+    def test_key_apps_roundtrip(self):
+        import json
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({}, f)
+            path = f.name
+        try:
+            with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+                self.assertIsNotNone(auth.create_key("viewer", apps=["view"]))
+                self.assertIsNotNone(auth.create_key("dev1"))
+                apps = auth.issued_key_apps()
+                self.assertEqual(apps["viewer"], ["view"])
+                self.assertIsNone(apps["dev1"])
+                # Unknown/empty apps collapse to the default (None).
+                self.assertIsNotNone(auth.create_key("junk", apps=["bogus"]))
+                self.assertIsNone(auth.issued_key_apps()["junk"])
+        finally:
+            os.unlink(path)
+
+    def test_bind_device_preserves_apps(self):
+        import json
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({"viewer": {"key": "viewer-key", "device": None,
+                                  "issued": "2026-09-26", "apps": ["view"]}}, f)
+            path = f.name
+        try:
+            with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+                self.assertTrue(auth.bind_device("viewer", "dev-abc"))
+                self.assertEqual(auth.bound_device("viewer"), "dev-abc")
+                self.assertEqual(auth.issued_key_apps()["viewer"], ["view"])
+                self.assertEqual(auth.issued_key_timeline()["viewer"]["issued"],
+                                 "2026-09-26")
+                # unbind drops the device but keeps apps too
+                self.assertTrue(auth.unbind_device("viewer"))
+                self.assertIsNone(auth.bound_device("viewer"))
+                self.assertEqual(auth.issued_key_apps()["viewer"], ["view"])
+        finally:
+            os.unlink(path)
+
     def test_shared_star_key_skips_device_binding(self):
         import json
         import tempfile

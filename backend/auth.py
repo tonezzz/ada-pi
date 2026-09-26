@@ -31,8 +31,21 @@ def _keys_file() -> str:
     )
 
 
+# Apps a key can be paired into: voice PWA, text chat page, cms viewer.
+# None/absent on a key means the legacy default ["voice", "chat"].
+VALID_KEY_APPS = ("voice", "chat", "view")
+
+
+def _clean_apps(apps: Any) -> list[str] | None:
+    """Normalize an apps value to a deduped list of known app ids, or None."""
+    if not isinstance(apps, (list, tuple)):
+        return None
+    seen = [a for a in dict.fromkeys(str(a) for a in apps) if a in VALID_KEY_APPS]
+    return seen or None
+
+
 def _key_entries() -> dict[str, dict]:
-    """File-issued keys normalized to {name: {"key": str, "device": str|None}}."""
+    """File-issued keys normalized to {name: {"key", "device", "issued", "apps"}}."""
     try:
         data = json.loads(open(_keys_file()).read())
     except (OSError, ValueError):
@@ -44,11 +57,12 @@ def _key_entries() -> dict[str, dict]:
         if isinstance(value, dict):
             key, device, issued = (value.get("key"), value.get("device"),
                                    value.get("issued"))
+            apps = _clean_apps(value.get("apps"))
         else:
-            key, device, issued = value, None, None
+            key, device, issued, apps = value, None, None, None
         if name and key:
             entries[str(name)] = {"key": str(key), "device": device or None,
-                                  "issued": issued}
+                                  "issued": issued, "apps": apps}
     return entries
 
 
@@ -86,8 +100,12 @@ def _save_file_keys(data: dict[str, str]) -> None:
         json.dump(data, f, indent=1)
 
 
-def create_key(name: str) -> str | None:
-    """Issue a new named device key, persisted to the keys file. None if taken."""
+def create_key(name: str, apps: Any = None) -> str | None:
+    """Issue a new named device key, persisted to the keys file. None if taken.
+
+    `apps` optionally restricts which UIs the key pairs into ("voice",
+    "chat", "view"); unset/empty means the default voice+chat.
+    """
     if not _KEY_NAME_RE.match(name):
         return None
     try:
@@ -100,6 +118,9 @@ def create_key(name: str) -> str | None:
     key = f"ada-{secrets.token_urlsafe(24)}"
     data[name] = {"key": key, "device": None,
                   "issued": time.strftime("%Y-%m-%d")}
+    clean = _clean_apps(apps)
+    if clean:
+        data[name]["apps"] = clean
     _save_file_keys(data)
     try:
         from backend.event_log import log_event
@@ -137,6 +158,11 @@ def issued_key_timeline() -> dict[str, dict]:
             for n, e in _key_entries().items()}
 
 
+def issued_key_apps() -> dict[str, list[str] | None]:
+    """{name: [apps] or None} — None means the legacy voice+chat default."""
+    return {n: e["apps"] for n, e in _key_entries().items()}
+
+
 def bound_device(name: str) -> str | None:
     entry = _key_entries().get(name)
     return entry["device"] if entry else None
@@ -151,11 +177,10 @@ def bind_device(name: str, device_id: str) -> bool:
     if name not in data:
         return False
     old = data[name]
-    key = old["key"] if isinstance(old, dict) else old
-    issued = old.get("issued") if isinstance(old, dict) else None
-    data[name] = {"key": key, "device": device_id}
-    if issued:
-        data[name]["issued"] = issued
+    if isinstance(old, dict):
+        old["device"] = device_id
+    else:
+        data[name] = {"key": old, "device": device_id}
     _save_file_keys(data)
     return True
 
