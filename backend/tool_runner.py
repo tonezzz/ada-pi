@@ -54,10 +54,18 @@ CALENDAR_WRITE_TOOLS = {
 # miniapp renders, so all writes require confirmed=true.
 CMS_WRITE_TOOLS = {"cms_publish_page", "cms_delete_page"}
 
-# Devin dispatch: launching an unattended agent session (devin_dispatch) or
-# injecting a message into one (devin_followup) both cause autonomous code
-# changes, so they require confirmed=true. devin_status is read-only.
-DEVIN_CONFIRMED_TOOLS = {"devin_dispatch", "devin_followup"}
+# Devin dispatch: launching an unattended agent session (devin_dispatch),
+# injecting a message into one (devin_followup), or delivering the user's
+# answer to a blocked job (devin_answer) all cause autonomous code changes,
+# so they require confirmed=true. devin_status and devin_pending are
+# read-only.
+DEVIN_CONFIRMED_TOOLS = {"devin_dispatch", "devin_followup", "devin_answer"}
+
+# Job ledger collection: job/<id> docs (status running|awaiting-user|
+# answered|done|failed) written by devin-dispatch-watch and job-run.sh;
+# answer/<id> docs are the user's refined replies. Lives in the
+# devin-handoff bank — render-handoff-inbox.py skips both prefixes.
+DEVIN_JOBS_COLLECTION = "ada-ha-bank-devin-handoff"
 
 # Document archive/print: ada_doc_archive writes pages to gdrive:ada-documents
 # and ada_doc_print sends real pages to the printer — both require
@@ -749,6 +757,77 @@ class ToolRunner:
     async def devin_followup(self, task_id: str, message: str) -> str:
         """Send a follow-up message into a dispatched session."""
         return await devin_dispatch_mod.followup(task_id, message)
+
+    async def devin_pending(self) -> list[dict[str, Any]]:
+        """Dispatched jobs blocked waiting for a user answer.
+
+        Reads job/<id> docs (kind=job, status=awaiting-user) from the
+        devin-handoff collection — the same ledger the watch timer, job-run
+        wrapper, and Report tab dispatch layer use.
+        """
+        if self.mddb is None:
+            return []
+        docs = await self.mddb.search_documents(
+            DEVIN_JOBS_COLLECTION,
+            filter_meta={"kind": ["job"], "status": ["awaiting-user"]},
+            limit=20,
+        )
+        out = []
+        for d in docs:
+            meta = d.get("meta") or {}
+            out.append({
+                "task_id": _first(meta.get("job_id"))
+                           or (d.get("key") or "").split("/", 1)[-1],
+                "question": _first(meta.get("question")) or "",
+                "host": _first(meta.get("host")),
+                "ts": _first(meta.get("ts")),
+                "detail": (d.get("contentMd") or "")[:600],
+            })
+        out.sort(key=lambda j: j.get("ts") or "", reverse=True)
+        return out
+
+    async def devin_answer(self, task_id: str, message: str) -> dict[str, Any]:
+        """Deliver the user's refined answer to a blocked job.
+
+        Writes answer/<task_id> to the ledger, flips job/<task_id> to
+        answered, and for devin-dispatch task ids also injects the message
+        straight into the session via devin_followup.
+        """
+        if self.mddb is None:
+            raise PermissionError("devin_answer needs MDDB (unavailable in guest mode)")
+        now = datetime.now(timezone.utc).isoformat()
+        delivered = False
+        via = "mailbox"
+        # Devin-dispatch task ids (YYYYMMDD-HHMMSS-slug) resume in-place.
+        if re.match(r"^\d{8}-\d{6}-[a-z0-9-]+$", task_id):
+            res = await devin_dispatch_mod.followup(task_id, message)
+            delivered = True
+            via = "followup"
+            logger.info("devin_answer: followup to %s -> %s", task_id, res)
+        await self.mddb.add_document(
+            DEVIN_JOBS_COLLECTION,
+            key=f"answer/{task_id}",
+            lang="en",
+            content_md=f"Answer for job {task_id} ({now}):\n\n{message}",
+            meta={
+                "kind": ["job-answer"], "status": ["answered"],
+                "job_id": [task_id], "ts": [now],
+                "subject": [f"answer-{task_id}"],
+                "source": ["voice"], "written_by": ["ada"],
+                "scope": ["tony"], "bank": ["devin-handoff"],
+            },
+        )
+        job = await self.mddb.get_document(DEVIN_JOBS_COLLECTION, f"job/{task_id}")
+        if job:
+            meta = dict(job.get("meta") or {})
+            meta["status"] = ["answered"]
+            meta["answered_at"] = [now]
+            await self.mddb.update_document(
+                DEVIN_JOBS_COLLECTION, f"job/{task_id}", meta=meta)
+        return {"task_id": task_id, "delivered": delivered, "via": via,
+                "note": ("Answer recorded" +
+                         (" and sent to the running session." if delivered
+                          else " — the dispatcher picks it up."))}
 
     def _check_doc_confirmed(
         self, name: str, args: dict[str, Any], confirmed: Any,

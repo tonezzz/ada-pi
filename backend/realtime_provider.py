@@ -100,7 +100,10 @@ CMS_INSTRUCTIONS = (
 
 # Same constant pattern as CALENDAR_TOOLS/CMS_TOOLS: lets ADA_EXCLUDED_TOOLS
 # strip the devin declarations and their instruction paragraph together.
-DEVIN_TOOLS = {"devin_dispatch", "devin_status", "devin_followup"}
+DEVIN_TOOLS = {
+    "devin_dispatch", "devin_status", "devin_followup",
+    "devin_pending", "devin_answer",
+}
 
 # Tools with real-world side effects — they share a tighter per-turn cap
 # (ADA_ACTUATION_BUDGET) than the generic tool-call budget so a runaway
@@ -134,6 +137,12 @@ DEVIN_INSTRUCTIONS = (
     "call with confirmed=true — writes are enforced server-side. "
     "Dispatched sessions run unattended; the user is notified on their phone when "
     "one finishes, so report the task id and move on rather than polling. "
+    "devin_pending lists jobs blocked waiting for the user's answer — when the "
+    "user asks what needs their attention, or says a job is waiting, call it and "
+    "read each job's question back with its short detail. To deliver an answer: "
+    "refine the user's reply into a self-contained instruction (the job sees "
+    "only the text, not this conversation), read the refined text back, get an "
+    "explicit yes, then call devin_answer with confirmed=true. "
     "When discussing an implementation task the user wants built later, offer to "
     "save the spec into the devin-handoff memory bank so a dispatched session can "
     "be told to 'check the ada handoff'."
@@ -2506,6 +2515,48 @@ class GeminiLiveProvider(RealtimeProvider):
                             "message": {
                                 "type": "string",
                                 "description": "The follow-up instruction to send.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["task_id", "message"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "devin_pending",
+                    "description": (
+                        "Lists dispatched jobs that are blocked waiting for the user's "
+                        "answer (needs-input), with each job's question and short detail. "
+                        "Use when the user asks what needs their attention, says a job is "
+                        "waiting for them, or a needs-input notification arrived."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "devin_answer",
+                    "description": (
+                        "Delivers the user's answer to a blocked dispatched job. For "
+                        "Devin sessions it resumes the session with the message directly; "
+                        "for other dispatched jobs it records the answer for the "
+                        "dispatcher. First refine the user's reply into a self-contained "
+                        "instruction, read it back, then call with confirmed=true only "
+                        "after an explicit yes."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task id from devin_pending or devin_status.",
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": "The refined, self-contained answer/instruction.",
                             },
                             "confirmed": {
                                 "type": "boolean",
