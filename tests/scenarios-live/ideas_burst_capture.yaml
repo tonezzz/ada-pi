@@ -1,0 +1,18 @@
+# Ideas inbox: a half-formed burst must land in the `ideas` bank verbatim
+# with no confirmation gate (write_policy=direct) and must NOT leak into
+# other banks.
+name: ideas_burst_capture
+turns:
+  - user: >-
+      Jot this down quick before I forget: zeta-idea-7717 — maybe the
+      scenario runner should diff two HA versions side by side.
+    expect:
+      calls_any: [ada_remember]
+      result_contains: ["ideas"]
+      timeout_s: 120
+      settle_s: 10
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-ideas-tony, contains: "zeta-idea-7717"}
+    - {collection: ada-ha-bank-general, contains: "zeta-idea-7717"}
+    - {collection: ada-ha-bank-personal-tony, contains: "zeta-idea-7717"}
