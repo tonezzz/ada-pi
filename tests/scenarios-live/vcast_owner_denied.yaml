@@ -26,7 +26,7 @@ turns:
       timeout_s: 90
       settle_s: 6
 
-  - user: "Cast a youtube video to screen one."
+  - user: "Play https://www.youtube.com on screen one right now — don't list, just do it."
     expect:
       calls: [cast_to_screen]
       result_contains: ["denied", "private"]
