@@ -233,3 +233,38 @@ key; voice identity only personalizes:
   `ssot.windsurf.common.md`, ada `AGENTS.md`, and `global_rules.md`.
 - Open decision: explicit `tests/baselines.yaml` (recommended, seeded
   from ssot.values) vs trailing-median baselines for `escalate_when`.
+
+## Task board (meaningful titles)
+
+Done this session: `ada-auth-person-keys`, `ada-sec-session-owner`,
+`ada-sec-secondary-gate`, `ada-latency-instrumentation`,
+`reports-l0-to-l3-pipeline`, `reports-drilldown-read-path`,
+`reports-baseline-escalations`, `devin-mddb-bridge-live`,
+`mddb-follower-reseed`, `mddb-primary-recovery`.
+
+Pending (who/what unblocks):
+
+- `verify-mddb-follower-bind` — curl `100.68.142.13:11023/v1/health`;
+  then delete `mddb.db.stale-20260926`.
+- `post-reboot-ram-verify` — after the RAM upgrade: 8 quadlets active,
+  vector index warm, raise `mem.conf` past 6.5G, recheck failed
+  `ada-scenario-*` oneshots.
+- `enroll-kk-live-voiceprint` — live host: `enroll_speakers.py` with real
+  samples, then `identify_eval.py` benchmark vs `tests/baselines.yaml`.
+- `live-bargein-scenarios` — owner/secondary policy scenarios with voice
+  fixtures; update `kk_first_contact`.
+- `reissue-kk-key-person` — key with `ha_person=person.kk`; verify
+  `personal-kk` bank scope.
+- `apply-ssot-drafts-to-chaba` — needs approval; copies
+  `docs/ssot-drafts/` + values/terminology/rules deltas from PATCHES.md.
+- `devin-kb-work-policy` — needs approval; `docs/work-policy.md` +
+  rules one-liners.
+- `triage-focus-inbox` — tony-dell IP-drift alerts + handoff-* items
+  sitting untriaged in chaba `focus-inbox/`.
+- `cleanup-old-worktree` — remove `dispatch-wt-20260925-215808-*`
+  (commits already on chaba HEAD).
+- `ai-edge-litert-dep` — 3 test errors are this missing dep only.
+- `ada-report-dig-tool` — optional: expose the drill chain to Ada
+  (owner-gated) and/or `GET /api/reports/<ref>` in pwa_server.
+- `weekly-rollup-timer` — schedule `report-rollup.py --level weekly`
+  alongside scenario timers on the host.
