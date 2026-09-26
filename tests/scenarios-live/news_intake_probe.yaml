@@ -36,6 +36,16 @@ turns:
       # (Bangna/On Nut/Srinakarin corridor) OR honestly asks where we are —
       # either is fine for the probe; no hard assertion.
 
+  # --- internet-search probe ----------------------------------------------
+  # With google_search grounding enabled she should fetch fresh info rather
+  # than only checking local sensors. Observe: does the answer contain NEW
+  # facts (dates, road counts, source names) vs. just the forwarded text?
+  - user: "Search the internet for the latest on this Bangkok flood and tell me what's new."
+    expect:
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
   # --- tracking probe -----------------------------------------------------
   - user: "Keep an eye on this flood situation for me."
     expect:
