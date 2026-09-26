@@ -151,6 +151,16 @@ key; voice identity only personalizes:
   devin_confirmed/doc/persona_write) + literal names; absent/malformed
   fails closed to the built-in default. SSOT tightening no longer needs
   a deploy.
+- **Baselines + L3**: `tests/baselines.yaml` holds audited thresholds
+  (latency p95, speaker-ID accuracy/refusal, scenario failures, recall
+  hit-rate); `report-rollup.py` checks day aggregates against them
+  (`ttft_p95 > baseline×1.25`, tool p95, accuracy/refusal, recall) and
+  emits rule-based escalations with refs. `--level weekly` rolls daily
+  L2 files into `runs/weekly/<iso-week>.json` with `daily_refs` — the
+  L3→L2→L1→L0 chain is complete. Smoke-tested: rules fire correctly.
+- **Bridge proven live**: `devin-memory-bridge.py dispatch-outcome.md`
+  published to `mddb://ada-ha-bank-devin-tony/devin/report/
+  2026-09-26-mddb-identity-policy` (write path to idc01 works).
 - **SSOT drafts staged** in `docs/ssot-drafts/` (not yet applied to
   chaba): `ssot.apps.ada-reports.yml`, `ssot.policy.memory-hierarchy.yml`
   (P-R1–R5 + collaboration pact), `PATCHES.md` with the values/
