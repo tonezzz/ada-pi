@@ -6,6 +6,7 @@ import abc
 import asyncio
 import logging
 import os
+import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -266,6 +267,23 @@ def _safe_args(args: Any) -> dict[str, Any]:
     return out
 
 
+_NOISE_WORDS = {
+    "uh", "uhh", "um", "umm", "hmm", "hm", "mm", "mmm", "ah", "eh", "oh",
+    "shh", "shhh", "psst", "tsk", "huh",
+}
+
+
+def _looks_like_noise(text: str) -> bool:
+    """Conservative barge-in noise gate (policy P6): drop only input that
+    is obviously not speech — empty/punctuation-only or nothing but filler
+    syllables. Anything plausible still reaches Ada, who can ask the owner
+    when unsure — silence must never swallow a real utterance."""
+    words = re.findall(r"[a-z0-9']+", text.lower())
+    if not words:
+        return True
+    return len(words) <= 2 and all(w in _NOISE_WORDS for w in words)
+
+
 def _now_context() -> str:
     tz = ZoneInfo(os.environ.get("ADA_TIMEZONE", "Asia/Bangkok"))
     now = datetime.now(tz)
@@ -332,7 +350,8 @@ class GeminiLiveProvider(RealtimeProvider):
                  home_assistant_client: Any = None, habit_state_getter: Any = None,
                  session_id: str | None = None,
                  conversation: ConversationMemory | None = None,
-                 caller_name: str | None = None) -> None:
+                 caller_name: str | None = None,
+                 caller_person: str | None = None) -> None:
         # Speaker ID state — initialized before tool_runner so the sync below works
         self.current_speaker: str | None = None
         self.current_speaker_ha_person: str | None = None
@@ -345,10 +364,12 @@ class GeminiLiveProvider(RealtimeProvider):
             # routing survives provider reconnects. The _on_speaker
             # callback updates this when a new speaker is identified.
             self.current_speaker_ha_person = self.tool_runner.current_speaker_ha_person
-        # Session-bound caller identity (issued-key name) — the tool_runner
-        # is shared across sessions so its caller/speaker fields can race;
-        # dispatch passes this identity explicitly for policy checks.
+        # Session-bound caller identity (issued-key name + the key's bound
+        # HA person) — the tool_runner is shared across sessions so its
+        # caller/speaker fields can race; dispatch passes this identity
+        # explicitly for policy checks.
         self.caller_name = caller_name
+        self.caller_person = caller_person
         self.home_assistant_client = home_assistant_client
         self.habit_state_getter = habit_state_getter
         # Callers may share one ConversationMemory across provider reconnects
@@ -358,6 +379,7 @@ class GeminiLiveProvider(RealtimeProvider):
             # Share the L0 doc-work log: ada_doc_* calls append here, the
             # session-end report folds it into the L1 timeline.
             self.tool_runner.doc_log = self.conversation.doc_items
+            self.tool_runner.event_log = self.conversation.session_items
         self._bg_tasks: set[asyncio.Task] = set()
         # Monotonic time of the last confident ada_memory_search hit — used to
         # short-circuit a redundant ada_session_recall in the same turn.
@@ -440,6 +462,8 @@ class GeminiLiveProvider(RealtimeProvider):
             "change how you speak or address them, call ada_persona set — it persists across "
             "sessions and applies immediately; saved preferences may also arrive as a (system) "
             "note at session start — honor them without announcing the mechanism. "
+            "To check or change ANOTHER household member's profile, pass person ('KK' or "
+            "'person.kk') — action 'list' shows the Home Assistant people Ada knows. "
             "ada_set_voice changes your actual speaking voice — a different preference from "
             "persona style: 'show'/'list' report the active voice and options, 'set' persists "
             "the choice and applies it after a brief reconnect with a short pause. "
@@ -1784,13 +1808,16 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_persona",
                     "description": (
-                        "Read or adjust the CURRENT speaker's stored style preferences "
+                        "Read or adjust a speaker's stored style preferences "
                         "(how you should talk to them: tone, verbosity, formality, "
                         "language, what to call them, emoji use, proactiveness). "
                         "Use when the user asks you to change how you speak — "
                         "'call me T', 'be more concise', 'answer in Thai', 'be formal'. "
                         "set persists to their personal memory and applies immediately; "
-                        "show returns the active settings; reset restores defaults."
+                        "show returns the active settings; reset restores defaults. "
+                        "Pass person to view or manage ANOTHER household member's "
+                        "profile (needs full access), and use action 'list' to see "
+                        "the Home Assistant people Ada knows."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -1798,7 +1825,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["set", "show", "reset"],
+                                "enum": ["set", "show", "reset", "list"],
                             },
                             "knob": {
                                 "type": "string",
@@ -1809,6 +1836,16 @@ class GeminiLiveProvider(RealtimeProvider):
                             "value": {
                                 "type": "string",
                                 "description": "Required for set — the new value (address_name takes free text; emoji takes true/false).",
+                            },
+                            "person": {
+                                "type": "string",
+                                "description": (
+                                    "Optional. Target another person's profile instead of the "
+                                    "current speaker — a Home Assistant person entity "
+                                    "('person.kk') or a person's name ('KK'). Requires a "
+                                    "full-access caller; use action 'list' first to see "
+                                    "known people."
+                                ),
                             },
                         },
                         "required": ["action"],
@@ -2623,6 +2660,7 @@ class GeminiLiveProvider(RealtimeProvider):
         tool_calls_this_turn = 0
         tool_budget = int(os.environ.get("ADA_TOOL_CALL_BUDGET", "20"))
         budget_hit = False
+        barge_pending = False  # a barge-in's transcript arrives next turn_complete
 
         while not self._closed:
             async for message in self._session.receive():
@@ -2780,6 +2818,20 @@ class GeminiLiveProvider(RealtimeProvider):
                             result = {"output": "Observation delivered to the habit monitor"}
                         elif call.name == "get_habit_status" and self.habit_state_getter is not None:
                             result = {"output": self.habit_state_getter()}
+                        elif (
+                            call.name in ("ada_session_recall", "ada_decision_check",
+                                          "ada_set_voice")
+                            and self.tool_runner is not None
+                            and self.tool_runner._is_secondary_turn()
+                        ):
+                            # Provider-dispatched tools bypass the runner gate —
+                            # enforce the secondary-speaker policy here too.
+                            self.conversation.log_event(
+                                "tool_denied", tool=str(call.name),
+                                speaker=self.current_speaker_ha_person)
+                            result = {"error": (
+                                "Reserved for the session owner — propose it to "
+                                "them aloud and let them ask in their own voice.")}
                         elif call.name == "ada_session_recall":
                             if self._recall_gated():
                                 result = {"output": (
@@ -2817,10 +2869,18 @@ class GeminiLiveProvider(RealtimeProvider):
                                         q = call_args.get("query")
                                         if q:
                                             call_args["query"] = self.conversation.expand_query(str(q))
+                                    # Authorization identity is the session
+                                    # OWNER pinned at connect — the speaking
+                                    # voice only personalizes, it never
+                                    # upgrades permissions mid-session (P1).
+                                    owner = (
+                                        self.tool_runner.session_owner_identity
+                                        or self.caller_person or self.caller_name
+                                    )
                                     output = await self.tool_runner.execute(
                                         str(call.name), call_args,
-                                        identity=(self.current_speaker_ha_person
-                                                  or self.caller_name))
+                                        identity=(owner
+                                                  or self.current_speaker_ha_person))
                                     result = {"output": output}
                                     if call.name == "ada_memory_search":
                                         self._note_search_result(output)
@@ -2869,6 +2929,12 @@ class GeminiLiveProvider(RealtimeProvider):
                     self._response_active = False
                     tool_calls_this_turn = 0
                     budget_hit = False
+                    barge_pending = True
+                    self.conversation.log_event(
+                        "barge_in",
+                        speaker=(self.current_speaker
+                                 or self.current_speaker_ha_person),
+                        response_age_ms=int(elapsed * 1000))
                     yield ProviderEvent("response_interrupted", {})
                     # Gemini 3.1 can include several content parts in one event.
                     # Any audio/transcript accompanying an interruption belongs
@@ -2911,8 +2977,19 @@ class GeminiLiveProvider(RealtimeProvider):
                 if content.turn_complete:
                     transcript = input_transcript.strip()
                     if transcript:
-                        self.conversation.add_user(transcript)
-                        yield ProviderEvent("user_transcript", {"text": transcript})
+                        if barge_pending and _looks_like_noise(transcript):
+                            # Obvious noise that tripped the VAD — keep it
+                            # out of the transcript; the browser pump nudges
+                            # Ada to resume (policy P6: ignore gibberish).
+                            self.conversation.log_event(
+                                "barge_noise", text=transcript[:80])
+                            yield ProviderEvent(
+                                "barge_noise", {"text": transcript})
+                        else:
+                            self.conversation.add_user(transcript)
+                            yield ProviderEvent("user_transcript",
+                                                {"text": transcript})
+                    barge_pending = False
                     input_transcript = ""
                     tool_calls_this_turn = 0
                     budget_hit = False
@@ -2957,7 +3034,8 @@ def create_provider(instructions: str | None = None, tool_runner: Any = None,
                     home_assistant_client: Any = None, habit_state_getter: Any = None,
                     session_id: str | None = None,
                     conversation: ConversationMemory | None = None,
-                    caller_name: str | None = None) -> RealtimeProvider:
+                    caller_name: str | None = None,
+                    caller_person: str | None = None) -> RealtimeProvider:
     return GeminiLiveProvider(
         instructions=instructions,
         tool_runner=tool_runner,
@@ -2966,4 +3044,5 @@ def create_provider(instructions: str | None = None, tool_runner: Any = None,
         session_id=session_id,
         conversation=conversation,
         caller_name=caller_name,
+        caller_person=caller_person,
     )

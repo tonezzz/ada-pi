@@ -1,0 +1,56 @@
+name: persona-cross-target
+instance: tony
+# Persona targeting rules: admin/full-access may manage other profiles,
+# same-bank self-resolution works by name, and writing a persona for a
+# person with no scoped bank fails CLOSED (never files under 'personal').
+persons:
+  - {entity_id: person.kk, name: KK}
+  - {entity_id: person.tony, name: Tony}
+  - {entity_id: person.bob, name: Bob}
+banks:
+  banks:
+    personal:
+      title: Personal
+      scope: instance
+      instances: [tony]
+      mddb_collection: ada-ha-bank-personal-{instance}
+      kinds: [fact, preference, note]
+      writable: true
+      write_policy: confirmed
+      allowed_tools: [ada_remember, ada_forget, ada_outcome]
+      status: active
+    personal-kk:
+      title: KK's personal
+      scope: person
+      person_scope: person.kk
+      instances: [tony]
+      mddb_collection: ada-ha-bank-personal-kk
+      kinds: [fact, preference, note]
+      writable: true
+      write_policy: confirmed
+      allowed_tools: [ada_remember, ada_forget, ada_outcome]
+      status: active
+  persona:
+    knobs:
+      verbosity: {type: string, values: [concise, normal], default: normal}
+steps:
+  # Admin may set KK's persona — her scoped bank exists.
+  - set: {session_caller_name: admin, session_owner_identity: admin}
+  - tool: ada_persona
+    args: {action: set, person: KK, knob: verbosity, value: concise}
+    expect: {no_error: true}
+  # Bob exists in HA but has no person-scoped bank — refuse to file his
+  # persona under the default 'personal' bank (fail closed, no leak).
+  - tool: ada_persona
+    args: {action: set, person: person.bob, knob: verbosity, value: concise}
+    expect: {error_contains: "person-scoped"}
+  # KK's own session: targeting herself by name resolves to her own bank.
+  - set: {session_caller_name: user-kk, session_caller_ha_person: person.kk,
+          session_owner_identity: person.kk}
+  - tool: ada_persona
+    args: {action: set, person: KK, knob: verbosity, value: normal}
+    expect: {no_error: true}
+  # ...but KK is not full-access — she cannot touch Tony's profile.
+  - tool: ada_persona
+    args: {action: set, person: Tony, knob: verbosity, value: concise}
+    expect: {error_contains: "full-access"}

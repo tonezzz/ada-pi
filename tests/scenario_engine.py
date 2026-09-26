@@ -288,6 +288,29 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
     runner = ToolRunner(unittest.mock.AsyncMock(), instance_id=instance)
     runner._banks = registry
     runner.mddb = fake
+    # `persons:` declares the HA people resolve_person()/persons() should
+    # see — matches by entity_id, friendly name, or name slug.
+    people = [dict(p) for p in (data.get("persons") or [])]
+    if people:
+        def _norm(s: Any) -> str:
+            return re.sub(r"[^a-z0-9]+", "_", str(s or "").lower()).strip("_")
+
+        async def _resolve_person(name: Any) -> dict | None:
+            n = str(name or "").strip().lower()
+            for p in people:
+                if n in (str(p.get("entity_id") or "").lower(),
+                         str(p.get("name") or "").lower()):
+                    return dict(p)
+            for p in people:
+                if f"person.{_norm(p.get('name'))}" == n:
+                    return dict(p)
+            return None
+
+        async def _persons() -> list[dict]:
+            return [dict(p) for p in people]
+
+        runner.context.ha_client.resolve_person = _resolve_person
+        runner.context.ha_client.persons = _persons
     conv = ConversationMemory(session_id="scenario")
     usage_ledger.configure(None)  # no data/usage.jsonl writes in offline runs
     usage_ledger.reset()
@@ -350,6 +373,12 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
                         last_tail=last_tail,
                     ),
                 }
+            elif "set" in step:
+                # Mutate runner session state — used by session-security
+                # scenarios to pin the owner or swap the identified speaker.
+                for k, v in dict(step["set"]).items():
+                    setattr(runner, str(k), v)
+                result = {"output": "set"}
             elif "record_usage" in step:
                 usage_ledger.record(**dict(step["record_usage"]))
                 result = {"output": "recorded"}

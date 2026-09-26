@@ -511,7 +511,18 @@ class ConversationMemory:
         # by ada_doc_* calls, folded into the session report timeline and
         # the unclosed-work proposal at session end.
         self.doc_items: list[dict[str, Any]] = []
+        # L0 session-mechanics log (connect identity, speaker matches,
+        # barge-ins, tool denials, reconnects) — folded into the session
+        # report alongside doc_items so reports carry how the session went,
+        # not just what was said.
+        self.session_items: list[dict[str, Any]] = []
         self.warm_summary()
+
+    def log_event(self, kind: str, **fields: Any) -> None:
+        """Record a session-mechanics event for the session report."""
+        self.session_items.append({
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "kind": str(kind), **fields})
 
     def add_user(self, text: str) -> None:
         if text.strip():
@@ -614,6 +625,7 @@ class ConversationMemory:
             report = await _session_report(transcript, day, self.session_id)
             if report:
                 self._fold_doc_items(report)
+                self._fold_session_items(report)
                 _save_session_report_files(report, day, self.session_id)
         await self._extract_candidates(transcript)
         await self._extract_actions(transcript)
@@ -641,6 +653,48 @@ class ConversationMemory:
         block = str(report.get("memory_block") or "").rstrip()
         report["memory_block"] = (
             block + "\n- documents: " + "; ".join(bits)).strip()
+
+    def _fold_session_items(self, report: dict) -> None:
+        """Fold the session-mechanics log into the report + a one-line
+        summary in memory_block (owner attribution, speakers seen,
+        barge-ins/denials) so session reports are auditable per user."""
+        items = self.session_items
+        if not items:
+            return
+        report["session_events"] = items
+        owner = next(
+            (str(it.get("owner")) for it in items
+             if it.get("kind") == "connect" and it.get("owner")),
+            None,
+        )
+        speakers = [
+            str(it.get("display") or it.get("name") or it.get("ha_person") or "?")
+            for it in items
+            if it.get("kind") in ("speaker_identified", "secondary_speaker")
+        ]
+        kinds: dict[str, int] = {}
+        for it in items:
+            k = str(it.get("kind") or "?")
+            kinds[k] = kinds.get(k, 0) + 1
+        bits: list[str] = []
+        if owner:
+            bits.append(f"owner={owner}")
+        if speakers:
+            bits.append("speakers=" + ",".join(dict.fromkeys(speakers)))
+        if kinds.get("barge_in"):
+            n = kinds["barge_in"]
+            noise = kinds.get("barge_noise", 0)
+            bits.append(
+                f"barge-ins={n}" + (f" ({noise} noise)" if noise else ""))
+        for k in ("secondary_speaker", "tool_denied", "live_reconnect",
+                  "speaker_unrecognized"):
+            if kinds.get(k):
+                bits.append(f"{k.replace('_', '-')}={kinds[k]}")
+        if not bits:
+            bits.append(f"events={len(items)}")
+        block = str(report.get("memory_block") or "").rstrip()
+        report["memory_block"] = (
+            block + "\n- session: " + "; ".join(bits)).strip()
 
     async def _doc_followups(self) -> None:
         """Unclosed doc work → pending action-proposal: uploads that were
