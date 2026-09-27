@@ -159,6 +159,8 @@ def main() -> int:
     ident = speaker_id.SpeakerIdentifier.__new__(speaker_id.SpeakerIdentifier)
     ident._model = True  # never touched — we stub the embedding source
     ident._enrolled = dict(profiles)
+    ident._prints = {}
+    ident._metadata = {}
     rows = []
     for name in names:
         ref = profiles[name]
