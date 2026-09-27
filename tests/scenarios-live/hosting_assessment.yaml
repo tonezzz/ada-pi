@@ -1,0 +1,38 @@
+name: hosting-assessment
+# Live scenario — Ada researches a hosting provider's plans and publishes
+# a miniapp report page.
+#
+# What it verifies:
+#   - web_search used for up-to-date provider pricing (readyidc.com)
+#   - the assessment compares plans against a stated requirement spec
+#   - cms_publish_page honors the confirm gate: first call without a
+#     user "yes" must be refused ('requires confirmation'), the second
+#     after 'yes' publishes the 'hosting-provider-assessment' page
+#
+# tier: smoke — read-only search + one miniapp page write (slug is
+#       idempotent, publishing just overwrites).
+tier: full
+
+turns:
+  - user: "Ada, research the VPS plans at readyidc dot com — both the Business and Game lines. Our idc02 requirement is Linux, at least 4 CPU cores, at least 16 gigabytes of RAM, at least 200 gigabytes SSD, daily backups included, and around 800 baht a month. Tell me the candidates."
+    expect:
+      calls_any: [web_search]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Good — publish that as a page titled Hosting Provider Assessment with slug hosting-provider-assessment."
+    expect:
+      calls: [cms_publish_page]
+      result_contains: ["confirmation"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Yes, publish it."
+    expect:
+      calls: [cms_publish_page]
+      result_not_contains: ["requires confirmation", "error"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6

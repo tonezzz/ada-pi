@@ -721,7 +721,10 @@ class ToolRunner:
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("CMS writes are disabled (ADA_READ_ONLY=true)")
         if name == "cms_publish_page":
-            slug = str(args.get("slug") or "")
+            # Normalize the slug before keying — the model may resubmit the
+            # confirm call with different casing/spacing than the register
+            # call, and a raw-args key would miss the pending request.
+            slug = self._cms_slug(str(args.get("slug") or ""))
             # Keyed by slug:lang — confirming an EN publish does not unlock
             # a different-language variant of the same slug.
             pkey = f"{slug}:{args.get('lang') or 'en'}"
