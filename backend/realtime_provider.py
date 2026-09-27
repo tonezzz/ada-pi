@@ -462,6 +462,7 @@ class GeminiLiveProvider(RealtimeProvider):
             # session-end report folds it into the L1 timeline.
             self.tool_runner.doc_log = self.conversation.doc_items
         self._bg_tasks: set[asyncio.Task] = set()
+        self._research_task: asyncio.Task | None = None
         # Monotonic time of the last confident ada_memory_search hit — used to
         # short-circuit a redundant ada_session_recall in the same turn.
         self._strong_hit_at = 0.0
@@ -793,6 +794,113 @@ class GeminiLiveProvider(RealtimeProvider):
         return ("The purchase check is running — it usually takes 30-60 "
                 "seconds. Briefly tell the user you're verifying it and will "
                 "report back.")
+
+    # --- ada_deep_research: multi-round web research, results injected ---
+
+    def _start_deep_research(self, args: dict) -> str:
+        """Fire-and-forget research fan-out — findings arrive as an injected
+        text turn via _on_research_complete."""
+        topic = str(args.get("topic") or "").strip()
+        depth = str(args.get("depth") or "standard").lower()
+        if not topic:
+            return "Nothing to research — ask the user what topic they mean."
+        if depth not in ("standard", "deep"):
+            depth = "standard"
+        if self._research_task is not None and not self._research_task.done():
+            return "A research task is already running — I'll report when it's done."
+        task = asyncio.create_task(self._run_deep_research(topic, depth))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        self._research_task = task
+        rounds = 5 if depth == "deep" else 3
+        return (f"Deep research on '{topic}' started ({rounds} search rounds, "
+                "usually 1-3 minutes). Briefly tell the user you're gathering "
+                "sources and will report back.")
+
+    async def _run_deep_research(self, topic: str, depth: str) -> None:
+        filler = asyncio.create_task(self._research_slow_filler(topic))
+        queries = [
+            f"{topic} — overview and history",
+            f"{topic} — latest news and current status",
+            f"{topic} — main competitors and criticism",
+        ]
+        if depth == "deep":
+            queries += [
+                f"{topic} — timeline of key milestones",
+                f"{topic} — expert analysis and future outlook",
+            ]
+        findings: list[dict] = []
+        errors: list[str] = []
+        try:
+            for q in queries:
+                try:
+                    r = await self.tool_runner.web_search(q)
+                    findings.append({
+                        "query": q,
+                        "answer": str(r.get("answer") or "")[:1200],
+                        "sources": (r.get("sources") or [])[:5],
+                        "provider": r.get("provider"),
+                    })
+                except Exception as exc:
+                    errors.append(f"{q}: {exc}")
+                    logger.warning("session=%s research round failed %r: %s",
+                                   self.session_id, q, exc)
+                # Gentle pacing — the grounded provider is quota-limited.
+                await asyncio.sleep(2.0)
+        finally:
+            filler.cancel()
+        await self._on_research_complete(topic, findings, errors)
+
+    async def _research_slow_filler(self, topic: str) -> None:
+        await asyncio.sleep(45)
+        await self._wait_for_idle(timeout=4.0)
+        if self._response_active:
+            return
+        try:
+            await self.send_text_turn(
+                f"(system) The deep research on '{topic}' is still running — "
+                "several search rounds. Briefly tell the user you're still "
+                "gathering sources.")
+        except Exception:
+            pass
+
+    async def _on_research_complete(self, topic: str, findings: list[dict],
+                                    errors: list[str]) -> None:
+        """Push the research digest back into the session so Ada speaks it."""
+        await self._wait_for_idle()
+        if not findings:
+            prompt = (
+                f"(system) The deep research on '{topic}' found nothing "
+                f"({'; '.join(errors) or 'no results'}). Tell the user the "
+                "research could not complete and suggest trying web_search "
+                "for a narrower question instead."
+            )
+        else:
+            parts: list[str] = []
+            source_urls: list[str] = []
+            for f in findings:
+                parts.append(f"## {f['query']}\n{f['answer']}")
+                for s in f.get("sources") or []:
+                    uri = s.get("uri")
+                    if uri and uri not in source_urls:
+                        source_urls.append(uri)
+            digest = "\n\n".join(parts)[:6000]
+            src_note = (f" Sources: {'; '.join(source_urls[:10])}."
+                        if source_urls else "")
+            err_note = (f" ({len(errors)} search round(s) failed — note the "
+                        "gap.)" if errors else "")
+            prompt = (
+                f"(system) Deep research on '{topic}' finished — "
+                f"{len(findings)} rounds completed.{err_note}\n\n{digest}\n\n"
+                f"{src_note}\nSummarize the key findings for the user in a few "
+                "sentences, then offer to save a full report page to the CMS "
+                "(cms_publish_page) including a Sources section."
+            )
+        try:
+            await self.send_text_turn(prompt)
+        except Exception as exc:
+            logger.warning("session=%s research send_text_turn failed: %s",
+                           self.session_id, exc)
 
     # --- ada_set_voice: persisted voice + idle-gated session swap ---
 
@@ -2314,6 +2422,35 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "ada_deep_research",
+                    "description": (
+                        "Deep multi-round research on a topic — use this whenever the user asks "
+                        "to 'deep research', 'deep dive', 'look into', or 'write a report on' a "
+                        "subject (not for a single quick fact — that is web_search). Fans out "
+                        "planned searches (overview/history, latest status, competitors/critics, "
+                        "plus timeline and outlook on depth='deep'), gathers sources, then reports "
+                        "back: summarize key findings to the user and offer to save a full report "
+                        "page via cms_publish_page. Runs in the background (1-3 minutes); the "
+                        "findings are spoken when ready."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "topic": {
+                                "type": "string",
+                                "description": "The research subject as the user stated it.",
+                            },
+                            "depth": {
+                                "type": "string",
+                                "enum": ["standard", "deep"],
+                                "description": "standard = 3 search rounds (default). deep = 5 rounds — only when the user explicitly asks for a thorough report.",
+                            },
+                        },
+                        "required": ["topic"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "calendar_list_calendars",
                     "description": (
                         "Lists every calendar across the configured providers (Google, etc.) "
@@ -3346,6 +3483,8 @@ class GeminiLiveProvider(RealtimeProvider):
                                 camera_frames.append(frame)
                         elif call.name == "ada_decision_check" and self.tool_runner is not None:
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
+                        elif call.name == "ada_deep_research" and self.tool_runner is not None:
+                            result = {"output": self._start_deep_research(dict(call.args or {}))}
                         elif call.name == "ada_remember" and budget_hit:
                             self._emit_ops_event(
                                 "remember_block",
