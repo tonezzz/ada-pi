@@ -2482,8 +2482,11 @@ class GeminiLiveProvider(RealtimeProvider):
                     "description": (
                         "Create or fully replace a page in the user's miniapp. The slug "
                         "is the page's URL-friendly id; publishing an existing slug "
-                        "overwrites it. Restate the slug, title, and what will change, "
-                        "get an explicit yes, then call with confirmed=true."
+                        "overwrites it. CALL THIS FIRST to register the pending request, "
+                        "then tell the user the slug + title and ask for an explicit yes; "
+                        "after they say yes, call again with confirmed=true. Do not ask "
+                        "verbally without calling — the ask-step only exists once the "
+                        "request is registered."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
