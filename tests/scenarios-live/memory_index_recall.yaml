@@ -1,0 +1,27 @@
+# Memory index recall — acceptance test for the tiered-recall design
+# (L0 injected index card → L1 rolling summary → L2 vector search →
+# L3 NotebookLM deep recall).
+#
+# Target behavior: facts visible in the L0 index (recent sessions, open
+# items, published pages) must be answered WITHOUT ada_memory_search —
+# the index is already in context. Deep/archival questions may tool-call.
+#
+# RED until the L0 session-index injection is implemented.
+name: memory_index_recall
+turns:
+  - user: >-
+      What pages or reports have you published recently? Just list the
+      slugs or titles you already know.
+    expect:
+      # Flood-report / gesture pages must surface from injected context
+      # (or search for now — relax to no_calls once L0 lands).
+      calls_any: [ada_memory_search, cms_list_pages]
+      timeout_s: 60
+      settle_s: 10
+  - user: >-
+      What does the gesture-ui-options report cover? Answer from memory
+      index or fetch the page.
+    expect:
+      calls_any: [ada_memory_search, cms_get_page]
+      timeout_s: 60
+      settle_s: 10
