@@ -130,7 +130,9 @@ ACTUATING_TOOLS = frozenset({
 # 2026-09-25 tool storm: plug_tv switched on with zero user consent).
 _CONFIRM_RE = re.compile(
     r"\b(yes|yeah|yep|yup|confirmed?|go ahead|do it|sure|okay?|"
-    r"approved?|proceed|absolutely)\b|ใช่|ยืนยัน|ตกลง|เอาเลย|ทำเลย|ได้เลย|ทำได้",
+    r"approved?|proceed|absolutely|mhm|uh huh|sounds good)\b|"
+    r"ใช่|ยืนยัน|ตกลง|เอาเลย|ทำเลย|ได้เลย|ทำได้|โอเค|ออเค|เออ|อือ|"
+    r"ต่อไป|จัดไป|เอาสิ|ไปเลย|ทำไป|เผยแพร่เลย|ส่งเลย",
     re.IGNORECASE,
 )
 
