@@ -229,13 +229,16 @@ function renderPage(el, page) {
   if (fmt === "html") renderHtml(body, page.content);
   else if (fmt === "yaml") renderYaml(body, page.content);
   else if (fmt === "slides") renderSlides(body, page.content);
-  else renderMarkdown(body, page.content);
+  else renderMarkdown(body, page.content, page.title);
 }
 
-function renderMarkdown(el, md) {
+function renderMarkdown(el, md, pageTitle) {
   const d = document.createElement("div");
   d.className = "prose-ada";
-  d.innerHTML = DOMPurify.sanitize(marked.parse(md || ""));
+  // Drop a leading '# Title' that just repeats the page header.
+  md = (md || "").replace(/^\s*#\s+(.+)\n+/, (m, t) =>
+    pageTitle && t.trim() === pageTitle.trim() ? "" : m);
+  d.innerHTML = DOMPurify.sanitize(marked.parse(md));
   el.appendChild(d);
   // Rich blocks: ```chart (echarts 2D JSON option), ```chart3d (echarts-gl),
   // ```mermaid, ```media (image|video|audio + optional caption/url).
