@@ -1893,6 +1893,15 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "string",
                                 "description": "The search question, e.g. 'Bangkok flood road closures latest'.",
                             },
+                            "provider": {
+                                "type": "string",
+                                "description": (
+                                    "Search backend: 'auto' (default — grounded answer, free "
+                                    "fallback on quota), 'gemini' (grounded, billed), or "
+                                    "'duckduckgo' (free, no quota — use when asked for it or "
+                                    "when grounded quota is exhausted)."
+                                ),
+                            },
                         },
                         "required": ["query"],
                         "additionalProperties": False,

@@ -1292,14 +1292,36 @@ class ToolRunner:
         await self.memory._ensure_confidence()
         return self.memory.confidence_groups()
 
-    async def web_search(self, query: str) -> dict[str, Any]:
-        """Grounded web search via Gemini's google_search tool.
+    async def web_search(self, query: str, provider: str | None = None) -> dict[str, Any]:
+        """Web search with provider selection.
 
-        The live audio model cannot ground itself (and silently prefers
-        cast tools for news-shaped requests), so search runs through the
-        regular generate API on a flash model and returns a short grounded
-        answer plus source links. Billed by Google per grounded query.
+        provider='gemini'  — grounded answer via Gemini google_search
+                             (billed/quota-limited; the live audio model
+                             cannot ground itself).
+        provider='duckduckgo' — free HTML endpoint; returns top results,
+                             no quota. Use when grounding is exhausted
+                             or the user asks for DuckDuckGo.
+        provider='auto' (default) — gemini, falling back to duckduckgo
+                             on quota/error.
         """
+        want = (provider or "auto").lower()
+        if want not in ("auto", "gemini", "duckduckgo"):
+            raise ValueError(f"unknown web_search provider {provider!r} "
+                             "(auto|gemini|duckduckgo)")
+        if want in ("auto", "gemini"):
+            try:
+                return await self._web_search_gemini(query)
+            except Exception as e:
+                if want == "gemini":
+                    raise
+                # auto: quota/error → free fallback
+                try:
+                    return await self._web_search_ddg(query)
+                except Exception:
+                    raise e
+        return await self._web_search_ddg(query)
+
+    async def _web_search_gemini(self, query: str) -> dict[str, Any]:
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("web search unavailable: GEMINI_API_KEY not set")
@@ -1328,7 +1350,38 @@ class ToolRunner:
                     })
         except Exception:
             pass
-        return {"answer": text, "sources": sources, "model": model}
+        return {"answer": text, "sources": sources,
+                "provider": "gemini", "model": model}
+
+    async def _web_search_ddg(self, query: str) -> dict[str, Any]:
+        """DuckDuckGo lite HTML — no API key, no quota. Returns top hits
+        as a synthesized answer + source list."""
+        import httpx
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query},
+                headers={"User-Agent": "Mozilla/5.0 (Ada-voice-assistant)"})
+            r.raise_for_status()
+        # results: <a rel="nofollow" class="result__a" href="redirect">title</a>
+        hits = re.findall(
+            r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text)
+        snippets = re.findall(
+            r'class="result__snippet"[^>]*>(.*?)</a>', r.text, re.S)
+        strip = lambda s: re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", s)).strip()
+        sources = []
+        for url, title in hits[:5]:
+            m = re.search(r"uddg=([^&]+)", url)
+            if m:
+                from urllib.parse import unquote
+                url = unquote(m.group(1))
+            sources.append({"title": strip(title), "uri": url})
+        if not sources:
+            raise RuntimeError("duckduckgo returned no results")
+        top = strip(snippets[0]) if snippets else sources[0]["title"]
+        answer = (top + " " if top else "") + "Top result: " + sources[0]["title"]
+        return {"answer": answer.strip(), "sources": sources,
+                "provider": "duckduckgo"}
 
     async def ada_ha_set_device_confidence(self, entity_id: str, status: str, safety: str | None = None) -> str:
         """Set a device's confidence and/or safety status."""
