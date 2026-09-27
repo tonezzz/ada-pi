@@ -811,6 +811,32 @@ class ToolRunner:
         out.sort(key=lambda j: j.get("ts") or "", reverse=True)
         return out
 
+    async def devin_jobs(self, status: str | None = None,
+                         limit: int = 30) -> list[dict[str, Any]]:
+        """Dispatch ledger: all job docs (running/done/failed/awaiting-user)
+        — the summary path. devin_pending is awaiting-user only; use this
+        for "what's the status of my tasks" questions."""
+        if self.mddb is None:
+            return []
+        fm: dict[str, Any] = {"kind": ["job"]}
+        if status:
+            fm["status"] = [status]
+        docs = await self.mddb.search_documents(
+            DEVIN_JOBS_COLLECTION, filter_meta=fm, limit=min(limit, 50))
+        out = []
+        for d in docs:
+            meta = d.get("meta") or {}
+            out.append({
+                "task_id": _first(meta.get("job_id"))
+                           or (d.get("key") or "").split("/", 1)[-1],
+                "status": _first(meta.get("status")),
+                "host": _first(meta.get("host")),
+                "ts": _first(meta.get("ts")),
+                "question": _first(meta.get("question")) or "",
+            })
+        out.sort(key=lambda j: j.get("ts") or "", reverse=True)
+        return out
+
     async def devin_answer(self, task_id: str, message: str) -> dict[str, Any]:
         """Deliver the user's refined answer to a blocked job.
 

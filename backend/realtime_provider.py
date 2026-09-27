@@ -108,7 +108,7 @@ CMS_INSTRUCTIONS = (
 # strip the devin declarations and their instruction paragraph together.
 DEVIN_TOOLS = {
     "devin_dispatch", "devin_status", "devin_followup",
-    "devin_pending", "devin_answer",
+    "devin_pending", "devin_jobs", "devin_answer",
 }
 
 # Tools with real-world side effects — they share a tighter per-turn cap
@@ -143,6 +143,9 @@ DEVIN_INSTRUCTIONS = (
     "call with confirmed=true — writes are enforced server-side. "
     "Dispatched sessions run unattended; the user is notified on their phone when "
     "one finishes, so report the task id and move on rather than polling. "
+    "devin_jobs is the dispatch ledger — call it for any 'summarize my dispatched "
+    "tasks' or 'did job X fail' question and report statuses exactly as stored "
+    "(done/failed/running/awaiting-user); never guess a job's outcome. "
     "devin_pending lists jobs blocked waiting for the user's answer — when the "
     "user asks what needs their attention, or says a job is waiting, call it and "
     "read each job's question back with its short detail. To deliver an answer: "
@@ -2605,6 +2608,28 @@ class GeminiLiveProvider(RealtimeProvider):
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "devin_jobs",
+                    "description": (
+                        "Dispatch ledger summary: ALL job docs with their real status "
+                        "(running/done/failed/awaiting-user), host, timestamp, and "
+                        "pending question. Use for 'summarize my dispatched tasks', "
+                        "'did job X fail', or any status-of-dispatches question — "
+                        "devin_pending only shows awaiting-user, devin_status only "
+                        "shows unit liveness."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": ["running", "done", "failed", "awaiting-user"],
+                                "description": "Optional filter; omit for all.",
+                            },
+                            "limit": {"type": "integer", "default": 30},
+                        },
                         "additionalProperties": False,
                     },
                 }, {
