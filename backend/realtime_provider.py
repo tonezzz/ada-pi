@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 
-from backend import chaba_memory, voice_config
+from backend import chaba_memory, voice_config, vms_camera
 from backend.instance import ada_instance_id
 from backend.conversation_memory import ConversationMemory
 from backend.tool_runner import ToolRunner
@@ -81,8 +81,9 @@ CALENDAR_INSTRUCTIONS = (
 
 CMS_INSTRUCTIONS = (
     " You maintain the user's miniapp — a small multi-page site whose pages you own. "
-    "cms_list_pages lists existing pages, cms_get_page reads one, "
-    "cms_publish_page creates or fully replaces a page (slugs are lowercase, e.g. 'pool-notes'), and "
+    "cms_list_pages lists existing pages with their language variants, cms_get_page reads one, "
+    "cms_publish_page creates or fully replaces a page (slugs are lowercase, e.g. 'pool-notes'; "
+    "en/th variants coexist — publish the user's language plus the other when asked), and "
     "cms_delete_page removes one. Page content is written as markdown, html, yaml, or slides markdown. "
     "Inside markdown pages you can embed rich blocks as fenced code blocks: "
     "```chart <yaml echarts option> for 2D charts (line/bar/pie/scatter), "
@@ -201,6 +202,49 @@ DOC_INSTRUCTIONS = (
     "duplicates or near-duplicates, say so plainly and ask whether it's a "
     "re-scan or a new version before proceeding."
 )
+
+
+# XMEye VMS camera snapshots — env-gated by ADA_VMS_SNAP_URL (not via
+# ADA_EXCLUDED_TOOLS): the declaration and paragraph only exist when the
+# instance is configured to reach the vms-snap shim on the VMS host.
+VMS_TOOLS = {"ada_camera_snapshot"}
+
+VMS_INSTRUCTIONS = (
+    " You can pull a still frame from the property CCTV cameras with "
+    "ada_camera_snapshot — pass the view the user means (e.g. 'swimming pool', "
+    "'tennis court', 'front road', 'walkway', 'guard', 'mini mart'). The frame "
+    "arrives attached to the tool result: look at it and describe what it "
+    "shows honestly — people, water level, weather, vehicles, anything "
+    "notable. It is a single still taken a few seconds ago, NOT live video; "
+    "say what you see now and do not claim continuous monitoring. If the tool "
+    "fails or the frame is dark or frozen, say the camera seems offline "
+    "rather than guessing."
+)
+
+VMS_DECLARATION = {
+    "name": "ada_camera_snapshot",
+    "description": (
+        "Take a still snapshot from one of the property CCTV cameras "
+        "(XMEye VMS). Use when the user asks to see, check, or look at a "
+        "camera view — 'is it flooding at the pool', 'show me the front "
+        "road'. The image is attached to the tool result for you to "
+        "describe. One still frame per call — not a live stream."
+    ),
+    "parameters_json_schema": {
+        "type": "object",
+        "properties": {
+            "channel": {
+                "type": "string",
+                "description": (
+                    "Camera/view name, e.g. 'swimming pool', 'tennis court', "
+                    "'front road left', 'walkway', 'guard view'. Fuzzy — "
+                    "the service returns the available list on a miss."),
+            },
+        },
+        "required": ["channel"],
+        "additionalProperties": False,
+    },
+}
 
 
 # CHABA_MEMORY=1 guest mode: the instance serves visitors through the file-
@@ -553,6 +597,9 @@ class GeminiLiveProvider(RealtimeProvider):
             + DOC_INSTRUCTIONS
             + HABIT_INSTRUCTIONS
         )
+        self.vms_snap_url = vms_camera.snap_url()
+        if self.vms_snap_url:
+            self.instructions += VMS_INSTRUCTIONS
         self._client: Any = None
         self._session_context: Any = None
         self._session: Any = None
@@ -791,6 +838,35 @@ class GeminiLiveProvider(RealtimeProvider):
             await self.close()
         except Exception as exc:
             logger.warning("session=%s voice-switch close failed: %s", self.session_id, exc)
+
+    async def _camera_snapshot(self, args: dict) -> tuple[dict, list | None]:
+        """ada_camera_snapshot — pull one still frame through the vms-snap
+        shim and attach it to the tool response so the model can see it."""
+        channel = str(args.get("channel") or "").strip()
+        if not channel:
+            return ({"error": "channel is required — e.g. 'swimming pool', "
+                              "'tennis court', 'front road'."}, None)
+        try:
+            png, resolved = await vms_camera.snapshot(channel)
+        except LookupError as exc:
+            return ({"error": str(exc)}, None)
+        except Exception as exc:
+            logger.warning("session=%s camera snapshot failed: %s",
+                           self.session_id, exc)
+            return ({"error": f"camera snapshot failed: {exc}"}, None)
+        result = {
+            "output": (
+                f"Still frame captured from camera '{resolved}' — it is "
+                "attached to this result. Describe what it shows: people, "
+                "water, weather, vehicles, anything notable. It is a single "
+                "frame taken seconds ago — not live video."
+            ),
+            "channel": resolved,
+        }
+        parts = [types.FunctionResponsePart(
+            inline_data=types.FunctionResponseBlob(
+                mime_type="image/png", data=png))]
+        return result, parts
 
     async def _run_decision_check(self, product: str, url: str, mode: str) -> None:
         filler = asyncio.create_task(self._check_slow_filler(mode))
@@ -2485,7 +2561,9 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "cms_get_page",
                     "description": (
                         "Read one miniapp page by slug — returns its title, format, "
-                        "and full content. Use before updating a page."
+                        "and full content. Use before updating a page. Pages can "
+                        "have 'en' and 'th' variants; pass lang to read a specific "
+                        "one (falls back to 'en')."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2494,6 +2572,11 @@ class GeminiLiveProvider(RealtimeProvider):
                             "slug": {
                                 "type": "string",
                                 "description": "Page slug, e.g. 'pool-notes' (from cms_list_pages).",
+                            },
+                            "lang": {
+                                "type": "string",
+                                "enum": ["en", "th"],
+                                "description": "Page language variant (default en).",
                             },
                         },
                         "required": ["slug"],
@@ -2551,6 +2634,11 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "string",
                                 "enum": ["markdown", "html", "yaml", "slides"],
                                 "description": "Content format. 'slides' is markdown with '---' between slides.",
+                            },
+                            "lang": {
+                                "type": "string",
+                                "enum": ["en", "th"],
+                                "description": "Language variant to publish (default en). 'en' and 'th' variants of the same slug coexist — the viewer has a language toggle.",
                             },
                             "confirmed": {
                                 "type": "boolean",
@@ -2933,6 +3021,8 @@ class GeminiLiveProvider(RealtimeProvider):
                 config["system_instruction"] = config["system_instruction"].replace(
                     HABIT_INSTRUCTIONS, ""
                 )
+        if self.vms_snap_url and not (VMS_TOOLS <= excluded):
+            config["tools"][0]["function_declarations"].append(dict(VMS_DECLARATION))
         if chaba_memory.enabled():
             # Guest mode: allowlist the tool surface, append chaba guest tools,
             # and inject the rendered guest context instead of MDDB priming.
@@ -3070,6 +3160,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             "args": _safe_args(call.args),
                         })
                         requested = (call.args or {}).get("expression")
+                        resp_parts: list | None = None
                         tool_calls_this_turn += 1
                         if call.name in ACTUATING_TOOLS:
                             actuations_this_turn += 1
@@ -3248,6 +3339,9 @@ class GeminiLiveProvider(RealtimeProvider):
                                 result = {"output": recall_status}
                         elif call.name == "ada_set_voice":
                             result = {"output": self._set_voice(dict(call.args or {}))}
+                        elif call.name == "ada_camera_snapshot" and self.vms_snap_url:
+                            result, resp_parts = await self._camera_snapshot(
+                                dict(call.args or {}))
                         elif call.name == "ada_decision_check" and self.tool_runner is not None:
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
                         elif call.name == "ada_remember" and budget_hit:
@@ -3303,6 +3397,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             id=call.id,
                             name=call.name or "set_facial_expression",
                             response=result,
+                            parts=resp_parts,
                             # The expression tool often arrives before audio.
                             # WHEN_IDLE lets Gemini continue the spoken reply;
                             # SILENT would add the result to context without

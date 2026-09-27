@@ -20,14 +20,13 @@ turns:
       timeout_s: 150
       settle_s: 8
 
-  # No CCTV/camera-image tool exists — the correct answer is an honest
-  # limitation. Wording varies (run 1: clean refusal; run 2: she pivoted to
-  # open-tasks recap — a pending-suggestions prime leak, flaky), so assert
-  # she probes for cameras rather than fabricating an image.
+  # CCTV ask. Where ADA_VMS_SNAP_URL is configured (tony) she should pull a
+  # real still via ada_camera_snapshot; elsewhere probing then an honest
+  # limitation is correct. Either way she must not fabricate an image.
   - user: "Can you show me a picture from the CCTV cameras so I can see the flood?"
     expect:
-      calls_any: [search_home_devices, list_home_devices, ada_memory_search,
-                  ada_ha_search_devices, ada_ha_search_sensors]
+      calls_any: [ada_camera_snapshot, search_home_devices, list_home_devices,
+                  ada_memory_search, ada_ha_search_devices, ada_ha_search_sensors]
       response_nonempty: true
       timeout_s: 90
       settle_s: 8
