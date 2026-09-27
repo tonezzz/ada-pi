@@ -524,6 +524,9 @@ class GeminiLiveProvider(RealtimeProvider):
             "'do you remember' questions — never for fact lookup, and never in the same "
             "turn as a confident ada_memory_search result; it can take up to 20 seconds, "
             "so keep the user informed while it runs. "
+            "EXCEPTION: when the user explicitly pushes back — 'dig deeper', 'check again', "
+            "'you missed something', 'keep looking' — the confident-hit gate does NOT apply; "
+            "call ada_session_recall with force=true. A requested second look is never redundant. "
             "Questions and references about THIS conversation — 'what were we "
             "working on', 'where did we land', 'the other thing', 'back to the "
             "first thing', 'what did we decide' — resolve from the live "
@@ -1850,6 +1853,14 @@ class GeminiLiveProvider(RealtimeProvider):
                                     "escalates to NotebookLM when nothing is found."
                                 ),
                             },
+                            "force": {
+                                "type": "boolean",
+                                "description": (
+                                    "Override the redundant-recall gate — use ONLY when the user "
+                                    "explicitly pushes for a deeper search after a recent "
+                                    "confident hit ('dig deeper', 'check again', 'you missed it')."
+                                ),
+                            },
                         },
                         "required": ["question"],
                         "additionalProperties": False,
@@ -3156,11 +3167,15 @@ class GeminiLiveProvider(RealtimeProvider):
                         elif call.name == "get_habit_status" and self.habit_state_getter is not None:
                             result = {"output": self.habit_state_getter()}
                         elif call.name == "ada_session_recall":
-                            if self._recall_gated():
+                            # `force=true` is the user's explicit push
+                            # ("dig deeper", "check again") — it overrides
+                            # the redundant-recall gate.
+                            force = (call.args or {}).get("force")
+                            if self._recall_gated() and not force:
                                 result = {"output": (
                                     "ada_memory_search already returned a confident match "
                                     "moments ago — answer from those hits. Session recall "
-                                    "skipped (redundant).")}
+                                    "skipped (redundant). If the user insists, retry with force=true.")}
                             else:
                                 question = (call.args or {}).get("question", "What did we discuss in the previous session?")
                                 group = (call.args or {}).get("group")

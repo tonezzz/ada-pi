@@ -1,0 +1,33 @@
+# Report references lifecycle — Tony's pattern: reports carry a
+# References section so he can follow up; once digested he says "remove
+# the references" and the page keeps its content without them.
+name: report_references_lifecycle
+turns:
+  - user: >-
+      Create a CMS report called "ref-lifecycle-test" titled "Reference
+      Lifecycle Test" — one line of content plus a References section
+      listing this conversation.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 120
+      settle_s: 12
+  - user: Yes, publish it.
+    expect:
+      calls_any: [cms_publish_page, cms_verify_page]
+      timeout_s: 90
+      settle_s: 12
+  - user: >-
+      I've read the references — remove the References section from that
+      page but keep the rest.
+    expect:
+      calls_any: [cms_get_page, cms_publish_page]
+      timeout_s: 120
+      settle_s: 12
+  - user: Confirm.
+    expect:
+      calls_any: [cms_publish_page, cms_verify_page]
+      timeout_s: 90
+      settle_s: 12
+cleanup:
+  mddb_delete:
+    - {collection: ada-cms-pages, key: "ref-lifecycle-test"}
