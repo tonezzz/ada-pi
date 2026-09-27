@@ -1572,11 +1572,12 @@ async def cms_list_pages(request: Request, limit: int = 50) -> dict:
 
 
 @app.get("/api/cms/pages/{slug}")
-async def cms_get_page(request: Request, slug: str) -> dict:
-    """Fetch one miniapp page's content by slug. Read-only, key-gated."""
+async def cms_get_page(request: Request, slug: str, lang: str = "en") -> dict:
+    """Fetch one miniapp page's content by slug (+ ?lang=th for the Thai
+    variant; falls back to en). Read-only, key-gated."""
     _require_api_key(request)
     try:
-        page = await tool_runner.cms_get_page(slug)
+        page = await tool_runner.cms_get_page(slug, lang)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if page is None:

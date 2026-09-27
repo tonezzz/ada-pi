@@ -722,12 +722,15 @@ class ToolRunner:
             raise PermissionError("CMS writes are disabled (ADA_READ_ONLY=true)")
         if name == "cms_publish_page":
             slug = str(args.get("slug") or "")
+            # Keyed by slug:lang — confirming an EN publish does not unlock
+            # a different-language variant of the same slug.
+            pkey = f"{slug}:{args.get('lang') or 'en'}"
             pending = getattr(self, "_cms_pending", None)
             if pending is None:
                 pending = self._cms_pending = {}
             if confirmed is True:
-                if pending.get(slug) is not None:
-                    del pending[slug]
+                if pending.get(pkey) is not None:
+                    del pending[pkey]
                     return
                 logger.warning("denied %s %r: confirmed without pending request", name, args)
                 raise PermissionError(
@@ -735,8 +738,8 @@ class ToolRunner:
                     "First call without confirmed to register the request, ask the "
                     "user to confirm, then resubmit with confirmed=true."
                 )
-            pending[slug] = True
-            logger.info("cms pending-confirm registered: %s", slug)
+            pending[pkey] = True
+            logger.info("cms pending-confirm registered: %s", pkey)
             raise PermissionError(
                 f"{name} requires confirmation — request registered. Now tell the "
                 "user the page slug and title, ask for an explicit yes, then "
@@ -1583,19 +1586,43 @@ class ToolRunner:
         }
 
     async def cms_list_pages(self, limit: int = 50) -> list[dict[str, Any]]:
-        """List pages in the miniapp CMS collection."""
+        """List pages in the miniapp CMS collection, grouped by slug with
+        the language variants present (lang is a per-doc field in MDDB)."""
         docs = await self.mddb.search_documents(
             CMS_COLLECTION, filter_meta={"kind": ["page"]}, limit=limit
         )
-        return [self._cms_page_summary(d) for d in docs]
+        by_slug: dict[str, dict[str, Any]] = {}
+        for d in docs:
+            page = self._cms_page_summary(d)
+            slug = page["slug"]
+            if slug in by_slug:
+                by_slug[slug]["langs"].add(d.get("lang") or "en")
+                continue
+            page["langs"] = {d.get("lang") or "en"}
+            by_slug[slug] = page
+        for p in by_slug.values():
+            p["langs"] = sorted(p["langs"])
+        return list(by_slug.values())
 
-    async def cms_get_page(self, slug: str) -> dict[str, Any] | None:
-        """Fetch one page's content and metadata by slug."""
-        doc = await self.mddb.get_document(CMS_COLLECTION, self._cms_slug(slug))
+    async def cms_get_page(
+        self, slug: str, lang: str = "en"
+    ) -> dict[str, Any] | None:
+        """Fetch one page's content by slug + language; falls back to 'en'
+        when the requested variant doesn't exist."""
+        key = self._cms_slug(slug)
+        lang = (lang or "en").strip().lower()
+        doc = await self.mddb.get_document(CMS_COLLECTION, key, lang)
+        fallback = False
+        if not doc and lang != "en":
+            doc = await self.mddb.get_document(CMS_COLLECTION, key, "en")
+            fallback = bool(doc)
         if not doc:
             return None
         page = self._cms_page_summary(doc)
         page["content"] = doc.get("contentMd") or doc.get("content") or ""
+        page["lang"] = doc.get("lang") or "en"
+        if fallback:
+            page["fallback"] = True
         return page
 
     async def cms_publish_page(
@@ -1604,10 +1631,16 @@ class ToolRunner:
         title: str,
         content: str,
         format: str = "markdown",
+        lang: str = "en",
     ) -> dict[str, Any]:
-        """Create or update a miniapp page. Upserts by slug."""
+        """Create or update a miniapp page. Upserts by (slug, lang) — 'en'
+        and 'th' variants of the same slug coexist; the viewer toggles."""
         slug = self._cms_slug(slug)
         fmt = (format or "markdown").strip().lower()
+        lang = (lang or "en").strip().lower()
+        if lang not in ("en", "th"):
+            raise ValueError(
+                f"invalid lang {lang!r}: expected 'en' or 'th'")
         if fmt not in CMS_FORMATS:
             raise ValueError(
                 f"invalid format {format!r}: expected one of {sorted(CMS_FORMATS)}"
@@ -1618,13 +1651,14 @@ class ToolRunner:
         result = await self.mddb.add_document(
             CMS_COLLECTION,
             slug,
-            "en",
+            lang,
             content,
             meta={
                 "kind": ["page"],
                 "slug": [slug],
                 "title": [title.strip()],
                 "format": [fmt],
+                "lang": [lang],
                 "updated": [updated],
                 "instance": [self._instance_id or "ada"],
             },
@@ -1636,6 +1670,7 @@ class ToolRunner:
             "slug": slug,
             "title": title.strip(),
             "format": fmt,
+            "lang": lang,
             "updated": updated,
         }
 

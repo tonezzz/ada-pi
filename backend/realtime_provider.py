@@ -3150,6 +3150,7 @@ class GeminiLiveProvider(RealtimeProvider):
                 tool_call = message.tool_call
                 if tool_call and tool_call.function_calls:
                     function_responses = []
+                    camera_frames: list[tuple[str, bytes]] = []
                     for call in tool_call.function_calls:
                         logger.info(
                             "session=%s function_call received id=%s name=%s args=%r",
@@ -3160,7 +3161,6 @@ class GeminiLiveProvider(RealtimeProvider):
                             "args": _safe_args(call.args),
                         })
                         requested = (call.args or {}).get("expression")
-                        resp_parts: list | None = None
                         tool_calls_this_turn += 1
                         if call.name in ACTUATING_TOOLS:
                             actuations_this_turn += 1
@@ -3340,8 +3340,10 @@ class GeminiLiveProvider(RealtimeProvider):
                         elif call.name == "ada_set_voice":
                             result = {"output": self._set_voice(dict(call.args or {}))}
                         elif call.name == "ada_camera_snapshot" and self.vms_snap_url:
-                            result, resp_parts = await self._camera_snapshot(
+                            result, frame = await self._camera_snapshot(
                                 dict(call.args or {}))
+                            if frame:
+                                camera_frames.append(frame)
                         elif call.name == "ada_decision_check" and self.tool_runner is not None:
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
                         elif call.name == "ada_remember" and budget_hit:
@@ -3397,7 +3399,6 @@ class GeminiLiveProvider(RealtimeProvider):
                             id=call.id,
                             name=call.name or "set_facial_expression",
                             response=result,
-                            parts=resp_parts,
                             # The expression tool often arrives before audio.
                             # WHEN_IDLE lets Gemini continue the spoken reply;
                             # SILENT would add the result to context without
