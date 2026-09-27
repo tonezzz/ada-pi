@@ -36,7 +36,7 @@ logger = logging.getLogger("tools")
 # are blocked entirely when ADA_READ_ONLY=true.
 CONTROL_TOOLS = {
     "control_entity", "control_cover", "press_button",
-    "control_media_player", "tv_action", "cast_to_screen",
+    "control_media_player", "tv_action", "cast_to_screen", "gev_command",
 }
 
 # Tools that mutate curated memory banks. Each bank's write_policy decides
@@ -1906,6 +1906,30 @@ class ToolRunner:
             ],
             "pending": len(data.get("pending", [])),
         }
+
+    async def gev_command(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Send a command to God's Eye View clients — forwards a
+        function_call frame through the gev-gemini bridge to every
+        connected GEV browser (including a casted one on the TV)."""
+        import asyncio
+        base = os.environ.get(
+            "GEV_CMD_URL",
+            "https://tony-dell.taila0626a.ts.net/apps/gev-cmd/command")
+        payload = json.dumps({"name": name, "args": args or {}}).encode()
+        def _post():
+            req = urllib.request.Request(
+                base, data=payload,
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.load(r)
+        try:
+            out = await asyncio.to_thread(_post)
+        except Exception as e:
+            return {"ok": False, "error": f"gev command relay: {e}"}
+        if not out.get("delivered"):
+            return {"ok": False, "error":
+                    "no GEV clients connected — cast /apps/gev/ first"}
+        return out
 
     @staticmethod
     def _cast_screens_cfg() -> dict[str, Any]:

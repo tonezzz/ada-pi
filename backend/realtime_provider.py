@@ -1414,6 +1414,28 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "gev_command",
+                    "description": (
+                        "Control God's Eye View (the Cesium map app on /apps/gev/) on whatever screen is showing "
+                        "it — the call reaches every connected GEV client including a casted one. "
+                        "To 'watch the show': cast_to_screen(action='nav', url='https://tony-dell.taila0626a.ts.net/apps/gev/') "
+                        "then drive it with gev_command. Useful names: fly_to_location {location}, zoom_to_globe {}, "
+                        "adjust_camera_zoom {factor}, set_layer_visibility {layer, visible}, track_entity {entity_id}, "
+                        "stop_tracking {}, move_camera {dx, dy}, analyst_query {query}, annotate_map {text, lat, lon}, "
+                        "clear_annotations {}, get_current_view_state {}. Returns error if no GEV client is connected — "
+                        "that means nothing is showing the app, cast it first."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "GEV tool name."},
+                            "args": {"type": "object", "description": "Tool arguments (per GEV tools.json)."},
+                        },
+                        "required": ["name"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "get_battery_status",
                     "description": (
                         "Returns current battery details: total and per-battery SOC, voltage, current, power, temperature, and state of health. "
