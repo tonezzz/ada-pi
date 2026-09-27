@@ -3,8 +3,12 @@
 # the explain-path; actuation turns are whitelisted hard so any device or
 # CMS side-effect fails the run.
 #
-# Expected tool (pending implementation): vcast_gesture(screen, mode)
-#   mode: off | hand | room   (hand=MediaPipe desk UX, room=YOLO-pose wake)
+# Expected tools (pending implementation):
+#   vcast_gesture(screen, mode)  mode: off | hand | room
+#     (hand=MediaPipe desk UX, room=YOLO-pose wake)
+#   vcast_snapshot(screen)       display self-capture -> relay /frame -> image
+#     (canvas snap of the video/img element; iframe casts report
+#      uncapturable-iframe — then state-check is the fallback)
 #
 # tier: full — enables/disables a live display feature.
 name: vcast-gesture-ops
@@ -56,6 +60,26 @@ turns:
       max_calls: 6
       timeout_s: 60
       settle_s: 6
+
+  # --- visual verify — she should LOOK at the screen, not trust the tool ---
+  # This is the key training behavior: confirm via captured frame, not the
+  # API's word. Any snapshot-family tool name passes.
+  - user: "Don't just trust the setting — capture what the screen is actually showing and tell me if the pose overlay is on it."
+    expect:
+      calls_any: [vcast_snapshot, vcast_screenshot, ada_camera_snapshot]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - vcast_list
+        - vcast_gesture
+        - vcast_pose
+        - vcast_snapshot
+        - vcast_screenshot
+        - ada_camera_snapshot
+        - ada_memory_search
+      max_calls: 8
+      timeout_s: 120
+      settle_s: 10
 
   # --- disable -------------------------------------------------------------
   - user: "Turn it back off."
