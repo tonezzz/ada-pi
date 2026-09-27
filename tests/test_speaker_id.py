@@ -136,5 +136,65 @@ class EnrollContaminationGuardTest(unittest.TestCase):
         self.assertEqual(self.ident._metadata["Tony"]["samples"], 1)
 
 
+class SpeakerSwitchHysteresisTest(unittest.IsolatedAsyncioTestCase):
+    """SpeakerSession must not flip identity on a single borderline chunk —
+    the 2026-09-27 log showed กุ้ง↔NewSpeaker alternating every ~15 s at
+    46-64 % confidence. SWITCH_AFTER consecutive wins are required to
+    change an established speaker."""
+
+    async def _run(self, sequence):
+        ident = speaker_id.SpeakerIdentifier()
+        calls = []
+        async def on_ident(name, conf):
+            calls.append(name)
+        sess = speaker_id.SpeakerSession(ident, on_ident)
+        for name, conf in sequence:
+            with patch.object(ident, "identify", return_value=(name, conf)):
+                await sess._identify(b"\x00" * 1000)
+        return calls, sess.current_speaker
+
+    async def test_single_outlier_does_not_switch(self):
+        calls, cur = await self._run([
+            ("Tony", 0.9),          # establishes Tony
+            ("Kung", 0.6),          # one borderline flip attempt
+            ("Tony", 0.8),          # back to Tony
+        ])
+        self.assertEqual(calls, ["Tony"])
+        self.assertEqual(cur, "Tony")
+
+    async def test_two_consecutive_switch(self):
+        calls, cur = await self._run([
+            ("Tony", 0.9),
+            ("Kung", 0.6), ("Kung", 0.65),  # sustained second speaker
+        ])
+        self.assertEqual(calls, ["Tony", "Kung"])
+        self.assertEqual(cur, "Kung")
+
+    async def test_alternating_flips_never_commit(self):
+        calls, cur = await self._run([
+            ("Tony", 0.9),
+            ("Kung", 0.6), ("Tony", 0.7),
+            ("Kung", 0.62), ("Tony", 0.75),
+        ])
+        self.assertEqual(calls, ["Tony"])
+        self.assertEqual(cur, "Tony")
+
+    async def test_first_identification_immediate(self):
+        calls, cur = await self._run([("KK", 0.7)])
+        self.assertEqual(calls, ["KK"])
+        self.assertEqual(cur, "KK")
+
+    async def test_miss_resets_pending_switch(self):
+        calls, cur = await self._run([
+            ("Tony", 0.9),
+            ("Kung", 0.6),            # pending Kung=1
+            (None, 0.4),              # miss resets
+            ("Kung", 0.6),            # back to 1 — still not enough
+            ("Tony", 0.8),
+        ])
+        self.assertEqual(calls, ["Tony"])
+        self.assertEqual(cur, "Tony")
+
+
 if __name__ == "__main__":
     unittest.main()

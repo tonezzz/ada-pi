@@ -64,7 +64,14 @@ MIN_MARGIN = 0.05
 # once enrolled a real speaker (KK) under "Guest" when she didn't state a
 # name, which then identified her as a sandbox guest instead of prompting
 # for her real name.
-RESERVED_NAMES = {"guest", "unknown", "someone", "anon", "anonymous", "test", "tester"}
+RESERVED_NAMES = {"guest", "unknown", "someone", "anon", "anonymous",
+                  "test", "tester", "newspeaker", "new speaker",
+                  "new_speaker", "unnamed", "user"}
+# Consecutive identical chunks required to CHANGE an established speaker —
+# a single borderline frame flipping กุ้ง↔NewSpeaker at 46-64% was observed
+# 2026-09-27 (same voice enrolled twice under two names). First-time
+# identification still accepts a single confident chunk.
+SWITCH_AFTER = 2
 
 
 def _rms(float_samples: np.ndarray) -> float:
@@ -365,6 +372,8 @@ class SpeakerSession:
         self._task: asyncio.Task[None] | None = None
         self._miss_count = 0
         self._unrecognized_notified = False
+        self._switch_pending: str | None = None
+        self._switch_count = 0
         # Rolling tail of ALL fed audio (not consumed by identification) —
         # enroll_from_buffer needs the voice that was just speaking even
         # after identify() consumed its chunk.
@@ -393,6 +402,7 @@ class SpeakerSession:
         self._identifying = True
         self._task = asyncio.create_task(self._identify(chunk))
 
+
     async def _identify(self, chunk: bytes) -> None:
         try:
             loop = asyncio.get_running_loop()
@@ -400,13 +410,32 @@ class SpeakerSession:
                 None, self._identifier.identify, chunk, SAMPLE_RATE, self._threshold
             )
             if name is not None and name != self._last_name:
+                # Hysteresis: switching to a different speaker needs
+                # SWITCH_AFTER consecutive wins for that name; first-time
+                # identification (no prior speaker) accepts immediately.
+                if self._last_name is not None:
+                    if name == self._switch_pending:
+                        self._switch_count += 1
+                    else:
+                        self._switch_pending = name
+                        self._switch_count = 1
+                    if self._switch_count < SWITCH_AFTER:
+                        return
+                self._switch_pending = None
+                self._switch_count = 0
                 self._last_name = name
                 self._miss_count = 0
                 self._unrecognized_notified = False
                 logger.info("speaker identified: %s (%.0f%%)", name, confidence * 100)
                 await self._on_identified(name, confidence)
-            elif name is None:
-                self._miss_count += 1
+            else:
+                # stable same-speaker hit or a miss — either way a pending
+                # switch doesn't accrue (single-frame outliers shouldn't
+                # count toward changing identity)
+                self._switch_pending = None
+                self._switch_count = 0
+                if name is None:
+                    self._miss_count += 1
                 if (
                     self._on_unrecognized is not None
                     and self._miss_count >= UNKNOWN_AFTER_MISSES
