@@ -44,6 +44,90 @@ def cos(a: np.ndarray, b: np.ndarray) -> float:
     return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
 
 
+def load_profiles_full() -> dict[str, dict]:
+    """Profiles incl. prints[] and audio[] (schema v2)."""
+    path = Path(os.environ["ADA_SPEAKER_PROFILES"])
+    return json.loads(path.read_text())
+
+
+def _np_prints(entry: dict) -> list[np.ndarray]:
+    out = []
+    for p in entry.get("prints") or []:
+        out.append(np.frombuffer(base64.b64decode(p), dtype=np.float32).copy())
+    if not out and isinstance(entry.get("embedding"), str):
+        out.append(np.frombuffer(
+            base64.b64decode(entry["embedding"]), dtype=np.float32).copy())
+    return out
+
+
+def audio_eval(a) -> int:
+    """Replay retained enrollment clips with leave-one-out — real audio,
+    real embeddings, every scoring mode."""
+    full = load_profiles_full()
+    ident = speaker_id.SpeakerIdentifier.get()  # lazy-loads ECAPA on first use
+    samples_root = Path(os.environ["ADA_SPEAKER_PROFILES"]).parent
+    saved_prints = {n: ident._prints.get(n, []) for n in ident._prints}
+    saved_enrolled = dict(ident._enrolled)
+    saved_meta = ident._metadata
+    modes = [m.strip() for m in (a.modes or "centroid,max,mean,hybrid").split(",")]
+
+    results: dict[str, dict[str, list]] = {}
+    for name, entry in full.items():
+        prints = _np_prints(entry)
+        clips = entry.get("audio") or []
+        for mode in modes:
+            results.setdefault(mode, {}).setdefault(name, [])
+        for i, rel in enumerate(clips):
+            p = samples_root / rel
+            if not p.exists():
+                continue
+            pcm = p.read_bytes()
+            try:
+                emb = ident._compute_embedding(pcm)
+            except Exception as exc:
+                print(f"  {name} {rel}: embedding failed: {exc}")
+                continue
+            # leave-one-out: this print must not score itself
+            loo = prints[:i] + prints[i + 1:]
+            if loo:
+                ident._prints[name] = loo
+                ident._enrolled[name] = speaker_id._centroid(loo)
+            else:
+                ident._prints.pop(name, None)
+                ident._enrolled.pop(name, None)
+            orig = ident._compute_embedding
+            ident._compute_embedding = lambda *_, **__: emb  # type: ignore
+            for mode in modes:
+                os.environ["ADA_SPEAKER_SCORE"] = mode
+                got, score = ident.identify(pcm)
+                results[mode][name].append(
+                    {"clip": rel, "got": got, "score": round(score, 3)})
+            ident._compute_embedding = orig  # type: ignore
+    ident._prints.update(saved_prints)
+    ident._enrolled.update(saved_enrolled)
+    ident._metadata = saved_meta
+
+    if a.json:
+        print(json.dumps(results, indent=1, ensure_ascii=False))
+        return 0
+    for mode in modes:
+        print(f"\n== audio replay, score_mode={mode} ==")
+        for name, rows in results[mode].items():
+            if not rows:
+                print(f"  {name:<14} no stored clips")
+                continue
+            ok = sum(1 for r in rows if r["got"] == name)
+            unk = sum(1 for r in rows if r["got"] is None)
+            flips = [r for r in rows if r["got"] not in (name, None)]
+            print(f"  {name:<14} clips={len(rows)} acc={ok / len(rows):.0%} "
+                  f"unknown={unk} flips={len(flips)}")
+            for r in rows:
+                flag = "" if r["got"] == name else "   <-- MISS"
+                print(f"      {Path(r['clip']).name}: -> {r['got']} "
+                      f"({r['score']:.2f}){flag}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sigma", type=float, default=0.05,
@@ -51,7 +135,14 @@ def main() -> int:
     ap.add_argument("--trials", type=int, default=200)
     ap.add_argument("--threshold", type=float, default=speaker_id.DEFAULT_THRESHOLD)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--audio", action="store_true",
+                    help="replay retained speaker_samples/*.pcm clips "
+                         "(leave-one-out) instead of synthetic noise")
+    ap.add_argument("--modes", default=None,
+                    help="comma list for --audio: centroid,max,mean,hybrid")
     a = ap.parse_args()
+    if a.audio:
+        return audio_eval(a)
 
     profiles = load_profiles()
     names = sorted(profiles)

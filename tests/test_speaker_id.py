@@ -11,6 +11,7 @@ from unittest.mock import patch
 import numpy as np
 
 os.environ.setdefault("ADA_SPEAKER_PROFILES", "/nonexistent-speaker-profiles.json")
+os.environ.setdefault("ADA_SPEAKER_KEEP_AUDIO", "0")
 
 from backend import speaker_id  # noqa: E402
 
@@ -198,6 +199,82 @@ class EnrollContaminationGuardTest(unittest.TestCase):
              self.assertRaises(ValueError):
             self.ident.enroll("Tony", b"\x00" * 2000)
         self.assertEqual(self.ident._metadata["Tony"]["samples"], 1)
+
+
+class MultiPrintTest(unittest.TestCase):
+    """Schema v2: per-sample prints, scoring modes, outlier pruning."""
+
+    def setUp(self):
+        self.ident = speaker_id.SpeakerIdentifier()
+        self.ident._enrolled = {}
+        self.ident._prints = {}
+        self.ident._metadata = {}
+
+    def _enroll_with(self, name: str, v: np.ndarray) -> dict:
+        with patch.object(self.ident, "_compute_embedding", return_value=v), \
+             patch.object(self.ident, "_save_enrolled"):
+            return self.ident.enroll(name, b"\x00" * 2000)
+
+    def test_enroll_accumulates_prints(self):
+        self._enroll_with("Tony", _vec(30))
+        self._enroll_with("Tony", _vec(30) + 0.01 * _vec(31))
+        self.assertEqual(len(self.ident._prints["Tony"]), 2)
+        self.assertEqual(self.ident._metadata["Tony"]["samples"], 2)
+
+    def test_v1_centroid_migrates_into_prints(self):
+        self.ident._enrolled = {"Tony": _vec(32)}
+        self.ident._metadata = {"Tony": {"samples": 1}}
+        near = _vec(32) + 0.01 * _vec(33)
+        near /= np.linalg.norm(near)
+        self._enroll_with("Tony", near)
+        self.assertEqual(len(self.ident._prints["Tony"]), 2)
+        self.assertEqual(self.ident._metadata["Tony"]["samples"], 2)
+
+    def test_prune_drops_outlier_not_newest(self):
+        base = _vec(34)
+        with patch.dict(os.environ, {"ADA_SPEAKER_MAX_PRINTS": "3"}):
+            for i in range(3):
+                v = base + 0.01 * i * _vec(35)
+                v /= np.linalg.norm(v)
+                self._enroll_with("Tony", v)
+            # A stale/mis-mic'd print already in the store (the guard would
+            # refuse it as a fresh enroll — pruning exists to evict these).
+            outlier = _vec(36)
+            self.ident._prints["Tony"].append(outlier)
+            self.ident._enrolled["Tony"] = speaker_id._centroid(
+                self.ident._prints["Tony"])
+            near = base + 0.01 * _vec(37)
+            near /= np.linalg.norm(near)
+            self._enroll_with("Tony", near)
+        sims = [speaker_id._cosine_similarity(p, outlier)
+                for p in self.ident._prints["Tony"]]
+        self.assertTrue(all(s < 0.5 for s in sims))
+        self.assertEqual(len(self.ident._prints["Tony"]), 3)
+
+    def test_score_modes(self):
+        a, b = _vec(40), _vec(41)
+        self.ident._enrolled = {"Tony": speaker_id._centroid([a, b])}
+        self.ident._prints = {"Tony": [a, b]}
+        with patch.object(self.ident, "_compute_embedding", return_value=a), \
+             patch.dict(os.environ, {"ADA_SPEAKER_SCORE": "max"}):
+            _, sc_max = self.ident.identify(b"\x00" * 1000)
+        with patch.object(self.ident, "_compute_embedding", return_value=a), \
+             patch.dict(os.environ, {"ADA_SPEAKER_SCORE": "centroid"}):
+            _, sc_c = self.ident.identify(b"\x00" * 1000)
+        self.assertGreater(sc_max, sc_c)  # exact print beats the centroid
+
+    def test_media_flag_roundtrip(self):
+        import json, tempfile
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "p.json")
+            self.ident._profiles_path = speaker_id.Path(path)
+            self.ident._enrolled = {"TV": _vec(50)}
+            self.ident._prints = {"TV": [_vec(50)]}
+            self.ident._metadata = {"TV": {"media": True, "samples": 1}}
+            self.ident._save_enrolled()
+            data = json.loads(open(path).read())
+            self.assertTrue(data["TV"]["media"])
+            self.assertEqual(len(data["TV"]["prints"]), 1)
 
 
 class SpeakerSwitchHysteresisTest(unittest.IsolatedAsyncioTestCase):
