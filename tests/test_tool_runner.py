@@ -162,7 +162,27 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
             )
         self.runner.mddb.add_document.assert_not_awaited()
 
+    async def test_publish_confirmed_without_pending_denied(self):
+        # Regression for the 2026-09-25 flip-flop: model retried
+        # confirmed=true without ever asking the user — must be rejected
+        # until a pending request has been registered.
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "cms_publish_page",
+                {"slug": "pool-notes", "title": "Pool",
+                 "content": "# hi", "confirmed": True},
+            )
+        self.runner.mddb.add_document.assert_not_awaited()
+
     async def test_publish_with_confirmed_writes_page_doc(self):
+        # Two-step handshake: first call registers pending, the confirmed
+        # resubmit publishes.
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "cms_publish_page",
+                {"slug": "Pool Notes", "title": "Pool notes",
+                 "content": "# Pool\npH 7.4"},
+            )
         result = await self.runner.execute(
             "cms_publish_page",
             {
@@ -182,6 +202,11 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(meta["format"], ["markdown"])
 
     async def test_publish_rejects_bad_slug_and_format(self):
+        # Register pending first so the calls reach validation.
+        for bad in ({"slug": "../evil", "title": "x", "content": "x"},
+                    {"slug": "ok", "title": "x", "content": "x", "format": "exe"}):
+            with self.assertRaises(PermissionError):
+                await self.runner.execute("cms_publish_page", bad)
         with self.assertRaises(ValueError):
             await self.runner.execute(
                 "cms_publish_page",

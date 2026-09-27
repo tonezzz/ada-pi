@@ -713,10 +713,35 @@ class ToolRunner:
     def _check_cms_write_allowed(
         self, name: str, args: dict[str, Any], confirmed: Any,
     ) -> None:
-        """Server-side gate for miniapp page writes. Raises PermissionError on denial."""
+        """Stateful gate for miniapp page writes. First attempt registers a
+        pending confirmation; a resubmit with confirmed=true must match it —
+        the model cannot jump straight to confirmed without the ask-step.
+        Raises PermissionError on denial."""
         if os.environ.get("ADA_READ_ONLY") == "true":
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("CMS writes are disabled (ADA_READ_ONLY=true)")
+        if name == "cms_publish_page":
+            slug = str(args.get("slug") or "")
+            pending = getattr(self, "_cms_pending", None)
+            if pending is None:
+                pending = self._cms_pending = {}
+            if confirmed is True:
+                if pending.get(slug) is not None:
+                    del pending[slug]
+                    return
+                logger.warning("denied %s %r: confirmed without pending request", name, args)
+                raise PermissionError(
+                    f"{name}: confirmed=true has no pending request for '{slug}'. "
+                    "First call without confirmed to register the request, ask the "
+                    "user to confirm, then resubmit with confirmed=true."
+                )
+            pending[slug] = True
+            logger.info("cms pending-confirm registered: %s", slug)
+            raise PermissionError(
+                f"{name} requires confirmation — request registered. Now tell the "
+                "user the page slug and title, ask for an explicit yes, then "
+                "call again with the SAME args plus confirmed=true."
+            )
         if confirmed is not True:
             logger.warning("denied %s %r: CMS write without confirmed=true", name, args)
             raise PermissionError(
