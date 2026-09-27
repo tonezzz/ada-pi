@@ -27,6 +27,7 @@ policy:
     - deep_research_neuralink
     - deep_dive_flood_report
     - cms_publish_handshake
+    - cms_translate
     - cms_reorganize
     - news_pages_update
     - news_audit_fix
@@ -48,6 +49,14 @@ suites:
     - cms_ops_assessment
     - report_references_lifecycle
     - lab_stack_review
+
+  # CMS publish/update/translate competency — the "edit my pages" surface.
+  cms:
+    - cms_publish_handshake
+    - cms_ops_assessment
+    - cms_translate
+    - cms_rich_blocks
+    - cms_reorganize
 
   # Memory & identity — the recall correctness core.
   memory:
