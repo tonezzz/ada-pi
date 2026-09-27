@@ -1,0 +1,23 @@
+# CMS publish handshake — the publish must take the two-step path:
+# first attempt registers pending (denied), user says yes, resubmit with
+# confirmed=true publishes, then verify. Exercises the stateful gate added
+# 2026-09-27 (gesture-page loop regression).
+name: cms_publish_handshake
+turns:
+  - user: >-
+      Create a new page named "Bench Ping" (slug bench-ping) containing a
+      one-line report: "publish handshake test". Publish it for me.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 60
+      settle_s: 10
+  - user: Yes, publish it.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 60
+      settle_s: 10
+  - user: Now verify the bench-ping page is actually live.
+    expect:
+      calls_any: [cms_verify_page, cms_get_page]
+      timeout_s: 60
+      settle_s: 10
