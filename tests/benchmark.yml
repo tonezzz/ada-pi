@@ -27,6 +27,8 @@ policy:
     - deep_research_neuralink
     - deep_dive_flood_report
     - cms_publish_handshake
+    - cms_ops_assessment
+    - cms_rich_blocks
     - cms_translate
     - cms_reorganize
     - news_pages_update
