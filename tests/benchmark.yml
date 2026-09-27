@@ -126,6 +126,13 @@ suites:
     - archive_recall
     - doc_recall_live
 
+  # Report surface — does the self-test record stay recallable and does
+  # Ada judge "what's worth reporting" correctly? Read-only.
+  reports:
+    - scenario_report_recall
+    - auto_report_worthy
+    - report_recall_benchmark
+
   # Tool discipline — selection, gating, and honesty under pressure.
   tools:
     - tool_selection_accuracy

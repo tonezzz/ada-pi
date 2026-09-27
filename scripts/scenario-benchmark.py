@@ -115,6 +115,51 @@ def _post(url: str, payload: dict) -> bool:
         return False
 
 
+def _fetch_prior_statuses(mddb: str, suite: str, before: str) -> dict[str, str]:
+    """scenario -> status from the most recent prior benchmark doc for this
+    suite (key < the one we're about to write). Used for regression diffs."""
+    try:
+        req = urllib.request.Request(
+            f"{mddb.rstrip('/')}/search",
+            data=json.dumps({"collection": COLLECTION, "query": "",
+                             "limit": 300}).encode(),
+            headers={"Content-Type": "application/json"})
+        docs = json.loads(urllib.request.urlopen(req, timeout=30).read())
+    except Exception:
+        return {}
+    cands = [d for d in docs
+             if d.get("key", "").startswith(f"benchmark/{suite}-")
+             and d.get("key", "") < f"benchmark/{suite}-{before}"]
+    if not cands:
+        return {}
+    latest = sorted(d["key"] for d in cands)[-1]
+    meta = (next(d for d in cands if d["key"] == latest).get("meta") or {})
+    out: dict[str, str] = {}
+    for s in meta.get("scenarios") or []:
+        name, _, status = str(s).rpartition(":")
+        if name:
+            out[name] = status
+    return out
+
+
+def _report_worthy(rows: list, violations: list[str],
+                   prior: dict[str, str]) -> list[str]:
+    """Deterministic report-worthiness judgment — no LLM. A report is
+    worthy when: a scenario fails, a policy violation fires, a scenario
+    regressed vs the previous run of the same suite, or score data shows
+    persistent flakiness. Everything else is noise."""
+    items: list[str] = []
+    for name, status, *_ in rows:
+        if status == "fail":
+            was = prior.get(name)
+            items.append(f"{name}: FAIL" + (f" (regression — was {was})"
+                                           if was and was != "fail" else ""))
+        elif status == "flaky" and prior.get(name) == "flaky":
+            items.append(f"{name}: persistently flaky")
+    items.extend(f"policy: {v}" for v in violations)
+    return items
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--suite", required=True)
@@ -195,6 +240,49 @@ def main() -> int:
                          "format": ["markdown"], "instance": ["tony"],
                          "updated": [now.isoformat(timespec="seconds")]},
             })
+
+        # Auto-report judgment — deterministic; maintains the 'auto-report'
+        # CMS page so report-worthy items are always visible, and appends an
+        # auto-report doc to the bank only when something IS worthy.
+        prior = _fetch_prior_statuses(args.mddb, args.suite,
+                                      now.strftime("%Y%m%d-%H%M%S"))
+        worthy = _report_worthy(rows, violations, prior)
+        worthy_md = (f"# Auto Report — {now:%Y-%m-%d %H:%M}\n\n")
+        if worthy:
+            worthy_md += ("Report-worthy items detected in the latest "
+                          f"`{args.suite}` suite run (score {score}):\n\n"
+                          + "\n".join(f"- **{w}**" for w in worthy) + "\n\n")
+        else:
+            worthy_md += (f"Nothing report-worthy from the latest "
+                          f"`{args.suite}` run (score {score}).\n\n")
+        worthy_md += (
+            "## How this page works\n\n"
+            "Updated automatically by `scenario-benchmark.py` after each suite "
+            "run. An item lands here when a scenario FAILs, a policy violation "
+            "fires, a scenario regresses vs the previous run of the same "
+            "suite, or a scenario stays flaky across runs. Ada reads this page "
+            "for 'anything to report?' questions — do not hand-edit; fix the "
+            "underlying failure instead.\n")
+        _post(f"{args.mddb.rstrip('/')}/add", {
+            "collection": "ada-cms-pages", "key": "auto-report", "lang": "en",
+            "contentMd": worthy_md,
+            "meta": {"kind": ["page"], "slug": ["auto-report"],
+                     "title": ["Auto Report"], "format": ["markdown"],
+                     "instance": ["tony"],
+                     "updated": [now.isoformat(timespec="seconds")],
+                     "worthy": [str(len(worthy))]},
+        })
+        if worthy:
+            _post(f"{args.mddb.rstrip('/')}/add", {
+                "collection": COLLECTION,
+                "key": f"auto-report/{args.suite}-{now:%Y%m%d-%H%M%S}",
+                "lang": "en", "contentMd": worthy_md,
+                "meta": {"kind": ["auto-report"], "suite": [args.suite],
+                         "score": [str(score)],
+                         "ts": [now.isoformat(timespec="seconds")],
+                         "items": worthy},
+            })
+            print(f"  auto-report: {len(worthy)} worthy item(s)")
 
     return 1 if any(s == "fail" for _, s, *_ in rows) or violations else 0
 
