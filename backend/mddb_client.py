@@ -137,6 +137,14 @@ class MddbClient:
         # mddb has no /update — /add upserts on (collection,key,lang), and a
         # meta-only /add wipes contentMd. Merge onto the existing doc.
         existing = await self.get_document(collection, key, lang)
+        if existing is None and content_md is None:
+            # Read failed or doc absent — a meta-only write here would store
+            # an empty body (or wipe the real one if the read merely
+            # timed out). Refuse instead.
+            logger.error("mddb update_document: no existing doc and no "
+                         "content_md — refusing meta-only write for %s/%s",
+                         collection, key)
+            return None
         merged_meta = dict((existing or {}).get("meta") or {})
         if meta:
             merged_meta.update(meta)

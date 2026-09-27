@@ -242,11 +242,17 @@ def _doc_to_hit(
         else:
             return None
     meta = doc.get("meta") or {}
+    content = doc.get("contentMd") or doc.get("content_md") or ""
+    if not str(content).strip():
+        # Content-wiped doc (meta-only write emptied the body). It still
+        # scores on meta but carries nothing Ada can use — and it crowds
+        # out real hits in the top-k. Skip it.
+        return None
     hit: dict[str, Any] = {
         "key": doc.get("key"),
         "status": status,
         "score": doc.get("score"),
-        "content": doc.get("contentMd") or doc.get("content_md") or "",
+        "content": content,
         "kind": _meta_first(meta, "kind"),
         "subject": _meta_first(meta, "subject"),
         "attribute": _meta_first(meta, "attribute"),
