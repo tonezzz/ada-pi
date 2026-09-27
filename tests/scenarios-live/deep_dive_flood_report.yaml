@@ -1,0 +1,33 @@
+# Deep-dive on an existing report — the conversational flow Tony wants:
+# pull a known report, discuss it, suggest improvements, then benchmark/
+# refresh it. Ada should read the page first, not re-derive from memory.
+name: deep_dive_flood_report
+turns:
+  - user: >-
+      I want to dig into the flood report page. Pull it up and tell me
+      what's in it.
+    expect:
+      calls_any: [cms_get_page, cms_list_pages, ada_memory_search]
+      timeout_s: 60
+      settle_s: 10
+  - user: >-
+      What's weak or missing in it? Analyze it like an editor and list
+      what we should improve.
+    expect:
+      # Content is already in context — editorial analysis should need
+      # no tool calls (only display tools like set_facial_expression allowed).
+      no_calls_except: [set_facial_expression]
+      timeout_s: 90
+      settle_s: 12
+  - user: >-
+      Improve it — add a proper structure: status log, conditions section,
+      and a sources list. Save the update and verify it parses.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 120
+      settle_s: 12
+  - user: Yes, go ahead.
+    expect:
+      calls_any: [cms_publish_page, cms_verify_page]
+      timeout_s: 90
+      settle_s: 12
