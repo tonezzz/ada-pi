@@ -609,6 +609,11 @@ class ConversationMemory:
         session_text = await _summarize_session(transcript)
         if session_text:
             await _save_session_summary(self.session_id, session_text)
+            # Daily rollup tier: keep today's digest current so
+            # ada_daily_summary/ada_weekly_comparison read fresh data.
+            from backend import summary_rollups
+            await summary_rollups.refresh_daily(
+                _mddb(), day=datetime.now(timezone.utc).date().isoformat())
         if _SESSION_REPORT:
             day = datetime.now(timezone.utc).date().isoformat()
             report = await _session_report(transcript, day, self.session_id)

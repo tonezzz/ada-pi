@@ -1,0 +1,109 @@
+# SSOT Job: Ada daily summaries + weekly comparison (idea 'summary-comparison')
+# Handoff: devin-handoff extract-2026-09-27-fd98e6e49c-2 — "make Ada
+# capable of viewing daily summaries and comparing weekly trends".
+
+title: Ada daily summaries and weekly trend comparison
+subtitle: Rollup tier over per-session summaries — daily digest auto-refreshed, weekly comparison on demand
+icon: calendar-text
+
+planning:
+  goal: |
+    Ada can answer "summarize today/yesterday/<date>" and "how did this
+    week go / compare my week" from generated digests instead of raw
+    recall. A new rollup tier sits above the per-session summaries that
+    conversation_memory already writes to the recall-summary MDDB
+    collection: daily-<date> docs (regenerated after each persisted
+    session and on demand) and weekly-<date> docs (a comparison across
+    the daily digests of a rolling window, default 7 days).
+  scope: |
+    In scope:
+      - backend/summary_rollups.py — daily_summary(), weekly_comparison(),
+        refresh_daily(); rollup docs in ada-ha-recall-summary-{instance}
+        (kind=daily-summary / kind=weekly-summary) so mid-tier recall
+        (_recall_summaries) picks them up with no extra wiring
+      - conversation_memory._update_summary — refresh today's daily digest
+        after each per-session summary lands (ADA_DAILY_ROLLUP=0 disables)
+      - ToolRunner: ada_daily_summary(day, refresh) and
+        ada_weekly_comparison(end, days, refresh) — reachable by voice and
+        by POST /api/tools/call for cron; no confirmed= gate (internal
+        summary collection, same as session summaries)
+      - realtime_provider: SUMMARY_TOOLS / SUMMARY_INSTRUCTIONS +
+        NON_BLOCKING declarations; ADA_EXCLUDED_TOOLS strips both together
+      - Docs: README 'Daily summaries and weekly trends', .env.example,
+        tests/test_summary_rollups.py
+    Out of scope:
+      - Monthly rollup tier (substrate now exists; prompt+collection
+        pattern identical)
+      - Auto-generated weekly digests on a timer (invoke via cron against
+        /api/tools/call if wanted)
+      - Miniapp rendering of summaries (cms_publish_page composes with it)
+  success_criteria:
+    - '"summarize today" triggers ada_daily_summary and the answer comes
+      from the generated digest'
+    - '"compare my week" triggers ada_weekly_comparison over the last 7
+      daily digests; <2 days with sessions returns insufficient_data'
+    - Daily digest exists for any day with >=1 persisted session without
+      being asked (auto-rollup after session persist)
+    - New docs searchable via ordinary session recall (same collection)
+  risks:
+    - 'Session-summary meta.date is stamped UTC while parse_day resolves
+      "today" in ADA_TIMEZONE: sessions between local midnight and the TZ
+      offset land on the previous UTC date. Acceptable for a digest tier.'
+    - 'Rollup quality degrades on days with many short sessions — the
+      prompt caps at 50 session docs/day.'
+    - 'Costs one Flash-class text call per session persist (daily refresh)
+      plus one per generated weekly comparison; ADA_DAILY_ROLLUP=0 /
+      ADA_ROLLUP_MODEL control it.'
+  resources:
+    - conversation_memory: _save_session_summary writes kind=session-summary
+      docs into ada-ha-recall-summary-{instance} (the substrate)
+    - calendar_providers.parse_day — today|yesterday|YYYY-MM-DD resolution
+    - Tool dispatch: realtime_provider else-branch -> tool_runner.execute;
+      /api/tools/call exposes every public ToolRunner method
+    - tests/test_summary_rollups.py — 14 tests, FakeMddb in-memory stand-in
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-09-27"
+  steps:
+    - id: 1
+      label: "Fetch handoff spec"
+      status: done
+      notes: "devin-handoff extract-2026-09-27-fd98e6e49c-2 via MDDB idc01 — 'view daily summaries, compare weekly trends'"
+    - id: 2
+      label: "summary_rollups.py + tool_runner tools"
+      status: done
+      notes: "daily-{date}/weekly-{date} docs in recall-summary collection; ada_daily_summary + ada_weekly_comparison"
+    - id: 3
+      label: "Auto-rollup hook + Gemini declarations"
+      status: done
+      notes: "refresh_daily after _save_session_summary; SUMMARY_TOOLS/SUMMARY_INSTRUCTIONS; NON_BLOCKING decls"
+    - id: 4
+      label: "Tests + docs"
+      status: done
+      notes: "14 new tests; full suite 323 OK; README + .env.example + this file"
+
+invoke:
+  voice:
+    - '"summarize today" / "what did we do yesterday" -> ada_daily_summary'
+    - '"how did this week go" / "compare my week" -> ada_weekly_comparison'
+    - '"save the weekly summary to the miniapp" -> cms_publish_page (confirmed)'
+  http:
+    endpoint: "POST /api/tools/call"
+    auth: "X-API-Key header or ?api_key= (ADA_API_KEY / ADA_API_KEYS)"
+    examples:
+      - '{"name": "ada_daily_summary", "args": {"day": "today"}}'
+      - '{"name": "ada_daily_summary", "args": {"day": "2026-09-27", "refresh": true}}'
+      - '{"name": "ada_weekly_comparison", "args": {"days": 7, "end": "today"}}'
+  env:
+    ADA_DAILY_ROLLUP: "1 = regenerate today's daily digest after each session persist; 0 disables"
+    ADA_ROLLUP_MODEL: "rollup model override (default: ADA_REPORT_MODEL / gemini-3.5-flash-lite)"
+    ADA_EXCLUDED_TOOLS: "add ada_daily_summary,ada_weekly_comparison to strip declarations + instructions"
+
+verification:
+  - "cd <repo> && .venv/bin/python -m unittest tests.test_summary_rollups -v  # 14 tests"
+  - "unittest discover -s tests -p 'test_*.py'  # 323 total"
+  - "POST /api/tools/call ada_daily_summary on a live instance returns
+     {status: ok, summary} or no_sessions"

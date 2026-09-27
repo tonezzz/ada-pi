@@ -108,6 +108,20 @@ DEVIN_INSTRUCTIONS = (
     "be told to 'check the ada handoff'."
 )
 
+# Summary rollup tools — same constant pattern: ADA_EXCLUDED_TOOLS strips
+# the declarations and this instruction paragraph together.
+SUMMARY_TOOLS = {"ada_daily_summary", "ada_weekly_comparison"}
+
+SUMMARY_INSTRUCTIONS = (
+    " You keep rollup summaries of past sessions: ada_daily_summary returns "
+    "the digest for one day ('today', 'yesterday', or a YYYY-MM-DD date), and "
+    "ada_weekly_comparison compares the last 7 days of daily digests into a "
+    "weekly trend view. Use them when the user asks for a recap of a day, how "
+    "the week went, or how this week compares — answer from the returned "
+    "text, naming the period it covers. Both read generated summaries; when a "
+    "day has no sessions the tool says so rather than guessing."
+)
+
 # Habit tracking tools — same constant pattern: ADA_EXCLUDED_TOOLS strips
 # the declarations and this instruction paragraph together. Only meaningful
 # where the hardware backend (camera + pose pipeline, backend/main.py)
@@ -483,6 +497,7 @@ class GeminiLiveProvider(RealtimeProvider):
             + DEVIN_INSTRUCTIONS
             + DOC_INSTRUCTIONS
             + HABIT_INSTRUCTIONS
+            + SUMMARY_INSTRUCTIONS
         )
         self._client: Any = None
         self._session_context: Any = None
@@ -2485,6 +2500,62 @@ class GeminiLiveProvider(RealtimeProvider):
                         },
                         "additionalProperties": False,
                     },
+                }, {
+                    "name": "ada_daily_summary",
+                    "description": (
+                        "Daily digest of all voice sessions on one day, rolled up "
+                        "from that day's stored session summaries. Use when the user "
+                        "asks for a summary of today, yesterday, or a specific date, "
+                        "or 'what did we do on <day>'. Returns the stored digest, "
+                        "generating it on first use; pass refresh=true only when the "
+                        "user asks to rebuild it."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "day": {
+                                "type": "string",
+                                "description": "'today' (default), 'yesterday', or a YYYY-MM-DD date.",
+                            },
+                            "refresh": {
+                                "type": "boolean",
+                                "description": "Regenerate the digest instead of returning the stored one.",
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_weekly_comparison",
+                    "description": (
+                        "Weekly trend view: compares the daily digests of the last 7 "
+                        "days ending at 'end' — recurring themes, what changed across "
+                        "the week, and open items. Use when the user asks how the week "
+                        "went, for weekly trends, or to compare days. When the user "
+                        "wants the comparison kept, offer to publish it to the miniapp "
+                        "with cms_publish_page (confirmed=true)."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "end": {
+                                "type": "string",
+                                "description": "Last day of the window: 'today' (default), 'yesterday', or YYYY-MM-DD.",
+                            },
+                            "days": {
+                                "type": "integer",
+                                "minimum": 2,
+                                "maximum": 14,
+                                "description": "Days in the window (default 7).",
+                            },
+                            "refresh": {
+                                "type": "boolean",
+                                "description": "Regenerate the comparison instead of returning the stored one.",
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
                 }]
             }],
         }
@@ -2531,6 +2602,10 @@ class GeminiLiveProvider(RealtimeProvider):
             if HABIT_TOOLS <= excluded:
                 config["system_instruction"] = config["system_instruction"].replace(
                     HABIT_INSTRUCTIONS, ""
+                )
+            if SUMMARY_TOOLS <= excluded:
+                config["system_instruction"] = config["system_instruction"].replace(
+                    SUMMARY_INSTRUCTIONS, ""
                 )
         if chaba_memory.enabled():
             # Guest mode: allowlist the tool surface, append chaba guest tools,

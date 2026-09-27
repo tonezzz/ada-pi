@@ -133,6 +133,43 @@ The settings drawer provides access to:
 
 You can also ask Ada, “What habits are you tracking?” or “How are my habits doing?” She reads the current tracker rather than guessing from conversational memory.
 
+### Daily summaries and weekly trends
+
+When the MDDB memory backend is configured, Ada keeps a summary tier above
+each session: a per-session summary is written when the session ends, a
+daily digest is rolled up automatically after every session
+(`ADA_DAILY_ROLLUP=0` disables the auto-rollup), and a weekly comparison
+is generated on demand.
+
+- **Voice** — ask “summarize today”, “what did we do yesterday”, or “how
+  did this week go / compare my week”. Ada calls `ada_daily_summary`
+  (`day`: `today` | `yesterday` | `YYYY-MM-DD`) or
+  `ada_weekly_comparison` (`end`, `days` 2–14, `refresh`) and answers from
+  the stored digest. Both digests are generated once and then cached in
+  the `ada-ha-recall-summary-<instance>` MDDB collection, so they are also
+  picked up by ordinary session recall. Ask Ada to publish the weekly
+  view to the miniapp if you want it kept as a page (`cms_publish_page`,
+  confirmed write).
+- **HTTP** — the same tools are callable through the tool endpoint, e.g.
+  for a nightly cron:
+
+  ```bash
+  curl -X POST http://127.0.0.1:8080/api/tools/call \
+      -H 'Content-Type: application/json' \
+      -H "X-API-Key: $ADA_API_KEY" \
+      -d '{"name": "ada_daily_summary", "args": {"day": "today"}}'
+
+  curl -X POST http://127.0.0.1:8080/api/tools/call \
+      -H 'Content-Type: application/json' \
+      -H "X-API-Key: $ADA_API_KEY" \
+      -d '{"name": "ada_weekly_comparison", "args": {"days": 7}}'
+  ```
+
+  A week needs at least two days with sessions before a comparison is
+  generated (`insufficient_data` otherwise). `refresh=true` rebuilds a
+  stored digest. `ADA_ROLLUP_MODEL` overrides the rollup model
+  (default: the report model, a Flash-class text model).
+
 ## Habit coaching
 
 Ada records one occurrence per prolonged episode, so repeated polling cannot inflate the tracker:

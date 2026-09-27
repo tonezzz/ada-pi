@@ -16,6 +16,7 @@ from backend import memory_ops
 from backend import chaba_memory
 from backend import devin_dispatch as devin_dispatch_mod
 from backend import doc_archive_client
+from backend import summary_rollups
 from backend.calendar_providers import CalendarService
 from backend.decision_check import DecisionCheckEngine
 from backend.event_recorder import HaEventRecorder
@@ -843,6 +844,24 @@ class ToolRunner:
             usage_ledger.reset()
             report["reset"] = True
         return report
+
+    # -- Summary rollup tools (backend/summary_rollups.py): daily digests
+    #    and a weekly comparison over the per-session summaries in the
+    #    recall-summary collection. Read-only against user-facing state —
+    #    rollup writes land in the internal summary collection like the
+    #    session summaries themselves, so no confirmed= gate.
+
+    async def ada_daily_summary(self, day: str = "today", refresh: bool = False) -> dict[str, Any]:
+        """Digest of all sessions on one day ('today'|'yesterday'|YYYY-MM-DD)."""
+        return await summary_rollups.daily_summary(
+            self.mddb, day=str(day), refresh=bool(refresh))
+
+    async def ada_weekly_comparison(
+        self, end: str = "today", days: int = 7, refresh: bool = False,
+    ) -> dict[str, Any]:
+        """Compare the daily digests of the last `days` days — weekly trends."""
+        return await summary_rollups.weekly_comparison(
+            self.mddb, end=str(end), days=int(days), refresh=bool(refresh))
 
     # -- Calendar / tasks tools (provider-agnostic; see ssot.apps.ada-calendar.yml) --
 
