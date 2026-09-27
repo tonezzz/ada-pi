@@ -118,6 +118,14 @@ DEVIN_TOOLS = {
 # Tools with real-world side effects — they share a tighter per-turn cap
 # (ADA_ACTUATION_BUDGET) than the generic tool-call budget so a runaway
 # planning/status turn can't mass-actuate devices or spawn work.
+# Phantom-write detector: assistant claims something was
+# registered/recorded/noted but made ZERO tool calls in the turn —
+# observed failure mode when tool results fail silently upstream.
+_PHANTOM_CLAIM_RE = re.compile(
+    r"(?i)\b(registered|registration|recorded|queued|written down|noted down)"
+    r"|จดไว้|บันทึกไว้|รับทราบ"
+)
+
 ACTUATING_TOOLS = frozenset({
     "control_entity", "control_cover", "control_media_player",
     "press_button", "tv_action", "yt_cast", "yt_cast_stop",
@@ -621,6 +629,9 @@ class GeminiLiveProvider(RealtimeProvider):
         self._last_model_at = 0.0
         self._stall_timeout = float(os.environ.get("ADA_STALL_TIMEOUT_S", "25"))
         self._ops_events_sent = 0
+        self._tool_leak_re = None
+        self._tool_leaks_stripped = 0
+        self._leak_active = False
         try:
             self._ops_collection = f"ada-ha-events-{ada_instance_id()}"
         except RuntimeError:
@@ -673,6 +684,34 @@ class GeminiLiveProvider(RealtimeProvider):
             asyncio.get_running_loop().create_task(_post())
         except RuntimeError:
             return  # no loop (unit tests, shutdown) — nothing to schedule
+
+    def _strip_tool_leak(self, text: str) -> str:
+        """Remove SPOKEN tool-call text from an output-transcription delta.
+
+        The model occasionally verbalizes a call ('set_facial_expression{
+        expression:...}') instead of emitting a real function_call. The
+        fake call is malformed/unterminated and swallows the rest of the
+        utterance, so once triggered we suppress deltas until the turn
+        ends (_leak_active is reset on turn_complete/interrupt)."""
+        if self._leak_active:
+            return ""
+        if self._tool_leak_re is None:
+            return text
+        m = self._tool_leak_re.search(text)
+        if not m:
+            return text
+        self._leak_active = True
+        self._tool_leaks_stripped += 1
+        logger.warning(
+            "session=%s tool-call text leaked into transcript (%r)",
+            self.session_id, text[m.start():m.start() + 60],
+        )
+        self._emit_ops_event(
+            "transcript_tool_leak",
+            f"stripped spoken tool call from transcript: {m.group(0)!r}",
+            tool=m.group(0).rstrip("{").strip(),
+        )
+        return text[:m.start()]
 
     # An affirmation is a consent utterance, not a content word: it must
     # either lead the user's turn ("yes, save it") or the turn must be
@@ -2143,7 +2182,9 @@ class GeminiLiveProvider(RealtimeProvider):
                         "Recall previous voice conversations. Use ONLY when the user asks "
                         "'what did we talk about', 'do you remember', or wants something "
                         "from an earlier conversation — not for fact lookup (use "
-                        "ada_memory_search bank='all' for that). "
+                        "ada_memory_search bank='all' for that). NOT for test, scenario, "
+                        "benchmark, or report results — those are stored documents, "
+                        "use ada_memory_search. "
                         "Pick the group or bank that best matches the topic. "
                         "The recall runs in the background and can take up to ~20 seconds; "
                         "the result will be spoken when ready."
@@ -2193,7 +2234,9 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "ada_memory_search",
                     "description": (
                         "Search curated memory banks for stored facts, preferences, people, "
-                        "procedures, and notes — the FIRST tool for any factual lookup; "
+                        "procedures, notes, and test/scenario/benchmark/report results — "
+                        "the FIRST tool for any factual lookup including 'which tests ran' "
+                        "or 'what did the last report say'; "
                         "pass bank='all' (default) when unsure which bank holds the fact. "
                         "Returns document keys you can pass to "
                         "ada_remember (to correct) or ada_forget (to retract). "
@@ -3287,6 +3330,22 @@ class GeminiLiveProvider(RealtimeProvider):
         # API key's plan rejects it with a 1011 quota error at connect,
         # taking down every session. Web search goes through the explicit
         # web_search tool (generate-API grounding) instead.
+        # Build the transcript leak filter from the declared tool names —
+        # the model occasionally SPEAKS 'set_facial_expression{...}' style
+        # text instead of emitting a real function call, and the output
+        # transcription relays it verbatim into transcripts/UI.
+        try:
+            names = [
+                fd.get("name", "")
+                for fd in config["tools"][0]["function_declarations"]
+            ]
+            names = [re.escape(n) for n in names if n]
+            self._tool_leak_re = (
+                re.compile(r"\b(?:" + "|".join(names) + r")\s*\{")
+                if names else None
+            )
+        except Exception:
+            self._tool_leak_re = None
         self._session_context = self._client.aio.live.connect(
             model=self.model,
             config=config,
@@ -3717,6 +3776,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     actuations_this_turn = 0
                     budget_hit = False
                     budget_nudged = False
+                    self._leak_active = False
                     yield ProviderEvent("response_interrupted", {})
                     # Gemini 3.1 can include several content parts in one event.
                     # Any audio/transcript accompanying an interruption belongs
@@ -3736,11 +3796,13 @@ class GeminiLiveProvider(RealtimeProvider):
                         response_audio_chunks = 0
                         response_audio_bytes = 0
                         yield ProviderEvent("response_started", {})
-                    assistant_turn_text += output_transcription.text
-                    yield ProviderEvent(
-                        "assistant_transcript_delta",
-                        {"text": output_transcription.text},
-                    )
+                    clean = self._strip_tool_leak(output_transcription.text)
+                    if clean:
+                        assistant_turn_text += clean
+                        yield ProviderEvent(
+                            "assistant_transcript_delta",
+                            {"text": clean},
+                        )
 
                 model_turn = content.model_turn
                 if model_turn:
@@ -3763,10 +3825,18 @@ class GeminiLiveProvider(RealtimeProvider):
                         self.conversation.add_user(transcript)
                         yield ProviderEvent("user_transcript", {"text": transcript})
                     input_transcript = ""
+                    if (tool_calls_this_turn == 0
+                            and _PHANTOM_CLAIM_RE.search(assistant_turn_text)):
+                        self._emit_ops_event(
+                            "phantom_write_claim",
+                            "assistant claimed a write with no tool call this "
+                            f"turn: {assistant_turn_text.strip()[:160]!r}",
+                        )
                     tool_calls_this_turn = 0
                     actuations_this_turn = 0
                     budget_hit = False
                     budget_nudged = False
+                    self._leak_active = False
                     if assistant_turn_text.strip():
                         self.conversation.add_assistant(assistant_turn_text)
                         assistant_turn_text = ""

@@ -132,7 +132,7 @@ suites:
     - kk_info_probe
     - new_person_nat
     - archive_recall
-    - doc_recall_live
+    - doc_recall
 
   # Report surface — does the self-test record stay recallable and does
   # Ada judge "what's worth reporting" correctly? Read-only.
