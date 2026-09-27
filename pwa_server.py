@@ -1019,6 +1019,7 @@ async def set_power(entity_id: str, request: Request) -> dict:
             "control_entity",
             {"entity_id": entity_id, "on": payload["on"]},
             payload.get("confirmed"),
+            payload.get("confirm_token"),
         )
         return await ha_client.set_power(entity_id, payload["on"])
     except ValueError as exc:

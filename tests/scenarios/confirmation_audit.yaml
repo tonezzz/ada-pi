@@ -1,0 +1,69 @@
+name: confirmation-audit
+instance: tony
+# Audit trail for the flexible-but-bound confirmation gate:
+# denial mints a single-use token bound to the exact call, truthy
+# spellings of `confirmed` pass, and mismatched or replayed tokens
+# are refused. The `audit: confirmations` step snapshots the ledger.
+
+steps:
+  # 1. Bare write on a confirmed-policy bank is refused; the denial
+  #    carries a bound confirm_token for this exact call.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The spare gate remote lives in the hallway cabinet."
+      subject: gate-remote
+      attribute: location
+    expect: {error_contains: "requires confirmation"}
+    capture: {token: "confirm_token='(cfm-[0-9a-f]+)'"}
+
+  # 2. The same token with different args is refused — a 'yes' can only
+  #    arm the action it was shown, not a rephrased one.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "A different memory entirely."
+      confirm_token: "{token}"
+    expect: {error_contains: "different arguments"}
+
+  # 3. Replaying the exact proposed call with the token executes it.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The spare gate remote lives in the hallway cabinet."
+      subject: gate-remote
+      attribute: location
+      confirm_token: "{token}"
+    expect: {verb: create}
+
+  # 4. Replaying the consumed token is refused — single use, no replay.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The spare gate remote lives in the hallway cabinet."
+      subject: gate-remote
+      attribute: location
+      confirm_token: "{token}"
+    expect: {error_contains: "unknown or expired confirm_token"}
+
+  # 5. Truthy spellings pass — 'yes' means the same as true and no
+  #    longer loops a spurious second denial.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The pool pump timer is set to four hours."
+      subject: pool-pump
+      attribute: schedule
+      confirmed: "yes"
+    expect: {verb: create}
+
+  # 6. The structured ledger recorded the full trail: denial, token
+  #    proposal, token-bound refusal, consumption, and granted write.
+  - audit: confirmations
+    expect:
+      count_min: 6
+      output_contains:
+        - '"event": "denied"'
+        - '"event": "proposed"'
+        - '"event": "consumed"'
+        - '"event": "granted"'
