@@ -48,8 +48,13 @@
 
   <div class="max-w-6xl mx-auto p-4 md:flex md:gap-6">
     <aside class="md:w-64 shrink-0 mb-6 md:mb-0">
-      <h2 class="text-xs uppercase tracking-wide text-slate-500 mb-2">Chaba CMS</h2>
-      <div id="page-list" class="space-y-1 text-sm"></div>
+      <div class="flex items-center gap-2 mb-2">
+        <h2 class="text-xs uppercase tracking-wide text-slate-500">Chaba CMS</h2>
+        <button id="btn-toggle-list" class="md:hidden ml-auto text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Pages ▾</button>
+      </div>
+      <input id="page-filter" type="search" placeholder="Filter pages…"
+             class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm mb-2">
+      <div id="page-list" class="space-y-1 text-sm hidden md:block"></div>
     </aside>
     <main class="flex-1 min-w-0">
       <div id="content" class="text-slate-400">Loading…</div>
@@ -130,7 +135,48 @@ document.getElementById("unlock-key").addEventListener("keydown", (e) => {
 document.getElementById("btn-refresh").addEventListener("click", loadPages);
 window.addEventListener("hashchange", renderRoute);
 
+// Mobile: page list starts collapsed; toggle button + auto-collapse on
+// selection (only applies below the md breakpoint — check per click).
+const pageList = document.getElementById("page-list");
+const isMobile = () => window.matchMedia("(max-width: 767px)").matches;
+document.getElementById("btn-toggle-list").addEventListener("click", () => {
+  pageList.classList.toggle("hidden");
+});
+document.getElementById("page-filter").addEventListener("input", (e) => {
+  renderPageList(e.target.value.trim().toLowerCase());
+});
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("#page-list a");
+  if (a && isMobile()) pageList.classList.add("hidden");
+});
+
 let pages = [];
+
+function renderPageList(filter = "") {
+  const list = document.getElementById("page-list");
+  list.innerHTML = "";
+  const shown = filter
+    ? pages.filter((p) =>
+        (p.title || "").toLowerCase().includes(filter) ||
+        (p.slug || "").toLowerCase().includes(filter))
+    : pages;
+  if (!shown.length) {
+    list.innerHTML = filter
+      ? '<div class="text-slate-500 italic">No matches.</div>'
+      : '<div class="text-slate-500 italic">No pages yet — ask Ada to create one.</div>';
+    return;
+  }
+  const slug = decodeURIComponent((location.hash.match(/^#\/(.+)$/) || [])[1] || "");
+  for (const p of shown) {
+    const a = document.createElement("a");
+    a.href = `#/${encodeURIComponent(p.slug)}`;
+    a.className = "block px-2 py-1.5 rounded hover:bg-slate-800 truncate" +
+      (p.slug === slug ? " bg-slate-800" : "");
+    a.innerHTML = `<span class="text-slate-200">${escapeHtml(p.title)}</span>
+      <span class="hidden sm:inline text-xs text-slate-500 ml-1">${escapeHtml(p.format || "markdown")}</span>`;
+    list.appendChild(a);
+  }
+}
 
 async function loadPages() {
   const list = document.getElementById("page-list");
@@ -139,18 +185,7 @@ async function loadPages() {
     if (res.status === 401) { showUnlock("API key required (or invalid for this device)."); return; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     pages = (await res.json()).pages || [];
-    list.innerHTML = "";
-    if (!pages.length) {
-      list.innerHTML = '<div class="text-slate-500 italic">No pages yet — ask Ada to create one.</div>';
-    }
-    for (const p of pages) {
-      const a = document.createElement("a");
-      a.href = `#/${encodeURIComponent(p.slug)}`;
-      a.className = "block px-2 py-1.5 rounded hover:bg-slate-800 truncate";
-      a.innerHTML = `<span class="text-slate-200">${escapeHtml(p.title)}</span>
-        <span class="text-xs text-slate-500 ml-1">${escapeHtml(p.format || "markdown")}</span>`;
-      list.appendChild(a);
-    }
+    renderPageList(document.getElementById("page-filter").value.trim().toLowerCase());
     renderRoute();
   } catch (err) {
     document.getElementById("content").innerHTML =
@@ -160,6 +195,7 @@ async function loadPages() {
 
 async function renderRoute() {
   const slug = decodeURIComponent((location.hash.match(/^#\/(.+)$/) || [])[1] || "");
+  renderPageList(document.getElementById("page-filter").value.trim().toLowerCase());
   const el = document.getElementById("content");
   if (!slug) {
     el.innerHTML = pages.length
