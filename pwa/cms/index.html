@@ -9,6 +9,15 @@
   <script src="vendor/js-yaml.min.js"></script>
   <script src="vendor/marked.umd.js"></script>
   <script src="vendor/purify.min.js"></script>
+  <script src="vendor/echarts-5.5.1.min.js"></script>
+  <script src="vendor/echarts-gl-2.1.0.min.js"></script>
+  <script src="vendor/mermaid-11.4.1.min.js"></script>
+  <style>
+    .cms-chart { width: 100%; height: 320px; }
+    .cms-media { max-width: 100%; border-radius: .5rem; margin: .6rem 0; }
+    .cms-figure { margin: .8rem 0; }
+    .cms-figure figcaption { font-size: .8rem; color: #94a3b8; margin-top: .3rem; }
+  </style>
   <style>
     /* tailwind .flex utility outranks [hidden] (same specificity, later in
        source order) — the unlock overlay would render permanently without
@@ -192,6 +201,57 @@ function renderMarkdown(el, md) {
   d.className = "prose-ada";
   d.innerHTML = DOMPurify.sanitize(marked.parse(md || ""));
   el.appendChild(d);
+  // Rich blocks: ```chart (echarts 2D JSON option), ```chart3d (echarts-gl),
+  // ```mermaid, ```media (image|video|audio + optional caption/url).
+  d.querySelectorAll("pre code").forEach((code) => {
+    const cls = code.className.replace("language-", "");
+    const pre = code.parentElement;
+    try {
+      if (cls === "chart" || cls === "chart3d") {
+        const opt = jsyaml.load(code.textContent);
+        const box = document.createElement("div");
+        box.className = "cms-chart";
+        if (opt && opt.height) box.style.height = `${opt.height}px`;
+        pre.replaceWith(box);
+        const c = echarts.init(box, null, { renderer: "canvas" });
+        c.setOption(opt.option || opt || {});
+        window.addEventListener("resize", () => c.resize());
+      } else if (cls === "mermaid") {
+        const div = document.createElement("pre");
+        div.className = "mermaid";
+        div.textContent = code.textContent;
+        pre.replaceWith(div);
+        mermaid.run({ nodes: [div] }).catch(() => {});
+      } else if (cls === "media") {
+        const spec = jsyaml.load(code.textContent) || {};
+        const fig = document.createElement("figure");
+        fig.className = "cms-figure";
+        const kind = spec.type || (/\.(mp4|webm|mov)/i.test(spec.url) ? "video"
+          : /\.(mp3|wav|m4a|ogg)/i.test(spec.url) ? "audio" : "image");
+        let node;
+        if (kind === "video") {
+          node = document.createElement("video");
+          node.controls = true; node.src = spec.url;
+        } else if (kind === "audio") {
+          node = document.createElement("audio");
+          node.controls = true; node.src = spec.url;
+        } else {
+          node = document.createElement("img");
+          node.src = spec.url; node.alt = spec.alt || "";
+        }
+        node.className = "cms-media";
+        fig.appendChild(node);
+        if (spec.caption) {
+          const cap = document.createElement("figcaption");
+          cap.textContent = spec.caption;
+          fig.appendChild(cap);
+        }
+        pre.replaceWith(fig);
+      }
+    } catch (err) {
+      pre.innerHTML = `<div class="text-red-400">Block parse error (${escapeHtml(cls)}): ${escapeHtml(err.message)}</div>`;
+    }
+  });
 }
 
 function renderHtml(el, html) {
@@ -301,6 +361,7 @@ function renderYamlItem(item) {
   return div;
 }
 
+mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
 loadPages();
 </script>
 </body>

@@ -1634,11 +1634,31 @@ class ToolRunner:
                 "has_doctype": content.lstrip().lower().startswith("<!doctype"),
                 "script_tags": len(re.findall(r"<script\b", content, re.I)),
             }
-        else:  # markdown
+        else:  # markdown — validate fenced rich blocks too
             headings = [
                 ln.strip() for ln in content.splitlines() if ln.lstrip().startswith("#")
             ]
             report["summary"] = {"headings": headings[:20]}
+            blocks = re.findall(
+                r"```(chart3?|mermaid|media)\s*\n(.*?)```", content, re.S
+            )
+            block_report = []
+            for kind, body in blocks:
+                entry: dict[str, Any] = {"type": kind}
+                if kind == "mermaid":
+                    entry["lines"] = len(body.splitlines())
+                else:
+                    try:
+                        import yaml
+                        yaml.safe_load(body)
+                        entry["yaml_ok"] = True
+                    except Exception as exc:
+                        entry["yaml_ok"] = False
+                        entry["error"] = str(exc).splitlines()[0]
+                        report["ok"] = False
+                block_report.append(entry)
+            if block_report:
+                report["summary"]["blocks"] = block_report
         return report
 
     # -- YouTube -> TV casting (yt-live shim on tony-dell) --
