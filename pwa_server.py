@@ -660,6 +660,12 @@ async def voice_socket(ws: WebSocket) -> None:
             pass
         finally:
             closed.set()
+            # Pending CMS write confirmations are conversational — they
+            # belong to this session's dialogue. Leaving them on the shared
+            # tool_runner leaks the pending ask into the next session
+            # ("should I delete that page?" as a greeting).
+            if tool_runner is not None:
+                getattr(tool_runner, "_cms_pending", {}).clear()
 
     async def provider_to_browser() -> None:
         # In-flight assistant text the browser already heard. When the Gemini

@@ -617,10 +617,18 @@ class GeminiLiveProvider(RealtimeProvider):
         tool args are honored only when this is true."""
         text = input_transcript
         if not text.strip() and self.conversation is not None:
+            # Find the most recent real user speech — skip (system) notes,
+            # which are stored as user-role turns and shadow the actual
+            # affirmation (e.g. "Confirm the update." stripped because a
+            # system note was the latest user-role entry).
             for t in reversed(self.conversation.turns()):
-                if t.get("role") == "user":
-                    text = str(t.get("text") or "")
-                    break
+                if t.get("role") != "user":
+                    continue
+                candidate = str(t.get("text") or "")
+                if candidate.strip().startswith("(system"):
+                    continue
+                text = candidate
+                break
         return bool(_CONFIRM_RE.search(text or ""))
 
     def _recall_gated(self) -> bool:
