@@ -1,0 +1,62 @@
+# CMS reorganize — ask Ada to audit all pages, propose a structure +
+# naming convention, then apply it to ONE disposable test page and write
+# a section-grouped index page. Real pages must not be touched: every
+# publish goes through the pending/confirm handshake and the pilot page
+# is a marker doc the cleanup deletes by content match.
+name: cms_reorganize
+turns:
+  - user: >-
+      Create a CMS page with slug "tmp-random-note-xyz", title "Random
+      Note", content "placeholder page for a reorg test — marker
+      zeta-reorg-7741".
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 120
+      settle_s: 10
+      # first publish registers pending — she must ask confirmation
+  - user: Yes, publish it.
+    expect:
+      calls_any: [cms_publish_page, cms_verify_page]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Now list all the CMS pages we have, look at their names, and
+      propose a naming convention plus a section structure to organize
+      them. Just propose — don't change anything yet.
+    expect:
+      calls_any: [cms_list_pages]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 15
+      # proposal only — no writes expected this turn
+  - user: >-
+      Apply your convention to just one page as a pilot: rename
+      tmp-random-note-xyz to whatever slug and title fits your structure
+      best. Keep its content as-is.
+    expect:
+      calls_any: [cms_get_page, cms_publish_page]
+      timeout_s: 120
+      settle_s: 12
+      # rename = publish(new slug) + delete(old); pending-confirm applies
+  - user: Yes, go ahead.
+    expect:
+      calls_any: [cms_publish_page, cms_verify_page, cms_delete_page]
+      timeout_s: 90
+      settle_s: 12
+  - user: >-
+      Last step: publish an index page with slug "cms-index" titled "CMS
+      Index" that lists every page grouped under your proposed sections.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 120
+      settle_s: 12
+  - user: Yes, publish it.
+    expect:
+      calls_any: [cms_publish_page, cms_verify_page]
+      timeout_s: 90
+      settle_s: 10
+cleanup:
+  mddb_delete:
+    - {collection: ada-cms-pages, contains: "zeta-reorg-7741"}
+    - {collection: ada-cms-pages, key: "cms-index"}
+    - {collection: ada-cms-pages, key: "tmp-random-note-xyz"}
