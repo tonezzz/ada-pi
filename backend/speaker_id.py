@@ -221,8 +221,12 @@ class SpeakerIdentifier:
         return self._metadata.get(name, {}).get("display_name") or name
 
     def set_metadata(self, name: str, ha_person: str | None = None,
-                     display_name: str | None = None) -> bool:
-        """Update HA person mapping and/or display name for an enrolled speaker."""
+                     display_name: str | None = None,
+                     media: bool | None = None) -> bool:
+        """Update HA person mapping, display name, or media flag for an
+        enrolled speaker. ``media`` marks a non-person source (TV/video/
+        podcast voice) so the pipeline steers Ada to ignore its content
+        instead of answering it."""
         if name not in self._enrolled:
             return False
         meta = self._metadata.setdefault(name, {})
@@ -230,10 +234,17 @@ class SpeakerIdentifier:
             meta["ha_person"] = ha_person or None
         if display_name is not None:
             meta["display_name"] = display_name or None
+        if media is not None:
+            meta["media"] = bool(media)
         self._save_enrolled()
-        logger.info("updated metadata for '%s': ha_person=%s display_name=%s",
-                    name, meta.get("ha_person"), meta.get("display_name"))
+        logger.info("updated metadata for '%s': ha_person=%s display_name=%s media=%s",
+                    name, meta.get("ha_person"), meta.get("display_name"),
+                    meta.get("media"))
         return True
+
+    def is_media(self, name: str) -> bool:
+        """True when the profile is flagged as a media/device voice."""
+        return bool(self._metadata.get(name, {}).get("media"))
 
     def enroll(self, name: str, pcm16: bytes, sample_rate: int = SAMPLE_RATE,
                ha_person: str | None = None,

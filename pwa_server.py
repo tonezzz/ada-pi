@@ -501,6 +501,27 @@ async def voice_socket(ws: WebSocket) -> None:
         try:
             identifier = SpeakerIdentifier.get()
             async def _on_speaker(name: str, confidence: float) -> None:
+                # Media/device voice (TV, video, podcast) — do NOT switch
+                # the session identity; steer the model to ignore the
+                # content so Ada stops answering ambient audio mid-topic.
+                if identifier.is_media(name):
+                    provider = provider_ref[0]
+                    with suppress(Exception):
+                        await ws.send_text(json.dumps({
+                            "type": "speaker", "name": name,
+                            "display_name": identifier.get_display_name(name) or name,
+                            "confidence": round(confidence, 3),
+                            "media": True,
+                        }))
+                    with suppress(Exception):
+                        await provider.send_text_turn(
+                            f"(system) Ambient audio detected — the voice matches "
+                            f"'{name}', a media/device profile (TV, video, "
+                            "podcast), not a person in the room. Do not answer "
+                            "its content; continue the prior topic. If the user "
+                            "asks what that sound is, say it's likely audio "
+                            "playing nearby.")
+                    return
                 # Level 1: set the provider's HA person so get_home_state
                 # queries the speaker's person entity instead of the
                 # instance default.
