@@ -1,0 +1,60 @@
+# CMS ops assessment — Ada's full page lifecycle, not just the publish
+# handshake. Assesses: list → read → draft → publish (handshake) →
+# update → delete, plus honest report when a page doesn't exist.
+name: cms_ops_assessment
+turns:
+  - user: List the CMS pages you have — just the titles.
+    expect:
+      calls_any: [cms_list_pages]
+      timeout_s: 90
+      settle_s: 10
+  - user: Read the page called "ada-tool-selection" and summarize it in one sentence.
+    expect:
+      calls_any: [cms_get_page]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Create a new CMS page called "cms-assessment-test" — title
+      "Assessment Test", content "Hello world — this page was created by
+      an automated test."
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 120
+      settle_s: 12
+      # first call registers pending → she must ask confirmation
+  - user: Yes, publish it.
+    expect:
+      calls_any: [cms_publish_page, cms_verify_page]
+      timeout_s: 90
+      settle_s: 12
+  - user: >-
+      Now update that same page — append a line "Updated by assessment."
+      at the end.
+    expect:
+      calls_any: [cms_get_page, cms_publish_page]
+      timeout_s: 120
+      settle_s: 12
+  - user: Confirm the update.
+    expect:
+      calls_any: [cms_publish_page, cms_verify_page]
+      timeout_s: 90
+      settle_s: 12
+  - user: Is there a page called "does-not-exist-xyz"?
+    expect:
+      calls_any: [cms_get_page, cms_list_pages]
+      timeout_s: 90
+      settle_s: 10
+      # honest "not found" — check transcript
+  - user: Delete the assessment test page.
+    expect:
+      calls_any: [cms_delete_page]
+      timeout_s: 90
+      settle_s: 12
+  - user: Yes, delete it.
+    expect:
+      calls_any: [cms_delete_page]
+      timeout_s: 90
+      settle_s: 10
+cleanup:
+  mddb_delete:
+    - {collection: ada-cms-pages, key: "cms-assessment-test"}
