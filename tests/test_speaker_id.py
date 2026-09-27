@@ -64,6 +64,70 @@ class IdentifyMarginTest(unittest.TestCase):
         self.assertLess(score, speaker_id.DEFAULT_THRESHOLD)
 
 
+class MediaSinkTest(unittest.TestCase):
+    """media:true profiles are noise sinks — they may win only when no
+    person is within MIN_MARGIN (regression: Tony matched 'NewSpeaker'
+    media profile 0.48 and Ada muted him as ambient audio)."""
+
+    def setUp(self):
+        self.ident = speaker_id.SpeakerIdentifier()
+        self.ident._enrolled = {}
+        self.ident._metadata = {}
+
+    def _media(self, name: str, v: np.ndarray) -> None:
+        self.ident._enrolled[name] = v
+        self.ident._metadata[name] = {"media": True}
+
+    def test_confident_person_beats_media_within_margin(self):
+        # Person 0.50, media 0.52 — person wins (media can't shadow a
+        # confident person match).
+        person = _vec(10)
+        media = _vec(10) + 0.02 * _vec(11)
+        media /= np.linalg.norm(media)
+        self.ident._enrolled = {"Tony": person}
+        self._media("NewSpeaker", media)
+        with patch.object(self.ident, "_compute_embedding", return_value=person):
+            name, score = self.ident.identify(b"\x00" * 1000)
+        self.assertEqual(name, "Tony")
+
+    def test_media_wins_when_no_person_close(self):
+        # Genuine TV audio: media sink >> any person → media verdict so
+        # the session mutes it as ambient.
+        media = _vec(12)
+        person = _vec(13)
+        self.ident._enrolled = {"Tony": person}
+        self._media("NewSpeaker", media)
+        near_media = media + 0.005 * _vec(14)
+        near_media /= np.linalg.norm(near_media)
+        with patch.object(self.ident, "_compute_embedding", return_value=near_media):
+            name, score = self.ident.identify(b"\x00" * 1000)
+        self.assertEqual(name, "NewSpeaker")
+
+    def test_media_and_person_both_weak_unrecognized(self):
+        media = _vec(15)
+        person = _vec(16)
+        self.ident._enrolled = {"Tony": person}
+        self._media("NewSpeaker", media)
+        far = _vec(17)
+        with patch.object(self.ident, "_compute_embedding", return_value=far):
+            name, score = self.ident.identify(b"\x00" * 1000)
+        self.assertIsNone(name)
+
+    def test_person_below_threshold_within_media_margin_unrecognized(self):
+        # person and media both sub-threshold and close — nobody
+        # confident → None, NOT the media label (a real near-miss person
+        # must not be muted as ambient).
+        person = _vec(18)
+        media = _vec(19)
+        self.ident._enrolled = {"Tony": person}
+        self._media("NewSpeaker", media)
+        half = person + media + 3.0 * _vec(20)  # ~0.3 cosine to both
+        half /= np.linalg.norm(half)
+        with patch.object(self.ident, "_compute_embedding", return_value=half):
+            name, score = self.ident.identify(b"\x00" * 1000)
+        self.assertIsNone(name)
+
+
 class EnrollContaminationGuardTest(unittest.TestCase):
     def setUp(self):
         self.ident = speaker_id.SpeakerIdentifier()

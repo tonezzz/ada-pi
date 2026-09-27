@@ -335,16 +335,39 @@ class SpeakerIdentifier:
         if not self._enrolled:
             return None, 0.0
         emb = self._compute_embedding(pcm16, sample_rate)
+        # Score persons and media sinks in separate pools — a media-flagged
+        # profile is a noise sink (TV/ambient), not a person in the room.
+        # Letting it win winner-take-all made Ada treat a real speaker as
+        # background noise whenever their voice drifted near the media
+        # cluster (observed 2026-09-27: Tony matched 'NewSpeaker' media
+        # profile at 0.48 and was muted as ambient audio).
         best_name: str | None = None
         best_score = 0.0
         second_score = 0.0
+        media_name: str | None = None
+        media_score = 0.0
         for name, ref in self._enrolled.items():
             score = _cosine_similarity(emb, ref)
+            if self.is_media(name):
+                if score > media_score:
+                    media_name, media_score = name, score
+                continue
             if score > best_score:
                 second_score = best_score
                 best_name, best_score = name, score
             elif score > second_score:
                 second_score = score
+        # A confident person within margin of the media sink wins the person
+        # path — the media label is only legitimate when no person is close.
+        if best_score >= threshold and best_score >= media_score - MIN_MARGIN:
+            pass  # fall through to the person margin check below
+        elif media_score >= threshold and media_score - best_score >= MIN_MARGIN:
+            return media_name, media_score
+        else:
+            logger.info(
+                "identify ambiguous: person %s=%.2f vs media %s=%.2f — unrecognized",
+                best_name, best_score, media_name, media_score)
+            return None, max(best_score, media_score)
         if best_score < threshold:
             return None, best_score
         if best_score - second_score < MIN_MARGIN:
