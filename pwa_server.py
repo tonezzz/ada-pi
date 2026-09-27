@@ -773,9 +773,26 @@ async def voice_socket(ws: WebSocket) -> None:
         finally:
             closed.set()
 
+    async def stall_watchdog() -> None:
+        """Close a silently-dead provider stream so the reconnect loop in
+        provider_to_browser fires. Symptom: user speaks, zero provider
+        events for >stall_timeout — seen live as 25-47s of silence."""
+        while not closed.is_set():
+            await asyncio.sleep(5)
+            p = provider_ref[0]
+            if p is not None and p.is_stalled():
+                logger.warning(
+                    "session=%s provider stalled >%.0fs after user turn — "
+                    "forcing reconnect", session_id, p._stall_timeout)
+                with suppress(Exception):
+                    await ws.send_text(json.dumps({"type": "live_stalled"}))
+                with suppress(Exception):
+                    await p.close()
+
     tasks = {
         asyncio.create_task(browser_to_provider()),
         asyncio.create_task(provider_to_browser()),
+        asyncio.create_task(stall_watchdog()),
     }
     try:
         await closed.wait()

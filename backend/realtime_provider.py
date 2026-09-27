@@ -561,6 +561,14 @@ class GeminiLiveProvider(RealtimeProvider):
         self.session_id = session_id or "-"
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
+        # Turn watchdog state — stall detection for a silently-dead Gemini
+        # stream. _last_user_at marks the most recent user input (input
+        # transcription delta or a text turn); _last_model_at marks the last
+        # provider event of any kind. Stalled = user spoke and the stream
+        # has been completely silent past the threshold.
+        self._last_user_at = 0.0
+        self._last_model_at = 0.0
+        self._stall_timeout = float(os.environ.get("ADA_STALL_TIMEOUT_S", "25"))
         self._ops_events_sent = 0
         try:
             self._ops_collection = f"ada-ha-events-{ada_instance_id()}"
@@ -2948,9 +2956,21 @@ class GeminiLiveProvider(RealtimeProvider):
                 video=types.Blob(data=jpeg, mime_type="image/jpeg")
             )
 
+    def is_stalled(self) -> bool:
+        """True when the user has spoken but the provider has been silent
+        past ADA_STALL_TIMEOUT_S — a dead Gemini Live stream that never
+        ends cleanly and must be force-reconnected."""
+        if self._closed or not self._last_user_at:
+            return False
+        return (
+            self._last_user_at > self._last_model_at
+            and time.monotonic() - self._last_user_at > self._stall_timeout
+        )
+
     async def send_text_turn(self, text: str) -> None:
         if self._session is None:
             raise RuntimeError("provider is not connected")
+        self._last_user_at = time.monotonic()
         async with self._send_lock:
             await self._session.send_client_content(
                 turns=types.Content(
@@ -2991,6 +3011,7 @@ class GeminiLiveProvider(RealtimeProvider):
 
         while not self._closed:
             async for message in self._session.receive():
+                self._last_model_at = time.monotonic()
                 usage = message.usage_metadata
                 if usage:
                     self._record_usage(usage)
@@ -3310,6 +3331,7 @@ class GeminiLiveProvider(RealtimeProvider):
                 transcription = content.input_transcription
                 if transcription and transcription.text:
                     input_transcript += transcription.text
+                    self._last_user_at = time.monotonic()
 
                 output_transcription = content.output_transcription
                 if output_transcription and output_transcription.text:
