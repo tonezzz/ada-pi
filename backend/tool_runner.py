@@ -58,6 +58,21 @@ CMS_WRITE_TOOLS = {"cms_publish_page", "cms_delete_page"}
 # changes, so they require confirmed=true. devin_status is read-only.
 DEVIN_CONFIRMED_TOOLS = {"devin_dispatch", "devin_followup"}
 
+# Job ledger collection: job/<id> docs (status running|awaiting-user|
+# answered|done|failed) written by devin-dispatch-watch on each dispatch
+# host. The devin-job-report CMS page is composed from this ledger.
+DEVIN_JOBS_COLLECTION = "ada-ha-bank-devin-handoff"
+DEVIN_JOB_REPORT_SLUG = "devin-job-report"
+# Ledger statuses that mean the job is finished and successful-ish vs
+# terminal-but-dead vs still in flight.
+_JOB_DONE_STATUSES = {"done", "success", "completed"}
+_JOB_STALE_STATUSES = {"superseded", "cancel", "cancelled", "stale"}
+# A ledger-"running" job whose unit is entirely gone (collected) and that
+# never wrote a transcript is a spawn failure — but a brand-new dispatch
+# can briefly look the same before systemd loads the unit, so the rule
+# only applies past this age.
+_JOB_GONE_GRACE_S = 1800.0
+
 # Document archive/print: ada_doc_archive writes pages to gdrive:ada-documents
 # and ada_doc_print sends real pages to the printer — both require
 # confirmed=true. ada_doc_search and ada_doc_get are read-only.
@@ -725,6 +740,175 @@ class ToolRunner:
     async def devin_followup(self, task_id: str, message: str) -> str:
         """Send a follow-up message into a dispatched session."""
         return await devin_dispatch_mod.followup(task_id, message)
+
+    @staticmethod
+    def _job_detail(doc: dict[str, Any]) -> str:
+        """One-line detail for a job doc: first body line after the standard
+        'Job <id> on <host>: <status>.' preamble, truncated for the report."""
+        for line in (doc.get("contentMd") or "").splitlines():
+            line = line.strip()
+            if not line or line.startswith("Job "):
+                continue
+            return line[:160]
+        return ""
+
+    def _classify_job(
+        self, doc: dict[str, Any], dispatch: dict[str, dict[str, str]],
+    ) -> tuple[str, dict[str, Any]]:
+        """Bucket a job/<id> doc as active|failed|done|stale.
+
+        The ledger is the cross-host source of truth; for tasks on this
+        dispatch host we verify a 'running' ledger entry against
+        `devin-dispatch status` — a dead unit that never wrote a transcript
+        is a spawn failure (the ledger only converges once the watch timer
+        notices, and pre-exit_code spawn failures it never did).
+        """
+        meta = doc.get("meta") or {}
+        job_id = (_first(meta.get("job_id"))
+                  or (doc.get("key") or "").split("/", 1)[-1])
+        ledger = (_first(meta.get("status")) or "").lower()
+        job = {
+            "task_id": job_id,
+            "host": _first(meta.get("host")),
+            "status": ledger or "unknown",
+            "ts": _first(meta.get("ts")),
+            "question": _first(meta.get("question")),
+            "detail": self._job_detail(doc),
+        }
+        if ledger in _JOB_STALE_STATUSES:
+            return "stale", job
+        if ledger in _JOB_DONE_STATUSES:
+            return "done", job
+        if ledger == "failed":
+            return "failed", job
+        rec = dispatch.get(job_id)
+        if rec:
+            state = (rec.get("state") or "").lower()
+            result = (rec.get("result") or "").lower()
+            transcript = (rec.get("transcript") or "").strip()
+            no_transcript = transcript in {"", "never"}
+            if state == "failed" or result.startswith("exit"):
+                job["detail"] = job["detail"] or (
+                    f"unit {state or 'dead'} (result {result or 'unknown'})"
+                )
+                return "failed", job
+            if no_transcript and (
+                state in {"inactive", "dead"}
+                or (state == "gone" and self._job_age_s(job) > _JOB_GONE_GRACE_S)
+            ):
+                job["detail"] = job["detail"] or (
+                    "died at spawn — unit is down and no transcript was written"
+                )
+                return "failed", job
+            if state == "inactive" and not no_transcript:
+                job["detail"] = "finished per dispatch status — ledger update pending"
+                return "done", job
+        return "active", job
+
+    @staticmethod
+    def _job_age_s(job: dict[str, Any]) -> float:
+        """Seconds since the ledger doc's ts; unknown ts counts as old so a
+        stale 'running' marker can't hide a spawn failure forever."""
+        ts = job.get("ts")
+        if not ts:
+            return _JOB_GONE_GRACE_S + 1
+        try:
+            started = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - started).total_seconds()
+        except ValueError:
+            return _JOB_GONE_GRACE_S + 1
+
+    async def devin_job_report(
+        self, publish: bool = False, confirmed: bool = False, limit: int = 60,
+    ) -> dict[str, Any]:
+        """Compose the Devin job report page content.
+
+        Reads the job/<id> ledger and verifies entries against
+        `devin-dispatch status`, so failed jobs — including spawn failures
+        the ledger still marks running — land in a dedicated 'Failed jobs'
+        section instead of the active list. publish=true writes the page
+        (CMS write: requires confirmed=true).
+        """
+        if self.mddb is None:
+            return {"status": "error", "error": "mddb unavailable (guest mode)"}
+        docs = await self.mddb.search_documents(
+            DEVIN_JOBS_COLLECTION, filter_meta={"kind": ["job"]}, limit=limit)
+        dispatch: dict[str, dict[str, str]] = {}
+        try:
+            dispatch = {
+                r["task_id"]: r for r in await devin_dispatch_mod.tasks()
+            }
+        except Exception as exc:
+            logger.info("devin_job_report: dispatch status unavailable: %s", exc)
+        buckets: dict[str, list[dict[str, Any]]] = {
+            "active": [], "failed": [], "done": [], "stale": [],
+        }
+        for doc in docs:
+            bucket, job = self._classify_job(doc, dispatch)
+            buckets[bucket].append(job)
+        for jobs in buckets.values():
+            jobs.sort(key=lambda j: j.get("ts") or "", reverse=True)
+
+        updated = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        lines = [
+            "# Devin Job Report", "",
+            f"*Updated {updated} — composed from the devin-handoff job ledger.*",
+            "",
+        ]
+
+        def _item(j: dict[str, Any], bucket: str) -> str:
+            host = f" ({j['host']})" if j.get("host") else ""
+            detail = j.get("detail") or ""
+            if j.get("question"):
+                note = f"**needs input**: {j['question']}"
+                if detail.lower().startswith("needs input"):
+                    detail = ""
+            elif bucket == "stale":
+                # One status label is enough — job bodies carry long
+                # transcript tails that just bury the section.
+                note, detail = f"{j['status']}", ""
+            elif j["status"] in {"running", "failed", "done"}:
+                note = ""
+            else:
+                note = f"{j['status']}"
+            tail = " — ".join(p for p in (note, detail) if p)
+            return f"- `{j['task_id']}`{host}" + (f" — {tail}" if tail else "")
+
+        for heading, key in (
+            ("Active jobs", "active"), ("Failed jobs", "failed"),
+            ("Done", "done"), ("Stale / superseded", "stale"),
+        ):
+            jobs = buckets[key]
+            lines.append(f"## {heading} — {len(jobs)}")
+            lines.append("")
+            if jobs:
+                lines.extend(_item(j, key) for j in jobs)
+            else:
+                lines.append("_None._")
+            lines.append("")
+        markdown = "\n".join(lines)
+
+        result: dict[str, Any] = {
+            "status": "composed",
+            "slug": DEVIN_JOB_REPORT_SLUG,
+            "counts": {k: len(v) for k, v in buckets.items()},
+            "jobs": buckets,
+            "markdown": markdown,
+            "note": (
+                "Publish via cms_publish_page (slug 'devin-job-report') or "
+                "call again with publish=true and confirmed=true."
+            ),
+        }
+        if publish:
+            self._check_cms_write_allowed(
+                "devin_job_report", {"slug": DEVIN_JOB_REPORT_SLUG}, confirmed)
+            pub = await self.cms_publish_page(
+                DEVIN_JOB_REPORT_SLUG, "Devin Job Report", markdown)
+            result["publish"] = pub
+            result["status"] = pub.get("status", "error")
+        return result
 
     def _check_doc_confirmed(
         self, name: str, args: dict[str, Any], confirmed: Any,

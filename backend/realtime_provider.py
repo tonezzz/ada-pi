@@ -92,7 +92,9 @@ CMS_INSTRUCTIONS = (
 
 # Same constant pattern as CALENDAR_TOOLS/CMS_TOOLS: lets ADA_EXCLUDED_TOOLS
 # strip the devin declarations and their instruction paragraph together.
-DEVIN_TOOLS = {"devin_dispatch", "devin_status", "devin_followup"}
+DEVIN_TOOLS = {
+    "devin_dispatch", "devin_status", "devin_followup", "devin_job_report",
+}
 
 DEVIN_INSTRUCTIONS = (
     " You can dispatch unattended Devin coding sessions on tony-dell: "
@@ -105,7 +107,11 @@ DEVIN_INSTRUCTIONS = (
     "one finishes, so report the task id and move on rather than polling. "
     "When discussing an implementation task the user wants built later, offer to "
     "save the spec into the devin-handoff memory bank so a dispatched session can "
-    "be told to 'check the ada handoff'."
+    "be told to 'check the ada handoff'. "
+    "When the user asks about Devin job status or wants the devin-job-report "
+    "page refreshed, call devin_job_report — it puts failed jobs (including "
+    "spawn failures the ledger still marks running) in their own 'Failed jobs' "
+    "section; never list failed jobs among the active ones."
 )
 
 # Habit tracking tools — same constant pattern: ADA_EXCLUDED_TOOLS strips
@@ -2343,6 +2349,33 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["task_id", "message"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "devin_job_report",
+                    "description": (
+                        "Composes the Devin job report from the job ledger and the live "
+                        "dispatch status: active jobs, a dedicated 'Failed jobs' section "
+                        "(spawn failures, dead units, no transcript), done, and stale. "
+                        "Returns ready-to-publish markdown; pass publish=true with "
+                        "confirmed=true to write the 'devin-job-report' CMS page directly."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "publish": {
+                                "type": "boolean",
+                                "description": "Write the composed report to the 'devin-job-report' CMS page.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required with publish=true; set only after explicit user confirmation.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max job-ledger docs to include (default 60).",
+                            },
+                        },
                         "additionalProperties": False,
                     },
                 }, {

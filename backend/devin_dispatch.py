@@ -184,6 +184,25 @@ async def status(task_id: str | None = None) -> str:
     )
 
 
+# `devin-dispatch status` prints: <id> <state> <result> repo=<r> transcript=<ts>
+_STATUS_LINE_RE = re.compile(
+    r"^(?P<task_id>\S+)\s+(?P<state>\S+)\s+(?P<result>\S+)\s+"
+    r"repo=(?P<repo>\S+)\s+transcript=(?P<transcript>.*)$"
+)
+
+
+async def tasks() -> list[dict[str, str]]:
+    """Structured `devin-dispatch status`: one dict per local task dir.
+
+    Lets callers verify job-ledger entries against ground truth on the
+    dispatch host — e.g. a ledger doc still marked "running" whose unit is
+    dead with transcript=never is a spawn failure, not an active job.
+    """
+    out = await _run("status")
+    return [m.groupdict() for line in out.splitlines()
+            if (m := _STATUS_LINE_RE.match(line.strip()))]
+
+
 async def followup(task_id: str, message: str) -> str:
     """Send a follow-up message to a running (or resumable) session."""
     return await _run("followup", task_id, message)

@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from backend.tool_runner import AdaMemoryStore, ToolRunner
 
@@ -261,6 +261,119 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
                 )
         finally:
             os.environ.pop("ADA_READ_ONLY", None)
+
+
+class DevinJobReportTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.add_document.return_value = {"status": "ok"}
+
+    @staticmethod
+    def _job_doc(task_id, status, host="tony-dell", ts="2026-09-27T14:00:00+00:00",
+                 body_extra="", question=None):
+        meta = {
+            "kind": ["job"], "status": [status], "job_id": [task_id],
+            "host": [host], "ts": [ts],
+        }
+        if question:
+            meta["question"] = [question]
+        return {
+            "key": f"job/{task_id}",
+            "meta": meta,
+            "contentMd": f"Job {task_id} on {host}: {status}.\n\n{body_extra}",
+        }
+
+    def _ledger(self):
+        return [
+            self._job_doc("20260927-215500-active-task", "running"),
+            self._job_doc("20260927-040246-spawn-failed", "running",
+                          host="mn01"),
+            self._job_doc("20260927-110116-finished-ok", "done",
+                          host="tony-omen"),
+            self._job_doc("resume-20260926-dead-task", "running"),
+            self._job_doc("20260926-191209-old-task", "superseded"),
+            self._job_doc("20260927-120000-blocked", "awaiting-user",
+                          host="tony-omen", question="which repo?"),
+        ]
+
+    def _dispatch_rows(self):
+        # Spawn failure signature on the dispatch host: ledger says running,
+        # unit is inactive/gone, transcript was never written.
+        return [
+            {"task_id": "20260927-215500-active-task", "state": "active",
+             "result": "-", "repo": "ada-pi", "transcript": "never"},
+            {"task_id": "resume-20260926-dead-task", "state": "inactive",
+             "result": "success", "repo": "resume", "transcript": "never"},
+        ]
+
+    async def test_failed_jobs_render_in_dedicated_section(self):
+        self.runner.mddb.search_documents.return_value = self._ledger()
+        with patch("backend.tool_runner.devin_dispatch_mod.tasks",
+                   new=AsyncMock(return_value=self._dispatch_rows())):
+            result = await self.runner.execute("devin_job_report", {})
+        md = result["markdown"]
+        failed_idx = md.index("## Failed jobs")
+        done_idx = md.index("## Done")
+        active_idx = md.index("## Active jobs")
+        stale_idx = md.index("## Stale / superseded")
+        self.assertLess(active_idx, failed_idx)
+        self.assertLess(failed_idx, done_idx)
+        self.assertLess(done_idx, stale_idx)
+        # Spawn failure: ledger 'running' + dead unit + no transcript → failed.
+        failed_block = md[failed_idx:done_idx]
+        self.assertIn("resume-20260926-dead-task", failed_block)
+        self.assertIn("no transcript", failed_block)
+        self.assertIn("counts", result)
+        self.assertEqual(result["counts"]["failed"], 1)
+        # Active = the running dispatch task + mn01's 'running' doc (remote
+        # host: ledger stays authoritative, can't verify from here) + the
+        # awaiting-user job.
+        self.assertEqual(result["counts"]["active"], 3)
+        self.assertEqual(result["counts"]["done"], 1)
+        self.assertEqual(result["counts"]["stale"], 1)
+
+    async def test_ledger_failed_status_goes_to_failed_section(self):
+        self.runner.mddb.search_documents.return_value = [
+            self._job_doc("20260927-040246-audit-tests", "failed",
+                          host="mn01", body_extra="spawn failure, no transcript"),
+            self._job_doc("20260927-215500-live-task", "running"),
+        ]
+        with patch("backend.tool_runner.devin_dispatch_mod.tasks",
+                   new=AsyncMock(return_value=[])):
+            result = await self.runner.execute("devin_job_report", {})
+        md = result["markdown"]
+        failed_block = md[md.index("## Failed jobs"):md.index("## Done")]
+        self.assertIn("20260927-040246-audit-tests", failed_block)
+        self.assertIn("spawn failure", failed_block)
+        active_block = md[md.index("## Active jobs"):md.index("## Failed jobs")]
+        self.assertIn("20260927-215500-live-task", active_block)
+        self.assertNotIn("20260927-040246-audit-tests", active_block)
+
+    async def test_compose_survives_dispatch_status_outage(self):
+        self.runner.mddb.search_documents.return_value = self._ledger()
+        with patch("backend.tool_runner.devin_dispatch_mod.tasks",
+                   new=AsyncMock(side_effect=RuntimeError("ssh down"))):
+            result = await self.runner.execute("devin_job_report", {})
+        self.assertEqual(result["status"], "composed")
+        self.assertIn("## Failed jobs", result["markdown"])
+
+    async def test_publish_requires_confirmed(self):
+        self.runner.mddb.search_documents.return_value = self._ledger()
+        with patch("backend.tool_runner.devin_dispatch_mod.tasks",
+                   new=AsyncMock(return_value=[])):
+            with self.assertRaises(PermissionError):
+                await self.runner.execute(
+                    "devin_job_report", {"publish": True})
+            self.runner.mddb.add_document.assert_not_awaited()
+            result = await self.runner.execute(
+                "devin_job_report", {"publish": True, "confirmed": True})
+        self.assertEqual(result["status"], "published")
+        args, kwargs = self.runner.mddb.add_document.call_args
+        self.assertEqual(args[:3], ("ada-cms-pages", "devin-job-report", "en"))
+        self.assertIn("## Failed jobs", args[3])
 
 
 if __name__ == "__main__":
