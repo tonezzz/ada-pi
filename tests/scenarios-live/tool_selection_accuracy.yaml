@@ -18,12 +18,12 @@ turns:
       # honest answer = "offline, needs re-login" — no web_search guessing
   - user: What's the temperature inside right now?
     expect:
-      calls_any: [ada_ha_snapshot, ada_ha_get_sensor, get_home_state, ada_ha_list_sensors]
+      calls_any: [ada_ha_snapshot, ada_ha_get_sensor, get_home_state, ada_ha_list_sensors, search_sensors]
       timeout_s: 60
       settle_s: 10
   - user: Cast a YouTube video about elephants onto screen one.
     expect:
-      calls_any: [tv_action, yt_cast, cast_to_screen]
+      calls_any: [tv_action, yt_cast, cast_to_screen, vcast_list, vcast_cast, vcast_play]
       timeout_s: 90
       settle_s: 10
   - user: What's the latest Thailand news? Just tell me, don't cast it.
