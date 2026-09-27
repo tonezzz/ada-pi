@@ -7,12 +7,13 @@ upserts the ada-cms-pages/lab-results document so the CMS page always
 shows the latest suite state.
 """
 import json
+import os
 import re
 import sys
 import urllib.request
 from datetime import datetime, timezone
 
-MDDB = "http://127.0.0.1:11023/v1"
+MDDB = os.environ.get("MDDB_BASE_URL", "http://127.0.0.1:11023/v1")
 
 
 def post(ep, payload):
