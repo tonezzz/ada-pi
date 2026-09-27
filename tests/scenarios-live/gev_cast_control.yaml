@@ -1,0 +1,19 @@
+# GEV cast + Ada control — the target flow. Until gev_* tools exist Ada
+# must answer honestly that the capability isn't wired yet; once the
+# gev-gemini /command bridge and gev_* tools land this becomes an action
+# test (vcast nav to /apps/gev/, then a fly_to_location command).
+name: gev_cast_control
+tier: full
+turns:
+  - user: Cast God's Eye View to screen 9.
+    expect:
+      calls_any: [vcast_screen_cast, vcast_nav, vcast_pub]
+      timeout_s: 120
+      settle_s: 15
+      # honest-not-yet is acceptable pre-bridge: if no cast tool is
+      # called she should say the capability isn't wired
+  - user: Fly the map to Bangkok.
+    expect:
+      calls_any: [gev_command, gev_fly_to, vcast_pub]
+      timeout_s: 90
+      settle_s: 15
