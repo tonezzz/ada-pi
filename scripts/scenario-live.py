@@ -305,13 +305,15 @@ def run_cleanup(spec: dict, mddb_url: str, verbose: bool) -> None:
                 d["key"] for d in docs
                 if sub in (str(d.get("key") or "") + (d.get("contentMd") or "")).lower()
             ]
+        langs = item.get("langs") or [item.get("lang") or "en"]
         for key in keys:
-            try:
-                post("/delete", {"collection": col, "key": key, "lang": "en"})
-                if verbose:
-                    print(f"  cleanup: deleted {col}/{key}")
-            except Exception as exc:
-                print(f"  cleanup: delete {col}/{key} failed: {exc}")
+            for lang in langs:
+                try:
+                    post("/delete", {"collection": col, "key": key, "lang": lang})
+                    if verbose:
+                        print(f"  cleanup: deleted {col}/{key} ({lang})")
+                except Exception as exc:
+                    print(f"  cleanup: delete {col}/{key} ({lang}) failed: {exc}")
 
 
 def run_speaker_cleanup(spec: dict, http_base: str, api_key: str, verbose: bool) -> None:

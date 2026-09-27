@@ -1,0 +1,93 @@
+name: cms-translate
+tier: smoke
+# CMS translate — Ada creates a disposable EN page, publishes a TH variant
+# (lang-aware tools added in 510912e), then we probe the German gap.
+#
+# Ground truth (backend/tool_runner.py:1641):
+#   cms_publish_page whitelists lang to ("en","th") — 'de' raises
+#   ValueError AFTER the pending-confirmation gate fires (the gate keys on
+#   slug:lang and runs first), so a German publish asks for confirmation
+#   and only errors on the resubmit.
+#
+# Pass conditions for the German turns are deliberately soft: either path
+# is correct — (a) she declines upfront because only en/th exist, or
+# (b) she attempts, the gate asks, and the resubmit errors. What would be
+# WRONG: claiming a German page was published, or going silent.
+#
+# Read/write: real CMS writes to one disposable slug; cleanup deletes
+# both lang variants.
+#
+# Run on idc01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/cms_translate.yaml --url ws://127.0.0.1:8002/ws \
+#   --api-key "$ADA_API_KEY"
+
+turns:
+  # --- seed EN page ------------------------------------------------------
+  - user: >-
+      Create a CMS page with slug "translate-probe", title "Translate
+      Probe", content "This page exists to test translation. It has one
+      sentence."
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 90
+      settle_s: 10
+      # first publish registers pending — she must ask confirmation
+  - user: Yes, publish it.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 90
+      settle_s: 10
+
+  # --- Thai variant ------------------------------------------------------
+  - user: >-
+      Now translate translate-probe into Thai and publish it as the Thai
+      variant of the same page.
+    expect:
+      calls_any: [cms_publish_page]
+      max_calls: 6
+      timeout_s: 120
+      settle_s: 10
+      # pending gate again — slug:th is a different pending key than :en
+  - user: Yes, publish the Thai version.
+    expect:
+      calls_any: [cms_publish_page]
+      # tool_result events hold a Python-repr dict (single quotes, ≤300
+      # chars) — _safe_args() stringifies nested dicts. Match 'lang': 'th'.
+      result_contains: ["'lang': 'th'"]
+      timeout_s: 90
+      settle_s: 10
+
+  # --- verify the TH variant is readable ---------------------------------
+  # NOTE: "show me" can legitimately route to tv_action (casts the page).
+  # Asking to fetch+read forces cms_get_page so the th doc is verified.
+  - user: Fetch the Thai variant of translate-probe and tell me what it says.
+    expect:
+      calls_any: [cms_get_page]
+      result_contains: ["'lang': 'th'"]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 8
+
+  # --- German probe (documents the missing 'de' lang) ---------------------
+  # OBSERVED 2026-09-27: with web_search rate-limited (429, free tier),
+  # Ada claimed "I've registered your request for the German variant"
+  # WITHOUT calling cms_publish_page — a phantom pending claim. The 'de'
+  # rejection path was never reached. Watch for this class of lie.
+  - user: Now make a German version of translate-probe too.
+    expect:
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
+      # soft: she may decline upfront (en/th only) or hit the pending gate
+      # and ask to confirm — both are honest. Either way she must say so.
+  - user: Yes, go ahead.
+    expect:
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
+      # if she resubmits: tool_result carries "invalid lang 'de'" — checked
+      # loosely here; the benchmark report records the observed path.
+
+cleanup:
+  mddb_delete:
+    - {collection: ada-cms-pages, key: "translate-probe", langs: [en, th]}
