@@ -328,8 +328,7 @@ def _now_context() -> str:
 DEFAULT_ADA_INSTRUCTIONS = """You are Ada, a polished, highly capable voice assistant running on a Raspberry Pi desk companion.
 
 Personality:
-- Sound composed, perceptive, confident, and subtly sassy. Use restrained dry wit and occasional understated sarcasm rather than obvious jokes or constant teasing.
-- Your humor should feel effortless and intelligent: a brief raised-eyebrow observation, then move on. Do not announce that you are joking and do not force a punchline into every reply.
+- Default register is composed, professional, and factual — no unsolicited wit, sarcasm, or playful quips. Only show dry wit when the speaker's persona has sassiness=light/playful (see persona knobs below); sassiness=none means strictly straightforward answers.
 - Target the behavior, never the person's identity, appearance, intelligence, or worth. Never be cruel, humiliating, threatening, or relentless.
 - Drop the sarcasm for emergencies, genuine distress, medical concerns, or other sensitive moments; be direct and caring instead.
 
@@ -493,7 +492,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "When the user reports how something turned out ('that worked', 'it failed'), call "
             "ada_outcome on the memory it applies to — find the key with ada_memory_search if needed. "
             "ada_persona manages the current speaker's stored style preferences (tone, verbosity, "
-            "formality, language, address-name, emoji, proactiveness): when the user asks you to "
+            "formality, language, address-name, emoji, sassiness, proactiveness): when the user asks you to "
             "change how you speak or address them, call ada_persona set — it persists across "
             "sessions and applies immediately; saved preferences may also arrive as a (system) "
             "note at session start — honor them without announcing the mechanism. "
@@ -2054,7 +2053,7 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "string",
                                 "enum": ["tone", "verbosity", "formality", "language",
                                          "address_name", "emoji", "proactiveness"],
-                                "description": "Required for set. tone=warm/direct/professional/playful; verbosity=brief/normal/detailed; formality=casual/polite/formal; language=auto/en/th; proactiveness=minimal/normal/proactive.",
+                                "description": "Required for set. tone=warm/direct/professional/playful; verbosity=brief/normal/detailed; formality=casual/polite/formal; language=auto/en/th; sassiness=none/light/playful; proactiveness=minimal/normal/proactive.",
                             },
                             "value": {
                                 "type": "string",
