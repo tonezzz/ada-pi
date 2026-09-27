@@ -822,7 +822,7 @@ class GeminiLiveProvider(RealtimeProvider):
         # Compact keyword topic — DuckDuckGo's HTML endpoint returns zero
         # results for long prose queries, and short forms also cost less
         # on the grounded provider.
-        short = re.split(r"[,;—–]", topic)[0].strip() or topic
+        short = re.split(r"[,;:—–]", topic)[0].strip() or topic
         short = " ".join(short.split()[:8])
         queries = [
             f"{short} history overview",
