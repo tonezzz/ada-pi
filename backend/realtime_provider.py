@@ -839,9 +839,11 @@ class GeminiLiveProvider(RealtimeProvider):
         except Exception as exc:
             logger.warning("session=%s voice-switch close failed: %s", self.session_id, exc)
 
-    async def _camera_snapshot(self, args: dict) -> tuple[dict, list | None]:
+    async def _camera_snapshot(self, args: dict) -> tuple[dict, tuple[str, bytes] | None]:
         """ada_camera_snapshot — pull one still frame through the vms-snap
-        shim and attach it to the tool response so the model can see it."""
+        shim. Returns (tool_result, (channel, png)); the caller delivers the
+        frame as a follow-up client-content turn — send_tool_response can't
+        carry binary parts (its json.dumps path can't serialize bytes)."""
         channel = str(args.get("channel") or "").strip()
         if not channel:
             return ({"error": "channel is required — e.g. 'swimming pool', "
@@ -856,17 +858,15 @@ class GeminiLiveProvider(RealtimeProvider):
             return ({"error": f"camera snapshot failed: {exc}"}, None)
         result = {
             "output": (
-                f"Still frame captured from camera '{resolved}' — it is "
-                "attached to this result. Describe what it shows: people, "
-                "water, weather, vehicles, anything notable. It is a single "
-                "frame taken seconds ago — not live video."
+                f"Still frame captured from camera '{resolved}'. The image "
+                "arrives as a separate message right after this result — "
+                "wait for it, then describe what it shows: people, water, "
+                "weather, vehicles, anything notable. It is a single frame "
+                "taken seconds ago — not live video."
             ),
             "channel": resolved,
         }
-        parts = [types.FunctionResponsePart(
-            inline_data=types.FunctionResponseBlob(
-                mime_type="image/png", data=png))]
-        return result, parts
+        return result, (resolved, png)
 
     async def _run_decision_check(self, product: str, url: str, mode: str) -> None:
         filler = asyncio.create_task(self._check_slow_filler(mode))
@@ -3416,6 +3416,29 @@ class GeminiLiveProvider(RealtimeProvider):
                         "session=%s function_call responses sent count=%d",
                         self.session_id, len(function_responses),
                     )
+                    # Camera frames ride as follow-up client content (same
+                    # pattern as send_habit_alert) — FunctionResponse.parts
+                    # crashes send_tool_response's json.dumps on bytes.
+                    for cam_name, cam_png in camera_frames:
+                        try:
+                            async with self._send_lock:
+                                await self._session.send_client_content(
+                                    turns=types.Content(role="user", parts=[
+                                        types.Part.from_text(text=(
+                                            f"Camera frame from '{cam_name}' "
+                                            "just arrived — describe to the user "
+                                            "what it shows.")),
+                                        types.Part.from_bytes(
+                                            data=cam_png,
+                                            mime_type="image/png"),
+                                    ]),
+                                    turn_complete=True,
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "session=%s camera frame send failed: %s",
+                                self.session_id, exc,
+                            )
                     if budget_hit and not budget_nudged:
                         # Refused results alone don't stop a storm — the model
                         # keeps emitting calls. Inject an explicit user-turn
