@@ -134,13 +134,18 @@ class MddbClient:
         content_md: str | None = None,
         meta: dict[str, list[str]] | None = None,
     ) -> dict[str, Any] | None:
-        payload: dict[str, Any] = {"collection": collection, "key": key, "lang": lang}
-        if content_md is not None:
-            payload["contentMd"] = content_md
-        if meta is not None:
-            payload["meta"] = meta
+        # mddb has no /update — /add upserts on (collection,key,lang), and a
+        # meta-only /add wipes contentMd. Merge onto the existing doc.
+        existing = await self.get_document(collection, key, lang)
+        merged_meta = dict((existing or {}).get("meta") or {})
+        if meta:
+            merged_meta.update(meta)
+        payload: dict[str, Any] = {"collection": collection, "key": key, "lang": lang,
+                                   "meta": merged_meta}
+        payload["contentMd"] = (content_md if content_md is not None
+                                else (existing or {}).get("contentMd") or "")
         try:
-            resp = await self._client.patch(f"{self.base_url}/update", json=payload)
+            resp = await self._client.post(f"{self.base_url}/add", json=payload)
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
