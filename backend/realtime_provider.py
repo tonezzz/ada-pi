@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import json
 import logging
 import os
 import re
 import time
+import urllib.error
+import urllib.request
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -979,7 +982,73 @@ class GeminiLiveProvider(RealtimeProvider):
             ),
             "channel": resolved,
         }
-        return result, (resolved, png)
+        return result, (resolved, png, "image/png")
+
+    async def _vcast_snapshot(self, args: dict) -> tuple[dict, tuple[str, bytes, str] | None]:
+        """vcast_snapshot — ask the display to capture its own frame over the
+        input-bridge: /pub {type:snap-request,token} -> the page POSTs a JPEG
+        to /frame -> we poll /frame?screen&token until it lands. Same frame
+        delivery shape as _camera_snapshot (follow-up client content)."""
+        try:
+            screen = int(args.get("screen"))
+        except (TypeError, ValueError):
+            return ({"error": "screen number required — call vcast_list to see registered displays."}, None)
+        base = os.environ.get(
+            "VCAST_API", "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+        token = f"snap-{int(time.time() * 1000)}-{self.session_id[:8]}"
+        def _req(path: str, payload: dict | None = None):
+            data = json.dumps(payload).encode() if payload is not None else None
+            req = urllib.request.Request(
+                base + path, data=data,
+                headers={"Content-Type": "application/json"} if data else {})
+            return urllib.request.urlopen(req, timeout=10)
+        try:
+            r = await asyncio.to_thread(
+                _req, "/pub",
+                {"screen": screen,
+                 "msg": {"type": "snap-request", "token": token}})
+            delivered = json.load(r).get("delivered", 0)
+            if not delivered:
+                return ({"error": f"screen {screen} is not connected — "
+                                  "check vcast_list for online displays."}, None)
+        except Exception as exc:
+            return ({"error": f"snap-request failed: {exc}"}, None)
+        for _ in range(15):
+            try:
+                r = await asyncio.to_thread(
+                    _req, f"/frame?screen={screen}&token={token}")
+                ctype = r.headers.get("Content-Type", "")
+                if ctype.startswith("image/"):
+                    jpeg = r.read()
+                    if jpeg:
+                        label = f"vcast screen {screen}"
+                        result = {
+                            "output": (
+                                f"Still frame captured from {label}. The image "
+                                "arrives as a separate message right after this "
+                                "result — wait for it, then describe what the "
+                                "screen is actually showing. It is a single "
+                                "frame taken a moment ago — not live video."),
+                            "screen": screen,
+                        }
+                        return result, (label, jpeg, "image/jpeg")
+                else:
+                    body = json.loads(r.read() or b"{}")
+                    if body.get("error") and body.get("ok"):
+                        return ({"error": (
+                                    f"screen {screen} could not capture: {body['error']} "
+                                    f"(state={body.get('state') or 'unknown'}). If it is an "
+                                    "uncapturable iframe, tell the user the page content "
+                                    "cannot be screenshotted.")},
+                                None)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404:
+                    logger.warning("session=%s vcast frame poll: %s", self.session_id, exc)
+            except Exception as exc:
+                logger.warning("session=%s vcast frame poll: %s", self.session_id, exc)
+            await asyncio.sleep(0.8)
+        return ({"error": f"screen {screen} did not return a frame in time — "
+                          "it may be offline or stuck."}, None)
 
     async def _run_decision_check(self, product: str, url: str, mode: str) -> None:
         filler = asyncio.create_task(self._check_slow_filler(mode))
@@ -1610,6 +1679,29 @@ class GeminiLiveProvider(RealtimeProvider):
                             "url": {
                                 "type": "string",
                                 "description": "Target URL for nav/play/image/audio. Not needed for stop.",
+                            },
+                        },
+                        "required": ["screen"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "vcast_snapshot",
+                    "description": (
+                        "Capture what a numbered vcast virtual display is actually showing right now — "
+                        "the display draws its current frame and the image arrives attached to this "
+                        "tool's result. Use to LOOK at a screen and verify what it shows (after a cast, "
+                        "to check an overlay, or when the user asks what's on a screen) — do not rely on "
+                        "the reported state flag alone. One still frame per call, a few seconds old. "
+                        "If the result reports uncapturable-iframe, the screen is showing a framed web "
+                        "page the browser cannot capture — say so rather than guessing. Not for the TV."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "screen": {
+                                "type": "integer",
+                                "description": "Screen number (the # shown on the display and in vcast_list).",
                             },
                         },
                         "required": ["screen"],
@@ -3292,7 +3384,7 @@ class GeminiLiveProvider(RealtimeProvider):
                 tool_call = message.tool_call
                 if tool_call and tool_call.function_calls:
                     function_responses = []
-                    camera_frames: list[tuple[str, bytes]] = []
+                    camera_frames: list[tuple[str, bytes, str]] = []
                     for call in tool_call.function_calls:
                         logger.info(
                             "session=%s function_call received id=%s name=%s args=%r",
@@ -3486,6 +3578,11 @@ class GeminiLiveProvider(RealtimeProvider):
                                 dict(call.args or {}))
                             if frame:
                                 camera_frames.append(frame)
+                        elif call.name == "vcast_snapshot":
+                            result, frame = await self._vcast_snapshot(
+                                dict(call.args or {}))
+                            if frame:
+                                camera_frames.append(frame)
                         elif call.name == "ada_decision_check" and self.tool_runner is not None:
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
                         elif call.name == "ada_deep_research" and self.tool_runner is not None:
@@ -3563,7 +3660,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     # Camera frames ride as follow-up client content (same
                     # pattern as send_habit_alert) — FunctionResponse.parts
                     # crashes send_tool_response's json.dumps on bytes.
-                    for cam_name, cam_png in camera_frames:
+                    for cam_name, cam_img, cam_mime in camera_frames:
                         try:
                             async with self._send_lock:
                                 await self._session.send_client_content(
@@ -3573,8 +3670,8 @@ class GeminiLiveProvider(RealtimeProvider):
                                             "just arrived — describe to the user "
                                             "what it shows.")),
                                         types.Part.from_bytes(
-                                            data=cam_png,
-                                            mime_type="image/png"),
+                                            data=cam_img,
+                                            mime_type=cam_mime),
                                     ]),
                                     turn_complete=True,
                                 )
