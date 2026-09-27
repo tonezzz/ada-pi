@@ -819,15 +819,20 @@ class GeminiLiveProvider(RealtimeProvider):
 
     async def _run_deep_research(self, topic: str, depth: str) -> None:
         filler = asyncio.create_task(self._research_slow_filler(topic))
+        # Compact keyword topic — DuckDuckGo's HTML endpoint returns zero
+        # results for long prose queries, and short forms also cost less
+        # on the grounded provider.
+        short = re.split(r"[,;—–]", topic)[0].strip() or topic
+        short = " ".join(short.split()[:8])
         queries = [
-            f"{topic} — overview and history",
-            f"{topic} — latest news and current status",
-            f"{topic} — main competitors and criticism",
+            f"{short} history overview",
+            f"{short} latest news",
+            f"{short} competitors criticism",
         ]
         if depth == "deep":
             queries += [
-                f"{topic} — timeline of key milestones",
-                f"{topic} — expert analysis and future outlook",
+                f"{short} milestones timeline",
+                f"{short} analysis outlook",
             ]
         findings: list[dict] = []
         errors: list[str] = []

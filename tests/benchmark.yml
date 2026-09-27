@@ -73,20 +73,28 @@ policy:
     - vcast_unknown_speaker
 
 # Usage plan — cadence that keeps Gemini grounded-search quota healthy.
-# Grounded web_search is billed/quota-limited and SHARED with interactive
-# voice use (a benchmark run once exhausted it mid-suite, forcing DDG
-# fallback). Deep-research rounds: standard=3, deep=5, 2s pacing.
+# MEASURED: free-tier quota is 20 grounded requests/day/project/model
+# (429 RESOURCE_EXHAUSTED, GenerateRequestsPerDayPerModel) — shared with
+# interactive voice web_search AND ada_deep_research rounds.
+# Budget per day: ~20 total → standard deep research (3 rounds) ≈ 15%,
+# deep (5 rounds) ≈ 25%. A full benchmark day can consume the whole quota.
 usage:
-  smoke:   daily 03:00 (existing ada-scenario-smoke.timer — unchanged)
-  research: weekly — Monday 03:30, ~7 scenarios ≈ 15-25 grounded calls
-  memory:   weekly — Wednesday 03:30
-  tools:    weekly — Friday 03:30
-  full:     on-request only (~1h, ~100+ grounded calls — check quota first)
+  smoke:   hourly (existing ada-scenario-smoke.timer — unchanged)
+  research: weekly — Monday 03:30 (ada-scenario-research.timer),
+            ~7 scenarios ≈ 15-25 grounded calls — runs at quota-reset edge;
+            acceptable to consume most of one day's grounded budget
+  memory:   weekly — Wednesday 03:30 (manual, on-request)
+  tools:    weekly — Friday 03:30 (manual, on-request)
+  full:     on-request only (~1h, can exceed the daily grounded quota —
+            run when voice use is low; DDG fallback keeps results landing)
   notes:
-    - If grounded quota is exhausted, web_search auto-falls back to
-      duckduckgo — results still land, just less synthesized.
-    - ada_deep_research caps at 5 rounds/call and paces 2s between
-      rounds; interactive use shares the same quota as benchmark runs.
+    - "429 → web_search auto-falls back to duckduckgo (free, no key).
+      DDG needs SHORT keyword queries — prose queries return 0 results."
+    - "ada_deep_research — standard=3 rounds, deep=5, 2s pacing,
+      keyword-compacted queries; interactive use shares the same
+      daily quota — prefer standard unless the user asks for deep."
+    - "Quota resets daily (~midnight PT); a paid Gemini tier raises it
+      from 20/day — infra decision, not an automated action."
 
 suites:
   # Fast confidence check — same set ada-scenario-smoke.timer runs daily.
