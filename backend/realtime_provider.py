@@ -623,6 +623,14 @@ class GeminiLiveProvider(RealtimeProvider):
         except RuntimeError:
             return  # no loop (unit tests, shutdown) — nothing to schedule
 
+    # An affirmation is a consent utterance, not a content word: it must
+    # either lead the user's turn ("yes, save it") or the turn must be
+    # short enough to be a standalone reply ("sure"). Longer write
+    # requests that merely contain an affirmative word mid-sentence
+    # ("…the design is approved") must not self-certify.
+    _CONFIRM_LEAD_WINDOW = 20
+    _CONFIRM_MAX_TURN = 60
+
     def _user_confirmed(self, input_transcript: str) -> bool:
         """True when the user's own recent speech affirms — `confirmed=true`
         tool args are honored only when this is true."""
@@ -640,7 +648,12 @@ class GeminiLiveProvider(RealtimeProvider):
                     continue
                 text = candidate
                 break
-        return bool(_CONFIRM_RE.search(text or ""))
+        text = (text or "").strip()
+        if not text:
+            return False
+        if len(text) <= self._CONFIRM_MAX_TURN:
+            return bool(_CONFIRM_RE.search(text))
+        return bool(_CONFIRM_RE.search(text[: self._CONFIRM_LEAD_WINDOW]))
 
     def _recall_gated(self) -> bool:
         """True when a confident ada_memory_search hit is fresh enough that
