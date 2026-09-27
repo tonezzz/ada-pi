@@ -16,7 +16,10 @@ tier: full
 turns:
   - user: "Ada, research the VPS plans at readyidc dot com — both the Business and Game lines. Our idc02 requirement is Linux, at least 4 CPU cores, at least 16 gigabytes of RAM, at least 200 gigabytes SSD, daily backups included, and around 800 baht a month. Tell me the candidates."
     expect:
-      calls_any: [web_search]
+      # multi-round research is the better tool for this; web_search
+      # acceptable for a quick overview. Both share the same upstream
+      # quota — a rate-limited run still passes on the call.
+      calls_any: [web_search, ada_deep_research]
       response_nonempty: true
       timeout_s: 120
       settle_s: 8
