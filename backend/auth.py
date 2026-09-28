@@ -15,6 +15,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 from typing import Any
 
@@ -45,7 +46,8 @@ def _clean_apps(apps: Any) -> list[str] | None:
 
 
 def _key_entries() -> dict[str, dict]:
-    """File-issued keys normalized to {name: {"key", "device", "issued", "apps"}}."""
+    """File-issued keys normalized to {name: {"key", "device", "issued",
+    "apps", "ha_person"}}."""
     try:
         data = json.loads(open(_keys_file()).read())
     except (OSError, ValueError):
@@ -58,11 +60,13 @@ def _key_entries() -> dict[str, dict]:
             key, device, issued = (value.get("key"), value.get("device"),
                                    value.get("issued"))
             apps = _clean_apps(value.get("apps"))
+            ha_person = value.get("ha_person")
         else:
-            key, device, issued, apps = value, None, None, None
+            key, device, issued, apps, ha_person = value, None, None, None, None
         if name and key:
             entries[str(name)] = {"key": str(key), "device": device or None,
-                                  "issued": issued, "apps": apps}
+                                  "issued": issued, "apps": apps,
+                                  "ha_person": ha_person}
     return entries
 
 
@@ -91,6 +95,10 @@ def _parse_keys() -> dict[str, str]:
 
 _KEY_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
+# Serializes read-modify-write cycles on the keys file — without it two
+# concurrent create/bind calls can each read, mutate, and clobber the other.
+_KEYS_LOCK = threading.Lock()
+
 
 def _save_file_keys(data: dict[str, str]) -> None:
     path = _keys_file()
@@ -100,28 +108,34 @@ def _save_file_keys(data: dict[str, str]) -> None:
         json.dump(data, f, indent=1)
 
 
-def create_key(name: str, apps: Any = None) -> str | None:
-    """Issue a new named device key, persisted to the keys file. None if taken.
+def create_key(name: str, apps: Any = None,
+               ha_person: str | None = None) -> str | None:
+    """Issue a new named user key, persisted to the keys file. None if taken.
 
     `apps` optionally restricts which UIs the key pairs into ("voice",
     "chat", "view"); unset/empty means the default voice+chat.
-    """
+    ha_person optionally binds the key to a Home Assistant person entity
+    (e.g. 'person.kk') — sessions authenticated with this key inherit that
+    identity for memory/persona routing until a voiceprint overrides it."""
     if not _KEY_NAME_RE.match(name):
         return None
-    try:
-        data = json.loads(open(_keys_file()).read())
-    except (OSError, ValueError):
-        data = {}
-    env_names = {n for n in _parse_keys().values()}
-    if name in data or name in env_names:
-        return None
-    key = f"ada-{secrets.token_urlsafe(24)}"
-    data[name] = {"key": key, "device": None,
-                  "issued": time.strftime("%Y-%m-%d")}
-    clean = _clean_apps(apps)
-    if clean:
-        data[name]["apps"] = clean
-    _save_file_keys(data)
+    with _KEYS_LOCK:
+        try:
+            data = json.loads(open(_keys_file()).read())
+        except (OSError, ValueError):
+            data = {}
+        env_names = {n for n in _parse_keys().values()}
+        if name in data or name in env_names:
+            return None
+        key = f"ada-{secrets.token_urlsafe(24)}"
+        data[name] = {"key": key, "device": None,
+                      "issued": time.strftime("%Y-%m-%d")}
+        clean = _clean_apps(apps)
+        if clean:
+            data[name]["apps"] = clean
+        if ha_person:
+            data[name]["ha_person"] = str(ha_person)
+        _save_file_keys(data)
     try:
         from backend.event_log import log_event
         log_event("key-issued", name, "key", "device key created")
@@ -132,14 +146,15 @@ def create_key(name: str, apps: Any = None) -> str | None:
 
 def revoke_key(name: str) -> bool:
     """Remove a file-issued key. Existing sessions for that name die too."""
-    try:
-        data = json.loads(open(_keys_file()).read())
-    except (OSError, ValueError):
-        return False
-    if name not in data:
-        return False
-    del data[name]
-    _save_file_keys(data)
+    with _KEYS_LOCK:
+        try:
+            data = json.loads(open(_keys_file()).read())
+        except (OSError, ValueError):
+            return False
+        if name not in data:
+            return False
+        del data[name]
+        _save_file_keys(data)
     return True
 
 
@@ -163,6 +178,39 @@ def issued_key_apps() -> dict[str, list[str] | None]:
     return {n: e["apps"] for n, e in _key_entries().items()}
 
 
+def issued_key_details() -> dict[str, dict]:
+    """{name: {issued, device, apps, ha_person}} for admin listing (no raw keys)."""
+    return {n: {"issued": e["issued"], "device": e["device"],
+                "apps": e.get("apps"), "ha_person": e.get("ha_person")}
+            for n, e in _key_entries().items()}
+
+
+def ha_person_for_key(name: str) -> str | None:
+    """HA person entity bound to an issued key, or None."""
+    entry = _key_entries().get(name)
+    return entry.get("ha_person") if entry else None
+
+
+def set_key_ha_person(name: str, ha_person: str | None) -> bool:
+    """Bind/unbind an HA person entity on an issued key. False if no such key."""
+    with _KEYS_LOCK:
+        try:
+            data = json.loads(open(_keys_file()).read())
+        except (OSError, ValueError):
+            return False
+        if name not in data:
+            return False
+        if not isinstance(data[name], dict):
+            key = data[name]
+            data[name] = {"key": key}
+        if ha_person:
+            data[name]["ha_person"] = str(ha_person)
+        else:
+            data[name].pop("ha_person", None)
+        _save_file_keys(data)
+    return True
+
+
 def bound_device(name: str) -> str | None:
     entry = _key_entries().get(name)
     return entry["device"] if entry else None
@@ -170,18 +218,22 @@ def bound_device(name: str) -> str | None:
 
 def bind_device(name: str, device_id: str) -> bool:
     """Lock an issued key to a device id. False if no such file-issued key."""
-    try:
-        data = json.loads(open(_keys_file()).read())
-    except (OSError, ValueError):
-        return False
-    if name not in data:
-        return False
-    old = data[name]
-    if isinstance(old, dict):
-        old["device"] = device_id
-    else:
-        data[name] = {"key": old, "device": device_id}
-    _save_file_keys(data)
+    with _KEYS_LOCK:
+        try:
+            data = json.loads(open(_keys_file()).read())
+        except (OSError, ValueError):
+            return False
+        if name not in data:
+            return False
+        old = data[name]
+        if isinstance(old, dict):
+            entry = dict(old)
+            entry["key"] = old["key"]
+        else:
+            entry = {"key": old}
+        entry["device"] = device_id
+        data[name] = entry
+        _save_file_keys(data)
     return True
 
 
@@ -192,16 +244,17 @@ def unbind_device(name: str) -> bool:
     iframe key) — re-pair must NOT collapse it back to TOFU or the next
     browser silently re-binds it. Preserve '*' across re-pairs.
     """
-    try:
-        data = json.loads(open(_keys_file()).read())
-    except (OSError, ValueError):
-        return False
-    if not isinstance(data.get(name), dict):
-        return name in data
-    if data[name].get("device") == "*":
-        return True
-    data[name]["device"] = None
-    _save_file_keys(data)
+    with _KEYS_LOCK:
+        try:
+            data = json.loads(open(_keys_file()).read())
+        except (OSError, ValueError):
+            return False
+        if not isinstance(data.get(name), dict):
+            return name in data
+        if data[name].get("device") == "*":
+            return True
+        data[name]["device"] = None
+        _save_file_keys(data)
     return True
 
 

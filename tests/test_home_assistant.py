@@ -92,6 +92,50 @@ class HomeAssistantClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/api/logbook/period/", url)
         self.assertIn("entity=binary_sensor.front_door", url)
 
+    async def test_persons_lists_person_entities(self):
+        client = AsyncMock()
+        client.get.return_value = FakeResponse([
+            {"entity_id": "person.tony", "state": "home",
+             "attributes": {"friendly_name": "Tony"}},
+            {"entity_id": "person.kk", "state": "not_home",
+             "attributes": {"friendly_name": "KK"}},
+            {"entity_id": "light.office", "state": "on",
+             "attributes": {"friendly_name": "Office"}},
+        ])
+        home = HomeAssistantClient(client=client)
+        people = await home.persons()
+        self.assertEqual(
+            [p["entity_id"] for p in people],
+            ["person.kk", "person.tony"],  # sorted by name
+        )
+        self.assertEqual(people[0]["name"], "KK")
+
+    async def test_resolve_person_by_name_and_entity(self):
+        client = AsyncMock()
+        client.get.return_value = FakeResponse([
+            {"entity_id": "person.tony", "state": "home",
+             "attributes": {"friendly_name": "Tony"}},
+            {"entity_id": "person.kk", "state": "home",
+             "attributes": {"friendly_name": "KK"}},
+        ])
+        home = HomeAssistantClient(client=client)
+        self.assertEqual(
+            (await home.resolve_person("KK"))["entity_id"], "person.kk"
+        )
+        self.assertEqual(
+            (await home.resolve_person("person.tony"))["entity_id"], "person.tony"
+        )
+        # Slug fallback: 'Some One' -> person.some_one
+        client.get.return_value = FakeResponse([
+            {"entity_id": "person.some_one", "state": "home",
+             "attributes": {"friendly_name": "Friend"}},
+        ])
+        home = HomeAssistantClient(client=client)
+        self.assertEqual(
+            (await home.resolve_person("Some One"))["entity_id"], "person.some_one"
+        )
+        self.assertIsNone(await home.resolve_person("nobody"))
+
     async def test_state_transitions_collapses_and_computes_durations(self):
         def get(url):
             if url == "/api/states":

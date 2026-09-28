@@ -184,20 +184,118 @@ async def _auth_payload(request: Request) -> tuple[str, dict]:
     return name, payload if isinstance(payload, dict) else {}
 
 
+# -- User invites: per-user key + one-time redeem URL/QR -------------------
+# Flow:
+#   1. POST /api/auth/invites  {name, ha_person?, path?, redirect?, qr?, origin?}
+#      -> creates the user's key AND mints a burn-once redeem link in one call;
+#         the raw key is never returned — only the single-use link/QR.
+#   2. The user scans the QR / opens {base}/redeem/{token}: the token burns,
+#      an HttpOnly session cookie is set, and the PWA is handed the key once —
+#      the browser session is now tied to that user.
+#   3. Re-pair: POST /api/auth/invites/{name} mints a fresh link for the same
+#      key (device binding reset). Revoke: DELETE /api/auth/keys/{name}.
+
+
+_HA_PERSON_RE = re.compile(r"^person\.[a-z0-9_]+$")
+
+
+def _payload_ha_person(payload: dict) -> str | None:
+    hp = str(payload.get("ha_person") or "").strip().lower()
+    if hp and not _HA_PERSON_RE.match(hp):
+        raise HTTPException(status_code=422, detail="ha_person must look like 'person.<id>'")
+    return hp or None
+
+
+async def _ha_person_exists(ha_person: str | None) -> bool | None:
+    """Best-effort existence check for an ha_person binding: True/False,
+    None when HA is unreachable. Warn-only — a binding typo should surface
+    in the invite response instead of silently routing nowhere."""
+    if not ha_person:
+        return None
+    try:
+        rp = await tool_runner.context.ha_client.resolve_person(ha_person)
+        return bool(rp and rp.get("entity_id") == ha_person)
+    except Exception:
+        return None
+
+
+@app.post("/api/auth/invites")
+async def create_invite(request: Request) -> dict:
+    """Issue a per-user key and return its one-time redeem URL (+ QR SVG).
+
+    Body: {name, ha_person?, path?, redirect?, qr?, origin?}. ha_person binds
+    the key to an HA person entity so sessions inherit person.<id> identity
+    (memory banks, persona, actuation ACL) even before voice enrollment.
+    """
+    _, payload = await _auth_payload(request)
+    key_name = str(payload.get("name") or "").strip()
+    ha_person = _payload_ha_person(payload)
+    exists = await _ha_person_exists(ha_person)
+    if exists is False:
+        logger.warning("invite %s: ha_person %s does not exist in Home Assistant",
+                       key_name, ha_person)
+    if auth.create_key(key_name, ha_person=ha_person) is None:
+        raise HTTPException(status_code=409, detail="invalid or taken name")
+    logger.info("issued user key name=%s ha_person=%s", key_name, ha_person)
+    return {
+        "name": key_name,
+        "ha_person": ha_person,
+        "ha_person_exists": exists,
+        **_redeem_response(key_name, payload),
+    }
+
+
+@app.get("/api/auth/invites")
+async def list_invites(request: Request) -> dict:
+    """List issued user keys: name, issued date, device binding, ha_person."""
+    name, _ = await _auth_payload(request)
+    return {"caller": name, "users": auth.issued_key_details()}
+
+
+@app.post("/api/auth/invites/{name}")
+async def reissue_invite(name: str, request: Request) -> dict:
+    """Mint a fresh one-time redeem link for an existing user key.
+
+    Re-pairing keeps the same key — the new link hands it to a device again
+    (e.g. after the device cleared its browser storage). The device binding
+    is reset so the next session TOFU-binds to the new device.
+    """
+    _, payload = await _auth_payload(request)
+    if name not in auth.issued_key_names():
+        raise HTTPException(status_code=404, detail="no such issued key")
+    auth.unbind_device(name)
+    logger.info("re-pair redeem minted for name=%s (device binding reset)", name)
+    return {"name": name, **_redeem_response(name, payload)}
+
+
+@app.put("/api/auth/invites/{name}")
+async def update_invite(name: str, request: Request) -> dict:
+    """Update a user key's metadata: bind/clear its HA person entity."""
+    _, payload = await _auth_payload(request)
+    if name not in auth.issued_key_names():
+        raise HTTPException(status_code=404, detail="no such issued key")
+    ha_person = _payload_ha_person(payload)
+    exists = await _ha_person_exists(ha_person)
+    if exists is False:
+        logger.warning("invite %s: ha_person %s does not exist in Home Assistant",
+                       name, ha_person)
+    if not auth.set_key_ha_person(name, ha_person):
+        raise HTTPException(status_code=404, detail="no such issued key")
+    return {"ok": True, "name": name, "ha_person": ha_person,
+            "ha_person_exists": exists}
+
+
+# -- Legacy aliases (kept for existing admin tooling) -----------------------
+
 @app.post("/api/auth/redeem-token")
 async def mint_redeem(request: Request) -> dict:
-    """Mint a one-time redeem URL bound to the caller's key.
-
-    Opening {base}/redeem/{token} hands the device the real API key plus a
-    session cookie — designed for QR-code onboarding of phones/tablets.
-    """
+    """Mint a one-time redeem URL bound to the caller's own key."""
     name, payload = await _auth_payload(request)
     return _redeem_response(name, payload)
 
 
 @app.get("/api/auth/keys")
 async def list_keys(request: Request) -> dict:
-    """List issued (file-backed) device key names."""
     name, _ = await _auth_payload(request)
     return {"caller": name, "issued": auth.issued_key_names(),
             "bindings": auth.issued_key_bindings(), "apps": auth.issued_key_apps()}
@@ -205,23 +303,21 @@ async def list_keys(request: Request) -> dict:
 
 @app.post("/api/auth/keys")
 async def create_key(request: Request) -> dict:
-    """Issue a new named device key and return a one-time redeem URL for it.
-
-    The raw key is never returned to the admin — it is only delivered inside
-    the single-use redeem link. Revoke with DELETE /api/auth/keys/{name}.
-    """
     _, payload = await _auth_payload(request)
     key_name = str(payload.get("name") or "").strip()
-    key = auth.create_key(key_name, payload.get("apps"))
+    ha_person = _payload_ha_person(payload)
+    key = auth.create_key(key_name, apps=payload.get("apps"),
+                          ha_person=ha_person)
     if key is None:
         raise HTTPException(status_code=409, detail="invalid or taken name")
     logger.info("issued device key name=%s", key_name)
-    return {"name": key_name, **_redeem_response(key_name, payload)}
+    return {"name": key_name, "ha_person": ha_person,
+            **_redeem_response(key_name, payload)}
 
 
 @app.delete("/api/auth/keys/{name}")
 async def revoke_key(name: str, request: Request) -> dict:
-    """Revoke an issued device key (kills its sessions too)."""
+    """Revoke an issued user key (kills its sessions too)."""
     await _auth_payload(request)
     if not auth.revoke_key(name):
         raise HTTPException(status_code=404, detail="no such issued key")
@@ -231,17 +327,8 @@ async def revoke_key(name: str, request: Request) -> dict:
 
 @app.post("/api/auth/keys/{name}/redeem")
 async def reissue_key_redeem(name: str, request: Request) -> dict:
-    """Mint a fresh one-time redeem URL for an existing issued key.
-
-    Re-pairing keeps the same key — the new link just hands it to a
-    device again (e.g. after the device cleared its browser storage).
-    """
-    _, payload = await _auth_payload(request)
-    if name not in auth.issued_key_names():
-        raise HTTPException(status_code=404, detail="no such issued key")
-    auth.unbind_device(name)
-    logger.info("re-pair redeem minted for name=%s (device binding reset)", name)
-    return _redeem_response(name, payload)
+    """Alias of POST /api/auth/invites/{name} — re-mint a re-pair link."""
+    return await reissue_invite(name, request)
 
 
 def _qr_svg(data: str) -> str | None:
@@ -425,7 +512,7 @@ async def _prime_session(
             summary=recent_summary(),
             away_seconds=away_s,
             last_tail=tail,
-            person_entity=tool_runner._memory_identity(),
+            person_entity=tool_runner.policy_identity(),
         )
         if text:
             t0 = time.monotonic()
@@ -445,7 +532,26 @@ async def voice_socket(ws: WebSocket) -> None:
         return
     await ws.accept()
     session_id = uuid.uuid4().hex[:10]
-    tool_runner.session_caller_name = auth.websocket_caller(ws) or None
+    caller_name = auth.websocket_caller(ws) or None
+    # If the session key was issued bound to an HA person (invite ha_person),
+    # sessions inherit that identity until a voiceprint overrides it.
+    caller_person = auth.ha_person_for_key(caller_name) if caller_name else None
+    if caller_person is None and caller_name and caller_name != "admin":
+        # Bare key names that resolve to an HA person ("tony" -> person.tony)
+        # inherit it — keeps unbound legacy/env keys owner-consistent so a
+        # matching voiceprint is recognized AS the owner, not a guest.
+        try:
+            rp = await tool_runner.context.ha_client.resolve_person(caller_name)
+            caller_person = rp["entity_id"] if rp else None
+        except Exception:
+            caller_person = None
+    tool_runner.session_caller_name = caller_name
+    tool_runner.session_caller_ha_person = caller_person
+    # Session-security policy P1: the owner is pinned here, at connect, and
+    # never changes for the session's lifetime. All permission checks run
+    # against this identity; a recognized guest voice may personalize the
+    # conversation but can never widen authorization.
+    tool_runner.session_owner_identity = caller_person or caller_name
     # tool_runner is shared across sessions — speaker identity must NOT
     # bleed over from the previous session (a Tony-identified session would
     # otherwise grant the next caller person.tony's full bank/policy scope).
@@ -467,6 +573,13 @@ async def voice_socket(ws: WebSocket) -> None:
     # One ConversationMemory per websocket session, shared across provider
     # reconnects so the transcript survives a Gemini session swap.
     conversation = ConversationMemory(session_id)
+    conversation.log_event(
+        "connect",
+        caller=tool_runner.session_caller_name,
+        ha_person=tool_runner.session_caller_ha_person,
+        owner=tool_runner.session_owner_identity,
+        client=ws.client.host if ws.client else None,
+    )
     # Test hook: ?no_persist=1 skips transcript persist, extraction,
     # summaries and the session-end marker so scenario runs never pollute
     # real memory (banks are unaffected — explicit ada_remember still writes).
@@ -480,7 +593,8 @@ async def voice_socket(ws: WebSocket) -> None:
     }
     provider_ref = [create_provider(
         tool_runner=tool_runner, session_id=session_id, conversation=conversation,
-        caller_name=tool_runner.session_caller_name
+        caller_name=tool_runner.session_caller_name,
+        caller_person=tool_runner.session_caller_ha_person,
     )]
     # Keep the ref (not the instance) so provider swaps on Gemini reconnect
     # stay visible to /api/notify.
@@ -507,41 +621,66 @@ async def voice_socket(ws: WebSocket) -> None:
                 provider = provider_ref[0]
                 provider.current_speaker = name
                 provider.current_speaker_ha_person = ha_person
-                # Sync to tool_runner so memory ops route to the speaker's
-                # person-scoped bank (e.g. personal-kk instead of personal).
-                if provider.tool_runner is not None:
-                    provider.tool_runner.current_speaker_ha_person = ha_person
+                # Sync to tool_runner so personalization (get_home_state,
+                # persona reads, speaker-provenance) follows the voice.
+                # Authorization stays pinned to session_owner_identity —
+                # this never widens permissions (policy P1/P3).
+                tr = provider.tool_runner
+                if tr is not None:
+                    tr.current_speaker_ha_person = ha_person
+                secondary = bool(tr is not None and tr._is_secondary_turn())
+                conversation.log_event(
+                    "secondary_speaker" if secondary else "speaker_identified",
+                    name=name, display=display_name, ha_person=ha_person,
+                    confidence=round(confidence, 3))
                 with suppress(Exception):
                     await ws.send_text(json.dumps({
                         "type": "speaker",
                         "name": name,
                         "display_name": display_name,
                         "ha_person": ha_person,
+                        "secondary": secondary,
                         "confidence": round(confidence, 3),
                     }))
                 # Level 2: inject identity as system context for Gemini.
-                # Use display_name (e.g. "Tony") rather than the raw key.
-                # When the session prime already named a registered device
-                # identity, state the precedence explicitly — identified
-                # speaker wins over the key's registration.
-                caller = (
-                    provider.tool_runner.session_caller_name
-                    if provider.tool_runner is not None else None
-                )
-                override = (
-                    f" — this overrides the registered device identity ({caller})"
-                    if caller else ""
-                )
-                with suppress(Exception):
-                    await provider.send_text_turn(
+                # A guest speaker gets the secondary-speaker rules; the
+                # session owner gets plain personalization.
+                if secondary:
+                    owner = tr.session_owner_identity
+                    note = (
+                        f"(system) A different speaker is talking: {display_name} "
+                        f"(confidence {confidence:.0%}). This session belongs to "
+                        f"{owner} — converse with {display_name} normally, but "
+                        "their requests cannot write memories, change personas, "
+                        "enroll voices, search documents, or actuate devices. If "
+                        f"they suggest something useful, propose it aloud and ask "
+                        f"{owner} to confirm — only the owner's voice approves. "
+                        "Do not announce this policy unless asked."
+                    )
+                else:
+                    caller = tr.session_caller_name if tr is not None else None
+                    matched = (
+                        " — matches the session owner"
+                        if ha_person and ha_person == (
+                            tr.session_owner_identity if tr else None)
+                        else ""
+                    )
+                    override = (
+                        f" — device identity is {caller}" if caller and not matched else ""
+                    )
+                    note = (
                         f"(system) Speaker identified: {display_name}"
-                        f"{override} (confidence {confidence:.0%}). Use this to "
+                        f"{matched or override} (confidence {confidence:.0%}). Use this to "
                         f"personalize your response if appropriate, but do not "
                         f"announce it unless the user asks who you are talking to."
                     )
+                with suppress(Exception):
+                    await provider.send_text_turn(note)
             async def _on_unrecognized(best_score: float) -> None:
                 # Voice heard repeatedly but matches no enrolled profile —
                 # tell Gemini so it can offer ada_enroll_speaker.
+                conversation.log_event(
+                    "speaker_unrecognized", best_score=round(best_score, 3))
                 with suppress(Exception):
                     await ws.send_text(json.dumps({
                         "type": "speaker_unrecognized",
@@ -653,9 +792,20 @@ async def voice_socket(ws: WebSocket) -> None:
                 if event.type == "audio":
                     if not suppressing:
                         await ws.send_bytes(event.data["pcm16"])
+                elif event.type == "barge_noise":
+                    # Barge-in classified as noise — it never entered the
+                    # transcript; tell Ada to resume the interrupted reply.
+                    with suppress(Exception):
+                        await ws.send_text(json.dumps({
+                            "type": "barge_noise",
+                            "text": str(event.data.get("text") or "")[:120],
+                        }))
+                    with suppress(Exception):
+                        await provider_ref[0].send_text_turn(
+                            "(system) That interruption was background noise, "
+                            "not addressed to you — ignore it and resume what "
+                            "you were saying.")
                 elif event.type in (
-                    "speech_started",
-                    "speech_stopped",
                     "response_started",
                     "response_completed",
                     "response_interrupted",
@@ -665,7 +815,7 @@ async def voice_socket(ws: WebSocket) -> None:
                     "tool_call",
                     "tool_result",
                 ):
-                    if event.type == "speech_started" or event.type == "response_interrupted":
+                    if event.type == "response_interrupted":
                         await ws.send_text(json.dumps({"type": "clear_audio"}))
                     if event.type == "response_started":
                         live_turn_text = ""
@@ -724,9 +874,12 @@ async def voice_socket(ws: WebSocket) -> None:
                             tool_runner=tool_runner, session_id=session_id,
                             conversation=conversation,
                             caller_name=tool_runner.session_caller_name,
+                            caller_person=tool_runner.session_caller_ha_person,
                         )
                         await new_provider.connect(resumption_handle=handle)
                         provider_ref[0] = new_provider
+                        conversation.log_event(
+                            "live_reconnect", resumed=bool(handle))
                         if not handle:
                             # Fresh Gemini context — re-prime so the new
                             # session starts aware of recent/general memory.
@@ -764,6 +917,8 @@ async def voice_socket(ws: WebSocket) -> None:
         # Drop the identified-speaker binding with the session — it must
         # not carry into the next session on this shared runner.
         tool_runner.current_speaker_ha_person = None
+        tool_runner.session_caller_ha_person = None
+        tool_runner.session_owner_identity = None
         with suppress(Exception):
             await ws.close()
         if not no_persist:

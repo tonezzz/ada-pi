@@ -1,0 +1,81 @@
+name: session-owner-policy
+instance: tony
+# Session-security policy P1/P3/P4: the owner is pinned at connect; a
+# positively-identified foreign voice can converse but never write,
+# actuate, or read private stores. Owner identity returns with the owner's
+# voice.
+persons:
+  - {entity_id: person.kk, name: KK}
+  - {entity_id: person.tony, name: Tony}
+banks:
+  banks:
+    note:
+      title: Scratch notes
+      scope: instance
+      instances: [tony]
+      mddb_collection: ada-ha-bank-note-{instance}
+      kinds: [note]
+      writable: true
+      write_policy: direct
+      allowed_tools: [ada_remember, ada_forget, ada_outcome]
+      status: active
+    personal:
+      title: Personal
+      scope: instance
+      instances: [tony]
+      mddb_collection: ada-ha-bank-personal-{instance}
+      kinds: [fact, preference, note]
+      writable: true
+      write_policy: confirmed
+      allowed_tools: [ada_remember, ada_forget, ada_outcome]
+      status: active
+    personal-kk:
+      title: KK's personal
+      scope: person
+      person_scope: person.kk
+      instances: [tony]
+      mddb_collection: ada-ha-bank-personal-kk
+      kinds: [fact, preference, note]
+      writable: true
+      write_policy: confirmed
+      allowed_tools: [ada_remember, ada_forget, ada_outcome]
+      status: active
+  persona:
+    knobs:
+      verbosity: {type: string, values: [concise, normal], default: normal}
+steps:
+  # KK opens her session with her person-bound key — owner pinned.
+  - set: {session_caller_name: user-kk, session_caller_ha_person: person.kk,
+          session_owner_identity: person.kk}
+  - tool: ada_remember
+    args: {bank: note, text: "kk session fact", key: "t1", confirmed: true}
+    expect: {no_error: true}
+  # Tony's voice is identified mid-session — a guest, not a takeover.
+  - set: {current_speaker_ha_person: person.tony}
+  - tool: ada_remember
+    args: {bank: note, text: "guest write", confirmed: true}
+    expect: {error_contains: "session owner"}
+  - tool: control_entity
+    args: {entity_id: light.den, on: true}
+    expect: {error_contains: "session owner"}
+  - tool: ada_doc_search
+    args: {query: "id card"}
+    expect: {error_contains: "session owner"}
+  - tool: ada_memory_search
+    args: {query: "wifi password"}
+    expect: {error_contains: "session owner"}
+  - tool: ada_enroll_speaker
+    args: {name: Tony}
+    expect: {error_contains: "session owner"}
+  - tool: ada_persona
+    args: {action: set, knob: verbosity, value: concise}
+    expect: {error_contains: "session owner"}
+  # Read-only conversation still works for the guest (show own persona).
+  - tool: ada_persona
+    args: {action: show}
+    expect: {verb: show}
+  # Owner voice is identified again — full rights return.
+  - set: {current_speaker_ha_person: person.kk}
+  - tool: ada_remember
+    args: {bank: note, text: "owner back", key: "t2", confirmed: true}
+    expect: {no_error: true}

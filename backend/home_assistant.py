@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import statistics
 import time
 from dataclasses import dataclass
@@ -286,6 +287,43 @@ class HomeAssistantClient:
         response = await client.get(f"/api/states/{entity_id}")
         response.raise_for_status()
         return response.json()
+
+    async def persons(self) -> list[dict[str, Any]]:
+        """List Home Assistant person entities (the "people" Ada can address).
+
+        Uses GET /api/states, which any valid token may read. The websocket
+        alternatives (config/auth/list, person/list) are admin-only and would
+        fail for non-admin tokens; auth users are not the right surface anyway —
+        persona/memory identity is keyed on person.* entities."""
+        people = []
+        for item in await self._states():
+            entity_id = str(item.get("entity_id", ""))
+            if not entity_id.startswith("person."):
+                continue
+            attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+            people.append({
+                "entity_id": entity_id,
+                "name": str(attributes.get("friendly_name") or entity_id),
+                "state": str(item.get("state", "unknown")),
+            })
+        return sorted(people, key=lambda p: p["name"].lower())
+
+    async def resolve_person(self, name_or_entity: str) -> dict[str, Any] | None:
+        """Resolve 'KK', 'kk', or 'person.kk' to a person entity, else None."""
+        text = str(name_or_entity or "").strip().lower()
+        if not text:
+            return None
+        people = await self.persons()
+        for p in people:
+            if p["entity_id"].lower() == text or p["name"].lower() == text:
+                return p
+        slug = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+        if slug:
+            candidate = f"person.{slug}"
+            for p in people:
+                if p["entity_id"] == candidate:
+                    return p
+        return None
 
     async def sensors(self, search: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         """Return sensor entities, optionally filtered by a search term."""

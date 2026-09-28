@@ -72,6 +72,35 @@ DOC_BANK = "documents"
 # None is a real identity (anonymous) and must be distinguishable.
 _IDENTITY_UNSET = object()
 
+# Session-security policy (docs/session-security-policy.md P4/P7): while a
+# non-owner speaker's voice is identified, the turn is "secondary" — guests
+# may converse but never write, actuate, enroll, or read the owner's private
+# stores; anything useful becomes a proposal for the owner to confirm.
+SECONDARY_BLOCKED_TOOLS = (
+    CONTROL_TOOLS | MEMORY_WRITE_TOOLS | CALENDAR_WRITE_TOOLS
+    | CMS_WRITE_TOOLS | DEVIN_CONFIRMED_TOOLS | DOC_TOOLS
+    | {
+        "ada_enroll_speaker", "ada_memory_search",
+        "ada_ha_set_device_confidence", "ada_resolve_action",
+    }
+)
+
+# Group tokens accepted in rendered `session_security.secondary_blocked`
+# config — SSOT declares groups, code owns the tool-name expansion.
+# "persona_write" is a pseudo-token gating ada_persona set/reset only.
+_SECONDARY_BLOCKED_GROUPS = {
+    "control": CONTROL_TOOLS,
+    "memory_write": MEMORY_WRITE_TOOLS,
+    "calendar_write": CALENDAR_WRITE_TOOLS,
+    "cms_write": CMS_WRITE_TOOLS,
+    "devin_confirmed": DEVIN_CONFIRMED_TOOLS,
+    "doc": DOC_TOOLS,
+}
+
+
+def _slug(text: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(text or "").lower()).strip("_")
+
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -470,10 +499,22 @@ class ToolRunner:
         # Issued-key/caller name for this session (set by pwa_server at ws
         # connect). Fallback memory-policy identity when speaker ID is off.
         self.session_caller_name: str | None = None
+        # HA person entity bound to the session's issued key at connect
+        # (auth.ha_person_for_key). Bridges key -> person.<id> identity so
+        # unenrolled speakers still land in their person-scoped bank.
+        self.session_caller_ha_person: str | None = None
+        # Session owner identity pinned at websocket connect
+        # (session_caller_ha_person or session_caller_name). Immutable for
+        # the session's lifetime — ALL permission checks evaluate this;
+        # a recognized guest voice can never widen authorization (P1/P3).
+        self.session_owner_identity: str | None = None
         # Shared L0 doc-work log — the provider assigns this to the
         # conversation's doc_items list so ada_doc_* calls land in the
         # session report timeline. None = doc actions not recorded.
         self.doc_log: list[dict[str, Any]] | None = None
+        # Shared L0 session-mechanics log — same pattern as doc_log, for
+        # policy denials and security-relevant events.
+        self.event_log: list[dict[str, Any]] | None = None
         # Active SpeakerSession for voice enrollment — set by pwa_server
         # when the WebSocket session opens. Used by ada_enroll_speaker to
         # capture the user's voice from the buffered audio.
@@ -487,8 +528,54 @@ class ToolRunner:
 
     def _memory_identity(self) -> str | None:
         """Memory-policy identity: identified speaker's HA person first,
-        then the session's issued-key/caller name, else None (anonymous)."""
-        return self.current_speaker_ha_person or self.session_caller_name
+        then the key's bound HA person, then the key/caller name, else None."""
+        return (self.current_speaker_ha_person
+                or self.session_caller_ha_person
+                or self.session_caller_name)
+
+    def policy_identity(self) -> str | None:
+        """Authorization identity: the session owner pinned at connect.
+        Falls back to the live speaker identity only when no session owner
+        exists (REST calls, anonymous/test sessions)."""
+        return self.session_owner_identity or self._memory_identity()
+
+    def _is_secondary_turn(self) -> bool:
+        """True while the identified speaker is not the session owner.
+
+        Only a positively-identified different voice counts — an
+        unrecognized voice can never be proven non-owner, so it keeps the
+        owner's rights (unenrolled owners must not lock themselves out).
+        """
+        speaker = self.current_speaker_ha_person
+        owner = self.session_owner_identity
+        if not speaker or not owner or speaker == owner:
+            return False
+        caller = self.session_caller_name
+        aliases = {owner, caller, f"person.{_slug(caller)}" if caller else None}
+        return speaker not in aliases
+
+    def _secondary_blocked_tools(self) -> set[str]:
+        """Blocked tool set for secondary turns. Rendered SSOT config
+        (`session_security.secondary_blocked`) overrides the default when a
+        list is present; absent/malformed config fails closed to the
+        default. Entries may be group names or literal tool names."""
+        try:
+            spec = self.banks.session_security.get("secondary_blocked")
+        except Exception:
+            spec = None
+        if not isinstance(spec, list):
+            return SECONDARY_BLOCKED_TOOLS | {"persona_write"}
+        blocked: set[str] = set()
+        for tok in spec:
+            tok = str(tok)
+            blocked |= _SECONDARY_BLOCKED_GROUPS.get(tok, {tok})
+        return blocked
+
+    def _log_session_event(self, kind: str, **fields: Any) -> None:
+        if self.event_log is not None:
+            self.event_log.append({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "kind": str(kind), **fields})
 
     @property
     def banks(self) -> MemoryBankRegistry:
@@ -522,6 +609,25 @@ class ToolRunner:
         # resolved identity — the runner is shared across sessions, so its
         # mutable identity fields can race when sessions overlap.
         ident = self._memory_identity() if identity is _IDENTITY_UNSET else identity
+        policy_ident = self.policy_identity()
+        if self._is_secondary_turn():
+            action = str(call_args.get("action") or "").lower()
+            blocked = self._secondary_blocked_tools()
+            if name in blocked or (
+                name == "ada_persona" and action in ("set", "reset")
+                and "persona_write" in blocked
+            ):
+                self._log_session_event(
+                    "tool_denied", tool=name,
+                    speaker=self.current_speaker_ha_person,
+                    owner=self.session_owner_identity)
+                logger.warning(
+                    "denied %s: secondary speaker %r (owner %r)",
+                    name, self.current_speaker_ha_person,
+                    self.session_owner_identity)
+                raise PermissionError(
+                    "Only the session owner can run this action — propose it "
+                    "to them aloud and let them confirm in their own voice.")
         if name in CONTROL_TOOLS:
             confirmed = call_args.pop("confirmed", None)
             await self._check_control_allowed(name, call_args, confirmed)
@@ -538,7 +644,7 @@ class ToolRunner:
             confirmed = call_args.pop("confirmed", None)
             self._check_devin_confirmed(name, call_args, confirmed)
         elif name in DOC_TOOLS:
-            if not self.banks.bank_allowed(DOC_BANK, ident):
+            if not self.banks.bank_allowed(DOC_BANK, policy_ident):
                 logger.warning(
                     "denied %s for identity %r: documents bank policy",
                     name, ident)
@@ -582,7 +688,7 @@ class ToolRunner:
             )
         entity_id = str(args.get("entity_id") or "")
         if entity_id:
-            ident = self._memory_identity()
+            ident = self.policy_identity()
             if not self.banks.control_allowed(entity_id, ident):
                 logger.warning(
                     "denied %s on %r for identity %r: control policy",
@@ -639,13 +745,13 @@ class ToolRunner:
             bank = self.banks.bank(bank_name)
         except KeyError as exc:
             raise ValueError(str(exc)) from exc
-        if not self.banks.bank_allowed(bank.name, self._memory_identity()):
+        if not self.banks.bank_allowed(bank.name, self.policy_identity()):
             logger.warning(
                 "denied %s on %r for identity %r",
-                name, bank.name, self._memory_identity(),
+                name, bank.name, self.policy_identity(),
             )
             allowed = ", ".join(
-                self.banks.banks_for_person(self._memory_identity())
+                self.banks.banks_for_person(self.policy_identity())
             )
             raise PermissionError(
                 f"memory bank '{bank.name}' is not available for this speaker"
@@ -1171,14 +1277,35 @@ class ToolRunner:
         )
 
     async def ada_persona(
-        self, action: str, knob: str | None = None, value: Any = None
+        self, action: str, knob: str | None = None, value: Any = None,
+        person: str | None = None,
     ) -> dict[str, Any]:
-        """Read or adjust the current speaker's stored style preferences."""
-        identity = self._memory_identity()
+        """Read or adjust a speaker's stored style preferences.
+
+        Without `person` this targets the current session identity. With
+        `person` (name 'KK' or entity 'person.kk') it targets that HA
+        person's profile — allowed for full-access identities, or when the
+        target resolves to the caller's own persona bank (e.g. an
+        unenrolled speaker addressing themselves by name via key_scope).
+        """
+        caller = self.policy_identity()
         action = str(action or "show").lower()
+        if action == "list":
+            return await self._persona_list()
+        # "Self" follows the speaking voice (personalization); `person`
+        # targeting authorizes against the session owner (P3).
+        identity = self._memory_identity() or caller
+        if person:
+            identity = await self._resolve_persona_target(person, caller)
+            if (action in ("set", "reset") and identity != caller
+                    and self.banks.personal_bank_name(identity) == "personal"):
+                raise PermissionError(
+                    f"{identity} has no person-scoped memory bank — refusing "
+                    "to file their persona under the default 'personal' bank; "
+                    "provision a scoped bank (e.g. personal-<id>) first")
         if action == "show":
             p = await memory_ops.get_persona(self.mddb, self.banks, identity)
-            return {"verb": "show", **p}
+            return {"verb": "show", "person": identity, **p}
         if action == "reset":
             return await memory_ops.reset_persona(self.mddb, self.banks, identity)
         if action == "set":
@@ -1187,14 +1314,86 @@ class ToolRunner:
             result = await memory_ops.set_persona(
                 self.mddb, self.banks, identity, str(knob), value
             )
+            result["person"] = identity
             # Tell the model to apply it now — the persisted doc covers
             # future sessions via the prime injection.
-            result["apply"] = (
-                f"Preference saved and active now: {knob}={value}. "
-                "Honor it in your next replies without announcing the mechanism."
-            )
+            if identity == caller:
+                result["apply"] = (
+                    f"Preference saved and active now: {knob}={value}. "
+                    "Honor it in your next replies without announcing the mechanism."
+                )
+            else:
+                result["apply"] = (
+                    f"Preference saved for {identity}: {knob}={value}. "
+                    "It applies to their sessions, not this speaker's."
+                )
             return result
-        raise ValueError(f"unknown persona action {action!r} (set|show|reset)")
+        raise ValueError(f"unknown persona action {action!r} (set|show|reset|list)")
+
+    def _persona_admin(self, caller: str | None) -> bool:
+        """Full-access identities may manage other people's profiles.
+
+        'admin' is the name the master ADA_API_KEY resolves to; otherwise a
+        {full: true} entry in person_policies or control_policies grants it
+        (same convention as actuation admin)."""
+        if not caller:
+            return False
+        if caller == "admin":
+            return True
+        for policies in (self.banks.person_policies, self.banks.control_policies):
+            if (policies.get(caller) or {}).get("full"):
+                return True
+        return False
+
+    async def _resolve_persona_target(self, person: str, caller: str | None) -> str:
+        """Resolve person ('KK' or 'person.kk') to an entity id and check
+        the caller may touch that profile."""
+        resolved = await self.context.ha_client.resolve_person(person)
+        if resolved is None:
+            try:
+                known = ", ".join(
+                    p["entity_id"] for p in await self.context.ha_client.persons()
+                ) or "none"
+            except Exception:
+                known = "unavailable (Home Assistant unreachable)"
+            raise ValueError(
+                f"no Home Assistant person matches {person!r} (known: {known})"
+            )
+        target = resolved["entity_id"]
+        if target == caller:
+            return target
+        # Self-targeting by name still counts as self when both identities
+        # land in the same persona bank (e.g. key 'user-kk' -> person.kk).
+        if caller:
+            own = memory_ops.persona_bank_for(self.banks, caller)
+            theirs = memory_ops.persona_bank_for(self.banks, target)
+            if own is not None and own is theirs:
+                return target
+        if not self._persona_admin(caller):
+            logger.warning(
+                "denied persona manage of %s for identity %r", target, caller
+            )
+            raise PermissionError(
+                "managing another person's profile requires a full-access "
+                f"identity (caller: {caller or 'anonymous'})"
+            )
+        return target
+
+    async def _persona_list(self) -> dict[str, Any]:
+        """List HA person entities with their persona bank + custom knobs."""
+        people = await self.context.ha_client.persons()
+        out = []
+        for p in people:
+            entry = dict(p)
+            if self.mddb is not None:
+                bank = memory_ops.persona_bank_for(self.banks, p["entity_id"])
+                entry["persona_bank"] = bank.name if bank else None
+                persona = await memory_ops.get_persona(
+                    self.mddb, self.banks, p["entity_id"]
+                )
+                entry["custom_knobs"] = persona["custom"]
+            out.append(entry)
+        return {"verb": "list", "persons": out}
 
     async def ada_forget(self, bank: str, key: str, reason: str | None = None) -> dict[str, Any]:
         """Retract a memory: status becomes retracted; the doc stays auditable."""
@@ -1239,15 +1438,20 @@ class ToolRunner:
             # Auto-resolve 'Name' -> person.<slug> so the enrollment maps to
             # the speaker's HA person (memory banks + actuation ACL follow)
             # even when the model doesn't pass ha_person explicitly.
-            slug = re.sub(r"[^a-z0-9]+", "_", str(name).strip().lower()).strip("_")
-            if slug:
-                candidate = f"person.{slug}"
-                try:
-                    state = await self.context.ha_client.get_state(candidate)
-                    if state.get("entity_id") == candidate:
-                        ha_person = candidate
-                except Exception:
-                    pass
+            try:
+                resolved = await self.context.ha_client.resolve_person(str(name))
+                if resolved:
+                    ha_person = resolved["entity_id"]
+            except Exception:
+                slug = re.sub(r"[^a-z0-9]+", "_", str(name).strip().lower()).strip("_")
+                if slug:
+                    candidate = f"person.{slug}"
+                    try:
+                        state = await self.context.ha_client.get_state(candidate)
+                        if state.get("entity_id") == candidate:
+                            ha_person = candidate
+                    except Exception:
+                        pass
         try:
             result = self.speaker_session.enroll_from_buffer(
                 str(name),

@@ -48,9 +48,20 @@ def synth(base_hz: float, seed: int, seconds: float = SECONDS) -> bytes:
 
 
 def main() -> None:
-    outdir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent
+    # Optional extra voices: --voice name=base_hz:seed (repeatable). More
+    # synthetic speakers for multi-guest session-security scenarios.
+    extras = []
+    argv = sys.argv[1:]
+    while argv and argv[0] == "--voice":
+        argv.pop(0)
+        spec = argv.pop(0)
+        name, _, rest = spec.partition("=")
+        hz, _, seed = rest.partition(":")
+        extras.append((name.strip(), float(hz), int(seed or "0")))
+    outdir = Path(argv[0]) if argv else Path(__file__).parent
     outdir.mkdir(parents=True, exist_ok=True)
-    for name, base, seed in [("voice-guest", 150.0, 11), ("voice-other", 210.0, 37)]:
+    voices = [("voice-guest", 150.0, 11), ("voice-other", 210.0, 37)] + extras
+    for name, base, seed in voices:
         data = synth(base, seed)
         (outdir / f"{name}.pcm").write_bytes(data)
         print(f"wrote {outdir / (name + '.pcm')} ({len(data) / 32000:.1f}s)")

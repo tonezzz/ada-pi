@@ -679,6 +679,183 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["verb"], "show")
         self.assertEqual(out["knobs"]["tone"], "warm")
 
+    def _mock_persons(self, people):
+        self.runner.context.ha_client.persons = AsyncMock(return_value=people)
+        self.runner.context.ha_client.resolve_person = AsyncMock(
+            side_effect=lambda q: next(
+                (p for p in people
+                 if p["entity_id"] == q or p["name"].lower() == q.lower()
+                 or p["entity_id"] == f"person.{q.lower()}"),
+                None,
+            )
+        )
+
+    async def test_persona_list_shows_ha_people(self):
+        self.runner._banks = self._persona_registry()
+        self.runner.session_caller_name = "admin-device"
+        self._mock_persons([
+            {"entity_id": "person.kk", "name": "KK", "state": "home"},
+            {"entity_id": "person.testo_2", "name": "Testo", "state": "not_home"},
+        ])
+        out = await self.runner.execute("ada_persona", {"action": "list"})
+        self.assertEqual(out["verb"], "list")
+        self.assertEqual(
+            [p["entity_id"] for p in out["persons"]],
+            ["person.kk", "person.testo_2"],
+        )
+        # testo_2's person-scoped bank claims it; person.kk is unlisted so it
+        # falls back to the default 'personal' bank (no restrictive policy).
+        self.assertEqual(out["persons"][0]["persona_bank"], "personal")
+        self.assertEqual(out["persons"][1]["persona_bank"], "personal-testo")
+
+    async def test_persona_set_other_person_as_admin(self):
+        self.runner._banks = self._persona_registry()
+        self.runner.session_caller_name = "admin"
+        self._mock_persons([
+            {"entity_id": "person.testo_2", "name": "Testo", "state": "home"},
+        ])
+        out = await self.runner.execute(
+            "ada_persona",
+            {"action": "set", "person": "Testo", "knob": "tone", "value": "direct"},
+        )
+        args = self.runner.mddb.add_document.call_args.args
+        self.assertEqual(args[0], "ada-ha-bank-personal-testo")
+        self.assertEqual(out["person"], "person.testo_2")
+        self.assertIn("their sessions", out["apply"])
+
+    async def test_persona_set_other_person_denied_for_restricted(self):
+        self.runner._banks = self._persona_registry()
+        self.runner.session_caller_name = "testo"
+        self._mock_persons([
+            {"entity_id": "person.tony", "name": "Tony", "state": "home"},
+        ])
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "ada_persona",
+                {"action": "set", "person": "Tony", "knob": "tone", "value": "direct"},
+            )
+        self.runner.mddb.add_document.assert_not_called()
+
+    async def test_persona_key_bound_ha_person_routes_identity(self):
+        # A key issued with ha_person=person.testo_2 makes the session
+        # identity person.testo_2 even without a voiceprint — persona
+        # writes land in the person-scoped bank.
+        self.runner._banks = self._persona_registry()
+        self.runner.session_caller_name = "user-testo"
+        self.runner.session_caller_ha_person = "person.testo_2"
+        self.assertEqual(self.runner._memory_identity(), "person.testo_2")
+        await self.runner.execute(
+            "ada_persona", {"action": "set", "knob": "tone", "value": "direct"}
+        )
+        args = self.runner.mddb.add_document.call_args.args
+        self.assertEqual(args[0], "ada-ha-bank-personal-testo")
+
+    async def test_persona_set_self_by_name_via_same_bank(self):
+        # Key 'testo' resolves to the same persona bank as person.testo_2 —
+        # naming yourself is self-targeting, not a cross-person write.
+        self.runner._banks = self._persona_registry()
+        self.runner.session_caller_name = "testo"
+        self._mock_persons([
+            {"entity_id": "person.testo_2", "name": "Testo", "state": "home"},
+        ])
+        out = await self.runner.execute(
+            "ada_persona",
+            {"action": "set", "person": "person.testo_2", "knob": "tone",
+             "value": "direct"},
+        )
+        self.assertEqual(out["person"], "person.testo_2")
+
+    async def test_persona_unknown_person_lists_known(self):
+        self.runner._banks = self._persona_registry()
+        self.runner.session_caller_name = "admin"
+        self._mock_persons([
+            {"entity_id": "person.kk", "name": "KK", "state": "home"},
+        ])
+        with self.assertRaises(ValueError) as ctx:
+            await self.runner.execute(
+                "ada_persona", {"action": "show", "person": "nobody"}
+            )
+        self.assertIn("person.kk", str(ctx.exception))
+
+    def _pin_session(self, caller, person, owner=None, speaker=None):
+        self.runner.session_caller_name = caller
+        self.runner.session_caller_ha_person = person
+        self.runner.session_owner_identity = (
+            owner if owner is not None else (person or caller))
+        self.runner.current_speaker_ha_person = speaker
+
+    async def test_policy_identity_prefers_owner_over_speaker(self):
+        # Session-security P1: the pinned owner authorizes, never the
+        # currently-speaking voice.
+        self._pin_session("user-kk", "person.kk", speaker="person.tony")
+        self.assertEqual(self.runner.policy_identity(), "person.kk")
+        self.assertEqual(self.runner._memory_identity(), "person.tony")
+
+    async def test_secondary_speaker_denied_writes(self):
+        self.runner._banks = _registry(instance="tony")
+        self._pin_session("user-kk", "person.kk", speaker="person.tony")
+        self.assertTrue(self.runner._is_secondary_turn())
+        for tool, args in (
+            ("ada_remember", {"bank": "personal", "text": "x"}),
+            ("control_entity", {"entity_id": "light.den", "on": True}),
+            ("ada_doc_search", {"query": "id"}),
+            ("ada_memory_search", {"bank": "general", "query": "x"}),
+            ("ada_enroll_speaker", {"name": "Tony"}),
+        ):
+            with self.assertRaises(PermissionError, msg=tool):
+                await self.runner.execute(tool, args)
+        self.runner.mddb.add_document.assert_not_called()
+
+    async def test_secondary_speaker_denied_persona_write(self):
+        self.runner._banks = self._persona_registry()
+        self._pin_session("user-kk", "person.kk", speaker="person.tony")
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "ada_persona",
+                {"action": "set", "knob": "tone", "value": "direct"})
+        # Reads still work — a guest may show (their own) persona.
+        out = await self.runner.execute(
+            "ada_persona", {"action": "show"})
+        self.assertEqual(out["verb"], "show")
+        self.assertEqual(out["person"], "person.tony")
+
+    async def test_owner_voice_restores_rights(self):
+        self.runner._banks = _registry(instance="tony")
+        self.runner.mddb.vector_search.return_value = []
+        self._pin_session("user-kk", "person.kk", speaker="person.kk")
+        self.assertFalse(self.runner._is_secondary_turn())
+        out = await self.runner.execute(
+            "ada_remember", {"bank": "personal", "text": "owner fact"})
+        self.assertEqual(out["verb"], "create")
+
+    async def test_key_name_alias_not_secondary(self):
+        # Unbound key 'tony' + speaker person.tony must not self-lock the
+        # owner — the person.<slug> alias keeps them the same identity.
+        self._pin_session("tony", None, owner="tony", speaker="person.tony")
+        self.assertFalse(self.runner._is_secondary_turn())
+
+    async def test_unrecognized_voice_not_secondary(self):
+        # No positive non-owner identification -> not a secondary turn
+        # (unenrolled owners must not lock themselves out; policy P6 edge).
+        self._pin_session("user-kk", "person.kk", speaker=None)
+        self.assertFalse(self.runner._is_secondary_turn())
+
+    async def test_persona_cross_target_fails_closed_without_scoped_bank(self):
+        # Admin targets a person with no scoped bank — refuse rather than
+        # file their persona under the default 'personal' bank.
+        self.runner._banks = self._persona_registry()
+        self._pin_session("admin", None, owner="admin")
+        self._mock_persons([
+            {"entity_id": "person.bob", "name": "Bob", "state": "home"},
+        ])
+        with self.assertRaises(PermissionError) as ctx:
+            await self.runner.execute(
+                "ada_persona",
+                {"action": "set", "person": "Bob", "knob": "tone",
+                 "value": "direct"})
+        self.assertIn("person-scoped", str(ctx.exception))
+        self.runner.mddb.add_document.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

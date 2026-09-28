@@ -1,0 +1,23 @@
+# Audited baselines for the continuous-improvement loop.
+# report-rollup.py compares day/week aggregates against these; violations
+# become escalations with refs. Bump deliberately — this is the "what is
+# normal" contract, not a living average.
+version: 1
+updated: "2026-09-26"
+
+latency:
+  # session turn_latency events (per-day aggregates)
+  ttft_p95_ms: 1500          # escalate if day p95 exceeds this
+  ttft_p95_regress_x: 1.25   # ...or if it exceeds prior baseline × this
+  tool_dur_p95_ms: 2000      # per-tool-call p95 across the day
+
+speaker_id:
+  accuracy_min: 1.0          # identify_eval: escalate on any misidentify
+  refusal_rate_max: 0.10
+
+scenario:
+  failures_max: 0            # any scenario run failure escalates
+
+recall:
+  mddb_hit_rate_min: 0.9     # recall-bench MDDB path
+  summaries_p95_ms: 5000     # local summaries scan ceiling
