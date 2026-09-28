@@ -1776,7 +1776,11 @@ class GeminiLiveProvider(RealtimeProvider):
                         "'uplink' starts the display's camera uplink (frames available via "
                         "GET /frame?screen=N&token=cam), 'uplink-stop' stops it. "
                         "Screens are numbered — call vcast_list first if you need to pick one. "
-                        "Some screens are private to their owner — casting to another person's screen is denied."
+                        "Some screens are private to their owner — casting to another person's screen is denied. "
+                        "Camera captures (uplink, cctv walls) are permission-gated: ask the user BEFORE "
+                        "starting one, and if the result's active_captures shows a running capture, "
+                        "acknowledge it and ask before stopping — never silently stop or leave it unmentioned "
+                        "when the user changes the subject."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {

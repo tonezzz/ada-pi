@@ -2014,6 +2014,12 @@ class ToolRunner:
                 await asyncio.to_thread(
                     self._vcast_api, "/pub",
                     {"screen": int(screen), "msg": {"type": "stop"}})
+                try:
+                    await asyncio.to_thread(self._vcast_api, "/capture",
+                                            {"screen": int(screen),
+                                             "active": False})
+                except Exception:
+                    pass
             return {"ok": True, "zone": zone, "stopped": True}
         n = int(screen or 1)
         if n:
@@ -2021,6 +2027,12 @@ class ToolRunner:
         await asyncio.to_thread(
             self._vcast_api, "/camwall",
             {"zone": zone, "enabled": True, "screen": n})
+        try:
+            await asyncio.to_thread(self._vcast_api, "/capture", {
+                "screen": n, "source": "camwall", "ch": zone,
+                "active": True, "by": "ada"})
+        except Exception:
+            pass
         url = (os.environ.get(
                    "ADA_CAMWALL_BASE",
                    "https://tony-dell.taila0626a.ts.net/apps/camwall/")
@@ -2161,5 +2173,24 @@ class ToolRunner:
             if not url:
                 raise ValueError("url is required for " + action)
             msg = {"type": action, "url": url}
-        return await asyncio.to_thread(
+        out = await asyncio.to_thread(
             self._vcast_api, "/pub", {"screen": screen, "msg": msg})
+        # capture lease bookkeeping — the relay's /capture state is ground
+        # truth for the ask-before-stopping contract; the display also POSTs
+        # on uplink-start, but this covers display-offline cases
+        if action in {"uplink", "uplink-stop", "stop"}:
+            try:
+                await asyncio.to_thread(self._vcast_api, "/capture", {
+                    "screen": screen,
+                    "active": action == "uplink",
+                    "source": "cam",
+                    "by": "ada",
+                })
+            except Exception:
+                pass
+        try:
+            caps = await asyncio.to_thread(self._vcast_api, "/capture")
+            out["active_captures"] = caps.get("captures") or {}
+        except Exception:
+            pass
+        return out
