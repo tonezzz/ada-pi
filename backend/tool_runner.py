@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import collections
+import hashlib
 import inspect
 import json
 import logging
 import os
 import re
+import secrets
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -105,6 +108,21 @@ CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
+# Confirmation gate: `confirmed` is a self-asserted flag — the server cannot
+# verify the user actually said yes, the flag exists to force the
+# propose -> restate -> explicit-yes -> execute protocol and to leave an
+# audit trail. Two acceptance forms:
+#   confirmed: truthy spellings ('yes', 'true', '1', 'confirmed'). Strict-bool
+#     parsing only produced spurious denials (the model re-asking an already
+#     answered question) without changing the self-asserted semantics.
+#   confirm_token: the bound form. A denial mints a single-use token tied to
+#     the exact tool + args fingerprint, so a 'yes' can only arm the action it
+#     was shown — not a rephrased or unrelated retry — and cannot be replayed.
+_CONFIRM_TRUE = frozenset({"true", "1", "yes", "y", "confirm", "confirmed"})
+CONFIRM_TOKEN_TTL_S = float(os.environ.get("ADA_CONFIRM_TOKEN_TTL_S", "120"))
+_CONFIRM_TOKEN_MAX = 64
+_CONFIRM_AUDIT_MAX = 200
+
 CONTROL_RATE_WINDOW_S = float(os.environ.get("ADA_CONTROL_RATE_WINDOW_S", "60"))
 CONTROL_MAX_PER_ENTITY = int(os.environ.get("ADA_CONTROL_MAX_PER_ENTITY", "5"))
 CONTROL_MAX_GLOBAL = int(os.environ.get("ADA_CONTROL_MAX_GLOBAL", "30"))
@@ -128,6 +146,25 @@ def _int_or_none(value: str | None) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _confirmed_truthy(value: Any) -> bool:
+    """Accept the spellings LLM callers actually emit. The flag is
+    self-asserted either way, so 'yes'/'true'/1 carry the same weight as a
+    strict boolean — rejecting them only manufactured retry loops."""
+    if value is True:
+        return True
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return value == 1
+    return isinstance(value, str) and value.strip().lower() in _CONFIRM_TRUE
+
+
+def _confirm_fingerprint(tool: str, args: dict[str, Any]) -> str:
+    """Stable digest binding a confirmation to one exact tool call."""
+    blob = json.dumps(args, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(f"{tool}\0{blob}".encode()).hexdigest()
 
 
 
@@ -525,6 +562,14 @@ class ToolRunner:
         self._calendar_loaded = False
         self._control_calls: list[float] = []
         self._control_entity_calls: dict[str, list[float]] = {}
+        # Bound confirmations minted on denial: token -> {fp, at, tool}.
+        # Single-use, TTL'd; see _mint_confirm_token/_consume_confirm_token.
+        self._confirm_tokens: dict[str, dict[str, Any]] = {}
+        # Structured ledger of confirm proposals/grants/consumptions — the
+        # audit trail for "which action did the user actually approve?".
+        self._confirm_audit: collections.deque[dict[str, Any]] = collections.deque(
+            maxlen=_CONFIRM_AUDIT_MAX
+        )
 
     def _memory_identity(self) -> str | None:
         """Memory-policy identity: identified speaker's HA person first,
@@ -609,6 +654,10 @@ class ToolRunner:
         # resolved identity — the runner is shared across sessions, so its
         # mutable identity fields can race when sessions overlap.
         ident = self._memory_identity() if identity is _IDENTITY_UNSET else identity
+        confirm: tuple[Any, Any] = (
+            call_args.pop("confirmed", None),
+            call_args.pop("confirm_token", None),
+        )
         policy_ident = self.policy_identity()
         if self._is_secondary_turn():
             action = str(call_args.get("action") or "").lower()
@@ -629,20 +678,15 @@ class ToolRunner:
                     "Only the session owner can run this action — propose it "
                     "to them aloud and let them confirm in their own voice.")
         if name in CONTROL_TOOLS:
-            confirmed = call_args.pop("confirmed", None)
-            await self._check_control_allowed(name, call_args, confirmed)
+            await self._check_control_allowed(name, call_args, *confirm)
         elif name in MEMORY_WRITE_TOOLS:
-            confirmed = call_args.pop("confirmed", None)
-            self._check_memory_write_allowed(name, call_args, confirmed)
+            self._check_memory_write_allowed(name, call_args, *confirm)
         elif name in CALENDAR_WRITE_TOOLS:
-            confirmed = call_args.pop("confirmed", None)
-            self._check_calendar_write_allowed(name, call_args, confirmed)
+            self._check_calendar_write_allowed(name, call_args, *confirm)
         elif name in CMS_WRITE_TOOLS:
-            confirmed = call_args.pop("confirmed", None)
-            self._check_cms_write_allowed(name, call_args, confirmed)
+            self._check_cms_write_allowed(name, call_args, *confirm)
         elif name in DEVIN_CONFIRMED_TOOLS:
-            confirmed = call_args.pop("confirmed", None)
-            self._check_devin_confirmed(name, call_args, confirmed)
+            self._check_devin_confirmed(name, call_args, *confirm)
         elif name in DOC_TOOLS:
             if not self.banks.bank_allowed(DOC_BANK, policy_ident):
                 logger.warning(
@@ -651,8 +695,7 @@ class ToolRunner:
                 raise PermissionError(
                     "document tools are outside this session's access policy")
             if name in DOC_CONFIRMED_TOOLS:
-                confirmed = call_args.pop("confirmed", None)
-                self._check_doc_confirmed(name, call_args, confirmed)
+                self._check_doc_confirmed(name, call_args, *confirm)
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
         return await method(**call_args)
@@ -672,8 +715,99 @@ class ToolRunner:
                 call_args.pop(key, None)
         return call_args
 
+    # -- confirmation gate machinery -------------------------------------
+
+    def _audit_confirmation(
+        self, event: str, tool: str, fingerprint: str, via: str
+    ) -> None:
+        self._confirm_audit.append({
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "event": event,
+            "tool": tool,
+            "fingerprint": fingerprint[:12],
+            "via": via,
+            "identity": self._memory_identity(),
+        })
+
+    def confirmation_audit(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Newest-last ledger of confirm proposals, grants, consumptions,
+        and denials — the auditable answer to 'approved which action?'."""
+        entries = list(self._confirm_audit)
+        return entries[-max(1, int(limit)):]
+
+    def _mint_confirm_token(self, tool: str, args: dict[str, Any]) -> str:
+        """Mint a single-use token bound to this exact tool + args."""
+        now = time.monotonic()
+        for tok, rec in list(self._confirm_tokens.items()):
+            if now - rec["at"] > CONFIRM_TOKEN_TTL_S:
+                self._confirm_tokens.pop(tok, None)
+        while len(self._confirm_tokens) >= _CONFIRM_TOKEN_MAX:
+            self._confirm_tokens.pop(next(iter(self._confirm_tokens)))
+        token = "cfm-" + secrets.token_hex(5)
+        fp = _confirm_fingerprint(tool, args)
+        self._confirm_tokens[token] = {"fp": fp, "at": now, "tool": tool}
+        self._audit_confirmation("proposed", tool, fp, "token")
+        return token
+
+    def _consume_confirm_token(
+        self, tool: str, args: dict[str, Any], token: Any
+    ) -> str | None:
+        """Validate and consume a minted token; None = accepted, else reason."""
+        if not isinstance(token, str) or not token.strip():
+            return "not a string"
+        rec = self._confirm_tokens.get(token)
+        if rec is None:
+            return "unknown or expired confirm_token"
+        if time.monotonic() - rec["at"] > CONFIRM_TOKEN_TTL_S:
+            self._confirm_tokens.pop(token, None)
+            return "confirm_token expired"
+        if rec["tool"] != tool:
+            return "confirm_token was issued for a different tool"
+        if rec["fp"] != _confirm_fingerprint(tool, args):
+            return "confirm_token was issued for different arguments"
+        self._confirm_tokens.pop(token, None)  # single-use
+        return None
+
+    def _require_confirmation(
+        self,
+        name: str,
+        args: dict[str, Any],
+        confirmed: Any,
+        token: Any,
+        instruction: str,
+    ) -> None:
+        """Shared confirm gate. Accepts a truthy `confirmed` (user said yes
+        before the call) or a bound `confirm_token` minted by an earlier
+        denial. Otherwise raises PermissionError carrying a fresh token."""
+        fp = _confirm_fingerprint(name, args)
+        if _confirmed_truthy(confirmed):
+            if token is not None:
+                # Burn the token even though the flag sufficed — a token left
+                # unconsumed here could otherwise be replayed later.
+                self._consume_confirm_token(name, args, token)
+            self._audit_confirmation("granted", name, fp, "confirmed")
+            return
+        rejected = ""
+        if token is not None:
+            reason = self._consume_confirm_token(name, args, token)
+            if reason is None:
+                self._audit_confirmation("consumed", name, fp, "token")
+                return
+            rejected = f" ({reason})"
+            self._audit_confirmation("denied", name, fp, f"token:{reason}")
+        else:
+            self._audit_confirmation("denied", name, fp, "unconfirmed")
+        fresh = self._mint_confirm_token(name, args)
+        logger.warning("denied %s %r: confirmation required%s", name, args, rejected)
+        raise PermissionError(
+            f"{instruction}{rejected} A bound alternative: replay the same "
+            f"call with confirm_token='{fresh}' "
+            f"(single use, expires in {int(CONFIRM_TOKEN_TTL_S)}s)."
+        )
+
     async def _check_control_allowed(
         self, name: str, args: dict[str, Any], confirmed: Any,
+        confirm_token: Any = None,
     ) -> None:
         """Server-side gate for actuating tools. Raises PermissionError on denial."""
         if os.environ.get("ADA_READ_ONLY") == "true":
@@ -724,17 +858,18 @@ class ToolRunner:
                     if level == "dangerous" and object_id.startswith(eid.split(".", 1)[-1] + "_"):
                         safety = "dangerous"
                         break
-            if safety == "dangerous" and confirmed is not True:
-                logger.warning("denied %s %r: dangerous device without confirmed=true", name, args)
-                raise PermissionError(
-                    f"{entity_id} is marked dangerous. Call again with confirmed=true "
-                    "only after explicit user confirmation."
+            if safety == "dangerous":
+                self._require_confirmation(
+                    name, args, confirmed, confirm_token,
+                    f"{entity_id} is marked dangerous. Call again with "
+                    "confirmed=true only after explicit user confirmation.",
                 )
             calls.append(now)
         self._control_calls.append(now)
 
     def _check_memory_write_allowed(
         self, name: str, args: dict[str, Any], confirmed: Any,
+        confirm_token: Any = None,
     ) -> None:
         """Server-side gate for memory-bank writes. Raises PermissionError on denial."""
         if os.environ.get("ADA_READ_ONLY") == "true":
@@ -763,55 +898,55 @@ class ToolRunner:
         if name not in bank.allowed_tools:
             logger.warning("denied %s on %r: tool not in allowed_tools", name, bank_name)
             raise PermissionError(f"tool {name} is not allowed on memory bank '{bank_name}'")
-        if bank.write_policy == "confirmed" and confirmed is not True:
-            logger.warning("denied %s on %r: write_policy=confirmed without confirmed=true", name, bank_name)
-            raise PermissionError(
-                f"memory bank '{bank_name}' requires confirmation. Call again with "
-                "confirmed=true only after explicit user confirmation."
+        if bank.write_policy == "confirmed":
+            self._require_confirmation(
+                name, args, confirmed, confirm_token,
+                f"memory bank '{bank_name}' requires confirmation. Call again "
+                "with confirmed=true only after explicit user confirmation.",
             )
 
     def _check_calendar_write_allowed(
         self, name: str, args: dict[str, Any], confirmed: Any,
+        confirm_token: Any = None,
     ) -> None:
         """Server-side gate for calendar/task writes. Raises PermissionError on denial."""
         if os.environ.get("ADA_READ_ONLY") == "true":
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("calendar writes are disabled (ADA_READ_ONLY=true)")
-        if confirmed is not True:
-            logger.warning("denied %s %r: calendar write without confirmed=true", name, args)
-            raise PermissionError(
-                f"{name} requires confirmation. Restate the details to the user, "
-                "get an explicit yes, then call again with confirmed=true."
-            )
+        self._require_confirmation(
+            name, args, confirmed, confirm_token,
+            f"{name} requires confirmation. Restate the details to the user, "
+            "get an explicit yes, then call again with confirmed=true.",
+        )
 
     def _check_cms_write_allowed(
         self, name: str, args: dict[str, Any], confirmed: Any,
+        confirm_token: Any = None,
     ) -> None:
         """Server-side gate for miniapp page writes. Raises PermissionError on denial."""
         if os.environ.get("ADA_READ_ONLY") == "true":
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("CMS writes are disabled (ADA_READ_ONLY=true)")
-        if confirmed is not True:
-            logger.warning("denied %s %r: CMS write without confirmed=true", name, args)
-            raise PermissionError(
-                f"{name} requires confirmation. Restate the page slug, title, and "
-                "what will change, get an explicit yes, then call again with confirmed=true."
-            )
+        self._require_confirmation(
+            name, args, confirmed, confirm_token,
+            f"{name} requires confirmation. Restate the page slug, title, and "
+            "what will change, get an explicit yes, then call again with confirmed=true.",
+        )
 
     def _check_devin_confirmed(
         self, name: str, args: dict[str, Any], confirmed: Any,
+        confirm_token: Any = None,
     ) -> None:
         """Server-side gate for devin dispatch/followup. Raises PermissionError on denial."""
         if os.environ.get("ADA_READ_ONLY") == "true":
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("devin tools are disabled (ADA_READ_ONLY=true)")
-        if confirmed is not True:
-            logger.warning("denied %s %r: devin call without confirmed=true", name, args)
-            raise PermissionError(
-                f"{name} requires confirmation. Restate the repo, task, and "
-                "that an unattended Devin session will make code changes, get an "
-                "explicit yes, then call again with confirmed=true."
-            )
+        self._require_confirmation(
+            name, args, confirmed, confirm_token,
+            f"{name} requires confirmation. Restate the repo, task, and "
+            "that an unattended Devin session will make code changes, get an "
+            "explicit yes, then call again with confirmed=true.",
+        )
 
     # -- Devin dispatch tools (headless sessions on tony-dell; job SSOT:
     #    docs/ssot/jobs/ada/2026-09-22-ada-devin-dispatch.yml) --
@@ -834,17 +969,17 @@ class ToolRunner:
 
     def _check_doc_confirmed(
         self, name: str, args: dict[str, Any], confirmed: Any,
+        confirm_token: Any = None,
     ) -> None:
         """Server-side gate for doc archive/print. Raises PermissionError on denial."""
         if os.environ.get("ADA_READ_ONLY") == "true":
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("document tools are disabled (ADA_READ_ONLY=true)")
-        if confirmed is not True:
-            logger.warning("denied %s %r: doc call without confirmed=true", name, args)
-            raise PermissionError(
-                f"{name} requires confirmation. Restate the archive/print "
-                "target, get an explicit yes, then call again with confirmed=true."
-            )
+        self._require_confirmation(
+            name, args, confirmed, confirm_token,
+            f"{name} requires confirmation. Restate the archive/print "
+            "target, get an explicit yes, then call again with confirmed=true.",
+        )
 
     # -- Document archive tools (doc-archive service on idc01 + MDDB
     #    `documents` collection — the shared Ada/Devin document index) --

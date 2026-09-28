@@ -939,6 +939,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "boolean",
                                 "description": "Required for dangerous-safety entities; set true only after explicit user confirmation.",
                             },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
                         },
                         "required": ["entity_id", "on"],
                         "additionalProperties": False,
@@ -1092,6 +1096,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "boolean",
                                 "description": "Required for dangerous-safety covers; set true only after explicit user confirmation.",
                             },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
                         },
                         "required": ["entity_id", "action"],
                         "additionalProperties": False,
@@ -1113,6 +1121,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "confirmed": {
                                 "type": "boolean",
                                 "description": "Required for buttons attached to dangerous devices; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
                         "required": ["entity_id"],
@@ -1146,6 +1158,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "confirmed": {
                                 "type": "boolean",
                                 "description": "Required for dangerous-safety entities; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
                         "required": ["entity_id", "action"],
@@ -1724,6 +1740,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "boolean",
                                 "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
                             },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
                             "prime": {
                                 "type": "boolean",
                                 "description": (
@@ -1763,6 +1783,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "boolean",
                                 "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
                             },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
                         },
                         "required": ["bank", "key"],
                         "additionalProperties": False,
@@ -1800,6 +1824,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "confirmed": {
                                 "type": "boolean",
                                 "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
                         "required": ["bank", "key", "outcome"],
@@ -2075,6 +2103,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "boolean",
                                 "description": "Required; set true only after explicit user confirmation.",
                             },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
                         },
                         "required": ["title", "start", "end"],
                         "additionalProperties": False,
@@ -2096,6 +2128,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "confirmed": {
                                 "type": "boolean",
                                 "description": "Required; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
                         "required": ["event_id"],
@@ -2148,6 +2184,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "boolean",
                                 "description": "Required; set true only after explicit user confirmation.",
                             },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
                         },
                         "required": ["title"],
                         "additionalProperties": False,
@@ -2169,6 +2209,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "confirmed": {
                                 "type": "boolean",
                                 "description": "Required; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
                         "required": ["task_id"],
@@ -2263,6 +2307,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "boolean",
                                 "description": "Required; set true only after explicit user confirmation.",
                             },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
                         },
                         "required": ["slug", "title", "content"],
                         "additionalProperties": False,
@@ -2284,6 +2332,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "confirmed": {
                                 "type": "boolean",
                                 "description": "Required; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
                         "required": ["slug"],
@@ -2336,6 +2388,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "boolean",
                                 "description": "Required; set true only after explicit user confirmation.",
                             },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
                         },
                         "required": ["repo", "task"],
                         "additionalProperties": False,
@@ -2377,6 +2433,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "confirmed": {
                                 "type": "boolean",
                                 "description": "Required; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
                         "required": ["task_id", "message"],
@@ -2462,6 +2522,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "boolean",
                                 "description": "Required; set true only after explicit user confirmation.",
                             },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
                         },
                         "required": ["slug"],
                         "additionalProperties": False,
@@ -2492,6 +2556,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "confirmed": {
                                 "type": "boolean",
                                 "description": "Required; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
                         "required": ["slug"],

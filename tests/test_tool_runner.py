@@ -1,8 +1,21 @@
+import json
 import os
+import re
+import tempfile
 import unittest
-from unittest.mock import AsyncMock
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
+from backend.memory_banks import MemoryBankRegistry
 from backend.tool_runner import AdaMemoryStore, ToolRunner
+
+
+def _hermetic_registry(instance="test") -> MemoryBankRegistry:
+    """Empty local registry so gate tests don't depend on the ambient
+    ~/.config/ada/memory-banks.json (whose control_policies vary by host)."""
+    path = Path(tempfile.mkdtemp()) / "banks.json"
+    path.write_text(json.dumps({"banks": {}}))
+    return MemoryBankRegistry(path=str(path), instance=instance, notebook_ids={})
 
 
 class ToolRunnerSafetyTests(unittest.IsolatedAsyncioTestCase):
@@ -81,6 +94,7 @@ class ControlGateTests(unittest.IsolatedAsyncioTestCase):
         self.ha_client.press_button.return_value = {"pressed": True}
         self.ha_client.set_power.return_value = {"state": "off"}
         self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
         self.runner.mddb = AsyncMock()
         self.runner.mddb.search_documents.return_value = []
         self.runner.memory.mddb = self.runner.mddb
@@ -261,6 +275,131 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
                 )
         finally:
             os.environ.pop("ADA_READ_ONLY", None)
+
+
+class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):
+    """The flexible-but-bound confirmation gate: truthy spellings pass,
+    denials mint single-use tokens bound to the exact call, and the
+    ledger records every proposal/grant/consumption."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.ha_client.entities.return_value = [
+            {"entity_id": "cover.gate", "state": "closed", "available": True, "name": "Gate"},
+        ]
+        self.ha_client.control_cover.return_value = {"ok": True}
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.search_documents.return_value = []
+        self.runner.mddb.delete_document.return_value = {"status": "deleted"}
+        self.runner.memory.mddb = self.runner.mddb
+
+    async def _deny_for_token(self, tool="cms_delete_page", args=None) -> str:
+        args = args or {"slug": "pool-notes"}
+        with self.assertRaises(PermissionError) as ctx:
+            await self.runner.execute(tool, dict(args))
+        match = re.search(r"confirm_token='(cfm-[0-9a-f]+)'", str(ctx.exception))
+        self.assertIsNotNone(match, f"no token in denial: {ctx.exception}")
+        return match.group(1)
+
+    async def test_truthy_spellings_accepted(self):
+        for value in (True, 1, "yes", "true", "confirmed"):
+            result = await self.runner.execute(
+                "cms_delete_page", {"slug": "pool-notes", "confirmed": value}
+            )
+            self.assertEqual(result["status"], "deleted", msg=f"confirmed={value!r}")
+
+    async def test_falsey_spellings_rejected(self):
+        for value in (None, False, 0, "", "no", "nope"):
+            with self.assertRaises(PermissionError, msg=f"confirmed={value!r}"):
+                await self.runner.execute(
+                    "cms_delete_page", {"slug": "pool-notes", "confirmed": value}
+                )
+
+    async def test_denial_mints_bound_token_then_replay_executes(self):
+        token = await self._deny_for_token()
+        result = await self.runner.execute(
+            "cms_delete_page", {"slug": "pool-notes", "confirm_token": token}
+        )
+        self.assertEqual(result["status"], "deleted")
+        self.runner.mddb.delete_document.assert_awaited_once()
+
+    async def test_token_single_use_replay_rejected(self):
+        token = await self._deny_for_token()
+        await self.runner.execute(
+            "cms_delete_page", {"slug": "pool-notes", "confirm_token": token}
+        )
+        with self.assertRaises(PermissionError) as ctx:
+            await self.runner.execute(
+                "cms_delete_page", {"slug": "pool-notes", "confirm_token": token}
+            )
+        self.assertIn("unknown or expired", str(ctx.exception))
+
+    async def test_token_bound_to_exact_args(self):
+        token = await self._deny_for_token(args={"slug": "pool-notes"})
+        with self.assertRaises(PermissionError) as ctx:
+            await self.runner.execute(
+                "cms_delete_page", {"slug": "other-page", "confirm_token": token}
+            )
+        self.assertIn("different arguments", str(ctx.exception))
+
+    async def test_token_bound_to_tool(self):
+        token = await self._deny_for_token(args={"slug": "pool-notes"})
+        with self.assertRaises(PermissionError) as ctx:
+            await self.runner.execute(
+                "control_cover",
+                {"entity_id": "cover.gate", "action": "open", "confirm_token": token},
+            )
+        self.assertIn("different tool", str(ctx.exception))
+        self.ha_client.control_cover.assert_not_awaited()
+
+    async def test_expired_token_rejected(self):
+        token = await self._deny_for_token()
+        with patch("backend.tool_runner.CONFIRM_TOKEN_TTL_S", -1):
+            with self.assertRaises(PermissionError) as ctx:
+                await self.runner.execute(
+                    "cms_delete_page", {"slug": "pool-notes", "confirm_token": token}
+                )
+        self.assertIn("expired", str(ctx.exception))
+
+    async def test_audit_ledger_tracks_proposal_grant_and_consumption(self):
+        token = await self._deny_for_token()
+        await self.runner.execute(
+            "cms_delete_page", {"slug": "pool-notes", "confirm_token": token}
+        )
+        await self.runner.execute(
+            "cms_delete_page", {"slug": "pool-notes", "confirmed": "yes"}
+        )
+        events = [(e["event"], e["via"]) for e in self.runner.confirmation_audit()]
+        self.assertIn(("denied", "unconfirmed"), events)
+        self.assertIn(("proposed", "token"), events)
+        self.assertIn(("consumed", "token"), events)
+        self.assertIn(("granted", "confirmed"), events)
+        # every entry is bound to a fingerprint of the exact call
+        self.assertTrue(all(len(e["fingerprint"]) == 12 for e in self.runner.confirmation_audit()))
+
+    async def test_confirmed_true_still_arms_dangerous_control(self):
+        result = await self.runner.execute(
+            "control_cover",
+            {"entity_id": "cover.gate", "action": "open", "confirmed": True},
+        )
+        self.assertEqual(result, {"ok": True})
+
+    async def test_token_arms_dangerous_control(self):
+        with self.assertRaises(PermissionError) as ctx:
+            await self.runner.execute(
+                "control_cover", {"entity_id": "cover.gate", "action": "open"}
+            )
+        token = re.search(r"confirm_token='(cfm-[0-9a-f]+)'", str(ctx.exception)).group(1)
+        result = await self.runner.execute(
+            "control_cover",
+            {"entity_id": "cover.gate", "action": "open", "confirm_token": token},
+        )
+        self.assertEqual(result, {"ok": True})
 
 
 if __name__ == "__main__":

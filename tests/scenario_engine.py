@@ -26,6 +26,11 @@ A scenario file looks like:
         expect: {expanded_contains: ["ada-ha-michael"]}
       - reconnect_after: 3h          # simulate ws disconnect+reconnect;
         expect: {output_contains: ['"tier": "return"']}   # null = first session
+
+Steps may also carry `capture: {name: "regex"}` — the first regex group is
+stored and `{name}` placeholders in later steps' args are substituted
+(e.g. replay a confirm_token minted by an earlier denial). `audit:
+confirmations` snapshots the runner's structured confirm ledger.
 """
 
 from __future__ import annotations
@@ -33,6 +38,7 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import time
 import unittest.mock
 from datetime import datetime, timezone
 from pathlib import Path
@@ -345,8 +351,22 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
         "steps": [],
         "failures": [],
     }
+    captures: dict[str, str] = {}
+
+    def _subst(value: Any) -> Any:
+        if isinstance(value, str):
+            for key, stored in captures.items():
+                value = value.replace("{" + key + "}", stored)
+            return value
+        if isinstance(value, dict):
+            return {k: _subst(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [_subst(v) for v in value]
+        return value
+
     for i, step in enumerate(data.get("steps") or []):
         entry: dict[str, Any] = {"i": i, "step": step}
+        t0 = time.monotonic()
         try:
             if "say" in step:
                 conv.add_user(str(step["say"]))
@@ -356,6 +376,12 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
                 result = {"output": "recorded"}
             elif "expand_query" in step:
                 result = {"expanded": conv.expand_query(str(step["expand_query"]))}
+            elif "audit" in step:
+                if str(step["audit"]) == "confirmations":
+                    entries = runner.confirmation_audit()
+                    result = {"count": len(entries), "entries": entries}
+                else:
+                    result = {"error": f"unknown audit {step['audit']!r}"}
             elif "reconnect_after" in step:
                 # Simulate a websocket disconnect+reconnect: snapshot the
                 # transcript tail, start a fresh ConversationMemory, and run
@@ -385,7 +411,7 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
             elif "tool" in step:
                 try:
                     result = await runner.execute(
-                        str(step["tool"]), dict(step.get("args") or {})
+                        str(step["tool"]), _subst(dict(step.get("args") or {}))
                     )
                 except Exception as exc:
                     result = {"error": f"{type(exc).__name__}: {exc}"}
@@ -393,6 +419,11 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
                 result = {"error": "unknown step kind"}
         except Exception as exc:  # engine bug safety net
             result = {"error": f"engine: {exc}"}
+        entry["ms"] = int((time.monotonic() - t0) * 1000)
+        for var, pattern in (step.get("capture") or {}).items():
+            match = re.search(str(pattern), json.dumps(result, default=str))
+            if match:
+                captures[var] = match.group(1)
         entry["result"] = result
         entry["failures"] = check_expect(result, step.get("expect") or {})
         report["steps"].append(entry)
