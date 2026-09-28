@@ -1926,6 +1926,45 @@ class ToolRunner:
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.load(r)
 
+    async def cctv_wall(self, action: str, zone: str, screen: int = 0) -> dict[str, Any]:
+        """Start/stop the periodic-thumbnail camera wall on a vcast screen.
+        Enables the zone in the relay's /camwall state (the puller on
+        tony-dell refreshes thumbs into /apps/camwall/data/<zone>/) and casts
+        the wall page. Zones: zone-a, noble-park, tony-house."""
+        import asyncio
+        action = (action or "start").strip().lower()
+        zone = (zone or "").strip().lower().replace(" ", "-")
+        valid = {"zone-a", "noble-park", "tony-house"}
+        if zone not in valid:
+            return {"error": f"unknown zone {zone!r} — valid: {sorted(valid)}"}
+        if action == "stop":
+            await asyncio.to_thread(
+                self._vcast_api, "/camwall", {"zone": zone, "enabled": False})
+            if screen:
+                await asyncio.to_thread(
+                    self._vcast_api, "/pub",
+                    {"screen": int(screen), "msg": {"type": "stop"}})
+            return {"ok": True, "zone": zone, "stopped": True}
+        n = int(screen or 1)
+        if n:
+            await self._check_screen_owner(n, self._memory_identity())
+        await asyncio.to_thread(
+            self._vcast_api, "/camwall",
+            {"zone": zone, "enabled": True, "screen": n})
+        url = (os.environ.get(
+                   "ADA_CAMWALL_BASE",
+                   "https://tony-dell.taila0626a.ts.net/apps/camwall/")
+               + f"?zone={zone}")
+        out = await asyncio.to_thread(
+            self._vcast_api, "/pub",
+            {"screen": n, "msg": {"type": "nav", "url": url}})
+        out.update({
+            "zone": zone, "screen": n, "url": url,
+            "note": ("thumbs refresh in the background (VMS cams ~60s, "
+                     "house ~30s) — the wall fills in within a minute."),
+        })
+        return out
+
     async def vcast_list(self) -> dict[str, Any]:
         """List registered vcast virtual displays (screen number, device,
         online/offline, current state)."""

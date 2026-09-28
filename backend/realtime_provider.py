@@ -1780,6 +1780,39 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "cctv_wall",
+                    "description": (
+                        "Show the live camera wall on a vcast display — a grid of periodic thumbnails "
+                        "for a camera zone. Zones: 'zone-a' (estate perimeter: roads, walkway, guard), "
+                        "'noble-park' (pool, tennis, playground, mini mart), 'tony-house' (home cams "
+                        "c100/c201/coffee). Use when the user's focus shifts to a camera zone — "
+                        "e.g. they ask to check the pool or the front road — OFFER to put the wall up "
+                        "('want the Zone A wall on screen 1?') rather than doing it unprompted for a "
+                        "single one-off look; a single look is ada_camera_snapshot. action='start' "
+                        "enables background refresh + casts the grid; 'stop' disables it. Thumbs are "
+                        "still frames updated in the background — not live video."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "description": "'start' (default) or 'stop'.",
+                            },
+                            "zone": {
+                                "type": "string",
+                                "description": "'zone-a', 'noble-park', or 'tony-house'.",
+                            },
+                            "screen": {
+                                "type": "integer",
+                                "description": "vcast screen number (vcast_list) — default 1.",
+                            },
+                        },
+                        "required": ["zone"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "gev_command",
                     "description": (
                         "Control God's Eye View (the Cesium map app on /apps/gev/) on whatever screen is showing "
