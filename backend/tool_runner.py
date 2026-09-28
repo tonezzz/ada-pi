@@ -712,6 +712,14 @@ class ToolRunner:
                     "document tools are outside this session's access policy")
             if name in DOC_CONFIRMED_TOOLS:
                 self._check_doc_confirmed(name, call_args, *confirm)
+        # confirmed/confirm_token were popped for the gates above — hand them
+        # back to methods that declare them (e.g. devin_job_report re-checks
+        # confirmation internally on its publish path).
+        _params = inspect.signature(method).parameters
+        if "confirmed" in _params and confirm[0] is not None:
+            call_args["confirmed"] = confirm[0]
+        if "confirm_token" in _params and confirm[1] is not None:
+            call_args["confirm_token"] = confirm[1]
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
         return await method(**call_args)
@@ -1063,7 +1071,8 @@ class ToolRunner:
             return _JOB_GONE_GRACE_S + 1
 
     async def devin_job_report(
-        self, publish: bool = False, confirmed: bool = False, limit: int = 60,
+        self, publish: bool = False, confirmed: bool = False,
+        confirm_token: str | None = None, limit: int = 60,
     ) -> dict[str, Any]:
         """Compose the Devin job report page content.
 
@@ -1145,7 +1154,8 @@ class ToolRunner:
         }
         if publish:
             self._check_cms_write_allowed(
-                "devin_job_report", {"slug": DEVIN_JOB_REPORT_SLUG}, confirmed)
+                "devin_job_report", {"slug": DEVIN_JOB_REPORT_SLUG},
+                confirmed, confirm_token)
             pub = await self.cms_publish_page(
                 DEVIN_JOB_REPORT_SLUG, "Devin Job Report", markdown)
             result["publish"] = pub
