@@ -29,8 +29,21 @@ async def snapshot(channel: str, settle: float | None = None) -> tuple[bytes, st
     params = {"ch": channel}
     if settle is not None:
         params["settle"] = str(settle)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(45.0)) as client:
-        r = await client.get(f"{base}/snap", params=params)
+    import asyncio
+    r = None
+    async with httpx.AsyncClient(timeout=httpx.Timeout(75.0)) as client:
+        for _try in range(2):
+            try:
+                r = await client.get(f"{base}/snap", params=params)
+            except httpx.HTTPError:
+                r = None
+            if r is not None and r.status_code == 404:
+                break
+            if r is not None and r.status_code == 200:
+                break
+            await asyncio.sleep(2)  # dead pane / flaky P2P — retry once
+    if r is None:
+        raise RuntimeError("camera snapshot service unreachable")
     if r.status_code == 404:
         try:
             names = r.json().get("channels", [])

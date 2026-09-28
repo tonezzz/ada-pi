@@ -2487,9 +2487,22 @@ class ToolRunner:
         try:
             import urllib.parse
             url = f"{vms}/snap?ch={urllib.parse.quote(camera)}"
-            req = urllib.request.Request(url)
-            with urllib.request.urlopen(req, timeout=60) as r:
-                png = r.read()
+            # P2P streams are flaky — a dead pane now 503s; retry once.
+            png = b""
+            last_exc: Exception | None = None
+            for _try in range(2):
+                try:
+                    with urllib.request.urlopen(
+                            urllib.request.Request(url), timeout=75) as r:
+                        png = r.read()
+                    if len(png) >= 500:
+                        break
+                except Exception as exc:
+                    last_exc = exc
+                    png = b""
+                    time.sleep(2)
+            if last_exc is not None and not png:
+                raise last_exc
             if len(png) < 500:
                 return {"ok": False, "error": f"no frame from {camera!r} (camera may be offline)"}
             slug = "".join(c if c.isalnum() else "-"
