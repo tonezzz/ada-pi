@@ -2759,6 +2759,24 @@ class ToolRunner:
         except (OSError, ValueError):
             return {}
 
+    @staticmethod
+    def _private_screen_denial(what: str, owner: str, person: str) -> PermissionError:
+        """Owner-lock denial text. Must tell the model that the ACL lives in
+        cast-screens.json — a memory note (ada_remember) can never change it,
+        so 'record it as public then retry' loops forever."""
+        who = owner.replace("person.", "")
+        lock = ("owner-locks live in cast-screens.json; memory notes cannot "
+                f"change them — {who} flips the entry to \"shared\" there "
+                "if it should be public")
+        if person == "anonymous":
+            return PermissionError(
+                f"denied: {what} is {who}'s private screen — speaker "
+                f"unidentified. If the speaker is {who}, retry once "
+                f"speaker-ID resolves them; {lock}")
+        return PermissionError(
+            f"denied: {what} is {who}'s private screen "
+            f"(speaker={person.replace('person.', '')}) — {lock}")
+
     async def _check_screen_owner(self, screen: int, ident: str | None) -> None:
         """vcast screens are owner-locked: a speaker may only cast to their
         own screen unless the screen is 'shared'."""
@@ -2771,13 +2789,7 @@ class ToolRunner:
                   else (cfg.get("aliases") or {}).get(s, "anonymous"))
         if owner == "shared" or owner == person:
             return
-        who = owner.replace("person.", "")
-        if person == "anonymous":
-            raise PermissionError(
-                f"denied: screen {screen} is {who}'s private screen — "
-                "identify the speaker first")
-        raise PermissionError(
-            f"denied: screen {screen} is {who}'s private screen")
+        raise self._private_screen_denial(f"screen {screen}", owner, person)
 
     def _check_tv_source_owner(self, target: str, ident: str | None) -> None:
         """Gate personal desktop streams in tv_action nav targets
@@ -2802,13 +2814,7 @@ class ToolRunner:
                   else (cfg.get("aliases") or {}).get(s, "anonymous"))
         if owner == "shared" or owner == person:
             return
-        who = owner.replace("person.", "")
-        if person == "anonymous":
-            raise PermissionError(
-                f"denied: {source} is {who}'s private screen — "
-                "identify the speaker first")
-        raise PermissionError(
-            f"denied: {source} is {who}'s private screen")
+        raise self._private_screen_denial(source, owner, person)
 
     async def cast_to_screen(self, screen: int, action: str = "nav",
                              url: str = "") -> dict[str, Any]:
