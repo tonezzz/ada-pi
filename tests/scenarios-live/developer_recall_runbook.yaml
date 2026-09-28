@@ -1,0 +1,27 @@
+name: developer-recall-runbook
+tier: smoke
+# Developer training benchmark — can Ada recall an exact SSOT runbook command?
+#
+# The target fact is in the infrastructure-ssot / chaba-docs bank:
+#   "python3 scripts/sync-ssot-to-mddb.py" syncs SSOT YAML into MDDB.
+#
+# What this exercises:
+#   1. ada_memory_search finds a relevant procedure
+#   2. The response quotes the exact script path
+
+session:
+  identity: tony
+
+turns:
+  - user: >-
+      Which script should I run to sync the SSOT infrastructure files into MDDB?
+    expect:
+      response_contains_any:
+        - sync-ssot-to-mddb.py
+        - python3 scripts/sync-ssot-to-mddb.py
+      response_not_contains:
+        - sync-ada-memory
+        - "I don't know"
+        - "I'm not sure"
+      timeout_s: 100
+      settle_s: 8
