@@ -65,6 +65,10 @@ CMS_WRITE_TOOLS = {"cms_publish_page", "cms_delete_page"}
 # read-only.
 DEVIN_CONFIRMED_TOOLS = {"devin_dispatch", "devin_followup", "devin_answer"}
 
+# Camera captures/casts visible on screens — gated by action inside
+# _check_capture_confirmed (uplink, wall start, cctv snapshot).
+CAPTURE_CONFIRMED_TOOLS = {"cast_to_screen", "cctv_wall", "cctv_snapshot"}
+
 # Job ledger collection: job/<id> docs (status running|awaiting-user|
 # answered|done|failed) written by devin-dispatch-watch and job-run.sh;
 # answer/<id> docs are the user's refined replies. Lives in the
@@ -722,8 +726,16 @@ class ToolRunner:
                 raise PermissionError(
                     "Only the session owner can run this action — propose it "
                     "to them aloud and let them confirm in their own voice.")
-        if name in CONTROL_TOOLS:
+        if name in CAPTURE_CONFIRMED_TOOLS:
+            # camera-capture gate first (uplink/wall-start/cctv-snapshot);
+            # cast_to_screen then still runs the control gate (read-only,
+            # rate limit)
+            self._check_capture_confirmed(name, call_args, confirm[0])
+            if name == "cast_to_screen":
+                await self._check_control_allowed(name, call_args, *confirm)
+        elif name in CONTROL_TOOLS:
             await self._check_control_allowed(name, call_args, *confirm)
+
         elif name in MEMORY_WRITE_TOOLS:
             self._check_memory_write_allowed(name, call_args, *confirm)
         elif name in CALENDAR_WRITE_TOOLS:
@@ -919,6 +931,26 @@ class ToolRunner:
                 )
             calls.append(now)
         self._control_calls.append(now)
+
+    def _check_capture_confirmed(
+        self, name: str, args: dict[str, Any], confirmed: Any,
+    ) -> None:
+        """Server-side gate for camera captures/casts (Tony's rule):
+        starting a camera capture requires an explicit user yes."""
+        gated = (
+            (name == "cast_to_screen"
+             and str(args.get("action") or "").lower() == "uplink")
+            or (name == "cctv_wall"
+                and str(args.get("action") or "").lower() != "stop")
+            or name == "cctv_snapshot"
+        )
+        if gated and confirmed is not True:
+            logger.warning("denied %s %r: camera capture without confirmed=true", name, args)
+            raise PermissionError(
+                f"{name} starts a camera capture — ask the user explicitly "
+                "first, then call again with confirmed=true only after "
+                "they say yes."
+            )
 
     def _check_memory_write_allowed(
         self, name: str, args: dict[str, Any], confirmed: Any,
@@ -2037,10 +2069,10 @@ class ToolRunner:
     ) -> dict[str, Any]:
         """Enroll the current speaker's voice from buffered audio.
 
-        Captures the last ~3.5 seconds of audio from the active
-        SpeakerSession buffer — the user was just speaking, so their voice
-        is already captured. Call this when the user asks to enroll their
-        voice or when Ada offers enrollment.
+        Uses the unrecognized-speaker voice accrued across the session
+        (or the last ~15s of audio if they were already identified) —
+        no separate recording needed. Call this when the user asks to
+        enroll their voice or when Ada offers enrollment.
         """
         if self.speaker_session is None:
             return {

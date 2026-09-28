@@ -1621,6 +1621,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "integer",
                                 "description": "vcast screen number when target='screen'.",
                             },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required — camera captures start only after the user explicitly says yes.",
+                            },
                         },
                         "required": ["camera"],
                         "additionalProperties": False,
@@ -1862,6 +1866,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "url": {
                                 "type": "string",
                                 "description": "Target URL for nav/play/image/audio. Not needed for stop.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required for action='uplink' (camera capture) — set true only after the user explicitly confirms.",
                             },
                         },
                         "required": ["screen"],
