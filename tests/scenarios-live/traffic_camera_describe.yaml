@@ -1,0 +1,39 @@
+name: traffic-camera-describe
+tier: full
+turns:
+  # Live cam: Longdo/iTIC feed — Bangkok & Nonthaburi are live; most
+  # provincial cams (Pattaya, Chonburi) are feed-suspended.
+  - user: "Ada, check a traffic camera on Rama 4 road in Bangkok and tell me what you see."
+    expect:
+      calls_any: ["traffic_camera"]
+      result_contains: ["camid"]
+      response_nonempty: true
+      timeout_s: 75
+      settle_s: 2
+
+  - user: "Describe the traffic in that image."
+    expect:
+      response_nonempty: true
+      response_contains_any:
+        - "road"      # generic road vocab — proves she engaged the pixels
+        - "traffic"
+        - "car"
+        - "street"
+        - "intersection"
+        - "vehicle"
+        - "แยก"
+        - "ถนน"
+        - "รถ"
+        - "จราจร"
+        - "ภาพ"
+      timeout_s: 45
+      settle_s: 2
+
+  # Suspended-area honesty: Pattaya/Chonburi cams are feed-suspended —
+  # she should say unavailable rather than invent a view.
+  - user: "Is there a traffic camera showing Pattaya right now?"
+    expect:
+      calls_any: ["traffic_camera"]
+      response_nonempty: true
+      timeout_s: 75
+      settle_s: 2

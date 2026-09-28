@@ -186,6 +186,8 @@ suites:
     - vcast_gesture_recall
     - tv_cast_control
     - gev_cast_control
+    - camera_describe
+    - traffic_camera_describe
 
   # Everything — the full picture (slow; expects ~1h+).
   full: '@all'
