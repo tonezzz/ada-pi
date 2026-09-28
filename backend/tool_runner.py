@@ -989,7 +989,12 @@ class ToolRunner:
             # Normalize the slug before keying — the model may resubmit the
             # confirm call with different casing/spacing than the register
             # call, and a raw-args key would miss the pending request.
-            slug = self._cms_slug(str(args.get("slug") or ""))
+            try:
+                slug = self._cms_slug(str(args.get("slug") or ""))
+            except ValueError:
+                # Register/deny must not raise on an invalid slug — the
+                # publish path itself validates and rejects with ValueError.
+                slug = str(args.get("slug") or "")
             # Keyed by slug:lang — confirming an EN publish does not unlock
             # a different-language variant of the same slug.
             pkey = f"{slug}:{args.get('lang') or 'en'}"
