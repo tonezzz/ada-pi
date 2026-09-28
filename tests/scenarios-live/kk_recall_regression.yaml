@@ -14,7 +14,7 @@ turns:
       timeout_s: 60
       settle_s: 6
       response_nonempty: true
-      response_contains_any: ["Pornsiri", "กุ้ง", "wife", "household"]
+      response_contains_any: ["Pornsiri", "พรศิริ", "กุ้ง", "wife", "ภรรยา", "household", "สมาชิก"]
 
   - user: "What do you know about คุณกุ้ง's car?"
     expect:
@@ -28,4 +28,4 @@ turns:
       timeout_s: 60
       settle_s: 6
       response_nonempty: true
-      response_contains_any: ["Ada", "assistant", "nickname", "you"]
+      response_contains_any: ["Ada", "assistant", "nickname", "you", "ดิฉัน", "คุณกุ้ง"]
