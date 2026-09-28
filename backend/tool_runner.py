@@ -2733,21 +2733,29 @@ class ToolRunner:
             pass
         return out
 
-    async def gev_command(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def gev_command(self, name: str, args: dict[str, Any] | None = None,
+                          screen: int | None = None,
+                          wait: float = 3.0) -> dict[str, Any]:
         """Send a command to God's Eye View clients — forwards a
-        function_call frame through the gev-gemini bridge to every
-        connected GEV browser (including a casted one on the TV)."""
+        function_call frame through the gev-gemini bridge to connected GEV
+        browsers (including casted ones). screen=N targets that display;
+        wait (seconds, 0=fire-and-forget) collects the clients'
+        tool_response so queries like get_current_view_state can answer."""
         import asyncio
         import urllib.request
         base = os.environ.get(
             "GEV_CMD_URL",
             "https://tony-dell.taila0626a.ts.net/apps/gev-cmd/command")
-        payload = json.dumps({"name": name, "args": args or {}}).encode()
+        payload = json.dumps({
+            "name": name, "args": args or {},
+            "screen": screen,
+            "wait": min(float(wait or 0), 10.0),
+        }).encode()
         def _post():
             req = urllib.request.Request(
                 base, data=payload,
                 headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with urllib.request.urlopen(req, timeout=15) as r:
                 return json.load(r)
         try:
             out = await asyncio.to_thread(_post)

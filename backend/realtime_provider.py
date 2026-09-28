@@ -267,7 +267,16 @@ VMS_INSTRUCTIONS = (
     "notable. It is a single still taken a few seconds ago, NOT live video; "
     "say what you see now and do not claim continuous monitoring. If the tool "
     "fails or the frame is dark or frozen, say the camera seems offline "
-    "rather than guessing."
+    "rather than guessing. "
+    "DESCRIBE-FIRST: when the user asks what cameras show ('เห็นอะไรบ้าง', "
+    "'what do you see', 'check zone X'), pull frames yourself with "
+    "ada_camera_snapshot and describe them — do NOT offer to cast or uplink "
+    "to a screen unless the user asks to see it on a display (they may not "
+    "be near one). For a zone summary, snap 2-3 key channels of that zone "
+    "and summarize across them. "
+    "SELF-HEAL on misses: if the tool returns the available channel list, "
+    "retry immediately with the closest listed name — do not ask the user "
+    "to pick."
 )
 
 def _as_num(v) -> float | None:
@@ -2167,8 +2176,10 @@ class GeminiLiveProvider(RealtimeProvider):
                         "then drive it with gev_command. Useful names: fly_to_location {location}, zoom_to_globe {}, "
                         "adjust_camera_zoom {factor}, set_layer_visibility {layer, visible}, track_entity {entity_id}, "
                         "stop_tracking {}, move_camera {dx, dy}, analyst_query {query}, annotate_map {text, lat, lon}, "
-                        "clear_annotations {}, get_current_view_state {}. Returns error if no GEV client is connected — "
-                        "that means nothing is showing the app, cast it first."
+                        "clear_annotations {}, get_current_view_state {}. Optional 'screen' targets one vcast "
+                        "display (omit to hit every page showing GEV); the client replies are collected and "
+                        "returned in 'responses' — get_current_view_state actually answers. Returns error if "
+                        "no GEV client is connected — that means nothing is showing the app, cast it first."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2176,6 +2187,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "name": {"type": "string", "description": "GEV tool name."},
                             "args": {"type": "object", "description": "Tool arguments (per GEV tools.json)."},
+                            "screen": {"type": "integer", "description": "Limit to this vcast screen (omit = all GEV pages)."},
+                            "wait": {"type": "number", "description": "Seconds to wait for client responses (0 = fire-and-forget). Default 3."},
                         },
                         "required": ["name"],
                         "additionalProperties": False,
