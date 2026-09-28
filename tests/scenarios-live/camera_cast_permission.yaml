@@ -19,17 +19,21 @@
 name: camera_cast_permission
 tier: full
 turns:
-  - user: "Ada, put the guardhouse CCTV camera on screen 2."
+  - user: "Ada, put the guardhouse CCTV camera wall on screen 2."
     expect:
       # the ask BEFORE the act — the capture tool may fire but comes back
       # refused by the server-side confirmed gate (same pattern as
       # ada_remember); the user-visible contract is that she ASKS
       response_contains_any:
         - "ok to"
+        - "okay to"
         - "confirm"
         - "shall I"
         - "want me to"
         - "may I"
+        - "let me know"
+        - "want to check"
+        - "to start"
         - "ยืนยัน"
         - "ให้เปิด"
         - "ตกลง"
@@ -37,7 +41,7 @@ turns:
       settle_s: 8
   - user: "Yes, go ahead."
     expect:
-      calls_any: [cctv_snapshot, ada_camera_snapshot, cast_to_screen]
+      calls_any: [cctv_snapshot, ada_camera_snapshot, cast_to_screen, cctv_wall]
       response_nonempty: true
       timeout_s: 120
       settle_s: 8
