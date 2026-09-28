@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -1023,32 +1024,63 @@ class GeminiLiveProvider(RealtimeProvider):
             ),
             "channel": resolved,
         }
-        # Also publish the frame at an HTTPS URL the vcast/TV browsers can
-        # load (mixed-content-safe) so Ada can cast it: cast_to_screen(
-        # action='image', url=cast_url). Without this she invents a URL and
-        # the screen shows a broken image (seen 2026-09-28).
+        # Publish the frame two ways and prefer the relay copy for casting:
+        #  a) relay asset  {VCAST_API}/frame?screen=0&token=cam:<slug>-<ts>
+        #     — same-origin for vcast pages -> canvas stays clean so
+        #     vcast_snapshot can verify the cast visually
+        #  b) PWA static   https://idc01.../static/cam-snap/<name>.png
+        #     — durable public URL for inspection/other clients
+        slug = re.sub(r"[^a-z0-9]+", "-", resolved.lower()).strip("-")
+        token = f"cam:{slug}-{int(time.time())}"
+        try:
+            vbase = os.environ.get(
+                "VCAST_API",
+                "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+            payload = json.dumps({
+                "screen": 0, "token": token,
+                "data": "data:image/png;base64,"
+                        + base64.b64encode(png).decode(),
+                "state": "asset",
+            }).encode()
+            req = urllib.request.Request(
+                vbase + "/frame", data=payload,
+                headers={"Content-Type": "application/json"})
+            await asyncio.to_thread(urllib.request.urlopen, req, timeout=10)
+            # cast_url must be the PUBLIC same-origin route — the vcast page
+            # fetches it; the local VCAST_API base would cross origins and
+            # taint the canvas for vcast_snapshot.
+            pub = os.environ.get(
+                "VCAST_PUBLIC_API",
+                "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+            result["cast_url"] = f"{pub}/frame?screen=0&token={token}"
+        except Exception as exc:
+            logger.warning("session=%s snap relay publish failed: %s",
+                           self.session_id, exc)
         try:
             snap_dir = (Path(__file__).resolve().parent.parent
                         / "frontend" / "cam-snap")
             snap_dir.mkdir(parents=True, exist_ok=True)
-            slug = re.sub(r"[^a-z0-9]+", "-", resolved.lower()).strip("-")
             name = f"{slug}-{int(time.time())}.png"
             (snap_dir / name).write_bytes(png)
             snaps = sorted(snap_dir.glob("*.png"),
                            key=lambda p: p.stat().st_mtime)
             for old in snaps[:-20]:
                 old.unlink(missing_ok=True)
-            base = os.environ.get(
-                "ADA_SNAP_PUBLIC_BASE",
-                "https://idc01.taila0626a.ts.net/static/cam-snap/")
-            result["cast_url"] = base + name
-            result["output"] += (
-                " To show this frame on a vcast display, call "
-                "cast_to_screen(action='image', url=<cast_url>) — always use "
-                "cast_url exactly; never guess a URL.")
+            result.setdefault("cast_url",
+                              os.environ.get(
+                                  "ADA_SNAP_PUBLIC_BASE",
+                                  "https://idc01.taila0626a.ts.net/static/cam-snap/")
+                              + name)
+            result["inspect_url"] = result["cast_url"]
         except Exception as exc:
             logger.warning("session=%s snap publish failed: %s",
                            self.session_id, exc)
+        if result.get("cast_url"):
+            result["output"] += (
+                " To show this frame on a vcast display, call "
+                f"cast_to_screen(action='image', "
+                f"url='{result['cast_url']}') — copy that url value "
+                "character-for-character; never guess or invent a URL.")
         return result, (resolved, png, "image/png")
 
     async def _vcast_snapshot(self, args: dict) -> tuple[dict, tuple[str, bytes, str] | None]:
@@ -1505,11 +1537,13 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "cctv_snapshot",
                     "description": (
-                        "Grabs ONE snapshot frame from a home CCTV camera and shows it on a screen. "
-                        "Cameras: 'coffee corner' (coffee corner cam), 'c201', 'c100' (Xiaomi cams). "
-                        "target='tv' shows it on the living-room TV; target='screen' with screen=N sends "
-                        "it to a vcast display. Use when the user asks to see/check a camera or show a "
-                        "camera picture on a screen — a single image, not live video."
+                        "Grabs ONE snapshot frame from a CCTV camera AND shows it on a screen in a single "
+                        "call — use this whenever the user asks to put/show/cast a camera on a screen or TV. "
+                        "Home cameras: 'coffee corner', 'c201', 'c100'. Estate/VMS cameras: 'swimming pool', "
+                        "'tennis court', 'front rd. left/right', 'walkway', 'guard view', 'mini mart', "
+                        "'play ground', 'road in', 'road corner', 'washing machines', 'stairway room', 'cam01'. "
+                        "target='tv' for the living-room TV; target='screen' + screen=N for a vcast display. "
+                        "The tool handles snapshot + publish + cast itself — never invent an image URL."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {

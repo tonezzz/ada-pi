@@ -1828,15 +1828,52 @@ class ToolRunner:
     }
 
     @staticmethod
+    def _vms_publish(camera: str) -> dict[str, Any]:
+        """VMS-channel path: pull one frame from the XMEye shim (mn01:8377)
+        and publish it as a relay asset so vcast pages get a SAME-ORIGIN
+        URL — the canvas stays clean for vcast_snapshot verification.
+        Returns {"ok", "url"|"error"}."""
+        import base64, time
+        vms = os.environ.get("ADA_VMS_SNAP_URL", "").rstrip("/")
+        if not vms:
+            return {"ok": False, "error": "VMS snapshot service not configured"}
+        try:
+            import urllib.parse
+            url = f"{vms}/snap?ch={urllib.parse.quote(camera)}"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=60) as r:
+                png = r.read()
+            if len(png) < 500:
+                return {"ok": False, "error": f"no frame from {camera!r} (camera may be offline)"}
+            slug = "".join(c if c.isalnum() else "-"
+                           for c in camera.lower()).strip("-")
+            token = f"cam:{slug}-{int(time.time())}"
+            ToolRunner._vcast_api("/frame", {
+                "screen": 0, "token": token,
+                "data": "data:image/png;base64," + base64.b64encode(png).decode(),
+                "state": "asset"})
+            # URL the DISPLAY fetches — must be the public same-origin https
+            # route (vcast pages sit under tony-dell.../apps/), never the
+            # local VCAST_API base (http cross-origin -> canvas taint).
+            pub = os.environ.get(
+                "VCAST_PUBLIC_API",
+                "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+            return {"ok": True, "url": f"{pub}/frame?screen=0&token={token}",
+                    "camera": camera}
+        except Exception as exc:
+            return {"ok": False, "error": f"VMS snapshot failed: {exc}"}
+
+    @staticmethod
     def _cctv_grab(camera: str) -> dict[str, Any]:
         """Fetch one JPEG via go2rtc on tony-dell into the HA /local/ dir.
-        Returns {"ok", "url"|"error"}."""
+        Falls back to the VMS shim for estate cameras (front road, pool,
+        tennis, etc). Returns {"ok", "url"|"error"}."""
         import subprocess
         import time
         src = ToolRunner._CCTV_CAMS.get(camera.strip().lower())
         if not src:
-            return {"ok": False,
-                    "error": f"unknown camera {camera!r} — try c100, c201, coffee corner"}
+            # not a go2rtc home cam — try the VMS estate channel set
+            return ToolRunner._vms_publish(camera)
         name = f"snap-{src}-{int(time.time())}.jpg"
         host = os.environ.get("ADA_CCTV_SSH", "tony-dell-m2m")
         cmd = (
