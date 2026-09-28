@@ -2637,10 +2637,11 @@ class ToolRunner:
 
     async def vcast_list(self) -> dict[str, Any]:
         """List registered vcast virtual displays (screen number, device,
-        online/offline, current state)."""
+        online/offline, current state), plus the relay's ground truth:
+        active camera-capture leases and enabled cam-wall zones."""
         import asyncio
         data = await asyncio.to_thread(self._vcast_api, "/displays")
-        return {
+        out: dict[str, Any] = {
             "screens": [
                 {
                     "screen": s["screen"],
@@ -2653,6 +2654,19 @@ class ToolRunner:
             ],
             "pending": len(data.get("pending", [])),
         }
+        try:
+            caps = await asyncio.to_thread(self._vcast_api, "/capture")
+            out["active_captures"] = caps.get("captures") or {}
+        except Exception:
+            pass
+        try:
+            wall = await asyncio.to_thread(self._vcast_api, "/camwall")
+            zones = wall.get("zones") or {}
+            out["camwall_zones"] = {
+                z: v for z, v in zones.items() if v.get("enabled")}
+        except Exception:
+            pass
+        return out
 
     async def gev_command(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         """Send a command to God's Eye View clients — forwards a
