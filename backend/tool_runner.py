@@ -1975,6 +1975,47 @@ class ToolRunner:
             return result
         raise ValueError(f"unknown persona action {action!r} (set|show|reset|list)")
 
+    VOCAB_DOC_KEY = "vocab/log"
+
+    async def vocab_note(
+        self, term: str, correct: str, note: str | None = None
+    ) -> dict[str, Any]:
+        """Append a term-coaching entry to the current speaker's personal
+        vocab log (vocab/log in their own personal bank — KK's notes land in
+        personal-kk, Tony's in personal-tony). Not confirmation-gated:
+        append-only, scoped to the caller's own bank."""
+        bank = memory_ops.persona_bank_for(self.banks, self._memory_identity())
+        if bank is None:
+            raise PermissionError(
+                "vocab_note needs a personal bank — this identity has none"
+            )
+        term, correct = (term or "").strip(), (correct or "").strip()
+        if not term or not correct:
+            raise ValueError("vocab_note requires term and correct")
+        today = datetime.now(timezone.utc).date().isoformat()
+        line = f"- {term} → {correct} — {today}" + (f" ({note.strip()})" if note else "")
+        doc = await self.mddb.get_document(bank.mddb_collection, self.VOCAB_DOC_KEY)
+        body = ((doc or {}).get("contentMd") or doc and doc.get("content_md") or "")
+        if not body.strip():
+            body = "# Vocabulary — terms I heard, gently corrected\n"
+        if line not in body:
+            body = body.rstrip("\n") + "\n" + line + "\n"
+        meta = {
+            "kind": ["vocab"], "subject": ["persona"],
+            "status": ["active"], "scope": ["instance"],
+            "last_verified": [today],
+        }
+        if doc is None:
+            ok = await self.mddb.add_document(
+                bank.mddb_collection, self.VOCAB_DOC_KEY, "en", body, meta)
+        else:
+            ok = await self.mddb.update_document(
+                bank.mddb_collection, self.VOCAB_DOC_KEY, content_md=body, meta=meta)
+        if not ok:
+            return {"status": "error", "error": "mddb write failed"}
+        return {"status": "noted", "bank": bank.name, "key": self.VOCAB_DOC_KEY,
+                "term": term, "correct": correct}
+
     def _persona_admin(self, caller: str | None) -> bool:
         """Full-access identities may manage other people's profiles.
 
