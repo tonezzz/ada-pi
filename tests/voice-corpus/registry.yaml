@@ -1,10 +1,26 @@
-# Voice corpus registry — clips live in clips/ (16kHz mono wav, gitignored).
-#
-# Pipeline: scripts/voice-harvest.py <youtube-url> segments speech, clusters
-# by speaker embedding, and appends entries here as qualified: pending.
-# Tony reviews each entry → qualified: ok (bench runs it) or reject.
-#
-# kind: person | media  (media voices are negative/sink profiles)
-# clips: ordered — clip k enrolls, clip k+1 tests (accumulation simulation)
-
-speakers: []
+speakers:
+- id: yt-h190FMr7u94-spk0
+  source: https://www.youtube.com/shorts/h190FMr7u94
+  lang: th
+  kind: person
+  qualified: ok
+  note: 6 segments, 32s speech
+  clips:
+  - yt-h190FMr7u94-spk0-01.wav
+  - yt-h190FMr7u94-spk0-02.wav
+  - yt-h190FMr7u94-spk0-03.wav
+  - yt-h190FMr7u94-spk0-04.wav
+  - yt-h190FMr7u94-spk0-05.wav
+  - yt-h190FMr7u94-spk0-06.wav
+- id: yt-eglcvo5UUyQ-spk0
+  source: https://www.youtube.com/shorts/eglcvo5UUyQ
+  lang: th
+  kind: person
+  qualified: reject
+  note: 'SAME VOICE as yt-h190FMr7u94-spk0 (bench: cross-score 0.61-0.74, contamination
+    refused @74%) — duplicate, excluded'
+  clips:
+  - yt-eglcvo5UUyQ-spk0-01.wav
+  - yt-eglcvo5UUyQ-spk0-02.wav
+  - yt-eglcvo5UUyQ-spk0-03.wav
+  - yt-eglcvo5UUyQ-spk0-04.wav
