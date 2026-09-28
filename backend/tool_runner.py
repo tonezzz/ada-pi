@@ -2651,11 +2651,13 @@ class ToolRunner:
         """Start/stop the periodic-thumbnail camera wall on a vcast screen.
         Enables the zone in the relay's /camwall state (the puller on
         tony-dell refreshes thumbs into /apps/camwall/data/<zone>/) and casts
-        the wall page. Zones: zone-a, noble-park, tony-house."""
+        the wall page. Zones: zone-a, noble-park, tony-house, vms-noble-club,
+        vms-noble-a, rama9 (demo traffic wall — Longdo stills + YouTube)."""
         import asyncio
         action = (action or "start").strip().lower()
         zone = (zone or "").strip().lower().replace(" ", "-")
-        valid = {"zone-a", "noble-park", "tony-house"}
+        valid = {"zone-a", "noble-park", "tony-house",
+                 "vms-noble-club", "vms-noble-a", "rama9"}
         if zone not in valid:
             return {"error": f"unknown zone {zone!r} — valid: {sorted(valid)}"}
         if action == "stop":
@@ -2866,3 +2868,19 @@ class ToolRunner:
         except Exception:
             pass
         return out
+
+    async def vcast_say(self, screen: int, text: str) -> dict[str, Any]:
+        """Speak a short narration line on a vcast display (Web Speech
+        synthesis — no backend TTS). Used to announce what Ada is doing on
+        the screen: 'loading the camera wall', 'flying the map to Bangkok'.
+        If the display hasn't been tapped for audio yet, it shows a toast
+        and reports speak-blocked instead of speaking."""
+        import asyncio
+        screen = int(screen)
+        text = str(text or "").strip()[:300]
+        if not text:
+            raise ValueError("text required")
+        await self._check_screen_owner(screen, self._memory_identity())
+        return await asyncio.to_thread(
+            self._vcast_api, "/pub",
+            {"screen": screen, "msg": {"type": "speak", "text": text}})

@@ -2076,6 +2076,32 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "vcast_say",
+                    "description": (
+                        "Speak a short narration line out loud on a numbered vcast display (the screen's own "
+                        "speech synthesis — e.g. the iPad's speaker). Use it to narrate what you are doing on "
+                        "that screen: right after cast_to_screen say what you loaded, before gev_command say "
+                        "what the map is about to do, on long waits say what is in progress. Keep it to one "
+                        "short sentence. If the result reports speak-blocked, the display hasn't been tapped "
+                        "for audio yet — tell the user to tap 'audio' once on that screen, then retry once."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "screen": {
+                                "type": "integer",
+                                "description": "Screen number to speak on (the same screen you are acting on).",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Short spoken line, plain text, under ~200 chars.",
+                            },
+                        },
+                        "required": ["screen", "text"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "vcast_snapshot",
                     "description": (
                         "Capture what a numbered vcast virtual display is actually showing right now — "
@@ -2122,7 +2148,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "zone": {
                                 "type": "string",
-                                "description": "'zone-a', 'noble-park', 'tony-house', 'vms-noble-club', or 'vms-noble-a'.",
+                                "description": "'zone-a', 'noble-park', 'tony-house', 'vms-noble-club', 'vms-noble-a', or 'rama9' (traffic demo — Bangkok road cams).",
                             },
                             "screen": {
                                 "type": "integer",
