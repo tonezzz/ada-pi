@@ -1,0 +1,10 @@
+name: vcast-snapshot-probe
+tier: smoke
+turns:
+  - user: "Look at vcast screen 9 — capture a snapshot and tell me exactly what text or picture is on it."
+    expect:
+      calls_any: [vcast_snapshot]
+      response_nonempty: true
+      response_contains_any: ["VCAST", "SNAP TEST", "ADA SEES", "test", "screen"]
+      timeout_s: 120
+      settle_s: 8

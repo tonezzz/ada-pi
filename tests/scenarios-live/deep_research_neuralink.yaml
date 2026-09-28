@@ -1,0 +1,42 @@
+# Deep research → CMS report. The user asks Ada to research Neuralink and
+# save the report — she should gather via web_search (one or more rounds),
+# then write a structured page through cms_publish_page (pending-handshake
+# gate → user confirms → resubmit), then verify it.
+#
+# tier: full — writes a real cms page (neuralink-report, kept on purpose).
+# Not in scheduled smoke runs; run manually or in the 'research' benchmark
+# suite (tests/benchmark.yml).
+name: deep_research_neuralink
+tier: full
+
+turns:
+  - user: >-
+      Do a deep research on Elon Musk's Neuralink project for me —
+      its history, where it stands now, the human trial results so far,
+      and the main competitors. Then save the report as a page in my CMS.
+    expect:
+      # ada_deep_research is the target path once deployed; web_search or a
+      # direct cms_publish_page draft are acceptable while it's rolling out.
+      calls_any: [ada_deep_research, web_search, cms_publish_page]
+      response_nonempty: true
+      timeout_s: 360
+      settle_s: 20
+
+  # Confirm gate — cms_publish_page registers pending and asks; this
+  # turn must end with a publish call (result may be pending OR published —
+  # both are correct gate behavior, so no result_contains check).
+  - user: Yes, publish it.
+    expect:
+      calls_any: [cms_publish_page]
+      response_nonempty: true
+      timeout_s: 180
+      settle_s: 15
+
+  # Content check — she may already have verified in turn 2, so don't
+  # demand a fresh verify call; assert she can recount the report.
+  - user: Give me the three-line summary of what's in that report.
+    expect:
+      response_contains_any: [neuralink]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 12

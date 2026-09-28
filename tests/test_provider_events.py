@@ -160,5 +160,42 @@ class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.payload["turns"].parts[0].text, "Give a short greeting")
 
 
+class UserConfirmedGateTests(unittest.TestCase):
+    """_user_confirmed must treat affirmative words inside a longer write
+    request as content, not consent."""
+
+    def setUp(self) -> None:
+        self.provider = GeminiLiveProvider()
+
+    def test_affirmative_word_inside_write_request_is_not_consent(self) -> None:
+        text = (
+            "Save a note to my tony-projects bank: marker zeta-gate — "
+            "the lab stack design is approved."
+        )
+        self.assertFalse(self.provider._user_confirmed(text))
+
+    def test_long_request_with_trailing_content_words_not_consent(self) -> None:
+        text = (
+            "Remember in tony-projects that the benchmark results were "
+            "absolutely fine and we should proceed tomorrow."
+        )
+        self.assertFalse(self.provider._user_confirmed(text))
+
+    def test_short_standalone_affirmation(self) -> None:
+        for text in ("yes", "yes go ahead", "sure", "ตกลง"):
+            self.assertTrue(self.provider._user_confirmed(text), text)
+
+    def test_leading_affirmation_in_longer_turn(self) -> None:
+        text = (
+            "yes go ahead and also remember the file upload design we "
+            "discussed this morning please"
+        )
+        self.assertTrue(self.provider._user_confirmed(text))
+
+    def test_no_affirmation(self) -> None:
+        self.assertFalse(self.provider._user_confirmed("save that note"))
+        self.assertFalse(self.provider._user_confirmed(""))
+
+
 if __name__ == "__main__":
     unittest.main()

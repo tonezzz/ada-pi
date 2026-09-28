@@ -134,13 +134,26 @@ class MddbClient:
         content_md: str | None = None,
         meta: dict[str, list[str]] | None = None,
     ) -> dict[str, Any] | None:
-        payload: dict[str, Any] = {"collection": collection, "key": key, "lang": lang}
-        if content_md is not None:
-            payload["contentMd"] = content_md
-        if meta is not None:
-            payload["meta"] = meta
+        # mddb has no /update — /add upserts on (collection,key,lang), and a
+        # meta-only /add wipes contentMd. Merge onto the existing doc.
+        existing = await self.get_document(collection, key, lang)
+        if existing is None and content_md is None:
+            # Read failed or doc absent — a meta-only write here would store
+            # an empty body (or wipe the real one if the read merely
+            # timed out). Refuse instead.
+            logger.error("mddb update_document: no existing doc and no "
+                         "content_md — refusing meta-only write for %s/%s",
+                         collection, key)
+            return None
+        merged_meta = dict((existing or {}).get("meta") or {})
+        if meta:
+            merged_meta.update(meta)
+        payload: dict[str, Any] = {"collection": collection, "key": key, "lang": lang,
+                                   "meta": merged_meta}
+        payload["contentMd"] = (content_md if content_md is not None
+                                else (existing or {}).get("contentMd") or "")
         try:
-            resp = await self._client.patch(f"{self.base_url}/update", json=payload)
+            resp = await self._client.post(f"{self.base_url}/add", json=payload)
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:

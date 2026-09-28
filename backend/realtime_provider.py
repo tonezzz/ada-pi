@@ -4,20 +4,26 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import base64
+import json
 import logging
 import os
 import re
 import time
+import urllib.error
+import urllib.request
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from google import genai
 from google.genai import types
 
-from backend import chaba_memory, voice_config
+from backend import chaba_memory, voice_config, vms_camera
+from backend.instance import ada_instance_id
 from backend.conversation_memory import ConversationMemory
 from backend.tool_runner import ToolRunner
 from backend.usage_tracker import usage_ledger
@@ -80,22 +86,69 @@ CALENDAR_INSTRUCTIONS = (
 
 CMS_INSTRUCTIONS = (
     " You maintain the user's miniapp — a small multi-page site whose pages you own. "
-    "cms_list_pages lists existing pages, cms_get_page reads one, "
-    "cms_publish_page creates or fully replaces a page (slugs are lowercase, e.g. 'pool-notes'), and "
+    "cms_list_pages lists existing pages with their language variants, cms_get_page reads one, "
+    "cms_publish_page creates or fully replaces a page (slugs are lowercase, e.g. 'pool-notes'; "
+    "en/th variants coexist — publish the user's language plus the other when asked), and "
     "cms_delete_page removes one. Page content is written as markdown, html, yaml, or slides markdown. "
+    "Inside markdown pages you can embed rich blocks as fenced code blocks: "
+    "```chart <yaml echarts option> for 2D charts (line/bar/pie/scatter), "
+    "```chart3d <yaml echarts-gl option> for 3D (surface3d/bar3d/scatter3d — set "
+    "xAxis3D/yAxis3D/zAxis3D/grid3D), ```mermaid for diagrams (flowchart, sequence, "
+    "timeline), and ```media <yaml {url, type, caption}> for images, video, or audio. "
+    "chart/chart3d bodies are YAML echarts options (or {height: N, option: {...}}). "
     "When the user asks you to prepare a document or update a page, draft the content, "
     "restate the slug and title, get an explicit yes, then call the write tool with "
     "confirmed=true — writes are enforced server-side. "
     "You cannot see the rendered site: after publishing or updating a page, call "
     "cms_verify_page to check the content parses and confirm the structure, then "
     "tell the user the page is live (or fix it if verification failed)."
+    " When the user reports an ongoing incident — a flood, outage, emergency, "
+    "or similar — create or update a cms report page for it (a short status "
+    "log, slug like 'flood-report'), check the live conditions with the "
+    "home/weather tools, and keep the page current as new details arrive; "
+    "the user's report is the consent — pass confirmed=true directly and do "
+    "not ask for confirmation."
 )
 
 # Same constant pattern as CALENDAR_TOOLS/CMS_TOOLS: lets ADA_EXCLUDED_TOOLS
 # strip the devin declarations and their instruction paragraph together.
 DEVIN_TOOLS = {
     "devin_dispatch", "devin_status", "devin_followup", "devin_job_report",
+    "devin_pending", "devin_jobs", "devin_answer",
 }
+
+# Tools with real-world side effects — they share a tighter per-turn cap
+# (ADA_ACTUATION_BUDGET) than the generic tool-call budget so a runaway
+# planning/status turn can't mass-actuate devices or spawn work.
+# Phantom-write detector: assistant claims something was
+# registered/recorded/noted but made ZERO tool calls in the turn —
+# observed failure mode when tool results fail silently upstream.
+_PHANTOM_CLAIM_RE = re.compile(
+    r"(?i)\b(registered|registration|recorded|queued|written down|noted down)"
+    r"|จดไว้|บันทึกไว้|รับทราบ"
+)
+
+ACTUATING_TOOLS = frozenset({
+    "control_entity", "control_cover", "control_media_player",
+    "press_button", "tv_action", "yt_cast", "yt_cast_stop",
+    "cast_to_screen", "cctv_snapshot",
+    "ada_doc_archive", "ada_doc_print", "ada_set_voice",
+    "devin_dispatch",
+    "calendar_create_event", "calendar_delete_event",
+    "tasks_add", "tasks_complete",
+})
+
+# 'confirmed=true' in a tool arg is only honored when the user's own
+# speech affirms — otherwise the model could self-certify past the
+# dangerous-device and write-policy gates (observed during the
+# 2026-09-25 tool storm: plug_tv switched on with zero user consent).
+_CONFIRM_RE = re.compile(
+    r"\b(yes|yeah|yep|yup|confirm(ed)?|go ahead|do it|sure|okay?|"
+    r"approved?|proceed|absolutely|mhm|uh huh|sounds good)\b|"
+    r"ใช่|ยืนยัน|ตกลง|เอาเลย|ทำเลย|ได้เลย|ทำได้|โอเค|ออเค|เออ|อือ|"
+    r"ต่อไป|จัดไป|เอาสิ|ไปเลย|ทำไป|เผยแพร่เลย|ส่งเลย",
+    re.IGNORECASE,
+)
 
 DEVIN_INSTRUCTIONS = (
     " You can dispatch unattended Devin coding sessions on tony-dell: "
@@ -106,6 +159,15 @@ DEVIN_INSTRUCTIONS = (
     "call with confirmed=true — writes are enforced server-side. "
     "Dispatched sessions run unattended; the user is notified on their phone when "
     "one finishes, so report the task id and move on rather than polling. "
+    "devin_jobs is the dispatch ledger — call it for any 'summarize my dispatched "
+    "tasks' or 'did job X fail' question and report statuses exactly as stored "
+    "(done/failed/running/awaiting-user); never guess a job's outcome. "
+    "devin_pending lists jobs blocked waiting for the user's answer — when the "
+    "user asks what needs their attention, or says a job is waiting, call it and "
+    "read each job's question back with its short detail. To deliver an answer: "
+    "refine the user's reply into a self-contained instruction (the job sees "
+    "only the text, not this conversation), read the refined text back, get an "
+    "explicit yes, then call devin_answer with confirmed=true. "
     "When discussing an implementation task the user wants built later, offer to "
     "save the spec into the devin-handoff memory bank so a dispatched session can "
     "be told to 'check the ada handoff'. "
@@ -171,6 +233,49 @@ DOC_INSTRUCTIONS = (
     "duplicates or near-duplicates, say so plainly and ask whether it's a "
     "re-scan or a new version before proceeding."
 )
+
+
+# XMEye VMS camera snapshots — env-gated by ADA_VMS_SNAP_URL (not via
+# ADA_EXCLUDED_TOOLS): the declaration and paragraph only exist when the
+# instance is configured to reach the vms-snap shim on the VMS host.
+VMS_TOOLS = {"ada_camera_snapshot"}
+
+VMS_INSTRUCTIONS = (
+    " You can pull a still frame from the property CCTV cameras with "
+    "ada_camera_snapshot — pass the view the user means (e.g. 'swimming pool', "
+    "'tennis court', 'front road', 'walkway', 'guard', 'mini mart'). The frame "
+    "arrives attached to the tool result: look at it and describe what it "
+    "shows honestly — people, water level, weather, vehicles, anything "
+    "notable. It is a single still taken a few seconds ago, NOT live video; "
+    "say what you see now and do not claim continuous monitoring. If the tool "
+    "fails or the frame is dark or frozen, say the camera seems offline "
+    "rather than guessing."
+)
+
+VMS_DECLARATION = {
+    "name": "ada_camera_snapshot",
+    "description": (
+        "Take a still snapshot from one of the property CCTV cameras "
+        "(XMEye VMS). Use when the user asks to see, check, or look at a "
+        "camera view — 'is it flooding at the pool', 'show me the front "
+        "road'. The image is attached to the tool result for you to "
+        "describe. One still frame per call — not a live stream."
+    ),
+    "parameters_json_schema": {
+        "type": "object",
+        "properties": {
+            "channel": {
+                "type": "string",
+                "description": (
+                    "Camera/view name, e.g. 'swimming pool', 'tennis court', "
+                    "'front road left', 'walkway', 'guard view'. Fuzzy — "
+                    "the service returns the available list on a miss."),
+            },
+        },
+        "required": ["channel"],
+        "additionalProperties": False,
+    },
+}
 
 
 # CHABA_MEMORY=1 guest mode: the instance serves visitors through the file-
@@ -315,8 +420,9 @@ def _now_context() -> str:
 DEFAULT_ADA_INSTRUCTIONS = """You are Ada, a polished, highly capable voice assistant running on a Raspberry Pi desk companion.
 
 Personality:
-- Sound composed, perceptive, confident, and subtly sassy. Use restrained dry wit and occasional understated sarcasm rather than obvious jokes or constant teasing.
-- Your humor should feel effortless and intelligent: a brief raised-eyebrow observation, then move on. Do not announce that you are joking and do not force a punchline into every reply.
+- Default register is polite but very straightforward: composed, professional, factual — no unsolicited wit, sarcasm, or playful quips. Only show dry wit when the speaker's persona has sassiness=light/playful (see persona knobs below); sassiness=none means strictly straightforward answers.
+- Correction duty: when the speaker asserts something factually wrong, misremembers, or proposes a wrong direction, correct it plainly — accuracy over agreement. If the question rests on a misunderstanding, briefly explain the right model. Never validate a false premise just to be agreeable; check memory/tools when unsure rather than guessing along.
+- Word coaching: when the speaker uses a term slightly wrong (mishearing, wrong-but-nearby word, coinage like "methodogy"), recast — use the correct term naturally in your reply instead of calling out the mistake. Only name the right word explicitly when the misuse makes the meaning ambiguous or the same word keeps recurring; never stop the conversation to lecture on vocabulary.
 - Target the behavior, never the person's identity, appearance, intelligence, or worth. Never be cruel, humiliating, threatening, or relentless.
 - Drop the sarcasm for emergencies, genuine distress, medical concerns, or other sensitive moments; be direct and caring instead.
 
@@ -326,6 +432,13 @@ Ada's capabilities:
 - Your animated face can express neutral, sassy, amused, skeptical, annoyed, mad, concerned, surprised, mischievous, serious, or alert.
 
 Conversation discipline:
+- LANGUAGE FIDELITY: respond in the language of the user's most recent
+  turn — a Thai question gets a Thai answer, English gets English. Never
+  switch to a third language (e.g. Chinese) for any reason. Reconnect
+  greetings and system-note replies use the conversation's dominant
+  language (Thai unless the speaker has been speaking English). Memory
+  hits, tool results, or (system) notes in English do NOT change your
+  spoken language — keep it consistent for the speaker.
 - Always answer the user's most recent question before ending a turn — never drop it or pivot to a different topic unprompted.
 - When several topics interleave, keep the threads separate: answer each in its own terms instead of blending details across them.
 - "Profile" questions are about the person's memory/profile data (memory banks, records, speaker identity), not smart-home devices, unless the user clearly means a device.
@@ -333,6 +446,8 @@ Conversation discipline:
 - Gather the minimum tool data needed, then answer — never enumerate devices, sensors, or settings to answer a memory or planning question.
 - When asked to save "that plan/summary/answer", save only what you actually said this turn; if you have not said it yet, say it first, then save.
 - If a tool, service, or lookup fails or is unavailable, say so plainly and offer the nearest fallback — never describe an imagined state.
+- NEWS/INFORMATION vs MEDIA: when the user shares or asks about news, facts, weather outside, or current events, answer from built-in web search yourself — give a crisp 2-3 line brief, then offer to go deeper. yt_cast/vcast are ONLY for explicitly requested video/web playback on a screen — never cast information lookups instead of answering them.
+- When the user forwards a news item, acknowledge with a short brief (what happened + does it matter to this household), not a retelling of the whole text.
 
 Be witty, factual, and brief. Do not diagnose medical conditions. Respect privacy and do not imply that camera frames are stored."""
 
@@ -401,6 +516,7 @@ class GeminiLiveProvider(RealtimeProvider):
             self.tool_runner.doc_log = self.conversation.doc_items
             self.tool_runner.event_log = self.conversation.session_items
         self._bg_tasks: set[asyncio.Task] = set()
+        self._research_task: asyncio.Task | None = None
         # Monotonic time of the last confident ada_memory_search hit — used to
         # short-circuit a redundant ada_session_recall in the same turn.
         self._strong_hit_at = 0.0
@@ -462,6 +578,18 @@ class GeminiLiveProvider(RealtimeProvider):
             "when the user says 'remember that', ada_forget to retract a memory that is no longer true, "
             "If ada_remember is denied because the bank is read-only, retry in a writable bank "
             "(general for shared facts, personal for private ones) — never just give up on a remember request. "
+            "RESULT-TRUTH RULE: after every tool call, ground your report in the tool RESULT — "
+            "if it shows an error, a confirmation request, 'not connected', or no ok/delivered/"
+            "published field, tell the user it did NOT happen (say what the error was). Never "
+            "claim a cast, publish, or device action succeeded from the call alone — only from "
+            "the result. If a publish is pending user confirmation, ask the user first and do "
+            "not cast or link the page until the publish result shows status=published. "
+            "CAMERA-CAPTURE CONTRACT: starting a camera capture or cast (uplink, cctv_snapshot, "
+            "cctv_wall, casting a camera view to a screen) requires asking the user first — "
+            "never start capture in the same turn as the request without an explicit yes. "
+            "While a capture is active (tool results list it in active_captures), if the user "
+            "changes the subject, briefly acknowledge the running capture and ask whether to "
+            "keep it or stop it — never silently stop it or leave it unmentioned. "
             "and ada_outcome to record how a memory or check turned out when the user reports back "
             "(e.g. 'that shop was fine', 'the fix worked', 'I skipped it') — outcomes update confidence "
             "so future recall trusts knowledge with a good track record. "
@@ -475,10 +603,14 @@ class GeminiLiveProvider(RealtimeProvider):
             "But when the user explicitly asks you to remember something ('remember that…', "
             "'note this'), that request IS the confirmation — pass confirmed=true directly "
             "instead of asking again. "
+            "Quick idea bursts ('jot this', 'idea:', a fragment worth keeping) go to the "
+            "'ideas' bank — save the raw wording verbatim with kind=idea and attribute=raw; "
+            "write_policy there is direct so no confirmation is needed. The Devin console "
+            "session elaborates raw ideas into connected items later — do not rewrite them."
             "When the user reports how something turned out ('that worked', 'it failed'), call "
             "ada_outcome on the memory it applies to — find the key with ada_memory_search if needed. "
             "ada_persona manages the current speaker's stored style preferences (tone, verbosity, "
-            "formality, language, address-name, emoji, proactiveness): when the user asks you to "
+            "formality, language, address-name, emoji, sassiness, proactiveness): when the user asks you to "
             "change how you speak or address them, call ada_persona set — it persists across "
             "sessions and applies immediately; saved preferences may also arrive as a (system) "
             "note at session start — honor them without announcing the mechanism. "
@@ -495,13 +627,19 @@ class GeminiLiveProvider(RealtimeProvider):
             "Prefer the ada_ha_* memory tools for home, device, sensor, or event questions — they answer instantly. "
             "For any factual lookup — people, projects, purchases, procedures, fixes — "
             "call ada_memory_search with bank='all' first; it fans out across every bank "
-            "so you never have to guess which one. When its top hit is a confident match, "
+            "so you never have to guess which one. For reports, research, or CMS pages "
+            "('that report about X', 'the research on Y'), include bank='cms' — published "
+            "pages live there; use cms_get_page(slug) for the full text. "
+            "When its top hit is a confident match, "
             "ground the answer in that result, not in earlier conversation or session "
             "context that may be stale or off-topic. "
             "Reserve ada_session_recall strictly for 'what did we talk about' or "
             "'do you remember' questions — never for fact lookup, and never in the same "
             "turn as a confident ada_memory_search result; it can take up to 20 seconds, "
             "so keep the user informed while it runs. "
+            "EXCEPTION: when the user explicitly pushes back — 'dig deeper', 'check again', "
+            "'you missed something', 'keep looking' — the confident-hit gate does NOT apply; "
+            "call ada_session_recall with force=true. A requested second look is never redundant. "
             "Questions and references about THIS conversation — 'what were we "
             "working on', 'where did we land', 'the other thing', 'back to the "
             "first thing', 'what did we decide' — resolve from the live "
@@ -529,6 +667,9 @@ class GeminiLiveProvider(RealtimeProvider):
             + HABIT_INSTRUCTIONS
             + SUMMARY_INSTRUCTIONS
         )
+        self.vms_snap_url = vms_camera.snap_url()
+        if self.vms_snap_url:
+            self.instructions += VMS_INSTRUCTIONS
         self._client: Any = None
         self._session_context: Any = None
         self._session: Any = None
@@ -537,11 +678,130 @@ class GeminiLiveProvider(RealtimeProvider):
         self.session_id = session_id or "-"
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
+        # Turn watchdog state — stall detection for a silently-dead Gemini
+        # stream. _last_user_at marks the most recent user input (input
+        # transcription delta or a text turn); _last_model_at marks the last
+        # provider event of any kind. Stalled = user spoke and the stream
+        # has been completely silent past the threshold.
+        self._last_user_at = 0.0
+        self._last_model_at = 0.0
+        self._stall_timeout = float(os.environ.get("ADA_STALL_TIMEOUT_S", "25"))
+        self._ops_events_sent = 0
+        self._tool_leak_re = None
+        self._tool_leaks_stripped = 0
+        self._leak_active = False
+        try:
+            self._ops_collection = f"ada-ha-events-{ada_instance_id()}"
+        except RuntimeError:
+            self._ops_collection = None
         self._response_active = False
         self.usage_input_tokens = 0
         self.usage_output_tokens = 0
         self.usage_input_by_modality: dict[str, int] = {}
         self.usage_output_by_modality: dict[str, int] = {}
+
+    def _emit_ops_event(self, ev_type: str, detail: str,
+                        tool: str | None = None) -> None:
+        """Fire-and-forget ops event to ada-ha-events-<instance> — the
+        hourly chaba report feed surfaces these. Capped per session so a
+        storm can't spam the index."""
+        if self._ops_collection is None or self._ops_events_sent >= 5:
+            return
+        runner = self.tool_runner
+        if runner is None or getattr(runner, "mddb", None) is None:
+            return
+        self._ops_events_sent += 1
+        collection = self._ops_collection
+        session_id = self.session_id
+
+        async def _post() -> None:
+            try:
+                now = datetime.now().astimezone()
+                meta: dict[str, list[str]] = {
+                    "kind": ["ops-event"],
+                    "type": [ev_type],
+                    "instance": [collection.rsplit("-", 1)[-1]],
+                    "session_id": [session_id],
+                    "ts": [now.isoformat(timespec="seconds")],
+                }
+                if tool:
+                    meta["tool"] = [str(tool)]
+                await runner.mddb.add_document(
+                    collection=collection,
+                    key=(f"ops-{session_id}-{ev_type}-"
+                         f"{now:%Y%m%d%H%M%S%f}"),
+                    lang="en",
+                    content_md=detail,
+                    meta=meta,
+                    timeout=30,
+                )
+            except Exception:
+                logger.debug("ops event emit failed", exc_info=True)
+
+        try:
+            asyncio.get_running_loop().create_task(_post())
+        except RuntimeError:
+            return  # no loop (unit tests, shutdown) — nothing to schedule
+
+    def _strip_tool_leak(self, text: str) -> str:
+        """Remove SPOKEN tool-call text from an output-transcription delta.
+
+        The model occasionally verbalizes a call ('set_facial_expression{
+        expression:...}') instead of emitting a real function_call. The
+        fake call is malformed/unterminated and swallows the rest of the
+        utterance, so once triggered we suppress deltas until the turn
+        ends (_leak_active is reset on turn_complete/interrupt)."""
+        if self._leak_active:
+            return ""
+        if self._tool_leak_re is None:
+            return text
+        m = self._tool_leak_re.search(text)
+        if not m:
+            return text
+        self._leak_active = True
+        self._tool_leaks_stripped += 1
+        logger.warning(
+            "session=%s tool-call text leaked into transcript (%r)",
+            self.session_id, text[m.start():m.start() + 60],
+        )
+        self._emit_ops_event(
+            "transcript_tool_leak",
+            f"stripped spoken tool call from transcript: {m.group(0)!r}",
+            tool=m.group(0).rstrip("{").strip(),
+        )
+        return text[:m.start()]
+
+    # An affirmation is a consent utterance, not a content word: it must
+    # either lead the user's turn ("yes, save it") or the turn must be
+    # short enough to be a standalone reply ("sure"). Longer write
+    # requests that merely contain an affirmative word mid-sentence
+    # ("…the design is approved") must not self-certify.
+    _CONFIRM_LEAD_WINDOW = 20
+    _CONFIRM_MAX_TURN = 60
+
+    def _user_confirmed(self, input_transcript: str) -> bool:
+        """True when the user's own recent speech affirms — `confirmed=true`
+        tool args are honored only when this is true."""
+        text = input_transcript
+        if not text.strip() and self.conversation is not None:
+            # Find the most recent real user speech — skip (system) notes,
+            # which are stored as user-role turns and shadow the actual
+            # affirmation (e.g. "Confirm the update." stripped because a
+            # system note was the latest user-role entry).
+            for t in reversed(self.conversation.turns()):
+                if t.get("role") != "user":
+                    continue
+                candidate = str(t.get("text") or "")
+                if candidate.strip().startswith("(system"):
+                    continue
+                text = candidate
+                break
+        text = (text or "").strip()
+        if not text:
+            return False
+        if len(text) <= self._CONFIRM_MAX_TURN:
+            return bool(_CONFIRM_RE.search(text))
+        return bool(_CONFIRM_RE.search(text[: self._CONFIRM_LEAD_WINDOW]))
 
     def _recall_gated(self) -> bool:
         """True when a confident ada_memory_search hit is fresh enough that
@@ -635,6 +895,118 @@ class GeminiLiveProvider(RealtimeProvider):
                 "seconds. Briefly tell the user you're verifying it and will "
                 "report back.")
 
+    # --- ada_deep_research: multi-round web research, results injected ---
+
+    def _start_deep_research(self, args: dict) -> str:
+        """Fire-and-forget research fan-out — findings arrive as an injected
+        text turn via _on_research_complete."""
+        topic = str(args.get("topic") or "").strip()
+        depth = str(args.get("depth") or "standard").lower()
+        if not topic:
+            return "Nothing to research — ask the user what topic they mean."
+        if depth not in ("standard", "deep"):
+            depth = "standard"
+        if self._research_task is not None and not self._research_task.done():
+            return "A research task is already running — I'll report when it's done."
+        task = asyncio.create_task(self._run_deep_research(topic, depth))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+        self._research_task = task
+        rounds = 5 if depth == "deep" else 3
+        return (f"Deep research on '{topic}' started ({rounds} search rounds, "
+                "usually 1-3 minutes). Briefly tell the user you're gathering "
+                "sources and will report back.")
+
+    async def _run_deep_research(self, topic: str, depth: str) -> None:
+        filler = asyncio.create_task(self._research_slow_filler(topic))
+        # Compact keyword topic — DuckDuckGo's HTML endpoint returns zero
+        # results for long prose queries, and short forms also cost less
+        # on the grounded provider.
+        short = re.split(r"[,;:—–]", topic)[0].strip() or topic
+        short = " ".join(short.split()[:8])
+        queries = [
+            f"{short} history overview",
+            f"{short} latest news",
+            f"{short} competitors criticism",
+        ]
+        if depth == "deep":
+            queries += [
+                f"{short} milestones timeline",
+                f"{short} analysis outlook",
+            ]
+        findings: list[dict] = []
+        errors: list[str] = []
+        try:
+            for q in queries:
+                try:
+                    r = await self.tool_runner.web_search(q)
+                    findings.append({
+                        "query": q,
+                        "answer": str(r.get("answer") or "")[:1200],
+                        "sources": (r.get("sources") or [])[:5],
+                        "provider": r.get("provider"),
+                    })
+                except Exception as exc:
+                    errors.append(f"{q}: {exc}")
+                    logger.warning("session=%s research round failed %r: %s",
+                                   self.session_id, q, exc)
+                # Gentle pacing — the grounded provider is quota-limited.
+                await asyncio.sleep(2.0)
+        finally:
+            filler.cancel()
+        await self._on_research_complete(topic, findings, errors)
+
+    async def _research_slow_filler(self, topic: str) -> None:
+        await asyncio.sleep(45)
+        await self._wait_for_idle(timeout=4.0)
+        if self._response_active:
+            return
+        try:
+            await self.send_text_turn(
+                f"(system) The deep research on '{topic}' is still running — "
+                "several search rounds. Briefly tell the user you're still "
+                "gathering sources.")
+        except Exception:
+            pass
+
+    async def _on_research_complete(self, topic: str, findings: list[dict],
+                                    errors: list[str]) -> None:
+        """Push the research digest back into the session so Ada speaks it."""
+        await self._wait_for_idle()
+        if not findings:
+            prompt = (
+                f"(system) The deep research on '{topic}' found nothing "
+                f"({'; '.join(errors) or 'no results'}). Tell the user the "
+                "research could not complete and suggest trying web_search "
+                "for a narrower question instead."
+            )
+        else:
+            parts: list[str] = []
+            source_urls: list[str] = []
+            for f in findings:
+                parts.append(f"## {f['query']}\n{f['answer']}")
+                for s in f.get("sources") or []:
+                    uri = s.get("uri")
+                    if uri and uri not in source_urls:
+                        source_urls.append(uri)
+            digest = "\n\n".join(parts)[:6000]
+            src_note = (f" Sources: {'; '.join(source_urls[:10])}."
+                        if source_urls else "")
+            err_note = (f" ({len(errors)} search round(s) failed — note the "
+                        "gap.)" if errors else "")
+            prompt = (
+                f"(system) Deep research on '{topic}' finished — "
+                f"{len(findings)} rounds completed.{err_note}\n\n{digest}\n\n"
+                f"{src_note}\nSummarize the key findings for the user in a few "
+                "sentences, then offer to save a full report page to the CMS "
+                "(cms_publish_page) including a Sources section."
+            )
+        try:
+            await self.send_text_turn(prompt)
+        except Exception as exc:
+            logger.warning("session=%s research send_text_turn failed: %s",
+                           self.session_id, exc)
+
     # --- ada_set_voice: persisted voice + idle-gated session swap ---
 
     def _set_voice(self, args: dict) -> str:
@@ -679,6 +1051,163 @@ class GeminiLiveProvider(RealtimeProvider):
             await self.close()
         except Exception as exc:
             logger.warning("session=%s voice-switch close failed: %s", self.session_id, exc)
+
+    async def _camera_snapshot(self, args: dict) -> tuple[dict, tuple[str, bytes] | None]:
+        """ada_camera_snapshot — pull one still frame through the vms-snap
+        shim. Returns (tool_result, (channel, png)); the caller delivers the
+        frame as a follow-up client-content turn — send_tool_response can't
+        carry binary parts (its json.dumps path can't serialize bytes)."""
+        channel = str(args.get("channel") or "").strip()
+        if not channel:
+            return ({"error": "channel is required — e.g. 'swimming pool', "
+                              "'tennis court', 'front road'."}, None)
+        try:
+            png, resolved = await vms_camera.snapshot(channel)
+        except LookupError as exc:
+            return ({"error": str(exc)}, None)
+        except Exception as exc:
+            logger.warning("session=%s camera snapshot failed: %s",
+                           self.session_id, exc)
+            return ({"error": f"camera snapshot failed: {exc}"}, None)
+        result = {
+            "output": (
+                f"Still frame captured from camera '{resolved}'. The image "
+                "arrives as a separate message right after this result — "
+                "wait for it, then describe what it shows: people, water, "
+                "weather, vehicles, anything notable. It is a single frame "
+                "taken seconds ago — not live video."
+            ),
+            "channel": resolved,
+        }
+        # Publish the frame two ways and prefer the relay copy for casting:
+        #  a) relay asset  {VCAST_API}/frame?screen=0&token=cam:<slug>-<ts>
+        #     — same-origin for vcast pages -> canvas stays clean so
+        #     vcast_snapshot can verify the cast visually
+        #  b) PWA static   https://idc01.../static/cam-snap/<name>.png
+        #     — durable public URL for inspection/other clients
+        slug = re.sub(r"[^a-z0-9]+", "-", resolved.lower()).strip("-")
+        token = f"cam:{slug}-{int(time.time())}"
+        try:
+            vbase = os.environ.get(
+                "VCAST_API",
+                "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+            payload = json.dumps({
+                "screen": 0, "token": token,
+                "data": "data:image/png;base64,"
+                        + base64.b64encode(png).decode(),
+                "state": "asset",
+            }).encode()
+            req = urllib.request.Request(
+                vbase + "/frame", data=payload,
+                headers={"Content-Type": "application/json"})
+            await asyncio.to_thread(urllib.request.urlopen, req, timeout=10)
+            # cast_url must be the PUBLIC same-origin route — the vcast page
+            # fetches it; the local VCAST_API base would cross origins and
+            # taint the canvas for vcast_snapshot.
+            pub = os.environ.get(
+                "VCAST_PUBLIC_API",
+                "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+            result["cast_url"] = f"{pub}/frame?screen=0&token={token}"
+        except Exception as exc:
+            logger.warning("session=%s snap relay publish failed: %s",
+                           self.session_id, exc)
+        try:
+            snap_dir = (Path(__file__).resolve().parent.parent
+                        / "frontend" / "cam-snap")
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            name = f"{slug}-{int(time.time())}.png"
+            (snap_dir / name).write_bytes(png)
+            snaps = sorted(snap_dir.glob("*.png"),
+                           key=lambda p: p.stat().st_mtime)
+            for old in snaps[:-20]:
+                old.unlink(missing_ok=True)
+            result.setdefault("cast_url",
+                              os.environ.get(
+                                  "ADA_SNAP_PUBLIC_BASE",
+                                  "https://idc01.taila0626a.ts.net/static/cam-snap/")
+                              + name)
+            result["inspect_url"] = result["cast_url"]
+        except Exception as exc:
+            logger.warning("session=%s snap publish failed: %s",
+                           self.session_id, exc)
+        if result.get("cast_url"):
+            result["output"] += (
+                " To show this frame on a vcast display, call "
+                f"cast_to_screen(action='image', "
+                f"url='{result['cast_url']}') — copy that url value "
+                "character-for-character; never guess or invent a URL.")
+        return result, (resolved, png, "image/png")
+
+    async def _vcast_snapshot(self, args: dict) -> tuple[dict, tuple[str, bytes, str] | None]:
+        """vcast_snapshot — ask the display to capture its own frame over the
+        input-bridge: /pub {type:snap-request,token} -> the page POSTs a JPEG
+        to /frame -> we poll /frame?screen&token until it lands. Same frame
+        delivery shape as _camera_snapshot (follow-up client content)."""
+        try:
+            screen = int(args.get("screen"))
+        except (TypeError, ValueError):
+            return ({"error": "screen number required — call vcast_list to see registered displays."}, None)
+        base = os.environ.get(
+            "VCAST_API", "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+        token = f"snap-{int(time.time() * 1000)}-{self.session_id[:8]}"
+        def _req(path: str, payload: dict | None = None):
+            data = json.dumps(payload).encode() if payload is not None else None
+            req = urllib.request.Request(
+                base + path, data=data,
+                headers={"Content-Type": "application/json"} if data else {})
+            return urllib.request.urlopen(req, timeout=10)
+        try:
+            r = await asyncio.to_thread(
+                _req, "/pub",
+                {"screen": screen,
+                 "msg": {"type": "snap-request", "token": token}})
+            delivered = json.load(r).get("delivered", 0)
+            if not delivered:
+                return ({"error": f"screen {screen} is not connected — "
+                                  "check vcast_list for online displays."}, None)
+        except Exception as exc:
+            return ({"error": f"snap-request failed: {exc}"}, None)
+        for _ in range(15):
+            try:
+                r = await asyncio.to_thread(
+                    _req, f"/frame?screen={screen}&token={token}")
+                ctype = r.headers.get("Content-Type", "")
+                if ctype.startswith("image/"):
+                    jpeg = r.read()
+                    if jpeg:
+                        label = f"vcast screen {screen}"
+                        result = {
+                            "output": (
+                                f"Still frame captured from {label}. The image "
+                                "arrives as a separate message right after this "
+                                "result — wait for it, then describe what the "
+                                "screen is actually showing. It is a single "
+                                "frame taken a moment ago — not live video."),
+                            "screen": screen,
+                        }
+                        return result, (label, jpeg, "image/jpeg")
+                else:
+                    body = json.loads(r.read() or b"{}")
+                    if body.get("error") and body.get("ok"):
+                        detail = body.get("detail")
+                        msg = (f"screen {screen} could not capture: {body['error']} "
+                               f"(state={body.get('state') or 'unknown'})."
+                               + (f" Failed URL: {detail}." if detail else "")
+                               + (" The casted image URL failed to load — tell the "
+                                  "user the screen shows a broken image and re-cast "
+                                  "with the cast_url from ada_camera_snapshot."
+                                  if body["error"] == "image-load-failed" else
+                                  " If it is an uncapturable iframe, tell the user "
+                                  "the page content cannot be screenshotted."))
+                        return ({"error": msg}, None)
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404:
+                    logger.warning("session=%s vcast frame poll: %s", self.session_id, exc)
+            except Exception as exc:
+                logger.warning("session=%s vcast frame poll: %s", self.session_id, exc)
+            await asyncio.sleep(0.8)
+        return ({"error": f"screen {screen} did not return a frame in time — "
+                          "it may be offline or stuck."}, None)
 
     async def _run_decision_check(self, product: str, url: str, mode: str) -> None:
         filler = asyncio.create_task(self._check_slow_filler(mode))
@@ -1006,6 +1535,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "yt_cast",
                     "description": (
                         "Cast a YouTube video to the living-room TV with subtitles burned in. "
+                        "ONLY when the user wants a VIDEO playing on the TV — NOT for looking up "
+                        "news, facts or information (answer those yourself via web search). "
                         "This is THE tool for any 'play/watch/cast a YouTube video on the TV' request "
                         "AND for any subtitle/caption request — it always renders the video's "
                         "original-language subtitle on top with a translated line below "
@@ -1060,6 +1591,63 @@ class GeminiLiveProvider(RealtimeProvider):
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "cctv_snapshot",
+                    "description": (
+                        "Grabs ONE snapshot frame from a CCTV camera AND shows it on a screen in a single "
+                        "call — use this whenever the user asks to put/show/cast a camera on a screen or TV. "
+                        "Home cameras: 'coffee corner', 'c201', 'c100'. Estate/VMS cameras: 'swimming pool', "
+                        "'tennis court', 'front rd. left/right', 'walkway', 'guard view', 'mini mart', "
+                        "'play ground', 'road in', 'road corner', 'washing machines', 'stairway room', 'cam01'. "
+                        "target='tv' for the living-room TV; target='screen' + screen=N for a vcast display. "
+                        "The tool handles snapshot + publish + cast itself — never invent an image URL."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "camera": {
+                                "type": "string",
+                                "description": "Camera name: 'coffee corner', 'c201', 'c100'.",
+                            },
+                            "target": {
+                                "type": "string",
+                                "enum": ["tv", "screen"],
+                                "description": "'tv' (default) or 'screen' for a vcast display.",
+                            },
+                            "screen": {
+                                "type": "integer",
+                                "description": "vcast screen number when target='screen'.",
+                            },
+                        },
+                        "required": ["camera"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "yt_transcript",
+                    "description": (
+                        "Fetches a YouTube video's spoken content as plain text (auto-captions via yt-dlp "
+                        "on the transcript host — no video download). Returns title, language, and up to "
+                        "~6k chars of transcript. Use when the user wants news/content from a YouTube "
+                        "video summarized or transcribed — Thai news sites block scrapers, so YouTube "
+                        "is the open source. This reads text only; it does NOT play or cast anything."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "YouTube URL or video ID.",
+                            },
+                            "language": {
+                                "type": "string",
+                                "description": "Caption language to prefer (default 'th'; falls back to en).",
+                            },
+                        },
+                        "required": ["url"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -1192,6 +1780,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "tv_action",
                     "description": (
                         "Send a command to the TV casting controller (cast-browser) through the Home Assistant rest_command.tv_action service. "
+                        "ONLY when the user wants something shown on a screen — never use this to answer "
+                        "questions or display search results unprompted (answer via web_search instead). "
                         "Cast targets via cmd='nav': text='<URL>' shows a page in the TV's browser (fully controllable afterwards), "
                         "text='screenlive:workspace:N[:pad|crop]' casts this host's live desktop workspace N, "
                         "text='tony-omen:workspace:N' casts Tony's desktop workspace N (switches his live workspace too). "
@@ -1200,7 +1790,9 @@ class GeminiLiveProvider(RealtimeProvider):
                         "cmd='press' text='<key e.g. Enter|Escape|Backspace>', cmd='back' to go back, "
                         "cmd='shot' text='<name>' for a screenshot, cmd='viewport' text='WxH'. "
                         "A streamed desktop (screenlive/tony-omen) is one-way video — control is limited to switching workspaces; "
-                        "for interactive control prefer nav'ing the page itself."
+                        "for interactive control prefer nav'ing the page itself. "
+                        "Personal screens are owner-locked: 'cast my screen' only works for the screen's owner — "
+                        "the living-room TV is shared and available to everyone."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -1216,8 +1808,141 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "selector": {"type": "string", "description": "CSS selector for click."},
                             "role": {"type": "string", "description": "ARIA role for click (e.g. 'button')."},
+                            "key": {"type": "string", "description": "Key name for press (e.g. 'Enter', 'Escape')."},
+                            "dx": {"type": "number", "description": "Horizontal scroll amount (px)."},
+                            "dy": {"type": "number", "description": "Vertical scroll amount (px)."},
+                            "factor": {"type": "number", "description": "Scroll amount as fraction of viewport height."},
                         },
                         "required": ["cmd"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "vcast_list",
+                    "description": (
+                        "List the vcast virtual displays (numbered software cast targets — iPad/iPhone/browser "
+                        "running the vcast app, NOT the TV). Returns screen number, name, device, online/offline, "
+                        "and what is playing. Use when the user refers to 'screen 1/2/...' or asks which screens "
+                        "are available; call before cast_to_screen if unsure."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "cast_to_screen",
+                    "description": (
+                        "Cast content to a numbered vcast virtual display (a browser/PWA screen — NOT the physical TV; "
+                        "for the TV use tv_action or yt_cast). action='nav' url='<URL>' shows a web page, "
+                        "'play' url='<m3u8, video, or YouTube/Vimeo page URL>' plays video (HLS supported, "
+                        "YouTube/Vimeo links auto-embed on the display), 'image' url='<png/jpg>' "
+                        "shows a snapshot, 'audio' url plays sound or TTS, 'stop' returns it to idle, "
+                        "'uplink' starts the display's camera uplink (frames available via "
+                        "GET /frame?screen=N&token=cam), 'uplink-stop' stops it. "
+                        "Screens are numbered — call vcast_list first if you need to pick one. "
+                        "Some screens are private to their owner — casting to another person's screen is denied. "
+                        "Camera captures (uplink, cctv walls) are permission-gated: ask the user BEFORE "
+                        "starting one, and if the result's active_captures shows a running capture, "
+                        "acknowledge it and ask before stopping — never silently stop or leave it unmentioned "
+                        "when the user changes the subject."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "screen": {
+                                "type": "integer",
+                                "description": "Screen number (the # shown on the display and in vcast_list).",
+                            },
+                            "action": {
+                                "type": "string",
+                                "description": "nav | play | image | audio | stop | uplink | uplink-stop (default nav).",
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "Target URL for nav/play/image/audio. Not needed for stop.",
+                            },
+                        },
+                        "required": ["screen"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "vcast_snapshot",
+                    "description": (
+                        "Capture what a numbered vcast virtual display is actually showing right now — "
+                        "the display draws its current frame and the image arrives attached to this "
+                        "tool's result. Use to LOOK at a screen and verify what it shows (after a cast, "
+                        "to check an overlay, or when the user asks what's on a screen) — do not rely on "
+                        "the reported state flag alone. One still frame per call, a few seconds old. "
+                        "If the result reports uncapturable-iframe, the screen is showing a framed web "
+                        "page the browser cannot capture — say so rather than guessing. Not for the TV."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "screen": {
+                                "type": "integer",
+                                "description": "Screen number (the # shown on the display and in vcast_list).",
+                            },
+                        },
+                        "required": ["screen"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "cctv_wall",
+                    "description": (
+                        "Show the live camera wall on a vcast display — a grid of periodic thumbnails "
+                        "for a camera zone. Zones: 'zone-a' (estate perimeter: roads, walkway, guard), "
+                        "'noble-park' (pool, tennis, playground, mini mart), 'tony-house' (home cams "
+                        "c100/c201/coffee). Use when the user's focus shifts to a camera zone — "
+                        "e.g. they ask to check the pool or the front road — OFFER to put the wall up "
+                        "('want the Zone A wall on screen 1?') rather than doing it unprompted for a "
+                        "single one-off look; a single look is ada_camera_snapshot. action='start' "
+                        "enables background refresh + casts the grid; 'stop' disables it. Thumbs are "
+                        "still frames updated in the background — not live video."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "description": "'start' (default) or 'stop'.",
+                            },
+                            "zone": {
+                                "type": "string",
+                                "description": "'zone-a', 'noble-park', or 'tony-house'.",
+                            },
+                            "screen": {
+                                "type": "integer",
+                                "description": "vcast screen number (vcast_list) — default 1.",
+                            },
+                        },
+                        "required": ["zone"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "gev_command",
+                    "description": (
+                        "Control God's Eye View (the Cesium map app on /apps/gev/) on whatever screen is showing "
+                        "it — the call reaches every connected GEV client including a casted one. "
+                        "To 'watch the show': cast_to_screen(action='nav', url='https://tony-dell.taila0626a.ts.net/apps/gev/') "
+                        "then drive it with gev_command. Useful names: fly_to_location {location}, zoom_to_globe {}, "
+                        "adjust_camera_zoom {factor}, set_layer_visibility {layer, visible}, track_entity {entity_id}, "
+                        "stop_tracking {}, move_camera {dx, dy}, analyst_query {query}, annotate_map {text, lat, lon}, "
+                        "clear_annotations {}, get_current_view_state {}. Returns error if no GEV client is connected — "
+                        "that means nothing is showing the app, cast it first."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "GEV tool name."},
+                            "args": {"type": "object", "description": "Tool arguments (per GEV tools.json)."},
+                        },
+                        "required": ["name"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -1634,7 +2359,9 @@ class GeminiLiveProvider(RealtimeProvider):
                         "Recall previous voice conversations. Use ONLY when the user asks "
                         "'what did we talk about', 'do you remember', or wants something "
                         "from an earlier conversation — not for fact lookup (use "
-                        "ada_memory_search bank='all' for that). "
+                        "ada_memory_search bank='all' for that). NOT for test, scenario, "
+                        "benchmark, or report results — those are stored documents, "
+                        "use ada_memory_search. "
                         "Pick the group or bank that best matches the topic. "
                         "The recall runs in the background and can take up to ~20 seconds; "
                         "the result will be spoken when ready."
@@ -1668,6 +2395,14 @@ class GeminiLiveProvider(RealtimeProvider):
                                     "escalates to NotebookLM when nothing is found."
                                 ),
                             },
+                            "force": {
+                                "type": "boolean",
+                                "description": (
+                                    "Override the redundant-recall gate — use ONLY when the user "
+                                    "explicitly pushes for a deeper search after a recent "
+                                    "confident hit ('dig deeper', 'check again', 'you missed it')."
+                                ),
+                            },
                         },
                         "required": ["question"],
                         "additionalProperties": False,
@@ -1676,7 +2411,9 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "ada_memory_search",
                     "description": (
                         "Search curated memory banks for stored facts, preferences, people, "
-                        "procedures, and notes — the FIRST tool for any factual lookup; "
+                        "procedures, notes, and test/scenario/benchmark/report results — "
+                        "the FIRST tool for any factual lookup including 'which tests ran' "
+                        "or 'what did the last report say'; "
                         "pass bank='all' (default) when unsure which bank holds the fact. "
                         "Returns document keys you can pass to "
                         "ada_remember (to correct) or ada_forget (to retract). "
@@ -1704,6 +2441,36 @@ class GeminiLiveProvider(RealtimeProvider):
                             "include_inactive": {
                                 "type": "boolean",
                                 "description": "Also return superseded, retracted, and expired memories. Default false.",
+                            },
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "web_search",
+                    "description": (
+                        "Search the public internet for current facts — news, events, prices, "
+                        "forecasts, anything needing up-to-date information outside this home. "
+                        "Returns a grounded answer plus source links. Use this when the user asks "
+                        "about news or to 'check online'; answer the question yourself in 2-3 "
+                        "lines and cite the source — never cast the search to a screen instead."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search question, e.g. 'Bangkok flood road closures latest'.",
+                            },
+                            "provider": {
+                                "type": "string",
+                                "description": (
+                                    "Search backend: 'auto' (default — grounded answer, free "
+                                    "fallback on quota), 'gemini' (grounded, billed), or "
+                                    "'duckduckgo' (free, no quota — use when asked for it or "
+                                    "when grounded quota is exhausted)."
+                                ),
                             },
                         },
                         "required": ["query"],
@@ -1880,7 +2647,7 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "string",
                                 "enum": ["tone", "verbosity", "formality", "language",
                                          "address_name", "emoji", "proactiveness"],
-                                "description": "Required for set. tone=warm/direct/professional/playful; verbosity=brief/normal/detailed; formality=casual/polite/formal; language=auto/en/th; proactiveness=minimal/normal/proactive.",
+                                "description": "Required for set. tone=warm/direct/professional/playful; verbosity=brief/normal/detailed; formality=casual/polite/formal; language=auto/en/th; sassiness=none/light/playful; proactiveness=minimal/normal/proactive.",
                             },
                             "value": {
                                 "type": "string",
@@ -1994,6 +2761,35 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": [],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "ada_deep_research",
+                    "description": (
+                        "Deep multi-round research on a topic — use this whenever the user asks "
+                        "to 'deep research', 'deep dive', 'look into', or 'write a report on' a "
+                        "subject (not for a single quick fact — that is web_search). Fans out "
+                        "planned searches (overview/history, latest status, competitors/critics, "
+                        "plus timeline and outlook on depth='deep'), gathers sources, then reports "
+                        "back: summarize key findings to the user and offer to save a full report "
+                        "page via cms_publish_page. Runs in the background (1-3 minutes); the "
+                        "findings are spoken when ready."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "topic": {
+                                "type": "string",
+                                "description": "The research subject as the user stated it.",
+                            },
+                            "depth": {
+                                "type": "string",
+                                "enum": ["standard", "deep"],
+                                "description": "standard = 3 search rounds (default). deep = 5 rounds — only when the user explicitly asks for a thorough report.",
+                            },
+                        },
+                        "required": ["topic"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -2260,7 +3056,9 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "cms_get_page",
                     "description": (
                         "Read one miniapp page by slug — returns its title, format, "
-                        "and full content. Use before updating a page."
+                        "and full content. Use before updating a page. Pages can "
+                        "have 'en' and 'th' variants; pass lang to read a specific "
+                        "one (falls back to 'en')."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2269,6 +3067,11 @@ class GeminiLiveProvider(RealtimeProvider):
                             "slug": {
                                 "type": "string",
                                 "description": "Page slug, e.g. 'pool-notes' (from cms_list_pages).",
+                            },
+                            "lang": {
+                                "type": "string",
+                                "enum": ["en", "th"],
+                                "description": "Page language variant (default en).",
                             },
                         },
                         "required": ["slug"],
@@ -2300,8 +3103,11 @@ class GeminiLiveProvider(RealtimeProvider):
                     "description": (
                         "Create or fully replace a page in the user's miniapp. The slug "
                         "is the page's URL-friendly id; publishing an existing slug "
-                        "overwrites it. Restate the slug, title, and what will change, "
-                        "get an explicit yes, then call with confirmed=true."
+                        "overwrites it. CALL THIS FIRST to register the pending request, "
+                        "then tell the user the slug + title and ask for an explicit yes; "
+                        "after they say yes, call again with confirmed=true. Do not ask "
+                        "verbally without calling — the ask-step only exists once the "
+                        "request is registered."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2323,6 +3129,11 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "string",
                                 "enum": ["markdown", "html", "yaml", "slides"],
                                 "description": "Content format. 'slides' is markdown with '---' between slides.",
+                            },
+                            "lang": {
+                                "type": "string",
+                                "enum": ["en", "th"],
+                                "description": "Language variant to publish (default en). 'en' and 'th' variants of the same slug coexist — the viewer has a language toggle.",
                             },
                             "confirmed": {
                                 "type": "boolean",
@@ -2399,7 +3210,14 @@ class GeminiLiveProvider(RealtimeProvider):
                             "repo": {
                                 "type": "string",
                                 "enum": ["chaba", "ada-pi", "sunsynk-card"],
-                                "description": "Repository the session works in.",
+                                "description": (
+                                    "Repository the session works in. 'chaba' = web apps under "
+                                    "/apps/* (incl. the vcast virtual-display receiver page), the "
+                                    "input-bridge relay, Caddy stack, HA dashboard cards, SSOT docs. "
+                                    "'ada-pi' = Ada's own backend tools, pwa_server, auth, scenarios. "
+                                    "'sunsynk-card' = the sunsynk power-flow card project. Pick the "
+                                    "repo where the code to change lives, not the service it affects."
+                                ),
                             },
                             "task": {
                                 "type": "string",
@@ -2488,6 +3306,70 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "description": "Max job-ledger docs to include (default 60).",
                             },
                         },
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "devin_pending",
+                    "description": (
+                        "Lists dispatched jobs that are blocked waiting for the user's "
+                        "answer (needs-input), with each job's question and short detail. "
+                        "Use when the user asks what needs their attention, says a job is "
+                        "waiting for them, or a needs-input notification arrived."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "devin_jobs",
+                    "description": (
+                        "Dispatch ledger summary: ALL job docs with their real status "
+                        "(running/done/failed/awaiting-user), host, timestamp, and "
+                        "pending question. Use for 'summarize my dispatched tasks', "
+                        "'did job X fail', or any status-of-dispatches question — "
+                        "devin_pending only shows awaiting-user, devin_status only "
+                        "shows unit liveness."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "status": {
+                                "type": "string",
+                                "enum": ["running", "done", "failed", "awaiting-user"],
+                                "description": "Optional filter; omit for all.",
+                            },
+                            "limit": {"type": "integer", "default": 30},
+                        },
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "devin_answer",
+                    "description": (
+                        "Delivers the user's answer to a blocked dispatched job. For "
+                        "Devin sessions it resumes the session with the message directly; "
+                        "for other dispatched jobs it records the answer for the "
+                        "dispatcher. First refine the user's reply into a self-contained "
+                        "instruction, read it back, then call with confirmed=true only "
+                        "after an explicit yes."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Task id from devin_pending or devin_status.",
+                            },
+                            "message": {
+                                "type": "string",
+                                "description": "The refined, self-contained answer/instruction.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                        },
+                        "required": ["task_id", "message"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -2745,6 +3627,8 @@ class GeminiLiveProvider(RealtimeProvider):
                 config["system_instruction"] = config["system_instruction"].replace(
                     SUMMARY_INSTRUCTIONS, ""
                 )
+        if self.vms_snap_url and not (VMS_TOOLS <= excluded):
+            config["tools"][0]["function_declarations"].append(dict(VMS_DECLARATION))
         if chaba_memory.enabled():
             # Guest mode: allowlist the tool surface, append chaba guest tools,
             # and inject the rendered guest context instead of MDDB priming.
@@ -2771,6 +3655,26 @@ class GeminiLiveProvider(RealtimeProvider):
             config["tools"][0]["function_declarations"] = _fill_bank_placeholders(
                 config["tools"][0]["function_declarations"], all_banks, writable_banks
             )
+        # NOTE: live-session google_search grounding is NOT enabled — the
+        # API key's plan rejects it with a 1011 quota error at connect,
+        # taking down every session. Web search goes through the explicit
+        # web_search tool (generate-API grounding) instead.
+        # Build the transcript leak filter from the declared tool names —
+        # the model occasionally SPEAKS 'set_facial_expression{...}' style
+        # text instead of emitting a real function call, and the output
+        # transcription relays it verbatim into transcripts/UI.
+        try:
+            names = [
+                fd.get("name", "")
+                for fd in config["tools"][0]["function_declarations"]
+            ]
+            names = [re.escape(n) for n in names if n]
+            self._tool_leak_re = (
+                re.compile(r"\b(?:" + "|".join(names) + r")\s*\{")
+                if names else None
+            )
+        except Exception:
+            self._tool_leak_re = None
         self._session_context = self._client.aio.live.connect(
             model=self.model,
             config=config,
@@ -2799,9 +3703,21 @@ class GeminiLiveProvider(RealtimeProvider):
                 video=types.Blob(data=jpeg, mime_type="image/jpeg")
             )
 
+    def is_stalled(self) -> bool:
+        """True when the user has spoken but the provider has been silent
+        past ADA_STALL_TIMEOUT_S — a dead Gemini Live stream that never
+        ends cleanly and must be force-reconnected."""
+        if self._closed or not self._last_user_at:
+            return False
+        return (
+            self._last_user_at > self._last_model_at
+            and time.monotonic() - self._last_user_at > self._stall_timeout
+        )
+
     async def send_text_turn(self, text: str) -> None:
         if self._session is None:
             raise RuntimeError("provider is not connected")
+        self._last_user_at = time.monotonic()
         async with self._send_lock:
             await self._session.send_client_content(
                 turns=types.Content(
@@ -2835,13 +3751,17 @@ class GeminiLiveProvider(RealtimeProvider):
         response_audio_bytes = 0
         tool_calls_this_turn = 0
         tool_budget = int(os.environ.get("ADA_TOOL_CALL_BUDGET", "20"))
+        actuations_this_turn = 0
+        actuation_budget = int(os.environ.get("ADA_ACTUATION_BUDGET", "6"))
         budget_hit = False
         barge_pending = False  # a barge-in's transcript arrives next turn_complete
         input_done_ts = 0.0  # last input_transcription chunk ≈ end of user speech
         n_tools_this_turn = 0
+        budget_nudged = False
 
         while not self._closed:
             async for message in self._session.receive():
+                self._last_model_at = time.monotonic()
                 usage = message.usage_metadata
                 if usage:
                     self._record_usage(usage)
@@ -2855,6 +3775,7 @@ class GeminiLiveProvider(RealtimeProvider):
                 tool_call = message.tool_call
                 if tool_call and tool_call.function_calls:
                     function_responses = []
+                    camera_frames: list[tuple[str, bytes, str]] = []
                     for call in tool_call.function_calls:
                         logger.info(
                             "session=%s function_call received id=%s name=%s args=%r",
@@ -2867,7 +3788,15 @@ class GeminiLiveProvider(RealtimeProvider):
                         requested = (call.args or {}).get("expression")
                         tool_calls_this_turn += 1
                         tool_t0 = time.monotonic()
+                        if call.name in ACTUATING_TOOLS:
+                            actuations_this_turn += 1
                         if tool_calls_this_turn > tool_budget:
+                            if not budget_hit:
+                                self._emit_ops_event(
+                                    "tool_storm",
+                                    f"Turn exceeded the tool-call budget "
+                                    f"({tool_budget}) — further calls refused.",
+                                    tool=str(call.name))
                             budget_hit = True
                             logger.warning(
                                 "session=%s per-turn tool-call budget %d exhausted — refusing %s",
@@ -2876,6 +3805,22 @@ class GeminiLiveProvider(RealtimeProvider):
                             result = {"error": (
                                 "Tool budget for this turn exhausted — stop calling tools "
                                 "and answer the user from what you already have.")}
+                        elif actuations_this_turn > actuation_budget:
+                            if actuations_this_turn == actuation_budget + 1:
+                                self._emit_ops_event(
+                                    "actuation_cap",
+                                    f"Turn exceeded the actuation budget "
+                                    f"({actuation_budget}) — refused "
+                                    f"{call.name}.",
+                                    tool=str(call.name))
+                            budget_hit = True
+                            logger.warning(
+                                "session=%s per-turn actuation budget %d exhausted — refusing %s",
+                                self.session_id, actuation_budget, call.name,
+                            )
+                            result = {"error": (
+                                "Actuation limit for this turn reached — stop and tell the "
+                                "user what you were trying to control instead of retrying.")}
                         elif call.name == "set_facial_expression" and requested in EXPRESSION_NAMES:
                             yield ProviderEvent("expression", {"name": requested})
                             result = {"output": f"Ada is now {requested}"}
@@ -3012,11 +3957,15 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "Reserved for the session owner — propose it to "
                                 "them aloud and let them ask in their own voice.")}
                         elif call.name == "ada_session_recall":
-                            if self._recall_gated():
+                            # `force=true` is the user's explicit push
+                            # ("dig deeper", "check again") — it overrides
+                            # the redundant-recall gate.
+                            force = (call.args or {}).get("force")
+                            if self._recall_gated() and not force:
                                 result = {"output": (
                                     "ada_memory_search already returned a confident match "
                                     "moments ago — answer from those hits. Session recall "
-                                    "skipped (redundant).")}
+                                    "skipped (redundant). If the user insists, retry with force=true.")}
                             else:
                                 question = (call.args or {}).get("question", "What did we discuss in the previous session?")
                                 group = (call.args or {}).get("group")
@@ -3030,9 +3979,26 @@ class GeminiLiveProvider(RealtimeProvider):
                                 result = {"output": recall_status}
                         elif call.name == "ada_set_voice":
                             result = {"output": self._set_voice(dict(call.args or {}))}
+                        elif call.name == "ada_camera_snapshot" and self.vms_snap_url:
+                            result, frame = await self._camera_snapshot(
+                                dict(call.args or {}))
+                            if frame:
+                                camera_frames.append(frame)
+                        elif call.name == "vcast_snapshot":
+                            result, frame = await self._vcast_snapshot(
+                                dict(call.args or {}))
+                            if frame:
+                                camera_frames.append(frame)
                         elif call.name == "ada_decision_check" and self.tool_runner is not None:
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
+                        elif call.name == "ada_deep_research" and self.tool_runner is not None:
+                            result = {"output": self._start_deep_research(dict(call.args or {}))}
                         elif call.name == "ada_remember" and budget_hit:
+                            self._emit_ops_event(
+                                "remember_block",
+                                "ada_remember refused — turn hit the tool "
+                                "budget, content may be confabulated.",
+                                tool="ada_remember")
                             # The plan/summary the model wants to save never
                             # survived the storm — refuse rather than persist
                             # confabulated content.
@@ -3044,6 +4010,19 @@ class GeminiLiveProvider(RealtimeProvider):
                             if self.tool_runner is not None:
                                 try:
                                     call_args = dict(call.args or {})
+                                    if call_args.get("confirmed") and not self._user_confirmed(input_transcript):
+                                        logger.warning(
+                                            "session=%s %s self-asserted confirmed=true "
+                                            "without user affirmation — stripping",
+                                            self.session_id, call.name,
+                                        )
+                                        call_args.pop("confirmed", None)
+                                        self._emit_ops_event(
+                                            "confirm_strip",
+                                            f"Stripped model-asserted "
+                                            f"confirmed=true on {call.name} — "
+                                            f"no user affirmation found.",
+                                            tool=str(call.name))
                                     if call.name == "ada_memory_search":
                                         q = call_args.get("query")
                                         if q:
@@ -3097,6 +4076,48 @@ class GeminiLiveProvider(RealtimeProvider):
                         "session=%s function_call responses sent count=%d",
                         self.session_id, len(function_responses),
                     )
+                    # Camera frames ride as follow-up client content (same
+                    # pattern as send_habit_alert) — FunctionResponse.parts
+                    # crashes send_tool_response's json.dumps on bytes.
+                    for cam_name, cam_img, cam_mime in camera_frames:
+                        try:
+                            async with self._send_lock:
+                                await self._session.send_client_content(
+                                    turns=types.Content(role="user", parts=[
+                                        types.Part.from_text(text=(
+                                            f"Camera frame from '{cam_name}' "
+                                            "just arrived — describe to the user "
+                                            "what it shows.")),
+                                        types.Part.from_bytes(
+                                            data=cam_img,
+                                            mime_type=cam_mime),
+                                    ]),
+                                    turn_complete=True,
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "session=%s camera frame send failed: %s",
+                                self.session_id, exc,
+                            )
+                    if budget_hit and not budget_nudged:
+                        # Refused results alone don't stop a storm — the model
+                        # keeps emitting calls. Inject an explicit user-turn
+                        # nudge so the turn has to produce an answer.
+                        budget_nudged = True
+                        try:
+                            async with self._send_lock:
+                                await self._session.send_client_content(
+                                    turns=types.Content(
+                                        role="user",
+                                        parts=[types.Part.from_text(text=(
+                                            "[system] Tool-call limit reached for this turn — "
+                                            "stop calling tools and answer the user now, "
+                                            "briefly, from what you already have."))],
+                                    ),
+                                    turn_complete=True,
+                                )
+                        except Exception:
+                            logger.debug("budget nudge send failed", exc_info=True)
 
                 content = message.server_content
                 if content is None:
@@ -3112,7 +4133,10 @@ class GeminiLiveProvider(RealtimeProvider):
                     )
                     self._response_active = False
                     tool_calls_this_turn = 0
+                    actuations_this_turn = 0
                     budget_hit = False
+                    budget_nudged = False
+                    self._leak_active = False
                     barge_pending = True
                     self.conversation.log_event(
                         "barge_in",
@@ -3129,6 +4153,7 @@ class GeminiLiveProvider(RealtimeProvider):
                 if transcription and transcription.text:
                     input_transcript += transcription.text
                     input_done_ts = time.monotonic()
+                    self._last_user_at = time.monotonic()
 
                 output_transcription = content.output_transcription
                 if output_transcription and output_transcription.text:
@@ -3138,11 +4163,13 @@ class GeminiLiveProvider(RealtimeProvider):
                         response_audio_chunks = 0
                         response_audio_bytes = 0
                         yield ProviderEvent("response_started", {})
-                    assistant_turn_text += output_transcription.text
-                    yield ProviderEvent(
-                        "assistant_transcript_delta",
-                        {"text": output_transcription.text},
-                    )
+                    clean = self._strip_tool_leak(output_transcription.text)
+                    if clean:
+                        assistant_turn_text += clean
+                        yield ProviderEvent(
+                            "assistant_transcript_delta",
+                            {"text": clean},
+                        )
 
                 model_turn = content.model_turn
                 if model_turn:
@@ -3177,8 +4204,18 @@ class GeminiLiveProvider(RealtimeProvider):
                     barge_pending = False
                     input_transcript = ""
                     n_tools_this_turn = tool_calls_this_turn
+                    if (tool_calls_this_turn == 0
+                            and _PHANTOM_CLAIM_RE.search(assistant_turn_text)):
+                        self._emit_ops_event(
+                            "phantom_write_claim",
+                            "assistant claimed a write with no tool call this "
+                            f"turn: {assistant_turn_text.strip()[:160]!r}",
+                        )
                     tool_calls_this_turn = 0
+                    actuations_this_turn = 0
                     budget_hit = False
+                    budget_nudged = False
+                    self._leak_active = False
                     if assistant_turn_text.strip():
                         self.conversation.add_assistant(assistant_turn_text)
                         assistant_turn_text = ""

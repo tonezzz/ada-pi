@@ -1,0 +1,46 @@
+name: auto-report-worthy
+tier: smoke
+# Report-worthiness judgment — given the real benchmark data in
+# ada-ha-scenario-reports, does Ada surface items that are actually worth
+# reporting (fails, policy violations, regressions) instead of saying
+# "all good" or inventing items?
+#
+# What this exercises:
+#   1. She reaches the scenario-reports bank (ada_memory_search).
+#   2. She reports SOMETHING — the bank almost always has a recent fail
+#      or flaky scenario; "nothing to report" is the failure mode.
+#   3. Honesty — she must not fabricate: a passing-day reply that
+#      mentions fail/flaky/score terms is also acceptable.
+#
+# Read-only — smoke tier.
+
+turns:
+  - user: >-
+      Check my recent test benchmark reports — is there anything failing
+      or noteworthy that you should report to me?
+    expect:
+      calls_any: [ada_memory_search]
+      response_contains_any:
+        - fail
+        - flaky
+        - benchmark
+        - score
+        - report
+        - ล้มเหลว
+        - รายงาน
+        - คะแนน
+      response_not_contains:
+        - "I don't know"
+        - "no idea"
+        - "can't find"
+      timeout_s: 100
+      settle_s: 8
+
+  - user: Which suite had the worst score in the latest runs?
+    expect:
+      response_nonempty: true
+      response_not_contains:
+        - "I don't know"
+        - "no idea"
+      timeout_s: 90
+      settle_s: 8

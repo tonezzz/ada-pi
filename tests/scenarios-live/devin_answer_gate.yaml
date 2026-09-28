@@ -1,0 +1,25 @@
+# Dispatch loop: answering a blocked job must (a) require confirmed=true on
+# the first attempt, and (b) record the answer once the user affirms. Uses a
+# non-devin task id so the mailbox path is exercised (no ssh followup).
+# Seed before running: a job/test-ans-4419 doc with status=awaiting-user
+# (same add-doc payload shape as devin_pending_list.yaml).
+name: devin_answer_gate
+turns:
+  - user: >-
+      Job test-ans-4419 is blocked — send it this answer: zeta-answer-4419,
+      use the chaba repo.
+    expect:
+      calls_any: [devin_answer]
+      result_contains: ["requires confirmation"]
+      timeout_s: 120
+      settle_s: 10
+  - user: "Yes, approved — send it."
+    expect:
+      calls_any: [devin_answer]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 10
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-devin-handoff, contains: "test-ans-4419"}
+    - {collection: ada-ha-bank-devin-handoff, contains: "zeta-answer-4419"}

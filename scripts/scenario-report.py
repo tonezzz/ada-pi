@@ -146,6 +146,7 @@ def main() -> int:
     ap.add_argument("--keys-file", default=os.environ.get("ADA_KEYS_FILE") or "")
     ap.add_argument("--api-key", default=os.environ.get("ADA_API_KEY") or "")
     ap.add_argument("--scenarios-dir", default=os.path.join(REPO, "tests", "scenarios-live"))
+    ap.add_argument("--only", default="", help="run only scenarios whose name contains this string")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -159,6 +160,8 @@ def main() -> int:
         spec = yaml.safe_load(open(path).read()) or {}
         name = spec.get("name") or os.path.basename(path)
         tier = spec.get("tier") or "full"
+        if args.only and args.only not in name:
+            continue
         if args.tier == "smoke" and tier != "smoke":
             continue
 

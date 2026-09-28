@@ -19,6 +19,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -64,7 +65,37 @@ MIN_MARGIN = 0.05
 # once enrolled a real speaker (KK) under "Guest" when she didn't state a
 # name, which then identified her as a sandbox guest instead of prompting
 # for her real name.
-RESERVED_NAMES = {"guest", "unknown", "someone", "anon", "anonymous", "test", "tester"}
+RESERVED_NAMES = {"guest", "unknown", "someone", "anon", "anonymous",
+                  "test", "tester", "newspeaker", "new speaker",
+                  "new_speaker", "unnamed", "user"}
+# Consecutive identical chunks required to CHANGE an established speaker —
+# a single borderline frame flipping กุ้ง↔NewSpeaker at 46-64% was observed
+# 2026-09-27 (same voice enrolled twice under two names). First-time
+# identification still accepts a single confident chunk.
+SWITCH_AFTER = 2
+
+# Per-speaker print cap (ADA_SPEAKER_MAX_PRINTS). When full, the print least
+# similar to the speaker's own centroid is dropped — outlier pruning keeps
+# the centroid clean without letting a bad capture live forever.
+def _max_prints() -> int:
+    try:
+        return max(1, int(os.environ.get("ADA_SPEAKER_MAX_PRINTS", "12")))
+    except ValueError:
+        return 12
+
+
+# Whether enroll() also persists the raw PCM clip (ADA_SPEAKER_KEEP_AUDIO=0
+# disables). Retained clips are what bench_speaker_id.py replays.
+def _keep_audio() -> bool:
+    return os.environ.get("ADA_SPEAKER_KEEP_AUDIO", "1") != "0"
+
+
+def _centroid(prints: list[np.ndarray]) -> np.ndarray:
+    """L2-normalized mean of per-sample prints — same geometry as the
+    historical running-average merge."""
+    m = np.mean(np.stack(prints), axis=0)
+    n = float(np.linalg.norm(m))
+    return m / n if n else m
 
 
 def _rms(float_samples: np.ndarray) -> float:
@@ -108,12 +139,22 @@ class SpeakerIdentifier:
     def __init__(self) -> None:
         self._model: Any = None
         self._model_lock = threading.Lock()
-        self._enrolled: dict[str, np.ndarray] = {}
+        self._enrolled: dict[str, np.ndarray] = {}  # name -> centroid embedding
+        # Per-sample voiceprints (schema v2). _enrolled stays the merged
+        # centroid for back-compat consumers; _prints is the source of truth
+        # for scoring modes and benchmark leave-one-out.
+        self._prints: dict[str, list[np.ndarray]] = {}
         self._metadata: dict[str, dict[str, Any]] = {}  # name -> {ha_person, display_name}
         self._profiles_path = Path(
             os.environ.get(
                 "ADA_SPEAKER_PROFILES",
                 Path.home() / ".local/share/ada-pi/speaker_profiles.json",
+            )
+        )
+        self._samples_dir = Path(
+            os.environ.get(
+                "ADA_SPEAKER_SAMPLES_DIR",
+                str(self._profiles_path.parent / "speaker_samples"),
             )
         )
         self._load_enrolled()
@@ -165,13 +206,24 @@ class SpeakerIdentifier:
             return
         for name, entry in data.items():
             if isinstance(entry, dict) and "embedding" in entry:
-                raw = base64.b64decode(entry["embedding"])
-                self._enrolled[name] = np.frombuffer(raw, dtype=np.float32).copy()
-                self._metadata[name] = {
+                prints: list[np.ndarray] = []
+                for p in entry.get("prints") or []:
+                    prints.append(
+                        np.frombuffer(base64.b64decode(p), dtype=np.float32).copy())
+                if not prints:
+                    raw = base64.b64decode(entry["embedding"])
+                    prints.append(np.frombuffer(raw, dtype=np.float32).copy())
+                self._prints[name] = prints
+                self._enrolled[name] = _centroid(prints)
+                meta = {
                     "ha_person": entry.get("ha_person"),
                     "display_name": entry.get("display_name"),
-                    "samples": entry.get("samples") or 1,
+                    "samples": len(prints),
+                    "audio": list(entry.get("audio") or []),
                 }
+                if entry.get("media"):
+                    meta["media"] = True
+                self._metadata[name] = meta
         logger.info("loaded %d enrolled speaker profiles from %s", len(self._enrolled), self._profiles_path)
 
     def _save_enrolled(self) -> None:
@@ -179,13 +231,23 @@ class SpeakerIdentifier:
         data = {}
         for name, emb in self._enrolled.items():
             meta = self._metadata.get(name, {})
-            data[name] = {
+            entry: dict[str, Any] = {
                 "embedding": base64.b64encode(emb.tobytes()).decode("ascii"),
                 "dim": int(emb.shape[0]),
                 "ha_person": meta.get("ha_person"),
                 "display_name": meta.get("display_name"),
-                "samples": meta.get("samples") or 1,
+                "samples": len(self._prints.get(name) or []) or (meta.get("samples") or 1),
             }
+            prints = self._prints.get(name)
+            if prints:
+                entry["prints"] = [
+                    base64.b64encode(p.tobytes()).decode("ascii") for p in prints
+                ]
+            if meta.get("audio"):
+                entry["audio"] = meta["audio"]
+            if meta.get("media"):
+                entry["media"] = True
+            data[name] = entry
         self._profiles_path.write_text(json.dumps(data, indent=2))
 
     # -- public API ------------------------------------------------------
@@ -214,8 +276,12 @@ class SpeakerIdentifier:
         return self._metadata.get(name, {}).get("display_name") or name
 
     def set_metadata(self, name: str, ha_person: str | None = None,
-                     display_name: str | None = None) -> bool:
-        """Update HA person mapping and/or display name for an enrolled speaker."""
+                     display_name: str | None = None,
+                     media: bool | None = None) -> bool:
+        """Update HA person mapping, display name, or media flag for an
+        enrolled speaker. ``media`` marks a non-person source (TV/video/
+        podcast voice) so the pipeline steers Ada to ignore its content
+        instead of answering it."""
         if name not in self._enrolled:
             return False
         meta = self._metadata.setdefault(name, {})
@@ -223,10 +289,17 @@ class SpeakerIdentifier:
             meta["ha_person"] = ha_person or None
         if display_name is not None:
             meta["display_name"] = display_name or None
+        if media is not None:
+            meta["media"] = bool(media)
         self._save_enrolled()
-        logger.info("updated metadata for '%s': ha_person=%s display_name=%s",
-                    name, meta.get("ha_person"), meta.get("display_name"))
+        logger.info("updated metadata for '%s': ha_person=%s display_name=%s media=%s",
+                    name, meta.get("ha_person"), meta.get("display_name"),
+                    meta.get("media"))
         return True
+
+    def is_media(self, name: str) -> bool:
+        """True when the profile is flagged as a media/device voice."""
+        return bool(self._metadata.get(name, {}).get("media"))
 
     def enroll(self, name: str, pcm16: bytes, sample_rate: int = SAMPLE_RATE,
                ha_person: str | None = None,
@@ -243,21 +316,35 @@ class SpeakerIdentifier:
                 "speaker for their name first, then enroll under that."
             )
         emb = self._compute_embedding(pcm16, sample_rate)
+        # Contamination guard: match against EVERY stored print of every
+        # other speaker (max), not just centroids — a foreign voice sitting
+        # near any single sample is still foreign.
         best_other, best_other_score = None, 0.0
-        for other, ref in self._enrolled.items():
+        for other in self._enrolled:
             if other == name:
                 continue
-            score = _cosine_similarity(emb, ref)
-            if score > best_other_score:
-                best_other, best_other_score = other, score
+            for ref in self._prints.get(other) or [self._enrolled[other]]:
+                score = _cosine_similarity(emb, ref)
+                if score > best_other_score:
+                    best_other, best_other_score = other, score
         if best_other is not None and best_other_score >= DEFAULT_THRESHOLD:
             raise ValueError(
                 f"this voice matches enrolled speaker '{best_other}' "
                 f"({best_other_score:.0%}) — refusing to enroll it as '{name}'. "
                 "Confirm who is actually speaking, or remove the stale profile first."
             )
-        if name in self._enrolled:
-            own = _cosine_similarity(emb, self._enrolled[name])
+        prev = self._metadata.get(name, {})
+        if name not in self._prints and name in self._enrolled:
+            # v1→v2 migration: seed prints with the existing centroid so the
+            # first v2 enrollment extends rather than replaces the profile.
+            self._prints[name] = [self._enrolled[name]]
+        if name in self._prints:
+            # Own-voice check vs the speaker's best stored print (max) —
+            # centroids alone get diluted as samples accumulate and would
+            # reject a legitimate re-enrollment.
+            own = max(
+                _cosine_similarity(emb, p) for p in self._prints[name]
+            )
             if own < DEFAULT_THRESHOLD:
                 raise ValueError(
                     f"this voice does not match the existing '{name}' profile "
@@ -265,20 +352,36 @@ class SpeakerIdentifier:
                     f"really is {name}, the stored print may be stale; remove "
                     "it first, then enroll fresh."
                 )
-        prev = self._metadata.get(name, {})
-        if name in self._enrolled:
-            # Multi-sample merge: running average of past samples + this one
-            # keeps the voiceprint stable while letting later enrollments
-            # strengthen it (single ~4s captures score ~0.5; merged prints
-            # hold a higher margin over time).
-            n = int(prev.get("samples") or 1)
-            merged = self._enrolled[name] * n + emb
-            norm = np.linalg.norm(merged)
-            self._enrolled[name] = merged / norm if norm else merged
-            prev["samples"] = n + 1
-        else:
-            self._enrolled[name] = emb
-            prev["samples"] = 1
+        # Append the print, then prune: past the cap, drop the print LEAST
+        # similar to the speaker centroid (the outlier) rather than the
+        # oldest — a stray/mis-mic'd capture shouldn't outlive good ones.
+        prints = self._prints.setdefault(name, [])
+        prints.append(emb)
+        centroid = _centroid(prints)
+        while len(prints) > _max_prints():
+            worst = min(
+                range(len(prints)),
+                key=lambda i: _cosine_similarity(prints[i], centroid),
+            )
+            prints.pop(worst)
+            audio_list = prev.get("audio") or []
+            if worst < len(audio_list):
+                rel = audio_list.pop(worst)
+                try:
+                    (self._samples_dir.parent / rel).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            centroid = _centroid(prints)
+        self._enrolled[name] = centroid
+        prev["samples"] = len(prints)
+
+        if _keep_audio():
+            rel = self._save_sample_audio(name, pcm16)
+            if rel:
+                prev.setdefault("audio", []).append(rel)
+                # keep audio list aligned with prints after pruning
+                prev["audio"] = prev["audio"][-len(prints):]
+
         prev["ha_person"] = ha_person if ha_person is not None else prev.get("ha_person")
         prev["display_name"] = (
             display_name if display_name is not None else prev.get("display_name")
@@ -297,11 +400,31 @@ class SpeakerIdentifier:
                 "duration_s": round(len(pcm16) / 2 / sample_rate, 1),
                 "ha_person": prev.get("ha_person"), "display_name": prev.get("display_name")}
 
+    def _save_sample_audio(self, name: str, pcm16: bytes) -> str | None:
+        """Persist the enrollment clip under speaker_samples/<slug>/ and
+        return its path relative to the profiles dir, or None on failure."""
+        try:
+            slug = re.sub(r"[^A-Za-z0-9ก-๙_-]+", "-", name.strip()) or "speaker"
+            d = self._samples_dir / slug
+            d.mkdir(parents=True, exist_ok=True)
+            rel = d / f"{int(time.time() * 1000)}.pcm"
+            rel.write_bytes(pcm16)
+            return str(rel.relative_to(self._samples_dir.parent))
+        except OSError as exc:
+            logger.warning("speaker sample audio save failed: %s", exc)
+            return None
+
     def remove(self, name: str) -> bool:
         if name not in self._enrolled:
             return False
         del self._enrolled[name]
-        self._metadata.pop(name, None)
+        self._prints.pop(name, None)
+        meta = self._metadata.pop(name, {})
+        for rel in meta.get("audio") or []:
+            try:
+                (self._samples_dir.parent / rel).unlink(missing_ok=True)
+            except OSError:
+                pass
         self._save_enrolled()
         logger.info("removed speaker '%s'", name)
         try:
@@ -311,22 +434,68 @@ class SpeakerIdentifier:
             pass
         return True
 
+    def _speaker_score(self, name: str, emb: np.ndarray,
+                       centroid: np.ndarray, mode: str) -> float:
+        """Score an embedding against one speaker's prints.
+
+        ADA_SPEAKER_SCORE:
+          centroid — cosine vs merged centroid (default; historical behavior)
+          max      — best single-print match (sensitive, can over-fire)
+          mean     — mean of per-print cosines
+          hybrid   — 0.5*max + 0.5*mean
+        """
+        prints = self._prints.get(name)
+        if not prints or mode == "centroid":
+            return _cosine_similarity(emb, centroid)
+        sims = [_cosine_similarity(emb, p) for p in prints]
+        if mode == "max":
+            return max(sims)
+        if mode == "mean":
+            return sum(sims) / len(sims)
+        if mode == "hybrid":
+            return 0.5 * max(sims) + 0.5 * (sum(sims) / len(sims))
+        return _cosine_similarity(emb, centroid)
+
     def identify(self, pcm16: bytes, sample_rate: int = SAMPLE_RATE,
                  threshold: float = DEFAULT_THRESHOLD) -> tuple[str | None, float]:
         """Return (name, confidence) or (None, best_score)."""
         if not self._enrolled:
             return None, 0.0
         emb = self._compute_embedding(pcm16, sample_rate)
+        # Score persons and media sinks in separate pools — a media-flagged
+        # profile is a noise sink (TV/ambient), not a person in the room.
+        # Letting it win winner-take-all made Ada treat a real speaker as
+        # background noise whenever their voice drifted near the media
+        # cluster (observed 2026-09-27: Tony matched 'NewSpeaker' media
+        # profile at 0.48 and was muted as ambient audio).
         best_name: str | None = None
         best_score = 0.0
         second_score = 0.0
+        media_name: str | None = None
+        media_score = 0.0
+        score_mode = os.environ.get("ADA_SPEAKER_SCORE", "centroid")
         for name, ref in self._enrolled.items():
-            score = _cosine_similarity(emb, ref)
+            score = self._speaker_score(name, emb, ref, score_mode)
+            if self.is_media(name):
+                if score > media_score:
+                    media_name, media_score = name, score
+                continue
             if score > best_score:
                 second_score = best_score
                 best_name, best_score = name, score
             elif score > second_score:
                 second_score = score
+        # A confident person within margin of the media sink wins the person
+        # path — the media label is only legitimate when no person is close.
+        if best_score >= threshold and best_score >= media_score - MIN_MARGIN:
+            pass  # fall through to the person margin check below
+        elif media_score >= threshold and media_score - best_score >= MIN_MARGIN:
+            return media_name, media_score
+        else:
+            logger.info(
+                "identify ambiguous: person %s=%.2f vs media %s=%.2f — unrecognized",
+                best_name, best_score, media_name, media_score)
+            return None, max(best_score, media_score)
         if best_score < threshold:
             return None, best_score
         if best_score - second_score < MIN_MARGIN:
@@ -365,6 +534,8 @@ class SpeakerSession:
         self._task: asyncio.Task[None] | None = None
         self._miss_count = 0
         self._unrecognized_notified = False
+        self._switch_pending: str | None = None
+        self._switch_count = 0
         # Rolling tail of ALL fed audio (not consumed by identification) —
         # enroll_from_buffer needs the voice that was just speaking even
         # after identify() consumed its chunk.
@@ -393,6 +564,7 @@ class SpeakerSession:
         self._identifying = True
         self._task = asyncio.create_task(self._identify(chunk))
 
+
     async def _identify(self, chunk: bytes) -> None:
         try:
             loop = asyncio.get_running_loop()
@@ -400,13 +572,32 @@ class SpeakerSession:
                 None, self._identifier.identify, chunk, SAMPLE_RATE, self._threshold
             )
             if name is not None and name != self._last_name:
+                # Hysteresis: switching to a different speaker needs
+                # SWITCH_AFTER consecutive wins for that name; first-time
+                # identification (no prior speaker) accepts immediately.
+                if self._last_name is not None:
+                    if name == self._switch_pending:
+                        self._switch_count += 1
+                    else:
+                        self._switch_pending = name
+                        self._switch_count = 1
+                    if self._switch_count < SWITCH_AFTER:
+                        return
+                self._switch_pending = None
+                self._switch_count = 0
                 self._last_name = name
                 self._miss_count = 0
                 self._unrecognized_notified = False
                 logger.info("speaker identified: %s (%.0f%%)", name, confidence * 100)
                 await self._on_identified(name, confidence)
-            elif name is None:
-                self._miss_count += 1
+            else:
+                # stable same-speaker hit or a miss — either way a pending
+                # switch doesn't accrue (single-frame outliers shouldn't
+                # count toward changing identity)
+                self._switch_pending = None
+                self._switch_count = 0
+                if name is None:
+                    self._miss_count += 1
                 if (
                     self._on_unrecognized is not None
                     and self._miss_count >= UNKNOWN_AFTER_MISSES

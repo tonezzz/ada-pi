@@ -278,8 +278,17 @@ class HomeAssistantClient:
         client = await self._http_client()
         payload = {"cmd": cmd, "text": text}
         payload.update({k: v for k, v in extra.items() if v is not None})
-        response = await client.post("/api/services/rest_command/tv_action", json=payload)
-        response.raise_for_status()
+        # nav/cast commands take 5-30s server-side (page load + screenshot +
+        # playlist wait + cast handshake) — far past the shared 5s default.
+        response = await client.post(
+            "/api/services/rest_command/tv_action", json=payload, timeout=45.0)
+        if response.status_code >= 400:
+            # Surface the controller's denial/error text (e.g. screen
+            # ownership "denied: ... is tony's private screen") so the
+            # model can explain it instead of a bare HTTP error.
+            raise RuntimeError(
+                f"tv_action failed ({response.status_code}): "
+                f"{response.text[:300]}")
         return {"cmd": cmd, "text": text, **extra}
 
     async def get_state(self, entity_id: str) -> dict[str, Any]:

@@ -211,6 +211,7 @@ function handleControl(event) {
       window.idleFace?.setConnecting(false);
       setConnected(true);
       setStatus("Connected — listening");
+      systemSay("Ada online. Listening.");
       break;
     case "speech_started":
       setStatus("Speech detected");
@@ -232,6 +233,7 @@ function handleControl(event) {
       else assistantEntry += event.text;
       break;
     case "response_started":
+      systemHush();           // Ada takes over — kill any pending boot voice
       assistantPlaybackActive = true;
       if (assistantEntry) logLine(`Ada: ${assistantEntry}`);
       assistantEntry = "";
@@ -262,15 +264,33 @@ function handleControl(event) {
   }
 }
 
+// Boot-voice: flat system announcements while connecting. SpeechSynthesis
+// with low pitch + brisk rate = crisp, non-emotional machine voice; the
+// click gesture unlocks it on iOS/Safari. Cancelled the moment Ada speaks.
+function systemSay(text) {
+  try {
+    if (!("speechSynthesis" in window)) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.15; u.pitch = 0.85; u.volume = 0.9;
+    const en = speechSynthesis.getVoices()
+      .find(v => /^en[-_]US/i.test(v.lang)) || null;
+    if (en) u.voice = en;
+    speechSynthesis.speak(u);
+  } catch (_) {}
+}
+function systemHush() { try { speechSynthesis?.cancel(); } catch (_) {} }
+
 async function connect() {
   if (connectionInProgress || socket) return;
   connectionInProgress = true;
   window.idleFace?.setConnecting(true);
   setStatus("Requesting microphone…");
+  systemSay("Initializing voice link.");
   try {
     await ensureSession();
     await createPlayback();
     await startMicrophone();
+    systemSay("Microphone ready. Establishing channel.");
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     const basePath = appBasePath();
     const key = getApiKey();
@@ -279,13 +299,15 @@ async function connect() {
       + (key ? `&api_key=${encodeURIComponent(key)}` : "");
     socket = new WebSocket(wsUrl);
     socket.binaryType = "arraybuffer";
-    socket.onopen = () => setStatus("Connecting to AI…");
+    socket.onopen = () => { setStatus("Connecting to AI…");
+      systemSay("Channel open. Handing over to Ada."); };
     socket.onmessage = (message) => {
       if (typeof message.data === "string") handleControl(JSON.parse(message.data));
       else playbackNode?.port.postMessage(message.data, [message.data]);
     };
     socket.onerror = () => logLine("WebSocket error", "system");
     socket.onclose = (event) => {
+      systemHush();
       if (event.code === 4401) {
         authRequired = true;
         localStorage.removeItem(AUTH_STORAGE_KEY);
@@ -297,6 +319,7 @@ async function connect() {
     window.idleFace?.setConnecting(false, true);
     console.error(error);
     setStatus(error.message);
+    systemSay("Link failed. " + String(error.message || "unknown error").slice(0, 60));
     await disconnect(false);
   } finally {
     connectionInProgress = false;

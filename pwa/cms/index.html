@@ -4,12 +4,25 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#1a1a2e">
-  <title>Ada Pages</title>
+  <title>Chaba CMS</title>
   <link rel="stylesheet" href="tailwind.min.css">
   <script src="vendor/js-yaml.min.js"></script>
   <script src="vendor/marked.umd.js"></script>
   <script src="vendor/purify.min.js"></script>
+  <script src="vendor/echarts-5.5.1.min.js"></script>
+  <script src="vendor/echarts-gl-2.1.0.min.js"></script>
+  <script src="vendor/mermaid-11.4.1.min.js"></script>
   <style>
+    .cms-chart { width: 100%; height: 320px; }
+    .cms-media { max-width: 100%; border-radius: .5rem; margin: .6rem 0; }
+    .cms-figure { margin: .8rem 0; }
+    .cms-figure figcaption { font-size: .8rem; color: #94a3b8; margin-top: .3rem; }
+  </style>
+  <style>
+    /* tailwind .flex utility outranks [hidden] (same specificity, later in
+       source order) — the unlock overlay would render permanently without
+       this id-scoped override. */
+    #unlock-overlay[hidden] { display: none; }
     .prose-ada h1 { font-size: 1.6rem; font-weight: 700; color: #fff; margin: 1rem 0 .5rem; }
     .prose-ada h2 { font-size: 1.3rem; font-weight: 600; color: #fff; margin: 1rem 0 .5rem; }
     .prose-ada h3 { font-size: 1.1rem; font-weight: 600; color: #e2e8f0; margin: .75rem 0 .4rem; }
@@ -29,14 +42,23 @@
   <nav class="bg-card border-b border-slate-700 px-4 py-3 flex items-center gap-3">
     <a href="../" class="text-sky-400 hover:text-sky-300">&larr; Ada</a>
     <span class="text-slate-500">|</span>
-    <span class="font-semibold">Pages</span>
-    <button id="btn-refresh" class="ml-auto text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Refresh</button>
+    <span class="font-semibold">Chaba CMS</span>
+    <div class="ml-auto flex items-center gap-1">
+      <button id="lang-en" class="text-xs px-2 py-1 rounded">EN</button>
+      <button id="lang-th" class="text-xs px-2 py-1 rounded">ไทย</button>
+    </div>
+    <button id="btn-refresh" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Refresh</button>
   </nav>
 
   <div class="max-w-6xl mx-auto p-4 md:flex md:gap-6">
     <aside class="md:w-64 shrink-0 mb-6 md:mb-0">
-      <h2 class="text-xs uppercase tracking-wide text-slate-500 mb-2">Pages</h2>
-      <div id="page-list" class="space-y-1 text-sm"></div>
+      <div class="flex items-center gap-2 mb-2">
+        <h2 class="text-xs uppercase tracking-wide text-slate-500">Chaba CMS</h2>
+        <button id="btn-toggle-list" class="md:hidden ml-auto text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Pages ▾</button>
+      </div>
+      <input id="page-filter" type="search" placeholder="Filter pages…"
+             class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm mb-2">
+      <div id="page-list" class="space-y-1 text-sm hidden md:block"></div>
     </aside>
     <main class="flex-1 min-w-0">
       <div id="content" class="text-slate-400">Loading…</div>
@@ -92,6 +114,16 @@ function apiFetch(path) {
   });
 }
 
+function fmtUpdated(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  return d.toLocaleString("en-GB", {
+    timeZone: "Asia/Bangkok",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }) + " ICT";
+}
+
 function escapeHtml(t) {
   if (t == null) return "";
   return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -117,7 +149,74 @@ document.getElementById("unlock-key").addEventListener("keydown", (e) => {
 document.getElementById("btn-refresh").addEventListener("click", loadPages);
 window.addEventListener("hashchange", renderRoute);
 
+// Language toggle — en/th page variants coexist under one slug; the
+// backend falls back to en when the requested variant is missing.
+const LANG_KEY = "cms_lang";
+let curLang = localStorage.getItem(LANG_KEY) || "en";
+function paintLangBtns() {
+  for (const l of ["en", "th"]) {
+    const b = document.getElementById(`lang-${l}`);
+    b.className = "text-xs px-2 py-1 rounded " + (l === curLang
+      ? "bg-accent text-white" : "bg-slate-700 hover:bg-slate-600");
+  }
+}
+function setLang(l) {
+  curLang = l;
+  localStorage.setItem(LANG_KEY, l);
+  paintLangBtns();
+  renderPageList(document.getElementById("page-filter").value.trim().toLowerCase());
+  renderRoute();
+}
+document.getElementById("lang-en").addEventListener("click", () => setLang("en"));
+document.getElementById("lang-th").addEventListener("click", () => setLang("th"));
+paintLangBtns();
+
+// Mobile: page list starts collapsed; toggle button + auto-collapse on
+// selection (only applies below the md breakpoint — check per click).
+const pageList = document.getElementById("page-list");
+const isMobile = () => window.matchMedia("(max-width: 767px)").matches;
+document.getElementById("btn-toggle-list").addEventListener("click", () => {
+  pageList.classList.toggle("hidden");
+});
+document.getElementById("page-filter").addEventListener("input", (e) => {
+  renderPageList(e.target.value.trim().toLowerCase());
+});
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("#page-list a");
+  if (a && isMobile()) pageList.classList.add("hidden");
+});
+
 let pages = [];
+
+function renderPageList(filter = "") {
+  const list = document.getElementById("page-list");
+  list.innerHTML = "";
+  const shown = filter
+    ? pages.filter((p) =>
+        (p.title || "").toLowerCase().includes(filter) ||
+        (p.slug || "").toLowerCase().includes(filter))
+    : pages;
+  if (!shown.length) {
+    list.innerHTML = filter
+      ? '<div class="text-slate-500 italic">No matches.</div>'
+      : '<div class="text-slate-500 italic">No pages yet — ask Ada to create one.</div>';
+    return;
+  }
+  const slug = decodeURIComponent((location.hash.match(/^#\/(.+)$/) || [])[1] || "");
+  for (const p of shown) {
+    const a = document.createElement("a");
+    a.href = `#/${encodeURIComponent(p.slug)}`;
+    a.className = "block px-2 py-1.5 rounded hover:bg-slate-800 truncate" +
+      (p.slug === slug ? " bg-slate-800" : "");
+    const langs = (p.langs || ["en"]);
+    const langBadge = langs.includes(curLang)
+      ? ""
+      : ` <span class="text-xs text-amber-500">no ${curLang}</span>`;
+    a.innerHTML = `<span class="text-slate-200">${escapeHtml(p.title)}</span>
+      <span class="hidden sm:inline text-xs text-slate-500 ml-1">${escapeHtml(p.format || "markdown")}</span>${langBadge}`;
+    list.appendChild(a);
+  }
+}
 
 async function loadPages() {
   const list = document.getElementById("page-list");
@@ -126,18 +225,7 @@ async function loadPages() {
     if (res.status === 401) { showUnlock("API key required (or invalid for this device)."); return; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     pages = (await res.json()).pages || [];
-    list.innerHTML = "";
-    if (!pages.length) {
-      list.innerHTML = '<div class="text-slate-500 italic">No pages yet — ask Ada to create one.</div>';
-    }
-    for (const p of pages) {
-      const a = document.createElement("a");
-      a.href = `#/${encodeURIComponent(p.slug)}`;
-      a.className = "block px-2 py-1.5 rounded hover:bg-slate-800 truncate";
-      a.innerHTML = `<span class="text-slate-200">${escapeHtml(p.title)}</span>
-        <span class="text-xs text-slate-500 ml-1">${escapeHtml(p.format || "markdown")}</span>`;
-      list.appendChild(a);
-    }
+    renderPageList(document.getElementById("page-filter").value.trim().toLowerCase());
     renderRoute();
   } catch (err) {
     document.getElementById("content").innerHTML =
@@ -147,6 +235,7 @@ async function loadPages() {
 
 async function renderRoute() {
   const slug = decodeURIComponent((location.hash.match(/^#\/(.+)$/) || [])[1] || "");
+  renderPageList(document.getElementById("page-filter").value.trim().toLowerCase());
   const el = document.getElementById("content");
   if (!slug) {
     el.innerHTML = pages.length
@@ -156,7 +245,7 @@ async function renderRoute() {
   }
   el.textContent = "Loading…";
   try {
-    const res = await apiFetch(`/api/cms/pages/${encodeURIComponent(slug)}`);
+    const res = await apiFetch(`/api/cms/pages/${encodeURIComponent(slug)}?lang=${curLang}`);
     if (res.status === 401) { showUnlock(); return; }
     if (res.status === 404) { el.innerHTML = `<div class="text-slate-500">Page not found: ${escapeHtml(slug)}</div>`; return; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -171,7 +260,13 @@ function renderPage(el, page) {
   const head = document.createElement("div");
   head.className = "mb-5";
   head.innerHTML = `<h1 class="text-2xl font-bold text-white">${escapeHtml(page.title)}</h1>
-    <div class="text-xs text-slate-500 mt-1">${escapeHtml(page.slug)} · ${escapeHtml(page.format)}${page.updated ? " · updated " + escapeHtml(page.updated) : ""}</div>`;
+    <div class="text-xs text-slate-500 mt-1">${escapeHtml(page.slug)} · ${escapeHtml(page.format)} · ${escapeHtml(page.lang || "en")}${page.updated ? " · updated " + escapeHtml(fmtUpdated(page.updated)) : ""}</div>`;
+  if (page.fallback) {
+    const fb = document.createElement("div");
+    fb.className = "text-xs text-amber-500 mb-2";
+    fb.textContent = `No ${curLang} version — showing the English page.`;
+    head.appendChild(fb);
+  }
   el.appendChild(head);
 
   const body = document.createElement("div");
@@ -180,14 +275,68 @@ function renderPage(el, page) {
   if (fmt === "html") renderHtml(body, page.content);
   else if (fmt === "yaml") renderYaml(body, page.content);
   else if (fmt === "slides") renderSlides(body, page.content);
-  else renderMarkdown(body, page.content);
+  else renderMarkdown(body, page.content, page.title);
 }
 
-function renderMarkdown(el, md) {
+function renderMarkdown(el, md, pageTitle) {
   const d = document.createElement("div");
   d.className = "prose-ada";
-  d.innerHTML = DOMPurify.sanitize(marked.parse(md || ""));
+  // Drop a leading '# Title' that just repeats the page header.
+  md = (md || "").replace(/^\s*#\s+(.+)\n+/, (m, t) =>
+    pageTitle && t.trim() === pageTitle.trim() ? "" : m);
+  d.innerHTML = DOMPurify.sanitize(marked.parse(md));
   el.appendChild(d);
+  // Rich blocks: ```chart (echarts 2D JSON option), ```chart3d (echarts-gl),
+  // ```mermaid, ```media (image|video|audio + optional caption/url).
+  d.querySelectorAll("pre code").forEach((code) => {
+    const cls = code.className.replace("language-", "");
+    const pre = code.parentElement;
+    try {
+      if (cls === "chart" || cls === "chart3d") {
+        const opt = jsyaml.load(code.textContent);
+        const box = document.createElement("div");
+        box.className = "cms-chart";
+        if (opt && opt.height) box.style.height = `${opt.height}px`;
+        pre.replaceWith(box);
+        const c = echarts.init(box, null, { renderer: "canvas" });
+        c.setOption(opt.option || opt || {});
+        window.addEventListener("resize", () => c.resize());
+      } else if (cls === "mermaid") {
+        const div = document.createElement("pre");
+        div.className = "mermaid";
+        div.textContent = code.textContent;
+        pre.replaceWith(div);
+        mermaid.run({ nodes: [div] }).catch(() => {});
+      } else if (cls === "media") {
+        const spec = jsyaml.load(code.textContent) || {};
+        const fig = document.createElement("figure");
+        fig.className = "cms-figure";
+        const kind = spec.type || (/\.(mp4|webm|mov)/i.test(spec.url) ? "video"
+          : /\.(mp3|wav|m4a|ogg)/i.test(spec.url) ? "audio" : "image");
+        let node;
+        if (kind === "video") {
+          node = document.createElement("video");
+          node.controls = true; node.src = spec.url;
+        } else if (kind === "audio") {
+          node = document.createElement("audio");
+          node.controls = true; node.src = spec.url;
+        } else {
+          node = document.createElement("img");
+          node.src = spec.url; node.alt = spec.alt || "";
+        }
+        node.className = "cms-media";
+        fig.appendChild(node);
+        if (spec.caption) {
+          const cap = document.createElement("figcaption");
+          cap.textContent = spec.caption;
+          fig.appendChild(cap);
+        }
+        pre.replaceWith(fig);
+      }
+    } catch (err) {
+      pre.innerHTML = `<div class="text-red-400">Block parse error (${escapeHtml(cls)}): ${escapeHtml(err.message)}</div>`;
+    }
+  });
 }
 
 function renderHtml(el, html) {
@@ -297,6 +446,7 @@ function renderYamlItem(item) {
   return div;
 }
 
+mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
 loadPages();
 </script>
 </body>

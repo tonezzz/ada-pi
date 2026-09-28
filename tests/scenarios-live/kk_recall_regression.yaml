@@ -1,0 +1,31 @@
+# Regression: household-member recall after the people/kk retraction fix.
+# Covers the 2026-09-28 failure where people/kk + people/tony were
+# retracted and all KK knowledge sat in invisible draft extracts.
+#
+# people/kk now holds: KK = คุณกุ้ง = Pornsiri Sunthonprasit, white
+# Honda CR-V 5ขว 6249, pop/electronic music, named assistant แก้วตา,
+# prefers Thai replies.
+# general/ada/kaewta-nickname holds the nickname fact.
+name: kk_recall_regression
+tier: smoke
+turns:
+  - user: "Who is KK in this household?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      response_contains_any: ["Pornsiri", "พรศิริ", "กุ้ง", "wife", "ภรรยา", "household", "สมาชิก"]
+
+  - user: "What do you know about คุณกุ้ง's car?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      response_contains_any: ["5ขว 6249", "Honda", "CR-V"]
+
+  - user: "What does the name แก้วตา refer to?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      response_contains_any: ["Ada", "assistant", "nickname", "you", "ดิฉัน", "คุณกุ้ง"]

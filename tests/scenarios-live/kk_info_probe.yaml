@@ -21,4 +21,6 @@ turns:
       timeout_s: 60
       settle_s: 6
       response_nonempty: true
-      response_contains_any: ["Thai", "ภาษาไทย"]
+      # Accept either the people/kk fact (Thai) or the persona knob
+      # answer (auto = reply in the language last used).
+      response_contains_any: ["Thai", "ภาษาไทย", "auto"]

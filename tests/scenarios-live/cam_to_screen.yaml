@@ -1,0 +1,54 @@
+# cam-to-screen — the real camera->display loop Tony hit on 2026-09-28:
+# snap a VMS camera, put the still on vcast screens, VERIFY visually, clean
+# up. Guards the two regressions seen live:
+#   1) Ada inventing a snapshot URL -> broken image (must return cast_url)
+#   2) vcast_snapshot saying idle-or-overlay on a broken img (now reports
+#      image-load-failed)
+# tier: full — casts content to real displays.
+name: cam-to-screen
+tier: full
+
+turns:
+  - user: "Ada, take a snapshot of the swimming pool camera and put it on screen 1."
+    expect:
+      calls_any: [cctv_snapshot, ada_camera_snapshot]   # unified path preferred
+      result_contains: ["delivered"]                    # a cast must actually land
+      response_nonempty: true
+      max_calls: 10
+      timeout_s: 180                        # vms snap ~12s + cast
+      settle_s: 10
+
+  - user: "Look at screen 1 and tell me what it's actually showing."
+    expect:
+      calls_any: [vcast_snapshot, vcast_list]  # liveness check first is fine
+      response_nonempty: true
+      # she should describe the pool still — or honestly report a failure
+      response_contains_any: ["pool", "water", "camera", "snapshot",
+                              "image", "สระ", "น้ำ", "กล้อง"]
+      max_calls: 8
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Show the pool camera on screen 2 as well."
+    expect:
+      calls_any: [cast_to_screen, cctv_wall, cctv_snapshot]
+      response_nonempty: true
+      max_calls: 10
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Check screen 2 as well — is the same picture up?"
+    expect:
+      calls_any: [vcast_snapshot]
+      response_nonempty: true
+      max_calls: 8
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Thanks — stop both screens, back to idle."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      max_calls: 8
+      timeout_s: 90
+      settle_s: 8

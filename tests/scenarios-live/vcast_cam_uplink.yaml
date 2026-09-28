@@ -1,0 +1,23 @@
+# Camera uplink scenario — Ada drives the new vcast uplink action:
+# "start camera uplink" -> cast_to_screen(action=uplink) -> the display
+# getUserMedia-pushes frames to input-bridge /frame?screen=N&token=cam,
+# and yolo-ipad-N on mn01 polls them for detections.
+#
+# Verified manually 2026-09-28: screen 2 uplink -> 640x480 JPEG frames ->
+# yolo-ipad-2 detections live. Screen 1 (iPad) needs the page open +
+# camera permission granted before this passes there.
+name: vcast_cam_uplink
+tier: full
+turns:
+  - user: "Ada, start the camera uplink on screen 2 please."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+  - user: "Stop the camera uplink on screen 2."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 5

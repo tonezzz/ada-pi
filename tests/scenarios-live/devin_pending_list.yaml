@@ -1,0 +1,19 @@
+# Dispatch loop: Ada must surface blocked dispatched jobs when asked.
+# Seed before running:
+#   curl -X POST $MDDB/v1/add -d '{"collection":"ada-ha-bank-devin-handoff",
+#     "key":"job/test-pending-9917","lang":"en","contentMd":"test job",
+#     "meta":{"kind":["job"],"status":["awaiting-user"],"job_id":["test-pending-9917"],
+#             "question":["zeta-pending marker: which repo?"],"scope":["tony"],
+#             "subject":["job-test-pending-9917"],"bank":["devin-handoff"],
+#             "written_by":["scenario"],"ts":["2026-09-26T00:00:00Z"]}}'
+name: devin_pending_list
+turns:
+  - user: "Is anything waiting for my attention — any blocked jobs?"
+    expect:
+      calls_any: [devin_pending]
+      response_contains_any: ["test-pending-9917", "which repo", "zeta-pending", "blocked", "waiting"]
+      timeout_s: 120
+      settle_s: 10
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-devin-handoff, contains: "test-pending-9917"}

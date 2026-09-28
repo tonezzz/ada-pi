@@ -1,0 +1,130 @@
+# News pages update — end-to-end exercise of the news-* CMS group.
+#
+# Drives Ada through the full publish protocol for the seeded news pages:
+# read news-system (format guide) -> web_search per scope -> cms_publish_page
+# pending -> user confirm -> confirmed resubmit -> verify.
+#
+# Benchmarks baked in:
+#   - max_calls bounds per turn (cost/latency discipline)
+#   - no_calls_except whitelists (no device actuation during a news task)
+#   - cms_get_page/cms_verify_page = the page actually exists & parses
+#
+# tier: full — real CMS writes + confirmation turns. Manual/scheduled-full only.
+name: news-pages-update
+tier: full
+
+turns:
+  # --- learn the format, update News World -------------------------------
+  - user: >-
+      We have a group of CMS pages with slugs starting "news-" —
+      news-headline, news-world, news-thailand, news-bangplee, news-tabsai,
+      plus a news-system index page. Read the news-system page first to see
+      the format we use, then update news-world with today's top world news:
+      search the web, write it in that brief format, and ask me before
+      publishing.
+    expect:
+      calls_any: [web_search]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - ada_memory_search
+        - ada_session_recall
+        - cms_list_pages
+        - cms_get_page
+        - cms_verify_page
+        - cms_publish_page
+        - web_search
+      max_calls: 14
+      timeout_s: 180
+      settle_s: 10
+
+  # --- confirm News World publish -----------------------------------------
+  - user: Yes, publish it.
+    expect:
+      calls_any: [cms_publish_page]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_publish_page
+        - cms_verify_page
+        - cms_get_page
+      max_calls: 8
+      timeout_s: 120
+      settle_s: 8
+
+  # --- News Thailand ------------------------------------------------------
+  - user: >-
+      Now update news-thailand with today's top Thai national news — same
+      process: search first, brief format, ask me before publishing.
+    expect:
+      calls_any: [web_search]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_get_page
+        - cms_verify_page
+        - cms_publish_page
+        - web_search
+      max_calls: 12
+      timeout_s: 180
+      settle_s: 10
+
+  - user: Yes, publish.
+    expect:
+      calls_any: [cms_publish_page]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_publish_page
+        - cms_verify_page
+        - cms_get_page
+      max_calls: 8
+      timeout_s: 120
+      settle_s: 8
+
+  # --- batch the remaining three ------------------------------------------
+  - user: >-
+      Finish the rest — news-bangplee and news-tabsai and then refresh
+      news-headline as the combined digest — same format, draft them all and
+      ask me once before publishing the batch.
+    expect:
+      calls_any: [web_search]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_get_page
+        - cms_verify_page
+        - cms_publish_page
+        - web_search
+      max_calls: 20
+      timeout_s: 240
+      settle_s: 12
+
+  - user: Yes, publish all of them.
+    expect:
+      calls_any: [cms_publish_page]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_publish_page
+        - cms_verify_page
+        - cms_get_page
+      max_calls: 12
+      timeout_s: 180
+      settle_s: 10
+
+  # --- verification --------------------------------------------------------
+  - user: >-
+      Verify the five news pages are live and readable — check each one
+      parses correctly.
+    expect:
+      calls_any: [cms_verify_page, cms_get_page]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_list_pages
+        - cms_get_page
+        - cms_verify_page
+      max_calls: 12
+      timeout_s: 120
+      settle_s: 10

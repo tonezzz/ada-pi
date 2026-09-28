@@ -1,0 +1,25 @@
+# Yomi vs LINE-bot disambiguation — Ada kept mixing the LINE archive
+# service with the earlier LINE notification bot. A canonical note now
+# exists at ada-ha-bank-general:yomi-vs-line-bot. Then she must write a
+# CMS report explaining the two.
+name: yomi_linebot_disambiguation
+turns:
+  - user: >-
+      You keep mixing up Yomi and the old LINE bot project. Explain the
+      difference to me.
+    expect:
+      calls_any: [ada_memory_search, ada_session_recall]
+      timeout_s: 90
+      settle_s: 12
+  - user: >-
+      Good. Write a short report to the CMS explaining both — titled
+      "Yomi vs LINE bot" — so you stop confusing them.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 120
+      settle_s: 12
+  - user: Yes, publish it.
+    expect:
+      calls_any: [cms_publish_page, cms_verify_page]
+      timeout_s: 90
+      settle_s: 12

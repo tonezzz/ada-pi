@@ -1,0 +1,12 @@
+# CCTV peek: user asks Ada to show a camera snapshot on the TV / a vcast
+# screen. She must call cctv_snapshot with the right camera name — single
+# frame via go2rtc, no live streaming.
+name: cctv_snapshot_to_screen
+turns:
+  - user: >-
+      Quick check — can you show me what the c201 camera sees right now?
+      Put it on the TV.
+    expect:
+      calls_any: [cctv_snapshot]
+      timeout_s: 180
+      settle_s: 15

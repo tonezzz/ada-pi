@@ -1,0 +1,30 @@
+# Persona style tuning — user asks Ada to change how she responds.
+# Exercises ada_persona set/show across the style knobs, including the
+# new sassiness gate.
+name: persona_style_change
+turns:
+  - user: What's my current response style set to?
+    expect:
+      calls_any: [ada_persona]
+      timeout_s: 60
+      settle_s: 10
+  - user: >-
+      Turn up the playfulness — be a bit more playful with me, light wit
+      is fine.
+    expect:
+      calls_any: [ada_persona]
+      timeout_s: 60
+      settle_s: 12
+      # expect set with sassiness=light/playful or tone=playful
+  - user: How are you so sure about that? Tell me something you know.
+    expect:
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 10
+  - user: >-
+      Actually go back to straight answers — polite but no jokes, no
+      playfulness at all.
+    expect:
+      calls_any: [ada_persona]
+      timeout_s: 60
+      settle_s: 12

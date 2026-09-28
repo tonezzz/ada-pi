@@ -1,0 +1,12 @@
+# Latency benchmark turn: a trivial question should answer well under
+# the observed 10s median. Acts as a live regression gate for the
+# mddb-wedge lag pattern (memory tools blocking the turn).
+name: response_budget
+tier: smoke
+turns:
+  - user: "Ada, quick check — what is two plus two?"
+    expect:
+      response_nonempty: true
+      response_contains_any: ["four", "4", "สี่"]
+      timeout_s: 30        # hard budget: trivial turns must not blow 30s
+      settle_s: 3

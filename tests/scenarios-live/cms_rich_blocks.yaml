@@ -1,0 +1,22 @@
+# Rich CMS blocks — Ada must publish a page containing a chart block
+# and verify it parses. Exercises ```chart/```mermaid/```media support.
+name: cms_rich_blocks
+turns:
+  - user: >-
+      Create a page called "Power Trend" (slug power-trend) with a short
+      intro line and a line chart of solar power over hours 6,9,12,15,18
+      with values 0,1800,3200,2500,400 watts. Publish it.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 90
+      settle_s: 12
+  - user: Yes, go ahead.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 60
+      settle_s: 10
+  - user: Verify the power-trend page renders correctly.
+    expect:
+      calls_any: [cms_verify_page]
+      timeout_s: 60
+      settle_s: 10

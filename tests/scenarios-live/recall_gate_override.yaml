@@ -1,0 +1,20 @@
+# Recall-gate override — the "confident refusal" incident. After a
+# confident memory_search hit, ada_session_recall is normally refused as
+# redundant. An explicit user push ("dig deeper") must override the gate.
+name: recall_gate_override
+turns:
+  - user: What music does KK like? Check memory.
+    expect:
+      calls_any: [ada_memory_search]
+      timeout_s: 90
+      settle_s: 10
+      # plants a confident hit → recall gate arms for ~60s
+  - user: >-
+      That's too shallow — dig deeper. Check the actual conversation
+      history, not just the fast memory.
+    expect:
+      calls_any: [ada_session_recall]
+      timeout_s: 120
+      settle_s: 15
+      # explicit push must reach recall despite the armed gate
+      # (force=true path deployed 2026-09-27)

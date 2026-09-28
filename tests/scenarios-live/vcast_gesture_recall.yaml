@@ -1,0 +1,43 @@
+# vcast-gesture recall — does Ada know the design for pose control on a
+# vcast iPad display? Ground truth lives in kb-system:
+#   docs/kb/gesture-ui-options.md (ada_v2 MediaPipe impl + YOLO assessment)
+#   docs/ssot/apps/ssot.apps.vcast.yml (vcast = fullscreen PWA + input-bridge)
+#
+# Exercises: knowledge question -> ada_memory_search routing (not session
+# recall), cross-doc synthesis (gesture doc + vcast ssot), and Ada's ability
+# to recommend the right model for the right range. Read-only -> smoke.
+name: vcast-gesture-recall
+tier: smoke
+
+turns:
+  # --- context prime: the vcast display system ---------------------------
+  - user: "Ada, what's the vcast system — the virtual display thing we run on the iPad?"
+    expect:
+      calls_any: [ada_memory_search, vcast_list]  # live display list is a legit lookup too
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 8
+
+  # --- the core design question -------------------------------------------
+  - user: "If we wanted hand-gesture or pose control on that iPad display, how would we run the detection — in the browser or on a server?"
+    expect:
+      calls_any: [ada_memory_search]
+      response_nonempty: true
+      # the doc's verdict must surface: browser-local WASM/MediaPipe path,
+      # or the YOLO-pose room-scale option — either is a correct recall
+      response_contains_any:
+        ["mediapipe", "wasm", "landmark", "browser", "webgpu", "yolo", "pose",
+         "โมเดล", "มือ"]
+      timeout_s: 90
+      settle_s: 8
+
+  # --- the tradeoff question (only the doc has this) ----------------------
+  - user: "Why not just run YOLO detection for the gestures?"
+    expect:
+      response_nonempty: true
+      # fidelity: boxes-vs-landmarks reasoning, or pose-keypoints nuance
+      response_contains_any:
+        ["bounding box", "box", "กรอบ", "landmark", "keypoint", "pose",
+         "pointer", "fingertip", "นิ้ว"]
+      timeout_s: 90
+      settle_s: 8

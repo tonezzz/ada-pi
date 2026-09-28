@@ -1,0 +1,45 @@
+name: report-recall-benchmark
+tier: smoke
+# Report recall accuracy — measures whether Ada retrieves CONCRETE values
+# from the reports bank, not just "there was a test". Benchmark docs carry
+# numeric scores in meta; the cms suite run of 2026-09-27 scored 0.9 with
+# cms_translate flaky.
+#
+# Soft assertions (values drift as new runs land): she must answer with a
+# number or named scenario, not hedge. A stale-but-real answer ("0.9")
+# still counts — the point is retrieval, not freshness.
+#
+# Read-only — smoke tier.
+
+turns:
+  - user: What score did the latest CMS benchmark run get?
+    expect:
+      calls_any: [ada_memory_search]
+      response_contains_any:
+        - "0.9"
+        - "0.7"
+        - "0.8"
+        - score
+        - point
+        - pass
+        - คะแนน
+        - ผ่าน
+      response_not_contains:
+        - "I don't know"
+        - "no idea"
+        - "can't find"
+      timeout_s: 100
+      settle_s: 8
+
+  - user: Which CMS scenario was flaky — not a clean pass or fail?
+    expect:
+      response_contains_any:
+        - translate
+        - flaky
+        - reorganize
+        - ไม่แน่นอน
+      response_not_contains:
+        - "I don't know"
+        - "no idea"
+      timeout_s: 90
+      settle_s: 8

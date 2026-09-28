@@ -1,0 +1,53 @@
+# Tool-selection accuracy — assess whether Ada picks the right tool for
+# common request shapes (DuckDuckGo, LINE send honesty, memory vs web,
+# cast vs lookup, devin ledger). Each turn asserts the expected tool OR
+# an allowed non-call where answering from context is correct.
+name: tool_selection_accuracy
+turns:
+  - user: Search DuckDuckGo for the latest Bangkok flood news.
+    expect:
+      calls: [web_search]
+      timeout_s: 90
+      settle_s: 10
+      # args should carry provider=duckduckgo — checked in transcript trace
+  - user: Send me a test message on LINE.
+    expect:
+      no_calls_except: [ada_memory_search, line_send, ada_session_recall]
+      timeout_s: 90
+      settle_s: 10
+      # honest answer = "offline, needs re-login" — no web_search guessing
+  - user: What's the temperature inside right now?
+    expect:
+      calls_any: [ada_ha_snapshot, ada_ha_get_sensor, get_home_state, ada_ha_list_sensors, search_sensors]
+      timeout_s: 60
+      settle_s: 10
+  - user: Cast a YouTube video about elephants onto screen one.
+    expect:
+      calls_any: [tv_action, yt_cast, cast_to_screen, vcast_list, vcast_cast, vcast_play]
+      timeout_s: 90
+      settle_s: 10
+  - user: What's the latest Thailand news? Just tell me, don't cast it.
+    expect:
+      calls: [web_search]
+      timeout_s: 90
+      settle_s: 10
+  - user: Remember that my coffee machine plug is called coffee plug.
+    expect:
+      calls: [ada_remember]
+      timeout_s: 90
+      settle_s: 10
+  - user: How many devin jobs are running and waiting for me?
+    expect:
+      calls_any: [devin_jobs, devin_pending, devin_status]
+      timeout_s: 90
+      settle_s: 10
+  - user: Write a short page to CMS titled "Tool Check" saying hello, then publish it.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 120
+      settle_s: 10
+cleanup:
+  mddb_delete:
+    - {collection: ada-cms-pages, key: "tool-check"}
+    - {collection: ada-ha-bank-general, contains: "coffee machine plug"}
+    - {collection: ada-ha-bank-personal, contains: "coffee machine plug"}

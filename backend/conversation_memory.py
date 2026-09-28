@@ -314,6 +314,13 @@ async def _summarize_session(transcript: str) -> str | None:
         return None
 
 
+# Content markers that force auto-extracted memories into the session
+# speaker's personal bank — private documents, identity papers and named
+# persons in a document context must not leak into shared banks (they are
+# KK/guest-visible). Shared with ada_remember via memory_banks.
+from backend.memory_banks import SENSITIVE_MEMORY_RE as _SENSITIVE_MEMORY_RE
+
+
 async def _session_report(transcript: str, date: str, session_id: str) -> dict | None:
     """Structured per-session report — the L1 layer feeding
     session-memory.md (rolling log) and offline focus rollups.
@@ -519,6 +526,10 @@ class ConversationMemory:
         # report alongside doc_items so reports carry how the session went,
         # not just what was said.
         self.session_items: list[dict[str, Any]] = []
+        # Session-bound identity (identified speaker's HA person, else the
+        # caller name) — used to route sensitive auto-extracted memories to
+        # the speaker's personal bank instead of shared banks.
+        self.speaker_identity: str | None = None
         self.warm_summary()
 
     def log_event(self, kind: str, **fields: Any) -> None:
@@ -765,9 +776,20 @@ class ConversationMemory:
             from backend.memory_banks import get_registry
             registry = get_registry()
             bank_names = [b.name for b in registry.banks().values() if b.writable]
+            personal_bank = "personal"
+            if self.speaker_identity:
+                scoped = registry._scoped_bank_name(self.speaker_identity)
+                if scoped:
+                    personal_bank = scoped
             prompt = (
                 "Transcript of one voice session:\n"
                 f"{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}\n\n"
+                "IMPORTANT routing: anything about private documents "
+                "(deeds, ID cards, passports, bank/legal papers), a named "
+                "person's identifying details, or private transactions must "
+                f"use bank '{personal_bank}' — never shared banks (general, "
+                "home, people, purchase). Shared banks are for household "
+                "facts everyone may see.\n"
                 "Extract up to 5 durable items worth remembering long-term — "
                 "things a future session should know, not small talk or "
                 "one-off questions. Look especially for: facts, decisions, "
@@ -793,6 +815,11 @@ class ConversationMemory:
             _report_failure("extract_candidates", exc)
             return
         today = datetime.now(timezone.utc).date().isoformat()
+        personal_bank_name = "personal"
+        if self.speaker_identity:
+            personal_bank_name = (
+                registry._scoped_bank_name(self.speaker_identity)
+                or "personal")
         for i, cand in enumerate(candidates[:5]):
             if not isinstance(cand, dict) or not cand.get("text"):
                 continue
@@ -802,6 +829,14 @@ class ConversationMemory:
                 bank = None
             if bank is None or not bank.writable:
                 bank = registry.bank("personal")  # safest: per-instance
+            # Sensitive content must never land in a shared bank — reroute
+            # to the session speaker's personal bank (drafts in shared banks
+            # surface to everyone who can read the bank).
+            if (bank.name != personal_bank_name
+                    and _SENSITIVE_MEMORY_RE.search(
+                        str(cand.get("text") or "")
+                        + " " + str(cand.get("subject") or ""))):
+                bank = registry.bank(personal_bank_name)
             kind = str(cand.get("kind") or "note")
             if kind not in bank.kinds:
                 kind = "note"
@@ -954,9 +989,10 @@ class ConversationMemory:
         if summary and group in (None, "memory") and bank is None:
             return (
                 "The detailed notes search is running in the background and "
-                "the result will be spoken when ready. Meanwhile, tell the "
-                "user this summary of recent sessions: "
-                f"{summary}"
+                "the result will be spoken when ready. For your own context "
+                "only, here is a summary of PAST sessions — do NOT switch to "
+                "or offer those topics unless the user asks; answer the "
+                f"CURRENT request first: {summary}"
             )
         return "One moment, I'm checking my notes."
 

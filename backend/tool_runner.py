@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import json
 import logging
+import contextvars
 import os
 import re
 import secrets
@@ -39,7 +40,7 @@ logger = logging.getLogger("tools")
 # are blocked entirely when ADA_READ_ONLY=true.
 CONTROL_TOOLS = {
     "control_entity", "control_cover", "press_button",
-    "control_media_player", "tv_action",
+    "control_media_player", "tv_action", "cast_to_screen", "gev_command",
 }
 
 # Tools that mutate curated memory banks. Each bank's write_policy decides
@@ -57,10 +58,18 @@ CALENDAR_WRITE_TOOLS = {
 # miniapp renders, so all writes require confirmed=true.
 CMS_WRITE_TOOLS = {"cms_publish_page", "cms_delete_page"}
 
-# Devin dispatch: launching an unattended agent session (devin_dispatch) or
-# injecting a message into one (devin_followup) both cause autonomous code
-# changes, so they require confirmed=true. devin_status is read-only.
-DEVIN_CONFIRMED_TOOLS = {"devin_dispatch", "devin_followup"}
+# Devin dispatch: launching an unattended agent session (devin_dispatch),
+# injecting a message into one (devin_followup), or delivering the user's
+# answer to a blocked job (devin_answer) all cause autonomous code changes,
+# so they require confirmed=true. devin_status and devin_pending are
+# read-only.
+DEVIN_CONFIRMED_TOOLS = {"devin_dispatch", "devin_followup", "devin_answer"}
+
+# Job ledger collection: job/<id> docs (status running|awaiting-user|
+# answered|done|failed) written by devin-dispatch-watch and job-run.sh;
+# answer/<id> docs are the user's refined replies. Lives in the
+# devin-handoff bank — render-handoff-inbox.py skips both prefixes.
+DEVIN_JOBS_COLLECTION = "ada-ha-bank-devin-handoff"
 
 # Job ledger collection: job/<id> docs (status running|awaiting-user|
 # answered|done|failed) written by devin-dispatch-watch on each dispatch
@@ -119,6 +128,13 @@ _SECONDARY_BLOCKED_GROUPS = {
 
 def _slug(text: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(text or "").lower()).strip("_")
+# Per-call identity propagated through a ContextVar: the runner is shared
+# across concurrent sessions, so every policy/memory check inside a tool
+# call must see the SESSION's identity, not the runner's mutable fields
+# (which can be overwritten by another session's speaker-ID callback mid-
+# call). execute() sets it; _memory_identity() prefers it.
+_CALLER_IDENTITY: contextvars.ContextVar = contextvars.ContextVar(
+    "ada_caller_identity", default=None)
 
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
@@ -588,8 +604,12 @@ class ToolRunner:
         )
 
     def _memory_identity(self) -> str | None:
-        """Memory-policy identity: identified speaker's HA person first,
-        then the key's bound HA person, then the key/caller name, else None."""
+        """Memory-policy identity: the in-flight call's identity first
+        (ContextVar set by execute()), then the identified speaker's HA
+        person, then the key's bound HA person / caller name, else None."""
+        v = _CALLER_IDENTITY.get()
+        if v is not None:
+            return v
         return (self.current_speaker_ha_person
                 or self.session_caller_ha_person
                 or self.session_caller_name)
@@ -670,6 +690,15 @@ class ToolRunner:
         # resolved identity — the runner is shared across sessions, so its
         # mutable identity fields can race when sessions overlap.
         ident = self._memory_identity() if identity is _IDENTITY_UNSET else identity
+        _ident_token = _CALLER_IDENTITY.set(ident)
+        try:
+            return await self._execute_gated(name, call_args, ident)
+        finally:
+            _CALLER_IDENTITY.reset(_ident_token)
+
+    async def _execute_gated(self, name: str, call_args: dict[str, Any],
+                             ident: str | None) -> Any:
+        method = getattr(self, name, None)
         confirm: tuple[Any, Any] = (
             call_args.pop("confirmed", None),
             call_args.pop("confirm_token", None),
@@ -925,8 +954,10 @@ class ToolRunner:
         if bank.write_policy == "confirmed":
             self._require_confirmation(
                 name, args, confirmed, confirm_token,
-                f"memory bank '{bank_name}' requires confirmation. Call again "
-                "with confirmed=true only after explicit user confirmation.",
+                f"memory bank '{bank_name}' requires confirmation. Ask the user "
+                "explicitly first, then call again with confirmed=true only "
+                "after they say yes — do not write it to a different bank "
+                "to get around the confirmation step.",
             )
 
     def _check_calendar_write_allowed(
@@ -947,10 +978,41 @@ class ToolRunner:
         self, name: str, args: dict[str, Any], confirmed: Any,
         confirm_token: Any = None,
     ) -> None:
-        """Server-side gate for miniapp page writes. Raises PermissionError on denial."""
+        """Stateful gate for miniapp page writes. First attempt registers a
+        pending confirmation; a resubmit with confirmed=true must match it —
+        the model cannot jump straight to confirmed without the ask-step.
+        Raises PermissionError on denial."""
         if os.environ.get("ADA_READ_ONLY") == "true":
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("CMS writes are disabled (ADA_READ_ONLY=true)")
+        if name == "cms_publish_page":
+            # Normalize the slug before keying — the model may resubmit the
+            # confirm call with different casing/spacing than the register
+            # call, and a raw-args key would miss the pending request.
+            slug = self._cms_slug(str(args.get("slug") or ""))
+            # Keyed by slug:lang — confirming an EN publish does not unlock
+            # a different-language variant of the same slug.
+            pkey = f"{slug}:{args.get('lang') or 'en'}"
+            pending = getattr(self, "_cms_pending", None)
+            if pending is None:
+                pending = self._cms_pending = {}
+            if confirmed is True:
+                if pending.get(pkey) is not None:
+                    del pending[pkey]
+                    return
+                logger.warning("denied %s %r: confirmed without pending request", name, args)
+                raise PermissionError(
+                    f"{name}: confirmed=true has no pending request for '{slug}'. "
+                    "First call without confirmed to register the request, ask the "
+                    "user to confirm, then resubmit with confirmed=true."
+                )
+            pending[pkey] = True
+            logger.info("cms pending-confirm registered: %s", pkey)
+            raise PermissionError(
+                f"{name} requires confirmation — request registered. Now tell the "
+                "user the page slug and title, ask for an explicit yes, then "
+                "call again with the SAME args plus confirmed=true."
+            )
         self._require_confirmation(
             name, args, confirmed, confirm_token,
             f"{name} requires confirmation. Restate the page slug, title, and "
@@ -1161,6 +1223,103 @@ class ToolRunner:
             result["publish"] = pub
             result["status"] = pub.get("status", "error")
         return result
+
+    async def devin_pending(self) -> list[dict[str, Any]]:
+        """Dispatched jobs blocked waiting for a user answer.
+
+        Reads job/<id> docs (kind=job, status=awaiting-user) from the
+        devin-handoff collection — the same ledger the watch timer, job-run
+        wrapper, and Report tab dispatch layer use.
+        """
+        if self.mddb is None:
+            return []
+        docs = await self.mddb.search_documents(
+            DEVIN_JOBS_COLLECTION,
+            filter_meta={"kind": ["job"], "status": ["awaiting-user"]},
+            limit=20,
+        )
+        out = []
+        for d in docs:
+            meta = d.get("meta") or {}
+            out.append({
+                "task_id": _first(meta.get("job_id"))
+                           or (d.get("key") or "").split("/", 1)[-1],
+                "question": _first(meta.get("question")) or "",
+                "host": _first(meta.get("host")),
+                "ts": _first(meta.get("ts")),
+                "detail": (d.get("contentMd") or "")[:600],
+            })
+        out.sort(key=lambda j: j.get("ts") or "", reverse=True)
+        return out
+
+    async def devin_jobs(self, status: str | None = None,
+                         limit: int = 30) -> list[dict[str, Any]]:
+        """Dispatch ledger: all job docs (running/done/failed/awaiting-user)
+        — the summary path. devin_pending is awaiting-user only; use this
+        for "what's the status of my tasks" questions."""
+        if self.mddb is None:
+            return []
+        fm: dict[str, Any] = {"kind": ["job"]}
+        if status:
+            fm["status"] = [status]
+        docs = await self.mddb.search_documents(
+            DEVIN_JOBS_COLLECTION, filter_meta=fm, limit=min(limit, 50))
+        out = []
+        for d in docs:
+            meta = d.get("meta") or {}
+            out.append({
+                "task_id": _first(meta.get("job_id"))
+                           or (d.get("key") or "").split("/", 1)[-1],
+                "status": _first(meta.get("status")),
+                "host": _first(meta.get("host")),
+                "ts": _first(meta.get("ts")),
+                "question": _first(meta.get("question")) or "",
+            })
+        out.sort(key=lambda j: j.get("ts") or "", reverse=True)
+        return out
+
+    async def devin_answer(self, task_id: str, message: str) -> dict[str, Any]:
+        """Deliver the user's refined answer to a blocked job.
+
+        Writes answer/<task_id> to the ledger, flips job/<task_id> to
+        answered, and for devin-dispatch task ids also injects the message
+        straight into the session via devin_followup.
+        """
+        if self.mddb is None:
+            raise PermissionError("devin_answer needs MDDB (unavailable in guest mode)")
+        now = datetime.now(timezone.utc).isoformat()
+        delivered = False
+        via = "mailbox"
+        # Devin-dispatch task ids (YYYYMMDD-HHMMSS-slug) resume in-place.
+        if re.match(r"^\d{8}-\d{6}-[a-z0-9-]+$", task_id):
+            res = await devin_dispatch_mod.followup(task_id, message)
+            delivered = True
+            via = "followup"
+            logger.info("devin_answer: followup to %s -> %s", task_id, res)
+        await self.mddb.add_document(
+            DEVIN_JOBS_COLLECTION,
+            key=f"answer/{task_id}",
+            lang="en",
+            content_md=f"Answer for job {task_id} ({now}):\n\n{message}",
+            meta={
+                "kind": ["job-answer"], "status": ["answered"],
+                "job_id": [task_id], "ts": [now],
+                "subject": [f"answer-{task_id}"],
+                "source": ["voice"], "written_by": ["ada"],
+                "scope": ["tony"], "bank": ["devin-handoff"],
+            },
+        )
+        job = await self.mddb.get_document(DEVIN_JOBS_COLLECTION, f"job/{task_id}")
+        if job:
+            meta = dict(job.get("meta") or {})
+            meta["status"] = ["answered"]
+            meta["answered_at"] = [now]
+            await self.mddb.update_document(
+                DEVIN_JOBS_COLLECTION, f"job/{task_id}", meta=meta)
+        return {"task_id": task_id, "delivered": delivered, "via": via,
+                "note": ("Answer recorded" +
+                         (" and sent to the running session." if delivered
+                          else " — the dispatcher picks it up."))}
 
     def _check_doc_confirmed(
         self, name: str, args: dict[str, Any], confirmed: Any,
@@ -1445,11 +1604,21 @@ class ToolRunner:
         return await self.context.ha_client.control_media_player(entity_id, action, source)
 
     async def tv_action(self, cmd: str, text: str = "",
-                        selector: str = "", role: str = "") -> dict[str, Any]:
+                        selector: str = "", role: str = "",
+                        key: str = "", dx: float | None = None,
+                        dy: float | None = None,
+                        factor: float | None = None) -> dict[str, Any]:
         if not cmd:
             raise ValueError("cmd is required")
+        # Screen-ownership ACL: personal desktop sources are owner-locked.
+        # Deny non-owners here (rest_command swallows the controller's 403)
+        # and pass the speaker so cast-browser enforces as backstop too.
+        target = text or " ".join(str(cmd).split()[1:])
+        self._check_tv_source_owner(target, self._memory_identity())
         return await self.context.ha_client.tv_action(
             cmd, text, selector=selector or None, role=role or None,
+            key=key or None, dx=dx, dy=dy, factor=factor,
+            speaker=self._memory_identity() or "",
         )
 
     async def get_battery_status(self) -> dict[str, Any]:
@@ -1581,6 +1750,97 @@ class ToolRunner:
         """Return controllable devices grouped by user confidence."""
         await self.memory._ensure_confidence()
         return self.memory.confidence_groups()
+
+    async def web_search(self, query: str, provider: str | None = None) -> dict[str, Any]:
+        """Web search with provider selection.
+
+        provider='gemini'  — grounded answer via Gemini google_search
+                             (billed/quota-limited; the live audio model
+                             cannot ground itself).
+        provider='duckduckgo' — free HTML endpoint; returns top results,
+                             no quota. Use when grounding is exhausted
+                             or the user asks for DuckDuckGo.
+        provider='auto' (default) — gemini, falling back to duckduckgo
+                             on quota/error.
+        """
+        want = (provider or "auto").lower()
+        if want not in ("auto", "gemini", "duckduckgo"):
+            raise ValueError(f"unknown web_search provider {provider!r} "
+                             "(auto|gemini|duckduckgo)")
+        if want in ("auto", "gemini"):
+            try:
+                return await self._web_search_gemini(query)
+            except Exception as e:
+                if want == "gemini":
+                    raise
+                # auto: quota/error → free fallback
+                try:
+                    return await self._web_search_ddg(query)
+                except Exception:
+                    raise e
+        return await self._web_search_ddg(query)
+
+    async def _web_search_gemini(self, query: str) -> dict[str, Any]:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise RuntimeError("web search unavailable: GEMINI_API_KEY not set")
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=api_key)
+        model = os.environ.get("ADA_WEB_SEARCH_MODEL", "gemini-2.5-flash")
+        resp = await client.aio.models.generate_content(
+            model=model,
+            contents=str(query),
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())]),
+        )
+        text = (resp.text or "").strip()
+        if not text:
+            raise RuntimeError("web search returned no answer")
+        sources = []
+        try:
+            gm = resp.candidates[0].grounding_metadata
+            for ch in (gm.grounding_chunks or [])[:5]:
+                w = getattr(ch, "web", None)
+                if w is not None:
+                    sources.append({
+                        "title": getattr(w, "title", "") or "",
+                        "uri": getattr(w, "uri", "") or "",
+                    })
+        except Exception:
+            pass
+        return {"answer": text, "sources": sources,
+                "provider": "gemini", "model": model}
+
+    async def _web_search_ddg(self, query: str) -> dict[str, Any]:
+        """DuckDuckGo lite HTML — no API key, no quota. Returns top hits
+        as a synthesized answer + source list."""
+        import httpx
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query},
+                headers={"User-Agent": "Mozilla/5.0 (Ada-voice-assistant)"})
+            r.raise_for_status()
+        # results: <a rel="nofollow" class="result__a" href="redirect">title</a>
+        hits = re.findall(
+            r'class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', r.text)
+        snippets = re.findall(
+            r'class="result__snippet"[^>]*>(.*?)</a>', r.text, re.S)
+        strip = lambda s: re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", s)).strip()
+        sources = []
+        for url, title in hits[:5]:
+            m = re.search(r"uddg=([^&]+)", url)
+            if m:
+                from urllib.parse import unquote
+                url = unquote(m.group(1))
+            sources.append({"title": strip(title), "uri": url})
+        if not sources:
+            raise RuntimeError("duckduckgo returned no results")
+        top = strip(snippets[0]) if snippets else sources[0]["title"]
+        answer = (top + " " if top else "") + "Top result: " + sources[0]["title"]
+        return {"answer": answer.strip(), "sources": sources,
+                "provider": "duckduckgo"}
 
     async def ada_ha_set_device_confidence(self, entity_id: str, status: str, safety: str | None = None) -> str:
         """Set a device's confidence and/or safety status."""
@@ -1880,19 +2140,43 @@ class ToolRunner:
         }
 
     async def cms_list_pages(self, limit: int = 50) -> list[dict[str, Any]]:
-        """List pages in the miniapp CMS collection."""
+        """List pages in the miniapp CMS collection, grouped by slug with
+        the language variants present (lang is a per-doc field in MDDB)."""
         docs = await self.mddb.search_documents(
             CMS_COLLECTION, filter_meta={"kind": ["page"]}, limit=limit
         )
-        return [self._cms_page_summary(d) for d in docs]
+        by_slug: dict[str, dict[str, Any]] = {}
+        for d in docs:
+            page = self._cms_page_summary(d)
+            slug = page["slug"]
+            if slug in by_slug:
+                by_slug[slug]["langs"].add(d.get("lang") or "en")
+                continue
+            page["langs"] = {d.get("lang") or "en"}
+            by_slug[slug] = page
+        for p in by_slug.values():
+            p["langs"] = sorted(p["langs"])
+        return list(by_slug.values())
 
-    async def cms_get_page(self, slug: str) -> dict[str, Any] | None:
-        """Fetch one page's content and metadata by slug."""
-        doc = await self.mddb.get_document(CMS_COLLECTION, self._cms_slug(slug))
+    async def cms_get_page(
+        self, slug: str, lang: str = "en"
+    ) -> dict[str, Any] | None:
+        """Fetch one page's content by slug + language; falls back to 'en'
+        when the requested variant doesn't exist."""
+        key = self._cms_slug(slug)
+        lang = (lang or "en").strip().lower()
+        doc = await self.mddb.get_document(CMS_COLLECTION, key, lang)
+        fallback = False
+        if not doc and lang != "en":
+            doc = await self.mddb.get_document(CMS_COLLECTION, key, "en")
+            fallback = bool(doc)
         if not doc:
             return None
         page = self._cms_page_summary(doc)
         page["content"] = doc.get("contentMd") or doc.get("content") or ""
+        page["lang"] = doc.get("lang") or "en"
+        if fallback:
+            page["fallback"] = True
         return page
 
     async def cms_publish_page(
@@ -1901,10 +2185,21 @@ class ToolRunner:
         title: str,
         content: str,
         format: str = "markdown",
+        lang: str = "en",
     ) -> dict[str, Any]:
-        """Create or update a miniapp page. Upserts by slug."""
+        """Create or update a miniapp page. Upserts by (slug, lang) — 'en'
+        and 'th' variants of the same slug coexist; the viewer toggles."""
         slug = self._cms_slug(slug)
         fmt = (format or "markdown").strip().lower()
+        lang = (lang or "en").strip().lower()
+        # The model tends to bake the language into the slug
+        # (gold-report-th + Thai content stored as 'en') — split it.
+        if lang == "en" and slug.endswith("-th"):
+            slug = slug[:-3]
+            lang = "th"
+        if lang not in ("en", "th"):
+            raise ValueError(
+                f"invalid lang {lang!r}: expected 'en' or 'th'")
         if fmt not in CMS_FORMATS:
             raise ValueError(
                 f"invalid format {format!r}: expected one of {sorted(CMS_FORMATS)}"
@@ -1915,25 +2210,40 @@ class ToolRunner:
         result = await self.mddb.add_document(
             CMS_COLLECTION,
             slug,
-            "en",
+            lang,
             content,
             meta={
                 "kind": ["page"],
                 "slug": [slug],
                 "title": [title.strip()],
                 "format": [fmt],
+                "lang": [lang],
                 "updated": [updated],
                 "instance": [self._instance_id or "ada"],
             },
         )
         if result is None:
             return {"status": "error", "error": "mddb write failed", "slug": slug}
+        # Give the model the REAL URLs — she has invented /cms/<slug> paths
+        # on tony-dell before (404). view_url is the CMS viewer; cast_url adds
+        # the api key so a vcast display can render it without a stored key.
+        base = os.environ.get(
+            "ADA_CMS_BASE", "https://idc01.taila0626a.ts.net/cms/")
+        view_url = f"{base}#/{slug}"
+        key = os.environ.get("ADA_API_KEY", "")
+        cast_url = f"{base}?api_key={key}#/{slug}" if key else view_url
         return {
             "status": "published",
             "slug": slug,
             "title": title.strip(),
             "format": fmt,
+            "lang": lang,
             "updated": updated,
+            "view_url": view_url,
+            "cast_url": cast_url,
+            "note": "To show this page on a display: cast_to_screen("
+                    "action='nav', url=<cast_url>) — only after this result "
+                    "shows status=published.",
         }
 
     async def cms_delete_page(self, slug: str) -> dict[str, Any]:
@@ -2010,11 +2320,31 @@ class ToolRunner:
                 "has_doctype": content.lstrip().lower().startswith("<!doctype"),
                 "script_tags": len(re.findall(r"<script\b", content, re.I)),
             }
-        else:  # markdown
+        else:  # markdown — validate fenced rich blocks too
             headings = [
                 ln.strip() for ln in content.splitlines() if ln.lstrip().startswith("#")
             ]
             report["summary"] = {"headings": headings[:20]}
+            blocks = re.findall(
+                r"```(chart3?|mermaid|media)\s*\n(.*?)```", content, re.S
+            )
+            block_report = []
+            for kind, body in blocks:
+                entry: dict[str, Any] = {"type": kind}
+                if kind == "mermaid":
+                    entry["lines"] = len(body.splitlines())
+                else:
+                    try:
+                        import yaml
+                        yaml.safe_load(body)
+                        entry["yaml_ok"] = True
+                    except Exception as exc:
+                        entry["yaml_ok"] = False
+                        entry["error"] = str(exc).splitlines()[0]
+                        report["ok"] = False
+                block_report.append(entry)
+            if block_report:
+                report["summary"]["blocks"] = block_report
         return report
 
     # -- YouTube -> TV casting (yt-live shim on tony-dell) --
@@ -2047,3 +2377,371 @@ class ToolRunner:
         """Stop the currently casting YouTube video on the TV."""
         import asyncio
         return await asyncio.to_thread(self._yt_api, "/stop", {})
+
+    # -- YouTube transcript (yt-dlp on mn01 — Thai news sites block scrapers,
+    #    YouTube auto-captions are the open lane) --
+
+    # -- CCTV peek: single frame via go2rtc on tony-dell, saved to the HA
+    #    /local/ static dir so the TV/vcast browsers can load it without auth --
+
+    _CCTV_CAMS = {
+        # go2rtc stream -> HA camera / friendly label (tony-dell :1984)
+        "coffee corner": "ip_cam_65_hd", "coffee": "ip_cam_65_hd",
+        "c201": "xiaomi_c201_hd", "xiaomi c201": "xiaomi_c201_hd",
+        "c100": "xiaomi_c100_hd", "xiaomi c100": "xiaomi_c100_hd",
+        "ip_cam_65": "ip_cam_65_hd", "ip_cam_65_hd": "ip_cam_65_hd",
+        "ip_cam_65_low": "ip_cam_65_low",
+        "xiaomi_c201": "xiaomi_c201_hd", "xiaomi_c201_hd": "xiaomi_c201_hd",
+        "xiaomi_c100": "xiaomi_c100_hd", "xiaomi_c100_hd": "xiaomi_c100_hd",
+        "xiaomi_c201_sd": "xiaomi_c201", "xiaomi_c100_sd": "xiaomi_c100",
+    }
+
+    @staticmethod
+    def _vms_publish(camera: str) -> dict[str, Any]:
+        """VMS-channel path: pull one frame from the XMEye shim (mn01:8377)
+        and publish it as a relay asset so vcast pages get a SAME-ORIGIN
+        URL — the canvas stays clean for vcast_snapshot verification.
+        Returns {"ok", "url"|"error"}."""
+        import base64, time
+        vms = os.environ.get("ADA_VMS_SNAP_URL", "").rstrip("/")
+        if not vms:
+            return {"ok": False, "error": "VMS snapshot service not configured"}
+        try:
+            import urllib.parse
+            url = f"{vms}/snap?ch={urllib.parse.quote(camera)}"
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=60) as r:
+                png = r.read()
+            if len(png) < 500:
+                return {"ok": False, "error": f"no frame from {camera!r} (camera may be offline)"}
+            slug = "".join(c if c.isalnum() else "-"
+                           for c in camera.lower()).strip("-")
+            token = f"cam:{slug}-{int(time.time())}"
+            ToolRunner._vcast_api("/frame", {
+                "screen": 0, "token": token,
+                "data": "data:image/png;base64," + base64.b64encode(png).decode(),
+                "state": "asset"})
+            # URL the DISPLAY fetches — must be the public same-origin https
+            # route (vcast pages sit under tony-dell.../apps/), never the
+            # local VCAST_API base (http cross-origin -> canvas taint).
+            pub = os.environ.get(
+                "VCAST_PUBLIC_API",
+                "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+            return {"ok": True, "url": f"{pub}/frame?screen=0&token={token}",
+                    "camera": camera}
+        except Exception as exc:
+            return {"ok": False, "error": f"VMS snapshot failed: {exc}"}
+
+    @staticmethod
+    def _cctv_grab(camera: str) -> dict[str, Any]:
+        """Fetch one JPEG via go2rtc on tony-dell into the HA /local/ dir.
+        Falls back to the VMS shim for estate cameras (front road, pool,
+        tennis, etc). Returns {"ok", "url"|"error"}."""
+        import subprocess
+        import time
+        src = ToolRunner._CCTV_CAMS.get(camera.strip().lower())
+        if not src:
+            # not a go2rtc home cam — try the VMS estate channel set
+            return ToolRunner._vms_publish(camera)
+        # Try the preferred stream, then fall back through SD/base variants —
+        # _hd streams die when a cam degrades while the base stream survives
+        # (c100/ip65 returned 200+0B on _hd while the plain names were fine).
+        variants = [src]
+        if src.endswith("_hd"):
+            variants += [src[:-3], src[:-3] + "_sd"]
+        name = f"snap-{src}-{int(time.time())}.jpg"
+        host = os.environ.get("ADA_CCTV_SSH", "tony-dell-m2m")
+        tried = []
+        ok = False
+        for v in variants:
+            cmd = (
+                f"mkdir -p ~/.config/home-assistant/www/cam && "
+                f"curl -sf -m 20 -o ~/.config/home-assistant/www/cam/{name} "
+                f"--size-limit 500 "
+                f"'http://127.0.0.1:1984/api/frame.jpeg?src={v}' "
+                f"&& [ -s ~/.config/home-assistant/www/cam/{name} ] && echo ok"
+            )
+            proc = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, cmd],
+                capture_output=True, text=True, timeout=45)
+            tried.append(v)
+            if proc.stdout.strip() == "ok":
+                src = v
+                ok = True
+                break
+        if not ok:
+            return {"ok": False,
+                    "error": f"no frame from {src} (camera may be offline; tried {tried})"}
+        base = os.environ.get(
+            "ADA_CCTV_PUBLIC_BASE",
+            "https://tony-dell.taila0626a.ts.net:8123/local/cam/")
+        return {"ok": True, "url": base + name, "camera": src}
+
+    async def cctv_snapshot(self, camera: str, target: str = "tv",
+                            screen: int = 0) -> dict[str, Any]:
+        """Grab a single frame from a CCTV camera and show it on a screen.
+        camera: c100|c201|coffee corner (or a go2rtc stream name).
+        target: 'tv' (living-room TV) or 'screen' (vcast display number).
+        Pulls ONE frame — no live stream, minimal bandwidth/CPU."""
+        import asyncio
+        shot = await asyncio.to_thread(self._cctv_grab, camera)
+        if not shot.get("ok"):
+            return shot
+        url = shot["url"]
+        t = (target or "tv").strip().lower()
+        if t == "screen" or t.startswith("vcast"):
+            n = int(screen or 1)
+            await self._check_screen_owner(n, self._memory_identity())
+            out = await asyncio.to_thread(
+                self._vcast_api, "/pub",
+                {"screen": n, "msg": {"type": "image", "url": url}})
+            out.update({"url": url, "camera": shot["camera"], "screen": n})
+            return out
+        out = await self.tv_action(cmd="nav", text=url)
+        if isinstance(out, dict):
+            out.update({"url": url, "camera": shot["camera"]})
+        return out
+
+    async def yt_transcript(self, url: str, language: str = "th") -> dict[str, Any]:
+        """Fetch a YouTube video's auto-captions as plain text. `url` is a
+        YouTube URL or video ID. The extraction runs on the transcript host
+        (mn01) via `yt-transcript.sh`. Returns title, language and up to ~6k
+        chars of transcript text — enough to summarize for a spoken report.
+        Thai news sites block scrapers; this is the news-source fallback."""
+        import asyncio
+        import subprocess
+        host = os.environ.get("ADA_YT_TRANSCRIPT_HOST", "mn01")
+        script = os.environ.get(
+            "ADA_YT_TRANSCRIPT_BIN", "~/.local/bin/yt-transcript.sh")
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+             host, script, url, language],
+            capture_output=True, text=True, timeout=90)
+        out = (proc.stdout or "").strip()
+        if out.startswith("NO_CAPTIONS"):
+            return {"ok": False, "error": "no captions available",
+                    "title": out[11:].strip() or url}
+        lines = out.splitlines()
+        title = next((l[7:] for l in lines if l.startswith("TITLE: ")), url)
+        lang = next((l[6:] for l in lines if l.startswith("LANG: ")), language)
+        text = "\n".join(
+            l for l in lines
+            if not l.startswith(("TITLE:", "LANG:"))).strip()
+        if not text:
+            return {"ok": False, "error": "empty transcript", "title": title}
+        return {"ok": True, "title": title, "language": lang,
+                "transcript": text, "chars": len(text)}
+
+    # -- vcast virtual displays (input-bridge relay on tony-dell :3010) --
+
+    @staticmethod
+    def _vcast_api(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        import urllib.request
+        base = os.environ.get(
+            "VCAST_API", "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(
+            base + path, data=data,
+            headers={"Content-Type": "application/json"} if data else {})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.load(r)
+
+    async def cctv_wall(self, action: str, zone: str, screen: int = 0) -> dict[str, Any]:
+        """Start/stop the periodic-thumbnail camera wall on a vcast screen.
+        Enables the zone in the relay's /camwall state (the puller on
+        tony-dell refreshes thumbs into /apps/camwall/data/<zone>/) and casts
+        the wall page. Zones: zone-a, noble-park, tony-house."""
+        import asyncio
+        action = (action or "start").strip().lower()
+        zone = (zone or "").strip().lower().replace(" ", "-")
+        valid = {"zone-a", "noble-park", "tony-house"}
+        if zone not in valid:
+            return {"error": f"unknown zone {zone!r} — valid: {sorted(valid)}"}
+        if action == "stop":
+            await asyncio.to_thread(
+                self._vcast_api, "/camwall", {"zone": zone, "enabled": False})
+            if screen:
+                await asyncio.to_thread(
+                    self._vcast_api, "/pub",
+                    {"screen": int(screen), "msg": {"type": "stop"}})
+                try:
+                    await asyncio.to_thread(self._vcast_api, "/capture",
+                                            {"screen": int(screen),
+                                             "active": False})
+                except Exception:
+                    pass
+            return {"ok": True, "zone": zone, "stopped": True}
+        n = int(screen or 1)
+        if n:
+            await self._check_screen_owner(n, self._memory_identity())
+        await asyncio.to_thread(
+            self._vcast_api, "/camwall",
+            {"zone": zone, "enabled": True, "screen": n})
+        try:
+            await asyncio.to_thread(self._vcast_api, "/capture", {
+                "screen": n, "source": "camwall", "ch": zone,
+                "active": True, "by": "ada"})
+        except Exception:
+            pass
+        url = (os.environ.get(
+                   "ADA_CAMWALL_BASE",
+                   "https://tony-dell.taila0626a.ts.net/apps/camwall/")
+               + f"?zone={zone}")
+        out = await asyncio.to_thread(
+            self._vcast_api, "/pub",
+            {"screen": n, "msg": {"type": "nav", "url": url}})
+        out.update({
+            "zone": zone, "screen": n, "url": url,
+            "note": ("thumbs refresh in the background (VMS cams ~60s, "
+                     "house ~30s) — the wall fills in within a minute."),
+        })
+        return out
+
+    async def vcast_list(self) -> dict[str, Any]:
+        """List registered vcast virtual displays (screen number, device,
+        online/offline, current state)."""
+        import asyncio
+        data = await asyncio.to_thread(self._vcast_api, "/displays")
+        return {
+            "screens": [
+                {
+                    "screen": s["screen"],
+                    "name": s["name"],
+                    "device": s.get("label") or s["name"],
+                    "online": s.get("connected", False),
+                    "state": s.get("state") or "idle",
+                }
+                for s in data.get("screens", [])
+            ],
+            "pending": len(data.get("pending", [])),
+        }
+
+    async def gev_command(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Send a command to God's Eye View clients — forwards a
+        function_call frame through the gev-gemini bridge to every
+        connected GEV browser (including a casted one on the TV)."""
+        import asyncio
+        base = os.environ.get(
+            "GEV_CMD_URL",
+            "https://tony-dell.taila0626a.ts.net/apps/gev-cmd/command")
+        payload = json.dumps({"name": name, "args": args or {}}).encode()
+        def _post():
+            req = urllib.request.Request(
+                base, data=payload,
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.load(r)
+        try:
+            out = await asyncio.to_thread(_post)
+        except Exception as e:
+            return {"ok": False, "error": f"gev command relay: {e}"}
+        if not out.get("delivered"):
+            return {"ok": False, "error":
+                    "no GEV clients connected — cast /apps/gev/ first"}
+        return out
+
+    @staticmethod
+    def _cast_screens_cfg() -> dict[str, Any]:
+        """vcast screen-ownership registry (screen -> person.*|'shared',
+        speaker aliases -> person). Missing file = no gating."""
+        import json as _json
+        try:
+            with open(os.path.expanduser(
+                    os.environ.get("ADA_CAST_SCREENS",
+                                   "~/.local/share/ada-pi/cast-screens.json"))) as f:
+                return _json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    async def _check_screen_owner(self, screen: int, ident: str | None) -> None:
+        """vcast screens are owner-locked: a speaker may only cast to their
+        own screen unless the screen is 'shared'."""
+        cfg = self._cast_screens_cfg()
+        if not cfg:
+            return  # no registry — don't gate
+        owner = (cfg.get("screens") or {}).get(str(int(screen)), "shared")
+        s = (ident or "").strip()
+        person = (s if s.startswith("person.")
+                  else (cfg.get("aliases") or {}).get(s, "anonymous"))
+        if owner == "shared" or owner == person:
+            return
+        who = owner.replace("person.", "")
+        if person == "anonymous":
+            raise PermissionError(
+                f"denied: screen {screen} is {who}'s private screen — "
+                "identify the speaker first")
+        raise PermissionError(
+            f"denied: screen {screen} is {who}'s private screen")
+
+    def _check_tv_source_owner(self, target: str, ident: str | None) -> None:
+        """Gate personal desktop streams in tv_action nav targets
+        (screenlive:* / workspace:* / screen:* = the tony-dell seat,
+        tony-omen:* = Tony's desktop). HA's rest_command swallows the
+        controller's 403, so deny here before the call ever leaves.
+        cast-browser still enforces as the authoritative backstop."""
+        cfg = self._cast_screens_cfg()
+        if not cfg:
+            return
+        t = (target or "").lower()
+        source = None
+        if re.match(r"^(screenlive|screen:|workspace)", t):
+            source = "seat"
+        elif t.startswith("tony-omen:"):
+            source = "omen"
+        if not source:
+            return  # plain URL / named page — no personal screen involved
+        owner = (cfg.get("sources") or {}).get(source, "shared")
+        s = (ident or "").strip()
+        person = (s if s.startswith("person.")
+                  else (cfg.get("aliases") or {}).get(s, "anonymous"))
+        if owner == "shared" or owner == person:
+            return
+        who = owner.replace("person.", "")
+        if person == "anonymous":
+            raise PermissionError(
+                f"denied: {source} is {who}'s private screen — "
+                "identify the speaker first")
+        raise PermissionError(
+            f"denied: {source} is {who}'s private screen")
+
+    async def cast_to_screen(self, screen: int, action: str = "nav",
+                             url: str = "") -> dict[str, Any]:
+        """Cast to a numbered vcast virtual display (NOT the TV).
+        action: nav|play|image|audio|stop|uplink|uplink-stop.
+        url required except for stop/uplink/uplink-stop."""
+        import asyncio
+        action = str(action or "nav").lower()
+        screen = int(screen)
+        await self._check_screen_owner(screen, self._memory_identity())
+        if action in {"stop", "uplink", "uplink-stop"}:
+            msg: dict[str, Any] = {
+                "type": "uplink-start" if action == "uplink" else action}
+        else:
+            if action not in {"nav", "play", "image", "audio"}:
+                raise ValueError(
+                    f"unknown action {action!r} (nav|play|image|audio|stop|uplink|uplink-stop)")
+            if not url:
+                raise ValueError("url is required for " + action)
+            msg = {"type": action, "url": url}
+        out = await asyncio.to_thread(
+            self._vcast_api, "/pub", {"screen": screen, "msg": msg})
+        # capture lease bookkeeping — the relay's /capture state is ground
+        # truth for the ask-before-stopping contract; the display also POSTs
+        # on uplink-start, but this covers display-offline cases
+        if action in {"uplink", "uplink-stop", "stop"}:
+            try:
+                await asyncio.to_thread(self._vcast_api, "/capture", {
+                    "screen": screen,
+                    "active": action == "uplink",
+                    "source": "cam",
+                    "by": "ada",
+                })
+            except Exception:
+                pass
+        try:
+            caps = await asyncio.to_thread(self._vcast_api, "/capture")
+            out["active_captures"] = caps.get("captures") or {}
+        except Exception:
+            pass
+        return out

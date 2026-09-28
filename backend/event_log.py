@@ -9,8 +9,10 @@ Names/kinds only — never secrets.
 """
 from __future__ import annotations
 
+import inspect
 import os
 import re
+import socket
 import time
 from pathlib import Path
 
@@ -25,10 +27,21 @@ def _path() -> Path:
 
 
 def log_event(kind: str, actor: str, subject: str, text: str = "") -> None:
-    """Append '## <ts> — <kind>: <actor> (<subject>)' + detail line."""
+    """Append '## <ts> — <kind>: <actor> (<subject>)' + detail line.
+
+    `where`/`how` are auto-derived: hostname + caller function name —
+    emitters carry no extra args."""
     path = _path()
     stamp = time.strftime("%Y-%m-%d %H:%M")
-    entry = f"## {stamp} — {kind}: {actor} ({subject})\n{text[:200]}".strip()
+    where = socket.gethostname()
+    how = "?"
+    try:
+        how = inspect.stack()[1].function
+    except Exception:
+        pass
+    detail = (f"{text[:180]} · {where}/{how}" if text
+              else f"{where}/{how}")
+    entry = f"## {stamp} — {kind}: {actor} ({subject})\n{detail}".strip()
     try:
         old = path.read_text(encoding="utf-8", errors="replace")
     except OSError:

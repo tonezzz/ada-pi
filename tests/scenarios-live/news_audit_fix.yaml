@@ -1,0 +1,94 @@
+# News audit fix — the CMS audit flagged the news-* pages for missing
+# required structure (H1, source links, "why it matters", TL;DR).
+# Ada re-reads news-system (the spec), re-drafts each failing page to
+# comply, and republishes through the confirm handshake.
+#
+# tier: full — real CMS writes. Manual/scheduled-full only.
+name: news-audit-fix
+tier: full
+
+turns:
+  - user: >-
+      The CMS audit flagged several news pages for missing required
+      structure. Read news-system for the required format first, then
+      re-draft news-world so it fully complies — H1, TL;DR, per-item
+      source links and "why it matters". Ask me before publishing.
+    expect:
+      calls_any: [cms_get_page]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_list_pages
+        - cms_get_page
+        - cms_verify_page
+        - cms_publish_page
+        - web_search
+      max_calls: 14
+      timeout_s: 180
+      settle_s: 10
+  - user: Yes, publish it.
+    expect:
+      calls_any: [cms_publish_page]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_publish_page
+        - cms_verify_page
+        - cms_get_page
+      max_calls: 8
+      timeout_s: 120
+      settle_s: 8
+  - user: >-
+      Same fix for news-bangplee and news-tabsai — full required
+      structure on both. Draft them and ask me once.
+    expect:
+      calls_any: [cms_get_page]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_get_page
+        - cms_verify_page
+        - cms_publish_page
+        - web_search
+      max_calls: 14
+      timeout_s: 180
+      settle_s: 10
+  - user: Yes, publish both.
+    expect:
+      calls_any: [cms_publish_page]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_publish_page
+        - cms_verify_page
+        - cms_get_page
+      max_calls: 10
+      timeout_s: 150
+      settle_s: 8
+  - user: >-
+      Last one — news-headline is the combined digest. Re-draft it to
+      comply too: H1, TL;DR covering all scopes, and source links.
+    expect:
+      calls_any: [cms_get_page]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_get_page
+        - cms_verify_page
+        - cms_publish_page
+        - web_search
+      max_calls: 12
+      timeout_s: 180
+      settle_s: 10
+  - user: Yes, publish it.
+    expect:
+      calls_any: [cms_publish_page]
+      response_nonempty: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_publish_page
+        - cms_verify_page
+        - cms_get_page
+      max_calls: 8
+      timeout_s: 120
+      settle_s: 8

@@ -1,0 +1,26 @@
+name: vms-camera-snapshot
+# XMEye VMS snapshot path — ada_camera_snapshot calls the vms-snap shim on
+# mn01 (tailnet :8377), which drives the Wine VMS UI and returns a cropped
+# PNG still. The frame arrives inside the tool response as inline media;
+# Ada should describe what she sees.
+#
+# Env-gated: only instances with ADA_VMS_SNAP_URL get the tool (tony only).
+# tier: full — real VMS UI automation on mn01 (~10s/channel select).
+tier: full
+
+turns:
+  - user: "Can you take a look at the swimming pool camera and tell me what you see there?"
+    expect:
+      calls: [ada_camera_snapshot]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  # Second view in the same session — re-selection path, and she should
+  # ground the answer in the new frame, not the previous one.
+  - user: "And how about the tennis court — does it look wet there?"
+    expect:
+      calls: [ada_camera_snapshot]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8

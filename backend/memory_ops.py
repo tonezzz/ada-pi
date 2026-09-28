@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,6 +19,7 @@ from backend.mddb_client import MddbClient
 from backend.memory_banks import (
     MemoryBank,
     MemoryBankRegistry,
+    SENSITIVE_MEMORY_RE,
     _meta_first,
     _slug,
     doc_effective_status,
@@ -53,6 +55,12 @@ DRAFT_VISIBLE_BANKS = {
 # recall after this many days, so stale extraction noise can't linger.
 ADA_DRAFT_MIN_SCORE = float(os.environ.get("ADA_DRAFT_MIN_SCORE", "0.55"))
 ADA_DRAFT_MAX_AGE_DAYS = int(os.environ.get("ADA_DRAFT_MAX_AGE_DAYS", "7"))
+
+# Read-only banks (cms, chaba-*, kb-*, infrastructure-ssot) are reference
+# docs, not memories — in degraded keyword mode they need a higher match
+# bar so they can't tie-crowd out the curated memory banks.
+ADA_DEGRADED_KB_MIN_SCORE = float(
+    os.environ.get("ADA_DEGRADED_KB_MIN_SCORE", "0.5"))
 
 # How each recorded outcome nudges a doc's confidence (clamped 0.05..1.0).
 # Good outcomes also bump last_verified — the verify stage of the knowledge
@@ -203,11 +211,20 @@ def _must(res: Any, what: str) -> None:
         raise RuntimeError(f"mddb write failed: {what}")
 
 
+def _draft_bank_allowed(bank: MemoryBank) -> bool:
+    """Draft visibility at the bank level. Person-scoped banks
+    (personal-kk, personal-testo) inherit the 'personal' allowlist entry —
+    bank.name is the resolved name, not the alias the user configured."""
+    if bank.name in DRAFT_VISIBLE_BANKS:
+        return True
+    return bank.scope == "person" and "personal" in DRAFT_VISIBLE_BANKS
+
+
 def _draft_visible(bank: MemoryBank, doc: dict[str, Any], instance: str) -> bool:
     """True when a status=draft doc may surface in recall: only for
     allowlisted banks, only the extracting instance's own docs, only
     recent, and only above the draft score bar."""
-    if bank.name not in DRAFT_VISIBLE_BANKS:
+    if not _draft_bank_allowed(bank):
         return False
     meta = doc.get("meta") or {}
     if _meta_first(meta, "scope") != instance:
@@ -241,11 +258,17 @@ def _doc_to_hit(
         else:
             return None
     meta = doc.get("meta") or {}
+    content = doc.get("contentMd") or doc.get("content_md") or ""
+    if not str(content).strip():
+        # Content-wiped doc (meta-only write emptied the body). It still
+        # scores on meta but carries nothing Ada can use — and it crowds
+        # out real hits in the top-k. Skip it.
+        return None
     hit: dict[str, Any] = {
         "key": doc.get("key"),
         "status": status,
         "score": doc.get("score"),
-        "content": doc.get("contentMd") or doc.get("content_md") or "",
+        "content": content,
         "kind": _meta_first(meta, "kind"),
         "subject": _meta_first(meta, "subject"),
         "attribute": _meta_first(meta, "attribute"),
@@ -269,6 +292,44 @@ def _doc_to_hit(
     return hit
 
 
+_KW_STOP = {
+    "the", "a", "an", "is", "are", "was", "were", "do", "does", "did",
+    "who", "what", "where", "when", "how", "why", "which", "tell", "me",
+    "about", "in", "on", "at", "to", "of", "for", "and", "or", "this",
+    "that", "you", "your", "we", "my", "it", "its", "be", "been", "know",
+    "can", "could", "would", "should", "refer", "now", "any",
+}
+
+
+def _keyword_rank(docs: list[dict[str, Any]], q: str) -> list[dict[str, Any]]:
+    """Score listed docs by query-token presence when vector search is
+    down: key/subject/content substring hits. English stopwords don't
+    count — they match nearly everything and drown the real hits. Docs
+    with no token overlap get score 0 and sort last."""
+    tokens = [
+        t for t in re.split(r"[^\wก-๙]+", q.lower())
+        if len(t) >= 2 and t not in _KW_STOP
+    ]
+    if not tokens:
+        return docs
+    for doc in docs:
+        meta = doc.get("meta") or {}
+        hay = " ".join(filter(None, [
+            str(doc.get("key") or ""),
+            str(doc.get("contentMd") or doc.get("content_md") or ""),
+            str(_meta_first(meta, "subject") or ""),
+            str(_meta_first(meta, "attribute") or ""),
+        ])).lower()
+        hits = sum(1 for t in tokens if t in hay)
+        doc["score"] = hits / len(tokens) if hits else 0.0
+    docs.sort(key=lambda d: d.get("score") or 0.0, reverse=True)
+    # Degraded listing order is arbitrary — a zero-token-overlap doc is
+    # noise, not a weak hit. Drop them rather than fill the response
+    # with random bank entries (they also crowd out matching docs from
+    # other banks in the bank='all' merge).
+    return [d for d in docs if (d.get("score") or 0.0) > 0]
+
+
 async def _bank_docs(
     mddb: MddbClient,
     bank: MemoryBank,
@@ -285,7 +346,7 @@ async def _bank_docs(
     # filter so recent same-instance drafts can surface as unverified hits.
     filter_meta = None
     if not include_inactive and bank.writable:
-        statuses = ["active", "draft"] if bank.name in DRAFT_VISIBLE_BANKS else ["active"]
+        statuses = ["active", "draft"] if _draft_bank_allowed(bank) else ["active"]
         filter_meta = {"status": statuses}
     if q and q != "*":
         docs = await mddb.vector_search(
@@ -296,14 +357,19 @@ async def _bank_docs(
             threshold=ADA_BANK_SEARCH_THRESHOLD,
         )
         if docs is None:
-            return (
-                await mddb.search_documents(
-                    collection=bank.mddb_collection,
-                    filter_meta=filter_meta,
-                    limit=int(limit) * 3,
-                ),
-                True,
+            # Degraded: widen the listing well past the caller's limit so
+            # keyword ranking has candidates to work with — an unordered
+            # top-N listing would silently miss the right doc.
+            listed = await mddb.search_documents(
+                collection=bank.mddb_collection,
+                filter_meta=filter_meta,
+                limit=max(int(limit) * 10, 50),
             )
+            ranked = _keyword_rank(listed, q)
+            if not bank.writable:
+                ranked = [d for d in ranked
+                          if (d.get("score") or 0.0) >= ADA_DEGRADED_KB_MIN_SCORE]
+            return ranked[: int(limit) * 3], True
         return docs or [], False
     return (
         await mddb.search_documents(
@@ -326,6 +392,25 @@ def _check_bank_allowed(
         raise PermissionError(
             f"memory bank '{bank}' is not available for this speaker"
             + (f" — allowed banks: {allowed}" if allowed else "")
+        )
+
+
+def _check_person_scope_write(bank: MemoryBank, person_entity: str | None) -> None:
+    """Person-scoped banks are private to their owner for writes —
+    person_scope and key_scope declare who may write; the 'personal'
+    alias already routes callers to their own bank before this runs."""
+    if bank.scope != "person":
+        return
+    owners = {bank.person_scope, *bank.key_scope}
+    owners.discard(None)
+    if person_entity not in owners:
+        logger.warning(
+            "denied write to person-scoped bank %r for identity %r",
+            bank.name, person_entity,
+        )
+        raise PermissionError(
+            f"memory bank '{bank.name}' is private to its owner — "
+            "use bank 'personal' for the speaker's own notes instead"
         )
 
 
@@ -372,7 +457,12 @@ async def memory_search(
                 used.append(doc)
             if used and not include_inactive and q and q != "*":
                 record_use_bg(mddb, b.mddb_collection, used)
-        hits.sort(key=lambda h: float(h.get("score") or 0), reverse=True)
+        # Writable memory banks win score ties over read-only KB banks —
+        # a same-scoring cms doc must not bury a people/ general fact.
+        writable_banks = {b.name for b in banks if b.writable}
+        hits.sort(key=lambda h: (float(h.get("score") or 0),
+                                 h.get("bank") in writable_banks),
+                  reverse=True)
         hits = hits[: int(limit)]
         return {
             "bank": "all",
@@ -404,7 +494,6 @@ async def memory_search(
         record_use_bg(mddb, b.mddb_collection, used_docs)
     return {
         "bank": b.name,
-        "collection": b.mddb_collection,
         "count": len(hits),
         "hits": hits,
         "degraded": degraded,
@@ -471,6 +560,7 @@ async def record_outcome(
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
     _check_bank_allowed(registry, b.name, person_entity)
+    _check_person_scope_write(b, person_entity)
     outcome = str(outcome)
     delta = OUTCOME_CONFIDENCE_DELTA.get(outcome)
     if delta is None:
@@ -532,11 +622,21 @@ async def remember(
 
     When *person_entity* is set and bank is 'personal', the write is routed
     to the speaker's person-scoped bank (e.g. personal-kk) so personal
-    memories never cross person boundaries."""
+    memories never cross person boundaries.
+
+    Sensitive content (documents, IDs, passports, named persons' private
+    details) targeting a shared bank is rerouted to the writer's personal
+    bank — shared banks are visible to every household speaker."""
+    rerouted_from: str | None = None
     if str(bank) == "personal" and person_entity:
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
+    if (b.scope == "shared" and person_entity
+            and SENSITIVE_MEMORY_RE.search(f"{text} {subject or ''}")):
+        rerouted_from = b.name
+        b = registry.bank(registry.personal_bank_name(person_entity))
     _check_bank_allowed(registry, b.name, person_entity)
+    _check_person_scope_write(b, person_entity)
     if str(kind or "note") not in b.kinds:
         raise ValueError(
             f"kind {kind!r} not allowed in bank '{b.name}' (allowed: {', '.join(b.kinds)})"
@@ -632,11 +732,17 @@ async def remember(
         _must(await mddb.update_document(
             b.mddb_collection, target_key, content_md=str(text), meta=meta
         ), f"correct {b.mddb_collection}/{target_key}")
-        return {"verb": "correct", "bank": b.name, "key": target_key}
-    _must(await mddb.add_document(
-        b.mddb_collection, target_key, "en", str(text), meta),
-        f"add {b.mddb_collection}/{target_key}")
-    return {"verb": "create", "bank": b.name, "key": target_key}
+        out = {"verb": "correct", "bank": b.name, "key": target_key}
+    else:
+        _must(await mddb.add_document(
+            b.mddb_collection, target_key, "en", str(text), meta),
+            f"add {b.mddb_collection}/{target_key}")
+        out = {"verb": "create", "bank": b.name, "key": target_key}
+    if rerouted_from:
+        out["rerouted_from"] = rerouted_from
+        out["note"] = (f"sensitive content kept in {b.name} "
+                       f"(your personal bank) instead of shared '{rerouted_from}'")
+    return out
 
 
 async def forget(
@@ -656,6 +762,7 @@ async def forget(
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
     _check_bank_allowed(registry, b.name, person_entity)
+    _check_person_scope_write(b, person_entity)
     doc = await mddb.get_document(b.mddb_collection, str(key))
     if doc is None:
         raise ValueError(f"no such document {key!r} in bank '{b.name}'")

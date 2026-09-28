@@ -1,0 +1,20 @@
+# Devin dispatch status accuracy — Ada must report REAL job states from
+# the handoff bank, including failures and awaiting-user. Guards against
+# the 2026-09-27 failure mode (task failed silently, Ada guessed "done").
+name: devin_status_accuracy
+turns:
+  - user: >-
+      Summarize my dispatched Devin tasks — which are done, which failed,
+      and which are waiting for me.
+    expect:
+      calls_any: [devin_jobs, devin_pending, devin_status]
+      timeout_s: 90
+      settle_s: 12
+  - user: >-
+      What happened with the logs-digesting and idc01-migration jobs?
+      Tell me their real status.
+    expect:
+      calls_any: [devin_jobs, devin_status, ada_memory_search]
+      timeout_s: 90
+      settle_s: 12
+      # Ada must say "failed" — the job docs exist in devin-handoff bank.

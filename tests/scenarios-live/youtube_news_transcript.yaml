@@ -1,0 +1,12 @@
+# YouTube news → transcript → report: user asks Ada to pull a Thai news
+# video's content. She must find/transcribe via yt_transcript (YouTube
+# captions — news sites block scrapers) and report what the video says.
+name: youtube_news_transcript
+turns:
+  - user: >-
+      Get me the content of this news video and tell me what the main story
+      is about: https://www.youtube.com/watch?v=WjdLmFWtIx0
+    expect:
+      calls_any: [yt_transcript]
+      timeout_s: 180
+      settle_s: 15

@@ -1,0 +1,32 @@
+# Document upload, live: the 📎 attach flow — the driver POSTs the fixture
+# photo to /api/documents/intake (exactly like ada-voice-card/ada-chat-card),
+# then injects the "[document uploaded via card]" session note. Ada should
+# acknowledge the document and ask what to do with it. Turn 2 declines —
+# nothing may be archived or printed without user confirmation.
+name: doc-upload
+tier: smoke
+turns:
+  - upload: fixtures/doc-receipt.png
+    expect:
+      response_nonempty: true
+      response_contains_any:
+        - "archive"
+        - "print"
+        - "receipt"
+        - "what would you like"
+      timeout_s: 120
+      settle_s: 8
+  - user: "no thanks — nothing to save, just wanted to check it worked"
+    expect:
+      response_nonempty: true
+      events_not_contain:
+        - {type: tool_call, name: ada_doc_archive}
+        - {type: tool_call, name: ada_doc_print}
+      timeout_s: 90
+
+# Ada sometimes ada_remember's the upload itself — drop any bank note that
+# references the fixture's intake key/name so repeat runs stay clean.
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-purchase, contains: "doc-receipt-png"}
+    - {collection: ada-ha-bank-general, contains: "doc-receipt-png"}

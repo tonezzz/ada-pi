@@ -1,0 +1,18 @@
+# Shared-memory audit — Tony's ask: "Devin, Ada, and me share a memory
+# bank — manage it." Ada should audit the devin-handoff ledger (the
+# shared space) and report what's stale/missing, not just agree.
+name: shared_memory_audit
+turns:
+  - user: >-
+      We share a memory bank between you, me, and Devin — audit it. What's
+      in it, what's stale, and is anything missing?
+    expect:
+      calls_any: [devin_jobs, ada_memory_search, devin_pending]
+      timeout_s: 90
+      settle_s: 12
+  - user: >-
+      Anything you should add or clean up in there? Do it if it's safe.
+    expect:
+      calls_any: [ada_remember, devin_jobs, ada_memory_search]
+      timeout_s: 120
+      settle_s: 12

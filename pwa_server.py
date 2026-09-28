@@ -580,6 +580,9 @@ async def voice_socket(ws: WebSocket) -> None:
         owner=tool_runner.session_owner_identity,
         client=ws.client.host if ws.client else None,
     )
+    # Fallback identity for memory routing/extraction until speaker ID
+    # identifies the voice (then _on_speaker updates this).
+    conversation.speaker_identity = tool_runner.session_caller_name
     # Test hook: ?no_persist=1 skips transcript persist, extraction,
     # summaries and the session-end marker so scenario runs never pollute
     # real memory (banks are unaffected — explicit ada_remember still writes).
@@ -613,6 +616,27 @@ async def voice_socket(ws: WebSocket) -> None:
         try:
             identifier = SpeakerIdentifier.get()
             async def _on_speaker(name: str, confidence: float) -> None:
+                # Media/device voice (TV, video, podcast) — do NOT switch
+                # the session identity; steer the model to ignore the
+                # content so Ada stops answering ambient audio mid-topic.
+                if identifier.is_media(name):
+                    provider = provider_ref[0]
+                    with suppress(Exception):
+                        await ws.send_text(json.dumps({
+                            "type": "speaker", "name": name,
+                            "display_name": identifier.get_display_name(name) or name,
+                            "confidence": round(confidence, 3),
+                            "media": True,
+                        }))
+                    with suppress(Exception):
+                        await provider.send_text_turn(
+                            f"(system) Ambient audio detected — the voice matches "
+                            f"'{name}', a media/device profile (TV, video, "
+                            "podcast), not a person in the room. Do not answer "
+                            "its content; continue the prior topic. If the user "
+                            "asks what that sound is, say it's likely audio "
+                            "playing nearby.")
+                    return
                 # Level 1: set the provider's HA person so get_home_state
                 # queries the speaker's person entity instead of the
                 # instance default.
@@ -621,10 +645,12 @@ async def voice_socket(ws: WebSocket) -> None:
                 provider = provider_ref[0]
                 provider.current_speaker = name
                 provider.current_speaker_ha_person = ha_person
+                provider.conversation.speaker_identity = ha_person
                 # Sync to tool_runner so personalization (get_home_state,
-                # persona reads, speaker-provenance) follows the voice.
-                # Authorization stays pinned to session_owner_identity —
-                # this never widens permissions (policy P1/P3).
+                # persona reads, speaker-provenance, person-scoped banks)
+                # follows the voice. Authorization stays pinned to
+                # session_owner_identity — this never widens permissions
+                # (policy P1/P3).
                 tr = provider.tool_runner
                 if tr is not None:
                     tr.current_speaker_ha_person = ha_person
@@ -775,6 +801,12 @@ async def voice_socket(ws: WebSocket) -> None:
             pass
         finally:
             closed.set()
+            # Pending CMS write confirmations are conversational — they
+            # belong to this session's dialogue. Leaving them on the shared
+            # tool_runner leaks the pending ask into the next session
+            # ("should I delete that page?" as a greeting).
+            if tool_runner is not None:
+                getattr(tool_runner, "_cms_pending", {}).clear()
 
     async def provider_to_browser() -> None:
         # In-flight assistant text the browser already heard. When the Gemini
@@ -896,9 +928,26 @@ async def voice_socket(ws: WebSocket) -> None:
         finally:
             closed.set()
 
+    async def stall_watchdog() -> None:
+        """Close a silently-dead provider stream so the reconnect loop in
+        provider_to_browser fires. Symptom: user speaks, zero provider
+        events for >stall_timeout — seen live as 25-47s of silence."""
+        while not closed.is_set():
+            await asyncio.sleep(5)
+            p = provider_ref[0]
+            if p is not None and p.is_stalled():
+                logger.warning(
+                    "session=%s provider stalled >%.0fs after user turn — "
+                    "forcing reconnect", session_id, p._stall_timeout)
+                with suppress(Exception):
+                    await ws.send_text(json.dumps({"type": "live_stalled"}))
+                with suppress(Exception):
+                    await p.close()
+
     tasks = {
         asyncio.create_task(browser_to_provider()),
         asyncio.create_task(provider_to_browser()),
+        asyncio.create_task(stall_watchdog()),
     }
     try:
         await closed.wait()
@@ -1681,11 +1730,12 @@ async def cms_list_pages(request: Request, limit: int = 50) -> dict:
 
 
 @app.get("/api/cms/pages/{slug}")
-async def cms_get_page(request: Request, slug: str) -> dict:
-    """Fetch one miniapp page's content by slug. Read-only, key-gated."""
+async def cms_get_page(request: Request, slug: str, lang: str = "en") -> dict:
+    """Fetch one miniapp page's content by slug (+ ?lang=th for the Thai
+    variant; falls back to en). Read-only, key-gated."""
     _require_api_key(request)
     try:
-        page = await tool_runner.cms_get_page(slug)
+        page = await tool_runner.cms_get_page(slug, lang)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if page is None:
