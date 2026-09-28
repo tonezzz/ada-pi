@@ -272,8 +272,9 @@ VMS_INSTRUCTIONS = (
     "'what do you see', 'check zone X'), pull frames yourself with "
     "ada_camera_snapshot and describe them — do NOT offer to cast or uplink "
     "to a screen unless the user asks to see it on a display (they may not "
-    "be near one). For a zone summary, snap 2-3 key channels of that zone "
-    "and summarize across them. "
+    "be near one). For a zone summary, snap ONE representative channel "
+    "(e.g. 'road in' for zone-a — VMS frames take up to a minute on cold "
+    "streams, so don't chain several) and offer to check more if they ask. "
     "SELF-HEAL on misses: if the tool returns the available channel list, "
     "retry immediately with the closest listed name — do not ask the user "
     "to pick."
@@ -762,6 +763,9 @@ class GeminiLiveProvider(RealtimeProvider):
         # has been completely silent past the threshold.
         self._last_user_at = 0.0
         self._last_model_at = 0.0
+        # count of tool calls currently executing — a slow tool (VMS snap can
+        # run 30-90s on cold P2P) must NOT look like a stalled provider
+        self._tools_in_flight = 0
         self._stall_timeout = float(os.environ.get("ADA_STALL_TIMEOUT_S", "25"))
         self._ops_events_sent = 0
         self._tool_leak_re = None
@@ -3986,7 +3990,7 @@ class GeminiLiveProvider(RealtimeProvider):
         """True when the user has spoken but the provider has been silent
         past ADA_STALL_TIMEOUT_S — a dead Gemini Live stream that never
         ends cleanly and must be force-reconnected."""
-        if self._closed or not self._last_user_at:
+        if self._closed or not self._last_user_at or self._tools_in_flight:
             return False
         return (
             self._last_user_at > self._last_model_at
@@ -4119,6 +4123,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         })
                         requested = (call.args or {}).get("expression")
                         tool_calls_this_turn += 1
+                        self._tools_in_flight += 1
                         tool_t0 = time.monotonic()
                         if call.name in ACTUATING_TOOLS:
                             actuations_this_turn += 1
@@ -4404,6 +4409,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             "name": str(call.name),
                             "result": _safe_args(result) if isinstance(result, dict) else {"value": str(result)[:500]},
                         })
+                        self._tools_in_flight = max(0, self._tools_in_flight - 1)
                         function_responses.append(types.FunctionResponse(
                             id=call.id,
                             name=call.name or "set_facial_expression",

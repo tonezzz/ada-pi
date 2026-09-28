@@ -1,0 +1,36 @@
+name: zone-describe
+tier: full
+turns:
+  # Regression for the 2026-09-28 session: user remote, asks what a zone's
+  # cameras show. Correct behavior: snap a zone channel herself and
+  # describe — never offer to uplink/cast a wall, never ask "which one?"
+  # when the tool returns the channel list.
+  - user: "ดูกล้องโซน A บ้าง เห็นอะไรบ้าง"
+    expect:
+      calls_any: ["ada_camera_snapshot"]
+      response_nonempty: true
+      response_not_contains:
+        - "อัปลิงก์"
+        - "หน้าจอ"
+        - "screen"
+        - "uplink"
+        - "ตัวไหน"
+      timeout_s: 150   # VMS P2P snap can take ~90s on a cold stream
+      settle_s: 2
+
+  - user: "เห็นอะไรบ้าง บอกหน่อย"
+    expect:
+      response_nonempty: true
+      response_contains_any:
+        - "road"
+        - "ถนน"
+        - "น้ำ"
+        - "รถ"
+        - "คน"
+        - "ภาพ"
+        - "กล้อง"
+        - "มืด"
+        - "ขึ้นไม่ได้"   # honest-fail wording is acceptable
+        - "ไม่ได้"
+      timeout_s: 45
+      settle_s: 2

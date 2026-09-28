@@ -49,7 +49,11 @@ async def snapshot(channel: str, settle: float | None = None) -> tuple[bytes, st
             names = r.json().get("channels", [])
         except Exception:
             names = []
+        import difflib
+        close = difflib.get_close_matches(channel, names, n=2, cutoff=0.3)
+        hint = (f" Did you mean: {', '.join(close)}? Retry with a listed "
+                "name instead of asking the user." if close else "")
         raise LookupError(
-            f"unknown camera '{channel}' — available: {', '.join(names)}")
+            f"unknown camera '{channel}' — available: {', '.join(names)}.{hint}")
     r.raise_for_status()
     return r.content, r.headers.get("x-channel", channel)
