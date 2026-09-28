@@ -1,0 +1,23 @@
+# Regression for 2026-09-28: mddb under rebuild load — ada_remember must
+# surface a failure honestly instead of claiming success, and the turn
+# must not hang past the timeout while the write blocks.
+name: memory_write_under_load
+tier: full
+turns:
+  - user: "Remember this in my personal bank — benchmark marker tau-load-7742: the value is forty-two."
+    expect:
+      calls_any: [ada_remember]
+      # must not say "saved" if the tool result was an error
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+  - user: "Did that actually save? Check."
+    expect:
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 5
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-personal-tony, contains: "tau-load-7742"}
+    - {collection: ada-ha-bank-personal-testo, contains: "tau-load-7742"}
+    - {collection: ada-ha-bank-general, contains: "tau-load-7742"}
