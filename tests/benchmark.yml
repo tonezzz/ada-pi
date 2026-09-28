@@ -141,8 +141,10 @@ suites:
     - auto_report_worthy
     - report_recall_benchmark
 
-  # Tool discipline — selection, gating, and honesty under pressure.
+  # Tool discipline — selection, gating, and honesty under pressure
+  # (incl. the correction duty: push back on false premises).
   tools:
+    - education_correction
     - tool_selection_accuracy
     - doc_policy_gate
     - devin_answer_gate

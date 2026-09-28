@@ -14,6 +14,7 @@ import urllib.request
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -384,6 +385,7 @@ DEFAULT_ADA_INSTRUCTIONS = """You are Ada, a polished, highly capable voice assi
 
 Personality:
 - Default register is polite but very straightforward: composed, professional, factual — no unsolicited wit, sarcasm, or playful quips. Only show dry wit when the speaker's persona has sassiness=light/playful (see persona knobs below); sassiness=none means strictly straightforward answers.
+- Correction duty: when the speaker asserts something factually wrong, misremembers, or proposes a wrong direction, correct it plainly — accuracy over agreement. If the question rests on a misunderstanding, briefly explain the right model. Never validate a false premise just to be agreeable; check memory/tools when unsure rather than guessing along.
 - Target the behavior, never the person's identity, appearance, intelligence, or worth. Never be cruel, humiliating, threatening, or relentless.
 - Drop the sarcasm for emergencies, genuine distress, medical concerns, or other sensitive moments; be direct and caring instead.
 
@@ -1021,6 +1023,32 @@ class GeminiLiveProvider(RealtimeProvider):
             ),
             "channel": resolved,
         }
+        # Also publish the frame at an HTTPS URL the vcast/TV browsers can
+        # load (mixed-content-safe) so Ada can cast it: cast_to_screen(
+        # action='image', url=cast_url). Without this she invents a URL and
+        # the screen shows a broken image (seen 2026-09-28).
+        try:
+            snap_dir = (Path(__file__).resolve().parent.parent
+                        / "frontend" / "cam-snap")
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            slug = re.sub(r"[^a-z0-9]+", "-", resolved.lower()).strip("-")
+            name = f"{slug}-{int(time.time())}.png"
+            (snap_dir / name).write_bytes(png)
+            snaps = sorted(snap_dir.glob("*.png"),
+                           key=lambda p: p.stat().st_mtime)
+            for old in snaps[:-20]:
+                old.unlink(missing_ok=True)
+            base = os.environ.get(
+                "ADA_SNAP_PUBLIC_BASE",
+                "https://idc01.taila0626a.ts.net/static/cam-snap/")
+            result["cast_url"] = base + name
+            result["output"] += (
+                " To show this frame on a vcast display, call "
+                "cast_to_screen(action='image', url=<cast_url>) — always use "
+                "cast_url exactly; never guess a URL.")
+        except Exception as exc:
+            logger.warning("session=%s snap publish failed: %s",
+                           self.session_id, exc)
         return result, (resolved, png, "image/png")
 
     async def _vcast_snapshot(self, args: dict) -> tuple[dict, tuple[str, bytes, str] | None]:
@@ -1074,12 +1102,17 @@ class GeminiLiveProvider(RealtimeProvider):
                 else:
                     body = json.loads(r.read() or b"{}")
                     if body.get("error") and body.get("ok"):
-                        return ({"error": (
-                                    f"screen {screen} could not capture: {body['error']} "
-                                    f"(state={body.get('state') or 'unknown'}). If it is an "
-                                    "uncapturable iframe, tell the user the page content "
-                                    "cannot be screenshotted.")},
-                                None)
+                        detail = body.get("detail")
+                        msg = (f"screen {screen} could not capture: {body['error']} "
+                               f"(state={body.get('state') or 'unknown'})."
+                               + (f" Failed URL: {detail}." if detail else "")
+                               + (" The casted image URL failed to load — tell the "
+                                  "user the screen shows a broken image and re-cast "
+                                  "with the cast_url from ada_camera_snapshot."
+                                  if body["error"] == "image-load-failed" else
+                                  " If it is an uncapturable iframe, tell the user "
+                                  "the page content cannot be screenshotted."))
+                        return ({"error": msg}, None)
             except urllib.error.HTTPError as exc:
                 if exc.code != 404:
                     logger.warning("session=%s vcast frame poll: %s", self.session_id, exc)
