@@ -25,7 +25,25 @@ from google.genai import types
 from backend import chaba_memory, voice_config, vms_camera
 from backend.instance import ada_instance_id
 from backend.conversation_memory import ConversationMemory
-from backend.tool_runner import ToolRunner
+from backend.tool_runner import (
+    ToolRunner,
+    CALENDAR_WRITE_TOOLS,
+    CAPTURE_CONFIRMED_TOOLS,
+    CMS_WRITE_TOOLS,
+    CONTROL_TOOLS,
+    DEVIN_CONFIRMED_TOOLS,
+    DOC_CONFIRMED_TOOLS,
+    MEMORY_WRITE_TOOLS,
+)
+
+# Tools whose call requires an explicit user confirmation. The Jev advisory
+# probe fires on every one of these calls — not only when the model asserted
+# confirmed=true — so divergence data covers the common path too.
+_CONFIRM_GATED_TOOLS = (
+    CONTROL_TOOLS | MEMORY_WRITE_TOOLS | CALENDAR_WRITE_TOOLS
+    | CMS_WRITE_TOOLS | DEVIN_CONFIRMED_TOOLS | CAPTURE_CONFIRMED_TOOLS
+    | DOC_CONFIRMED_TOOLS | {"ada_enroll_speaker"}
+)
 from backend.usage_tracker import usage_ledger
 
 logger = logging.getLogger("voice.provider")
@@ -904,7 +922,7 @@ class GeminiLiveProvider(RealtimeProvider):
                 resp = await asyncio.to_thread(_post)
                 score = float(resp["answers"]["affirmed"]["noul"])
             except Exception as exc:
-                logger.debug("jev advisory probe failed: %s", exc)
+                logger.info("jev advisory probe failed: %s", exc)
                 return
             jev_says = score >= 0.75
             diverged = jev_says != regex_says
@@ -3949,29 +3967,53 @@ class GeminiLiveProvider(RealtimeProvider):
                 turn_complete=True,
             )
 
-    async def notify_or_defer(self, text: str) -> str:
-        """Deliver a (system) notification. If a response is in flight the
-        note is queued and spoken after the current turn finishes —
-        returns 'queued' instead of 'delivered'. The note itself tells the
-        model to wrap up the current focus first, then summarize what
-        arrived in one line and offer a choice."""
+    async def notify_or_defer(self, text: str, urgent: bool = False) -> str:
+        """Notification handling (Eisenhower split):
+
+        urgent=True   — interrupt now: injected as a user turn so Ada stops
+                        and announces it immediately (urgent + important).
+        urgent=False  — the client already announced it via machine voice
+                        (speechSynthesis); we inject a silent context note
+                        (turn_complete=False) so Ada knows it arrived and
+                        can circle back, but she does NOT stop her current
+                        task or speak about it now. Queued to the next turn
+                        boundary if a response is in flight.
+
+        Returns 'interrupted' | 'context' | 'queued'."""
+        if urgent:
+            await self.send_text_turn(
+                "(system) URGENT notification — stop and tell the user now: "
+                + text)
+            return "interrupted"
         framed = (
-            "(system) A notification arrived while you may be busy: "
-            f"{text}\nFinish your current point first, then summarize what "
-            "arrived in ONE line and ask whether to continue what you were "
-            "doing or switch to the new item."
-        )
+            "(system) Note for later — a notification arrived and the user "
+            f"was already informed by a short machine-voice announcement: "
+            f"{text}\nDo not speak about this now. Finish your current "
+            "task; bring it up only when the current work is done or the "
+            "user asks.")
         if self._response_active:
             self._pending_notifications.append(framed)
             return "queued"
-        await self.send_text_turn(framed)
-        return "delivered"
+        await self._send_context_note(framed)
+        return "context"
+
+    async def _send_context_note(self, text: str) -> None:
+        """Append context WITHOUT triggering a response (turn_complete=False)
+        — the note lands in session state for later reference only."""
+        async with self._send_lock:
+            await self._session.send_client_content(
+                turns=types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text=text)],
+                ),
+                turn_complete=False,
+            )
 
     async def _drain_notifications(self) -> None:
         while self._pending_notifications:
             framed = self._pending_notifications.pop(0)
             try:
-                await self.send_text_turn(framed)
+                await self._send_context_note(framed)
             except Exception as exc:
                 logger.warning(
                     "session=%s deferred notify send failed: %s",
@@ -4266,13 +4308,18 @@ class GeminiLiveProvider(RealtimeProvider):
                             if self.tool_runner is not None:
                                 try:
                                     call_args = dict(call.args or {})
-                                    if call_args.get("confirmed"):
+                                    if str(call.name) in _CONFIRM_GATED_TOOLS:
                                         # Resolved source text shared by the
-                                        # gate and the Jev advisory probe.
+                                        # gate and the Jev advisory probe —
+                                        # probe fires on every gated call,
+                                        # not only self-asserted confirms.
                                         _src = self._confirm_source_text(input_transcript)
                                         _affirmed = self._user_confirmed(input_transcript)
                                         self._jev_confirm_probe(
                                             _src, _affirmed, str(call.name))
+                                    if call_args.get("confirmed"):
+                                        _src = self._confirm_source_text(input_transcript)
+                                        _affirmed = self._user_confirmed(input_transcript)
                                         if not _affirmed:
                                             logger.warning(
                                                 "session=%s %s self-asserted confirmed=true "
