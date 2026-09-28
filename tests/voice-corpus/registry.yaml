@@ -1,0 +1,10 @@
+# Voice corpus registry — clips live in clips/ (16kHz mono wav, gitignored).
+#
+# Pipeline: scripts/voice-harvest.py <youtube-url> segments speech, clusters
+# by speaker embedding, and appends entries here as qualified: pending.
+# Tony reviews each entry → qualified: ok (bench runs it) or reject.
+#
+# kind: person | media  (media voices are negative/sink profiles)
+# clips: ordered — clip k enrolls, clip k+1 tests (accumulation simulation)
+
+speakers: []
