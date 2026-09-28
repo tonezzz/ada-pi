@@ -2112,16 +2112,19 @@ class ToolRunner:
     async def cast_to_screen(self, screen: int, action: str = "nav",
                              url: str = "") -> dict[str, Any]:
         """Cast to a numbered vcast virtual display (NOT the TV).
-        action: nav|play|image|audio|stop. url required except for stop."""
+        action: nav|play|image|audio|stop|uplink|uplink-stop.
+        url required except for stop/uplink/uplink-stop."""
         import asyncio
         action = str(action or "nav").lower()
         screen = int(screen)
         await self._check_screen_owner(screen, self._memory_identity())
-        if action == "stop":
-            msg: dict[str, Any] = {"type": "stop"}
+        if action in {"stop", "uplink", "uplink-stop"}:
+            msg: dict[str, Any] = {
+                "type": "uplink-start" if action == "uplink" else action}
         else:
             if action not in {"nav", "play", "image", "audio"}:
-                raise ValueError(f"unknown action {action!r} (nav|play|image|audio|stop)")
+                raise ValueError(
+                    f"unknown action {action!r} (nav|play|image|audio|stop|uplink|uplink-stop)")
             if not url:
                 raise ValueError("url is required for " + action)
             msg = {"type": action, "url": url}

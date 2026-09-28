@@ -1766,7 +1766,9 @@ class GeminiLiveProvider(RealtimeProvider):
                         "for the TV use tv_action or yt_cast). action='nav' url='<URL>' shows a web page, "
                         "'play' url='<m3u8, video, or YouTube/Vimeo page URL>' plays video (HLS supported, "
                         "YouTube/Vimeo links auto-embed on the display), 'image' url='<png/jpg>' "
-                        "shows a snapshot, 'audio' url plays sound or TTS, 'stop' returns it to idle. "
+                        "shows a snapshot, 'audio' url plays sound or TTS, 'stop' returns it to idle, "
+                        "'uplink' starts the display's camera uplink (frames available via "
+                        "GET /frame?screen=N&token=cam), 'uplink-stop' stops it. "
                         "Screens are numbered — call vcast_list first if you need to pick one. "
                         "Some screens are private to their owner — casting to another person's screen is denied."
                     ),
@@ -1780,7 +1782,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "action": {
                                 "type": "string",
-                                "description": "nav | play | image | audio | stop (default nav).",
+                                "description": "nav | play | image | audio | stop | uplink | uplink-stop (default nav).",
                             },
                             "url": {
                                 "type": "string",
