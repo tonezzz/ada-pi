@@ -1275,13 +1275,25 @@ class GeminiLiveProvider(RealtimeProvider):
             return ({"error": f"no traffic camera matched {query or 'that position'}. "
                               "Try a road/area keyword (e.g. 'burapha', 'bangna') "
                               "or pass lat/lon."}, None)
-        cam = cams[0]
-        try:
-            jpeg, mime = await asyncio.to_thread(tc.snap, cam)
-        except Exception as exc:
-            alts = ", ".join(c["title"] for c in cams[1:4])
-            return ({"error": f"'{cam['title']}' matched but its frame failed: {exc}"
-                              + (f". Alternatives: {alts}" if alts else "")}, None)
+        if cams[0].get("suspended"):
+            return ({"error": cams[0]["title"] +
+                              " — the feed currently has live frames for "
+                              "Bangkok and Nonthaburi cams only."}, None)
+        # ~half the live-flagged cams still return dead frames — walk the
+        # ranked list until one produces a real image
+        cam = jpeg = mime = None
+        dead = []
+        for cand in cams[:4]:
+            try:
+                jpeg, mime = await asyncio.to_thread(tc.snap, cand)
+                cam = cand
+                break
+            except Exception:
+                dead.append(cand["title"][:60])
+        if cam is None:
+            return ({"error": f"{len(dead)} matched camera(s) returned no usable "
+                              f"frame ({', '.join(dead)}). The feed marks many "
+                              "cams offline — try another area."}, None)
         slug = re.sub(r"[^a-z0-9]+", "-", (cam.get("camid") or "cam").lower())
         cast_url = await asyncio.to_thread(tc.publish_relay, jpeg, slug)
         dist = f" (~{cam['dist_km']} km away)" if cam.get("dist_km") else ""

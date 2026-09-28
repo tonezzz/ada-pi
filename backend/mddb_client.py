@@ -3,6 +3,7 @@ conversation_memory — single place for the wire contract)."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Any
@@ -94,19 +95,34 @@ class MddbClient:
             payload["filterMeta"] = filter_meta
         if threshold:
             payload["threshold"] = threshold
-        try:
-            resp = await self._client.post(
-                f"{self.base_url}/vector-search", json=payload
-            )
-            resp.raise_for_status()
-            results = resp.json().get("results") or []
-            return [
-                {**(item.get("document") or {}), "score": item.get("score")}
-                for item in results
-            ]
-        except Exception as exc:
-            logger.error("mddb vector_search failed: %s", exc)
-            return None
+        # mddb 503s while its vector index reloads after a restart (minutes on
+        # idc01) and when the embedding provider hiccups — retry twice with
+        # backoff so a transient stall doesn't lose the memory hit.
+        delays = (3.0, 8.0)
+        for attempt in range(len(delays) + 1):
+            try:
+                resp = await self._client.post(
+                    f"{self.base_url}/vector-search", json=payload
+                )
+                if resp.status_code >= 500 and attempt < len(delays):
+                    await asyncio.sleep(delays[attempt])
+                    continue
+                resp.raise_for_status()
+                results = resp.json().get("results") or []
+                return [
+                    {**(item.get("document") or {}), "score": item.get("score")}
+                    for item in results
+                ]
+            except (httpx.TransportError, asyncio.TimeoutError) as exc:
+                if attempt < len(delays):
+                    await asyncio.sleep(delays[attempt])
+                    continue
+                logger.error("mddb vector_search failed: %s", exc)
+                return None
+            except Exception as exc:
+                logger.error("mddb vector_search failed: %s", exc)
+                return None
+        return None
 
     async def get_document(
         self, collection: str, key: str, lang: str = "en"
