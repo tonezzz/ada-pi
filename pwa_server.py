@@ -1655,6 +1655,7 @@ async def api_notify(request: Request) -> dict:
     text = str(body.get("text") or "").strip()[:500]
     if not text:
         raise HTTPException(status_code=422, detail="text is required")
+    urgent = str(body.get("urgent") or "").lower() in ("1", "true", "yes")
     if not _live_sessions:
         return {"delivered": False, "error": "no live session"}
     sid, sess = max(_live_sessions.items(),
@@ -1662,14 +1663,24 @@ async def api_notify(request: Request) -> dict:
     pref = sess.get("provider")
     if not pref or not pref[0]:
         return {"delivered": False, "error": "session has no provider"}
+    if not urgent:
+        # Non-urgent: a flat machine voice (speechSynthesis) announces the
+        # arrival immediately — Ada never stops her current task. A silent
+        # context note is injected so she can circle back later.
+        ws = sess.get("ws")
+        if ws is not None:
+            with suppress(Exception):
+                await ws.send_text(json.dumps(
+                    {"type": "notify_voice", "text": text[:160]}))
     # The ws registers the session before Gemini finishes connecting;
     # give it a short window before giving up.
     last_exc: Exception | None = None
     for _ in range(15):
         try:
-            result = await pref[0].notify_or_defer(text)
-            logger.info("session=%s notify %s (%d chars)", sid, result, len(text))
-            return {"delivered": result == "delivered",
+            result = await pref[0].notify_or_defer(text, urgent=urgent)
+            logger.info("session=%s notify %s urgent=%s (%d chars)",
+                        sid, result, urgent, len(text))
+            return {"delivered": result in ("interrupted", "context"),
                     "queued": result == "queued", "session": sid}
         except Exception as exc:
             last_exc = exc

@@ -219,6 +219,13 @@ function handleControl(event) {
     case "speech_stopped":
       setStatus("On — listening");
       break;
+    case "notify_voice":
+      // Data-package / event arrival — flat machine voice (speechSynthesis),
+      // deliberately NOT Ada's voice. Ada keeps her current focus; a silent
+      // context note lets her circle back later. Urgent items take the
+      // normal injection path instead and interrupt her.
+      systemSay(event.text || "Notification.");
+      break;
     case "clear_audio":
       assistantPlaybackActive = false;
       playbackNode?.port.postMessage({ type: "clear" });
