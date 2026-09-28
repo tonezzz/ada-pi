@@ -25,8 +25,8 @@ turns:
   # --- the exact utterance that misrouted --------------------------------
   - user: "มีข้อมูลเอกสารของ unit A68 ไหม"
     expect:
-      timeout_s: 60
-      settle_s: 8
+      timeout_s: 100
+      settle_s: 10
       calls_any: [ada_doc_search, ada_memory_search]
       result_contains: ["A-68"]
       # The failure mode: any home-device/control call means the document

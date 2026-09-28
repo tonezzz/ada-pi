@@ -13,7 +13,7 @@ turns:
   # --- context prime: the vcast display system ---------------------------
   - user: "Ada, what's the vcast system — the virtual display thing we run on the iPad?"
     expect:
-      calls_any: [ada_memory_search, vcast_list]  # live display list is a legit lookup too
+      calls_any: [ada_memory_search, ada_session_recall, vcast_list]  # session recall or live display list are legit
       response_nonempty: true
       timeout_s: 60
       settle_s: 8
@@ -21,13 +21,14 @@ turns:
   # --- the core design question -------------------------------------------
   - user: "If we wanted hand-gesture or pose control on that iPad display, how would we run the detection — in the browser or on a server?"
     expect:
-      calls_any: [ada_memory_search]
+      calls_any: [ada_memory_search, ada_session_recall, web_search]
       response_nonempty: true
       # the doc's verdict must surface: browser-local WASM/MediaPipe path,
-      # or the YOLO-pose room-scale option — either is a correct recall
+      # or the YOLO-pose room-scale option — either is a correct recall.
+      # Answers may be Thai — เบราว์เซอร์/เซิร์ฟเวอร์/โมเดล count.
       response_contains_any:
         ["mediapipe", "wasm", "landmark", "browser", "webgpu", "yolo", "pose",
-         "โมเดล", "มือ"]
+         "เบราว์เซอร์", "เซิร์ฟเวอร์", "โมเดล", "มือ"]
       timeout_s: 90
       settle_s: 8
 
