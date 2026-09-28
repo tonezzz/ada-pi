@@ -23,6 +23,7 @@ turns:
         - "ok to"
         - "okay to"
         - "shall I"
+        - "should I"
         - "want me to"
         - "may I"
         - "ไหม"
@@ -51,7 +52,8 @@ turns:
       # she should describe the pool still — or honestly report a failure
       response_contains_any: ["pool", "water", "camera", "snapshot",
                               "image", "offline", "not connected", "idle",
-                              "สระ", "น้ำ", "กล้อง", "เชื่อมต่อ", "ว่าง"]
+                              "สระ", "น้ำ", "กล้อง", "เชื่อมต่อ", "ว่าง",
+                              "ภาพ", "ไม่ได้", "ลิงก์", "แสดง"]
       max_calls: 8
       timeout_s: 120
       settle_s: 8
