@@ -20,7 +20,16 @@ def post(ep, payload):
     req = urllib.request.Request(f"{MDDB}/{ep}",
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"})
-    return json.load(urllib.request.urlopen(req, timeout=30))
+    # MDDB under corpus load can take >30s on a cold search — a bare
+    # timeout here marked the whole smoke run failed even after every
+    # scenario had already reported. Give it headroom + one retry.
+    last = None
+    for _ in range(2):
+        try:
+            return json.load(urllib.request.urlopen(req, timeout=120))
+        except Exception as exc:  # noqa: BLE001 — retried once, then raise
+            last = exc
+    raise last
 
 
 def main() -> int:
