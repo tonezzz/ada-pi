@@ -56,6 +56,12 @@ DRAFT_VISIBLE_BANKS = {
 ADA_DRAFT_MIN_SCORE = float(os.environ.get("ADA_DRAFT_MIN_SCORE", "0.55"))
 ADA_DRAFT_MAX_AGE_DAYS = int(os.environ.get("ADA_DRAFT_MAX_AGE_DAYS", "7"))
 
+# Read-only banks (cms, chaba-*, kb-*, infrastructure-ssot) are reference
+# docs, not memories — in degraded keyword mode they need a higher match
+# bar so they can't tie-crowd out the curated memory banks.
+ADA_DEGRADED_KB_MIN_SCORE = float(
+    os.environ.get("ADA_DEGRADED_KB_MIN_SCORE", "0.5"))
+
 # How each recorded outcome nudges a doc's confidence (clamped 0.05..1.0).
 # Good outcomes also bump last_verified — the verify stage of the knowledge
 # circle. "skipped" is neutral: the check ran but was never exercised.
@@ -359,7 +365,11 @@ async def _bank_docs(
                 filter_meta=filter_meta,
                 limit=max(int(limit) * 10, 50),
             )
-            return _keyword_rank(listed, q)[: int(limit) * 3], True
+            ranked = _keyword_rank(listed, q)
+            if not bank.writable:
+                ranked = [d for d in ranked
+                          if (d.get("score") or 0.0) >= ADA_DEGRADED_KB_MIN_SCORE]
+            return ranked[: int(limit) * 3], True
         return docs or [], False
     return (
         await mddb.search_documents(
@@ -447,7 +457,12 @@ async def memory_search(
                 used.append(doc)
             if used and not include_inactive and q and q != "*":
                 record_use_bg(mddb, b.mddb_collection, used)
-        hits.sort(key=lambda h: float(h.get("score") or 0), reverse=True)
+        # Writable memory banks win score ties over read-only KB banks —
+        # a same-scoring cms doc must not bury a people/ general fact.
+        writable_banks = {b.name for b in banks if b.writable}
+        hits.sort(key=lambda h: (float(h.get("score") or 0),
+                                 h.get("bank") in writable_banks),
+                  reverse=True)
         hits = hits[: int(limit)]
         return {
             "bank": "all",
