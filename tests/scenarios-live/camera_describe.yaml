@@ -1,0 +1,34 @@
+name: camera-describe
+tier: full
+turns:
+  # Ada pulls a real camera frame (attaches to the tool result), then must
+  # describe the actual pixels — a hallucination check: the transcript is
+  # audited against the known scene.
+  - user: "Ada, take a look at the swimming pool camera and tell me what you see."
+    expect:
+      calls_any: ["ada_camera_snapshot"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 2
+
+  - user: "What do you see in the picture? Describe it."
+    expect:
+      response_nonempty: true
+      response_contains_any:
+        - "pool"
+        - "water"
+        - "swim"
+        - "see"
+        - "image"
+        - "person"
+        - "people"
+        - "empty"
+        - "สระ"
+        - "น้ำ"
+        - "คน"
+        - "ภาพ"
+        - "กล้อง"
+        - "ว่าง"
+        - "ต้นไม้"
+      timeout_s: 45
+      settle_s: 2
