@@ -286,11 +286,24 @@ def _doc_to_hit(
     return hit
 
 
+_KW_STOP = {
+    "the", "a", "an", "is", "are", "was", "were", "do", "does", "did",
+    "who", "what", "where", "when", "how", "why", "which", "tell", "me",
+    "about", "in", "on", "at", "to", "of", "for", "and", "or", "this",
+    "that", "you", "your", "we", "my", "it", "its", "be", "been", "know",
+    "can", "could", "would", "should", "refer", "now", "any",
+}
+
+
 def _keyword_rank(docs: list[dict[str, Any]], q: str) -> list[dict[str, Any]]:
     """Score listed docs by query-token presence when vector search is
-    down: key/subject/content substring hits. Returns docs sorted by
-    score (docs with no token overlap get score 0 and sort last)."""
-    tokens = [t for t in re.split(r"\s+", q.lower().strip()) if len(t) >= 2]
+    down: key/subject/content substring hits. English stopwords don't
+    count — they match nearly everything and drown the real hits. Docs
+    with no token overlap get score 0 and sort last."""
+    tokens = [
+        t for t in re.split(r"[^\wก-๙]+", q.lower())
+        if len(t) >= 2 and t not in _KW_STOP
+    ]
     if not tokens:
         return docs
     for doc in docs:
