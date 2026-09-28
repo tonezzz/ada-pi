@@ -252,6 +252,55 @@ VMS_INSTRUCTIONS = (
     "rather than guessing."
 )
 
+def _as_num(v) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+TRAFFIC_INSTRUCTIONS = (
+    " For public traffic cameras use traffic_camera — it searches ~190 "
+    "Thailand traffic cams (expressways, Bangkok, Chonburi) by area keyword "
+    "or user position+heading, snaps the current frame, and attaches it for "
+    "you to describe. Prefer it over ada_camera_snapshot whenever the user "
+    "asks about roads/traffic outside the property."
+)
+
+TRAFFIC_DECLARATION = {
+    "name": "traffic_camera",
+    "description": (
+        "Find and look at a public Thailand traffic camera (Longdo/iTIC feed — "
+        "~190 cams on expressways, Bangkok roads, Chonburi corridor). Use when "
+        "the user asks about traffic, road conditions, or a camera near an "
+        "area or on their route — 'check traffic near Bang Na', 'is there a "
+        "cam ahead on Burapha', 'camera in the direction I'm heading'. "
+        "The matched camera's current frame is attached to the result — "
+        "describe what it shows honestly (it is one still, not live video). "
+        "query matches road/area names (Thai or English); lat/lon+heading pick "
+        "the nearest cam roughly ahead of the user. cast_url is provided to "
+        "show the frame on a vcast screen via cast_to_screen."
+    ),
+    "parameters_json_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "Area or road keyword — e.g. 'bangna', 'burapha', "
+                    "'สุขุมวิท', 'pattaya', a Thai road name."),
+            },
+            "lat": {"type": "number",
+                    "description": "User latitude (with lon) — nearest cams win."},
+            "lon": {"type": "number",
+                    "description": "User longitude (with lat)."},
+            "heading": {"type": "number",
+                        "description": "User heading in degrees (0=N) — prefers cams ahead."},
+        },
+        "additionalProperties": False,
+    },
+}
+
 VMS_DECLARATION = {
     "name": "ada_camera_snapshot",
     "description": (
@@ -670,6 +719,7 @@ class GeminiLiveProvider(RealtimeProvider):
         self.vms_snap_url = vms_camera.snap_url()
         if self.vms_snap_url:
             self.instructions += VMS_INSTRUCTIONS
+        self.instructions += TRAFFIC_INSTRUCTIONS
         self._client: Any = None
         self._session_context: Any = None
         self._session: Any = None
@@ -690,6 +740,10 @@ class GeminiLiveProvider(RealtimeProvider):
         self._tool_leak_re = None
         self._tool_leaks_stripped = 0
         self._leak_active = False
+        # Jev advisory probe — set ADA_JEV_URL to the systemone service
+        # (e.g. http://tony-omen:8777) to measure regex-vs-Jev divergence
+        # on confirm-gate decisions. Advisory only: the regex enforces.
+        self._jev_url = os.environ.get("ADA_JEV_URL", "").rstrip("/")
         try:
             self._ops_collection = f"ada-ha-events-{ada_instance_id()}"
         except RuntimeError:
@@ -784,15 +838,12 @@ class GeminiLiveProvider(RealtimeProvider):
     _CONFIRM_LEAD_WINDOW = 20
     _CONFIRM_MAX_TURN = 60
 
-    def _user_confirmed(self, input_transcript: str) -> bool:
-        """True when the user's own recent speech affirms — `confirmed=true`
-        tool args are honored only when this is true."""
+    def _confirm_source_text(self, input_transcript: str) -> str:
+        """The text the confirm gate judges — the live transcript, or the
+        most recent real user speech (skipping (system) notes stored as
+        user-role turns)."""
         text = input_transcript
         if not text.strip() and self.conversation is not None:
-            # Find the most recent real user speech — skip (system) notes,
-            # which are stored as user-role turns and shadow the actual
-            # affirmation (e.g. "Confirm the update." stripped because a
-            # system note was the latest user-role entry).
             for t in reversed(self.conversation.turns()):
                 if t.get("role") != "user":
                     continue
@@ -801,12 +852,75 @@ class GeminiLiveProvider(RealtimeProvider):
                     continue
                 text = candidate
                 break
-        text = (text or "").strip()
+        return (text or "").strip()
+
+    def _user_confirmed(self, input_transcript: str) -> bool:
+        """True when the user's own recent speech affirms — `confirmed=true`
+        tool args are honored only when this is true."""
+        text = self._confirm_source_text(input_transcript)
         if not text:
             return False
         if len(text) <= self._CONFIRM_MAX_TURN:
             return bool(_CONFIRM_RE.search(text))
         return bool(_CONFIRM_RE.search(text[: self._CONFIRM_LEAD_WINDOW]))
+
+    def _jev_confirm_probe(self, transcript: str, regex_says: bool,
+                           tool: str) -> None:
+        """Advisory-only: score the same confirmation question with Jev
+        (noul) and emit a jev_advisory ops event with both answers. The
+        regex remains the enforcer — this measures where it diverges."""
+        if not self._jev_url or not transcript.strip():
+            return
+        url = self._jev_url
+        session_id = self.session_id
+
+        async def _probe() -> None:
+            payload = {
+                "state": (
+                    "Ada, a voice assistant, asked the user to confirm a "
+                    f"write/action via tool '{tool}'. "
+                    f"The user turn was: \"{transcript[:300]}\""),
+                "questions": {"affirmed": {
+                    "type": "noul",
+                    "instructions": (
+                        "Did the user explicitly affirm or confirm? The "
+                        "turn counts as affirmation only when it is a "
+                        "standalone short affirmation (like yes, ok, "
+                        "confirm, go ahead, ยืนยัน) or begins with one. "
+                        "An approval word embedded inside a longer "
+                        "request does NOT count."),
+                    "criteria": {
+                        "true": "the whole turn is a short affirmation, or it leads with one",
+                        "false": "no affirmation present, or an affirmative word is buried inside a longer request",
+                    }}}}
+            try:
+                def _post() -> dict:
+                    req = urllib.request.Request(
+                        f"{url}/v1/systemone",
+                        data=json.dumps(payload).encode(),
+                        headers={"Content-Type": "application/json"})
+                    return json.loads(urllib.request.urlopen(
+                        req, timeout=40).read())
+                resp = await asyncio.to_thread(_post)
+                score = float(resp["answers"]["affirmed"]["noul"])
+            except Exception as exc:
+                logger.debug("jev advisory probe failed: %s", exc)
+                return
+            jev_says = score >= 0.75
+            diverged = jev_says != regex_says
+            logger.info(
+                "session=%s jev_advisory tool=%s regex=%s jev=%.3f diverged=%s",
+                session_id, tool, regex_says, score, diverged)
+            self._emit_ops_event(
+                "jev_advisory",
+                f"{tool}: regex={'yes' if regex_says else 'no'} "
+                f"jev={score:.3f} {'DIVERGED' if diverged else 'agree'}",
+                tool=tool)
+
+        try:
+            asyncio.get_running_loop().create_task(_probe())
+        except RuntimeError:
+            return
 
     def _recall_gated(self) -> bool:
         """True when a confident ada_memory_search hit is fresh enough that
@@ -1142,6 +1256,54 @@ class GeminiLiveProvider(RealtimeProvider):
                 f"url='{result['cast_url']}') — copy that url value "
                 "character-for-character; never guess or invent a URL.")
         return result, (resolved, png, "image/png")
+
+    async def _traffic_camera(self, args: dict) -> tuple[dict, tuple[str, bytes, str] | None]:
+        """traffic_camera — search the Longdo/iTIC feed, snap the best match,
+        attach the JPEG, publish a same-origin cast asset."""
+        from backend import traffic_camera as tc
+        query = str(args.get("query") or "").strip()
+        lat = _as_num(args.get("lat")); lon = _as_num(args.get("lon"))
+        heading = _as_num(args.get("heading"))
+        if not query and lat is None:
+            return ({"error": "pass a query (area/road) or lat+lon "
+                              "(+optional heading)"}, None)
+        try:
+            cams = await asyncio.to_thread(tc.find_cams, query, lat, lon, heading)
+        except Exception as exc:
+            return ({"error": f"camera feed unavailable: {exc}"}, None)
+        if not cams:
+            return ({"error": f"no traffic camera matched {query or 'that position'}. "
+                              "Try a road/area keyword (e.g. 'burapha', 'bangna') "
+                              "or pass lat/lon."}, None)
+        cam = cams[0]
+        try:
+            jpeg, mime = await asyncio.to_thread(tc.snap, cam)
+        except Exception as exc:
+            alts = ", ".join(c["title"] for c in cams[1:4])
+            return ({"error": f"'{cam['title']}' matched but its frame failed: {exc}"
+                              + (f". Alternatives: {alts}" if alts else "")}, None)
+        slug = re.sub(r"[^a-z0-9]+", "-", (cam.get("camid") or "cam").lower())
+        cast_url = await asyncio.to_thread(tc.publish_relay, jpeg, slug)
+        dist = f" (~{cam['dist_km']} km away)" if cam.get("dist_km") else ""
+        result = {
+            "output": (
+                f"Traffic camera '{cam['title']}'{dist} — the current frame "
+                "arrives as a separate message right after this result. "
+                "Describe what it shows honestly: traffic density, weather, "
+                "flooding, incidents. It is one still taken seconds ago — "
+                "not live video."),
+            "camid": cam["camid"], "title": cam["title"],
+            "matches": len(cams),
+        }
+        if cam.get("dist_km") is not None:
+            result["dist_km"] = cam["dist_km"]
+        if cast_url:
+            result["cast_url"] = cast_url
+            result["output"] += (
+                f" To show it on a vcast display call cast_to_screen("
+                f"action='image', url='{cast_url}') — copy that url value "
+                "character-for-character; never invent a URL.")
+        return result, (cam["title"], jpeg, mime)
 
     async def _vcast_snapshot(self, args: dict) -> tuple[dict, tuple[str, bytes, str] | None]:
         """vcast_snapshot — ask the display to capture its own frame over the
@@ -3675,6 +3837,8 @@ class GeminiLiveProvider(RealtimeProvider):
                 )
         if self.vms_snap_url and not (VMS_TOOLS <= excluded):
             config["tools"][0]["function_declarations"].append(dict(VMS_DECLARATION))
+        if "traffic_camera" not in excluded:
+            config["tools"][0]["function_declarations"].append(dict(TRAFFIC_DECLARATION))
         if chaba_memory.enabled():
             # Guest mode: allowlist the tool surface, append chaba guest tools,
             # and inject the rendered guest context instead of MDDB priming.
@@ -4064,6 +4228,11 @@ class GeminiLiveProvider(RealtimeProvider):
                                 dict(call.args or {}))
                             if frame:
                                 camera_frames.append(frame)
+                        elif call.name == "traffic_camera":
+                            result, frame = await self._traffic_camera(
+                                dict(call.args or {}))
+                            if frame:
+                                camera_frames.append(frame)
                         elif call.name == "ada_decision_check" and self.tool_runner is not None:
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
                         elif call.name == "ada_deep_research" and self.tool_runner is not None:
@@ -4085,19 +4254,26 @@ class GeminiLiveProvider(RealtimeProvider):
                             if self.tool_runner is not None:
                                 try:
                                     call_args = dict(call.args or {})
-                                    if call_args.get("confirmed") and not self._user_confirmed(input_transcript):
-                                        logger.warning(
-                                            "session=%s %s self-asserted confirmed=true "
-                                            "without user affirmation — stripping",
-                                            self.session_id, call.name,
-                                        )
-                                        call_args.pop("confirmed", None)
-                                        self._emit_ops_event(
-                                            "confirm_strip",
-                                            f"Stripped model-asserted "
-                                            f"confirmed=true on {call.name} — "
-                                            f"no user affirmation found.",
-                                            tool=str(call.name))
+                                    if call_args.get("confirmed"):
+                                        # Resolved source text shared by the
+                                        # gate and the Jev advisory probe.
+                                        _src = self._confirm_source_text(input_transcript)
+                                        _affirmed = self._user_confirmed(input_transcript)
+                                        self._jev_confirm_probe(
+                                            _src, _affirmed, str(call.name))
+                                        if not _affirmed:
+                                            logger.warning(
+                                                "session=%s %s self-asserted confirmed=true "
+                                                "without user affirmation — stripping",
+                                                self.session_id, call.name,
+                                            )
+                                            call_args.pop("confirmed", None)
+                                            self._emit_ops_event(
+                                                "confirm_strip",
+                                                f"Stripped model-asserted "
+                                                f"confirmed=true on {call.name} — "
+                                                f"no user affirmation found.",
+                                                tool=str(call.name))
                                     if call.name == "ada_memory_search":
                                         q = call_args.get("query")
                                         if q:
