@@ -924,9 +924,10 @@ class ConversationMemory:
         if summary and group in (None, "memory") and bank is None:
             return (
                 "The detailed notes search is running in the background and "
-                "the result will be spoken when ready. Meanwhile, tell the "
-                "user this summary of recent sessions: "
-                f"{summary}"
+                "the result will be spoken when ready. For your own context "
+                "only, here is a summary of PAST sessions — do NOT switch to "
+                "or offer those topics unless the user asks; answer the "
+                f"CURRENT request first: {summary}"
             )
         return "One moment, I'm checking my notes."
 
