@@ -726,33 +726,42 @@ class ToolRunner:
                 raise PermissionError(
                     "Only the session owner can run this action — propose it "
                     "to them aloud and let them confirm in their own voice.")
-        if name in CAPTURE_CONFIRMED_TOOLS:
-            # camera-capture gate first (uplink/wall-start/cctv-snapshot);
-            # cast_to_screen then still runs the control gate (read-only,
-            # rate limit)
-            self._check_capture_confirmed(name, call_args, confirm[0])
-            if name == "cast_to_screen":
+        try:
+            if name in CAPTURE_CONFIRMED_TOOLS:
+                # camera-capture gate first (uplink/wall-start/cctv-snapshot);
+                # cast_to_screen then still runs the control gate (read-only,
+                # rate limit)
+                self._check_capture_confirmed(name, call_args, confirm[0])
+                if name == "cast_to_screen":
+                    await self._check_control_allowed(name, call_args, *confirm)
+            elif name in CONTROL_TOOLS:
                 await self._check_control_allowed(name, call_args, *confirm)
-        elif name in CONTROL_TOOLS:
-            await self._check_control_allowed(name, call_args, *confirm)
 
-        elif name in MEMORY_WRITE_TOOLS:
-            self._check_memory_write_allowed(name, call_args, *confirm)
-        elif name in CALENDAR_WRITE_TOOLS:
-            self._check_calendar_write_allowed(name, call_args, *confirm)
-        elif name in CMS_WRITE_TOOLS:
-            self._check_cms_write_allowed(name, call_args, *confirm)
-        elif name in DEVIN_CONFIRMED_TOOLS:
-            self._check_devin_confirmed(name, call_args, *confirm)
-        elif name in DOC_TOOLS:
-            if not self.banks.bank_allowed(DOC_BANK, policy_ident):
-                logger.warning(
-                    "denied %s for identity %r: documents bank policy",
-                    name, ident)
-                raise PermissionError(
-                    "document tools are outside this session's access policy")
-            if name in DOC_CONFIRMED_TOOLS:
-                self._check_doc_confirmed(name, call_args, *confirm)
+            elif name in MEMORY_WRITE_TOOLS:
+                self._check_memory_write_allowed(name, call_args, *confirm)
+            elif name in CALENDAR_WRITE_TOOLS:
+                self._check_calendar_write_allowed(name, call_args, *confirm)
+            elif name in CMS_WRITE_TOOLS:
+                self._check_cms_write_allowed(name, call_args, *confirm)
+            elif name in DEVIN_CONFIRMED_TOOLS:
+                self._check_devin_confirmed(name, call_args, *confirm)
+            elif name in DOC_TOOLS:
+                if not self.banks.bank_allowed(DOC_BANK, policy_ident):
+                    logger.warning(
+                        "denied %s for identity %r: documents bank policy",
+                        name, ident)
+                    raise PermissionError(
+                        "document tools are outside this session's access policy")
+                if name in DOC_CONFIRMED_TOOLS:
+                    self._check_doc_confirmed(name, call_args, *confirm)
+        except PermissionError as exc:
+            # Phantom-save guard (2026-09-28): the model papered over refused
+            # writes and claimed success aloud. Every gate denial now carries
+            # a blunt prefix the narration layer cannot miss.
+            raise PermissionError(
+                "NOT EXECUTED — the action did not happen and must not be "
+                f"described as done/saved/published: {exc}"
+            ) from exc
         # confirmed/confirm_token were popped for the gates above — hand them
         # back to methods that declare them (e.g. devin_job_report re-checks
         # confirmation internally on its publish path).
