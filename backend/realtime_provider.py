@@ -1825,8 +1825,11 @@ class GeminiLiveProvider(RealtimeProvider):
                     "description": (
                         "List the vcast virtual displays (numbered software cast targets — iPad/iPhone/browser "
                         "running the vcast app, NOT the TV). Returns screen number, name, device, online/offline, "
-                        "and what is playing. Use when the user refers to 'screen 1/2/...' or asks which screens "
-                        "are available; call before cast_to_screen if unsure."
+                        "what is playing, plus the relay's ground truth: active_captures (camera-capture leases "
+                        "per screen) and camwall_zones (enabled periodic walls). Use when the user refers to "
+                        "'screen 1/2/...', asks which screens are available, or when diagnosing a cast — an "
+                        "offline screen or a stale capture explains a silent failure; call before "
+                        "cast_to_screen if unsure."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {

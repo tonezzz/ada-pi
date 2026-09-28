@@ -24,7 +24,10 @@ policy:
   write_tools: [cms_publish_page, cms_delete_page, ada_remember, ada_forget,
                 ada_doc_archive, ada_doc_print, devin_dispatch,
                 ada_enroll_speaker, ada_remove_speaker,
-                control_entity, tv_action, gev_command]
+                control_entity, tv_action, gev_command,
+                # casting/camera actuation — gated by the capture contract
+                cast_to_screen, cctv_snapshot, cctv_wall,
+                ada_camera_snapshot]
   # scenarios permitted to exercise write tools (incl. denied attempts).
   write_allowed_in:
     # cms/report writers
@@ -71,6 +74,16 @@ policy:
     - vcast_owner_allow
     - vcast_owner_denied
     - vcast_unknown_speaker
+    # camera capture + casting (incl. permission-gate scenarios where the
+    # tool call is expected to be DENIED)
+    - cam_to_screen
+    - camera_cast_permission
+    - camera_snapshot
+    - camera_snapshot_offline
+    - vcast_cam_uplink
+    - vcast_gesture_ops
+    - vcast_gesture_recall
+    - tool_selection_accuracy
 
 # Usage plan — cadence that keeps Gemini grounded-search quota healthy.
 # MEASURED: free-tier quota is 20 grounded requests/day/project/model
@@ -153,6 +166,26 @@ suites:
     - shared_memory_audit
     - news_intake_probe
     - scenario_report_recall
+
+  # Casting & camera — the snap→publish→cast→verify loop, the capture
+  # permission contract, and display diagnostics.
+  casting:
+    - camera_snapshot
+    - camera_snapshot_offline
+    - cctv_snapshot_to_screen
+    - cam_to_screen
+    - camera_cast_permission
+    - vcast_list
+    - vcast_snapshot_probe
+    - vcast_screen_cast
+    - vcast_cam_uplink
+    - vcast_owner_allow
+    - vcast_owner_denied
+    - vcast_unknown_speaker
+    - vcast_gesture_ops
+    - vcast_gesture_recall
+    - tv_cast_control
+    - gev_cast_control
 
   # Everything — the full picture (slow; expects ~1h+).
   full: '@all'
