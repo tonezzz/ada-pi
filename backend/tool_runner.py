@@ -2736,6 +2736,7 @@ class ToolRunner:
         function_call frame through the gev-gemini bridge to every
         connected GEV browser (including a casted one on the TV)."""
         import asyncio
+        import urllib.request
         base = os.environ.get(
             "GEV_CMD_URL",
             "https://tony-dell.taila0626a.ts.net/apps/gev-cmd/command")
