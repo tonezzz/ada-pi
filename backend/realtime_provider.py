@@ -695,6 +695,11 @@ class GeminiLiveProvider(RealtimeProvider):
         except RuntimeError:
             self._ops_collection = None
         self._response_active = False
+        # Notifications queued while a response is in flight — drained at
+        # the next turn_complete so a data-package arrival can't hijack or
+        # swallow the current turn (2026-09-28: notify mid-task made Ada
+        # "stop responding" — the injected turn was absorbed silently).
+        self._pending_notifications: list[str] = []
         self.usage_input_tokens = 0
         self.usage_output_tokens = 0
         self.usage_input_by_modality: dict[str, int] = {}
@@ -3768,6 +3773,35 @@ class GeminiLiveProvider(RealtimeProvider):
                 turn_complete=True,
             )
 
+    async def notify_or_defer(self, text: str) -> str:
+        """Deliver a (system) notification. If a response is in flight the
+        note is queued and spoken after the current turn finishes —
+        returns 'queued' instead of 'delivered'. The note itself tells the
+        model to wrap up the current focus first, then summarize what
+        arrived in one line and offer a choice."""
+        framed = (
+            "(system) A notification arrived while you may be busy: "
+            f"{text}\nFinish your current point first, then summarize what "
+            "arrived in ONE line and ask whether to continue what you were "
+            "doing or switch to the new item."
+        )
+        if self._response_active:
+            self._pending_notifications.append(framed)
+            return "queued"
+        await self.send_text_turn(framed)
+        return "delivered"
+
+    async def _drain_notifications(self) -> None:
+        while self._pending_notifications:
+            framed = self._pending_notifications.pop(0)
+            try:
+                await self.send_text_turn(framed)
+            except Exception as exc:
+                logger.warning(
+                    "session=%s deferred notify send failed: %s",
+                    self.session_id, exc)
+                return
+
     async def send_habit_alert(self, jpeg: bytes, alert: str) -> None:
         if self._session is None:
             raise RuntimeError("provider is not connected")
@@ -4278,6 +4312,10 @@ class GeminiLiveProvider(RealtimeProvider):
                         yield ProviderEvent("response_completed", {})
                     input_done_ts = 0.0
                     self._response_active = False
+                    # A notification queued mid-turn — deliver it now that
+                    # the response finished, as its own turn.
+                    if self._pending_notifications:
+                        await self._drain_notifications()
 
     async def close(self) -> None:
         if self._closed:

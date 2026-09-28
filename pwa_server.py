@@ -1667,10 +1667,10 @@ async def api_notify(request: Request) -> dict:
     last_exc: Exception | None = None
     for _ in range(15):
         try:
-            await pref[0].send_text_turn(
-                f"(system) Notification for the user: {text}")
-            logger.info("session=%s notify injected (%d chars)", sid, len(text))
-            return {"delivered": True, "session": sid}
+            result = await pref[0].notify_or_defer(text)
+            logger.info("session=%s notify %s (%d chars)", sid, result, len(text))
+            return {"delivered": result == "delivered",
+                    "queued": result == "queued", "session": sid}
         except Exception as exc:
             last_exc = exc
             if "not connected" not in str(exc):
