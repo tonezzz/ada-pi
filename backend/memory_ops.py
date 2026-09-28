@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -285,6 +286,27 @@ def _doc_to_hit(
     return hit
 
 
+def _keyword_rank(docs: list[dict[str, Any]], q: str) -> list[dict[str, Any]]:
+    """Score listed docs by query-token presence when vector search is
+    down: key/subject/content substring hits. Returns docs sorted by
+    score (docs with no token overlap get score 0 and sort last)."""
+    tokens = [t for t in re.split(r"\s+", q.lower().strip()) if len(t) >= 2]
+    if not tokens:
+        return docs
+    for doc in docs:
+        meta = doc.get("meta") or {}
+        hay = " ".join(filter(None, [
+            str(doc.get("key") or ""),
+            str(doc.get("contentMd") or doc.get("content_md") or ""),
+            str(_meta_first(meta, "subject") or ""),
+            str(_meta_first(meta, "attribute") or ""),
+        ])).lower()
+        hits = sum(1 for t in tokens if t in hay)
+        doc["score"] = hits / len(tokens) if hits else 0.0
+    docs.sort(key=lambda d: d.get("score") or 0.0, reverse=True)
+    return docs
+
+
 async def _bank_docs(
     mddb: MddbClient,
     bank: MemoryBank,
@@ -312,14 +334,15 @@ async def _bank_docs(
             threshold=ADA_BANK_SEARCH_THRESHOLD,
         )
         if docs is None:
-            return (
-                await mddb.search_documents(
-                    collection=bank.mddb_collection,
-                    filter_meta=filter_meta,
-                    limit=int(limit) * 3,
-                ),
-                True,
+            # Degraded: widen the listing well past the caller's limit so
+            # keyword ranking has candidates to work with — an unordered
+            # top-N listing would silently miss the right doc.
+            listed = await mddb.search_documents(
+                collection=bank.mddb_collection,
+                filter_meta=filter_meta,
+                limit=max(int(limit) * 10, 50),
             )
+            return _keyword_rank(listed, q)[: int(limit) * 3], True
         return docs or [], False
     return (
         await mddb.search_documents(
