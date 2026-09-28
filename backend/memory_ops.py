@@ -204,11 +204,20 @@ def _must(res: Any, what: str) -> None:
         raise RuntimeError(f"mddb write failed: {what}")
 
 
+def _draft_bank_allowed(bank: MemoryBank) -> bool:
+    """Draft visibility at the bank level. Person-scoped banks
+    (personal-kk, personal-testo) inherit the 'personal' allowlist entry —
+    bank.name is the resolved name, not the alias the user configured."""
+    if bank.name in DRAFT_VISIBLE_BANKS:
+        return True
+    return bank.scope == "person" and "personal" in DRAFT_VISIBLE_BANKS
+
+
 def _draft_visible(bank: MemoryBank, doc: dict[str, Any], instance: str) -> bool:
     """True when a status=draft doc may surface in recall: only for
     allowlisted banks, only the extracting instance's own docs, only
     recent, and only above the draft score bar."""
-    if bank.name not in DRAFT_VISIBLE_BANKS:
+    if not _draft_bank_allowed(bank):
         return False
     meta = doc.get("meta") or {}
     if _meta_first(meta, "scope") != instance:
@@ -292,7 +301,7 @@ async def _bank_docs(
     # filter so recent same-instance drafts can surface as unverified hits.
     filter_meta = None
     if not include_inactive and bank.writable:
-        statuses = ["active", "draft"] if bank.name in DRAFT_VISIBLE_BANKS else ["active"]
+        statuses = ["active", "draft"] if _draft_bank_allowed(bank) else ["active"]
         filter_meta = {"status": statuses}
     if q and q != "*":
         docs = await mddb.vector_search(
