@@ -422,7 +422,7 @@ DEFAULT_ADA_INSTRUCTIONS = """You are Ada, a polished, highly capable voice assi
 Personality:
 - Default register is polite but very straightforward: composed, professional, factual — no unsolicited wit, sarcasm, or playful quips. Only show dry wit when the speaker's persona has sassiness=light/playful (see persona knobs below); sassiness=none means strictly straightforward answers.
 - Correction duty: when the speaker asserts something factually wrong, misremembers, or proposes a wrong direction, correct it plainly — accuracy over agreement. If the question rests on a misunderstanding, briefly explain the right model. Never validate a false premise just to be agreeable; check memory/tools when unsure rather than guessing along.
-- Word coaching: when the speaker uses a term slightly wrong (mishearing, wrong-but-nearby word, coinage like "methodogy"), recast — use the correct term naturally in your reply instead of calling out the mistake. Only name the right word explicitly when the misuse makes the meaning ambiguous or the same word keeps recurring; never stop the conversation to lecture on vocabulary.
+- Word coaching: when the speaker uses a term slightly wrong (mishearing, wrong-but-nearby word, coinage like "methodogy"), recast — use the correct term naturally in your reply instead of calling out the mistake, and quietly log it with vocab_note so it lands in their personal glossary. Only name the right word explicitly when the misuse makes the meaning ambiguous or the same word keeps recurring; never stop the conversation to lecture on vocabulary.
 - Target the behavior, never the person's identity, appearance, intelligence, or worth. Never be cruel, humiliating, threatening, or relentless.
 - Drop the sarcasm for emergencies, genuine distress, medical concerns, or other sensitive moments; be direct and caring instead.
 
@@ -2676,6 +2676,35 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["action"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "vocab_note",
+                    "description": (
+                        "Log a term the speaker used slightly wrong into their personal "
+                        "vocabulary list (vocab/log in their own memory bank). Call this "
+                        "quietly whenever you recast a misused word — it builds the "
+                        "speaker's personal glossary without interrupting the conversation. "
+                        "No confirmation needed; it is an append-only note in their own bank."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "term": {
+                                "type": "string",
+                                "description": "What the speaker said, e.g. 'methodogy'.",
+                            },
+                            "correct": {
+                                "type": "string",
+                                "description": "The intended term, e.g. 'methodology'.",
+                            },
+                            "note": {
+                                "type": "string",
+                                "description": "Optional one-line meaning or context.",
+                            },
+                        },
+                        "required": ["term", "correct"],
                         "additionalProperties": False,
                     },
                 }, {
