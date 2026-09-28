@@ -317,7 +317,11 @@ def _keyword_rank(docs: list[dict[str, Any]], q: str) -> list[dict[str, Any]]:
         hits = sum(1 for t in tokens if t in hay)
         doc["score"] = hits / len(tokens) if hits else 0.0
     docs.sort(key=lambda d: d.get("score") or 0.0, reverse=True)
-    return docs
+    # Degraded listing order is arbitrary — a zero-token-overlap doc is
+    # noise, not a weak hit. Drop them rather than fill the response
+    # with random bank entries (they also crowd out matching docs from
+    # other banks in the bank='all' merge).
+    return [d for d in docs if (d.get("score") or 0.0) > 0]
 
 
 async def _bank_docs(
