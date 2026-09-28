@@ -1641,6 +1641,11 @@ class ToolRunner:
         slug = self._cms_slug(slug)
         fmt = (format or "markdown").strip().lower()
         lang = (lang or "en").strip().lower()
+        # The model tends to bake the language into the slug
+        # (gold-report-th + Thai content stored as 'en') — split it.
+        if lang == "en" and slug.endswith("-th"):
+            slug = slug[:-3]
+            lang = "th"
         if lang not in ("en", "th"):
             raise ValueError(
                 f"invalid lang {lang!r}: expected 'en' or 'th'")
@@ -1668,6 +1673,14 @@ class ToolRunner:
         )
         if result is None:
             return {"status": "error", "error": "mddb write failed", "slug": slug}
+        # Give the model the REAL URLs — she has invented /cms/<slug> paths
+        # on tony-dell before (404). view_url is the CMS viewer; cast_url adds
+        # the api key so a vcast display can render it without a stored key.
+        base = os.environ.get(
+            "ADA_CMS_BASE", "https://idc01.taila0626a.ts.net/cms/")
+        view_url = f"{base}#/{slug}"
+        key = os.environ.get("ADA_API_KEY", "")
+        cast_url = f"{base}?api_key={key}#/{slug}" if key else view_url
         return {
             "status": "published",
             "slug": slug,
@@ -1675,6 +1688,11 @@ class ToolRunner:
             "format": fmt,
             "lang": lang,
             "updated": updated,
+            "view_url": view_url,
+            "cast_url": cast_url,
+            "note": "To show this page on a display: cast_to_screen("
+                    "action='nav', url=<cast_url>) — only after this result "
+                    "shows status=published.",
         }
 
     async def cms_delete_page(self, slug: str) -> dict[str, Any]:
@@ -1874,20 +1892,35 @@ class ToolRunner:
         if not src:
             # not a go2rtc home cam — try the VMS estate channel set
             return ToolRunner._vms_publish(camera)
+        # Try the preferred stream, then fall back through SD/base variants —
+        # _hd streams die when a cam degrades while the base stream survives
+        # (c100/ip65 returned 200+0B on _hd while the plain names were fine).
+        variants = [src]
+        if src.endswith("_hd"):
+            variants += [src[:-3], src[:-3] + "_sd"]
         name = f"snap-{src}-{int(time.time())}.jpg"
         host = os.environ.get("ADA_CCTV_SSH", "tony-dell-m2m")
-        cmd = (
-            f"mkdir -p ~/.config/home-assistant/www/cam && "
-            f"curl -sf -m 20 -o ~/.config/home-assistant/www/cam/{name} "
-            f"'http://127.0.0.1:1984/api/frame.jpeg?src={src}' "
-            f"&& [ -s ~/.config/home-assistant/www/cam/{name} ] && echo ok"
-        )
-        proc = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, cmd],
-            capture_output=True, text=True, timeout=45)
-        if proc.stdout.strip() != "ok":
+        tried = []
+        ok = False
+        for v in variants:
+            cmd = (
+                f"mkdir -p ~/.config/home-assistant/www/cam && "
+                f"curl -sf -m 20 -o ~/.config/home-assistant/www/cam/{name} "
+                f"--size-limit 500 "
+                f"'http://127.0.0.1:1984/api/frame.jpeg?src={v}' "
+                f"&& [ -s ~/.config/home-assistant/www/cam/{name} ] && echo ok"
+            )
+            proc = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, cmd],
+                capture_output=True, text=True, timeout=45)
+            tried.append(v)
+            if proc.stdout.strip() == "ok":
+                src = v
+                ok = True
+                break
+        if not ok:
             return {"ok": False,
-                    "error": f"no frame from {src} (camera may be offline)"}
+                    "error": f"no frame from {src} (camera may be offline; tried {tried})"}
         base = os.environ.get(
             "ADA_CCTV_PUBLIC_BASE",
             "https://tony-dell.taila0626a.ts.net:8123/local/cam/")
