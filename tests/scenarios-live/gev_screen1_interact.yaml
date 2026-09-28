@@ -1,0 +1,56 @@
+# GEV on screen 1 — incremental interaction chain.
+#   cast /apps/gev/ -> screen 1 (iPad)
+#   verify via get_current_view_state (nav casts sit in an iframe — the
+#   display-side snapshot can't read cross-origin pixels, so GEV's own
+#   state endpoint is the verification path)
+#   fly to Bangkok -> zoom out -> track entity -> clear -> stop cast
+# tier: full — actuates a real display.
+name: gev_screen1_interact
+tier: full
+turns:
+  - user: Put God's Eye View on screen 1 for me.
+    expect:
+      calls_any: [cast_to_screen, vcast_screen_cast]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 20   # iPad needs a beat to load Cesium before the next step
+
+  # Verify what's actually on the screen — Ada should ask GEV for its own
+  # view state, or try a snapshot (which will report uncapturable-iframe —
+  # still a correct answer about what's showing).
+  - user: What's it showing right now?
+    expect:
+      calls_any: [gev_command, vcast_snapshot, vcast_list]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 12
+
+  - user: Fly the view to Bangkok.
+    expect:
+      calls_any: [gev_command]
+      result_contains_any: [delivered, ok, true]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 15   # the fly animation takes a few seconds
+
+  - user: Now zoom out so I can see the whole globe.
+    expect:
+      calls_any: [gev_command]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 15
+
+  - user: Confirm the camera actually moved — ask it for the current view state.
+    expect:
+      calls_any: [gev_command]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
+
+  # Cleanup — leave the display idle like we found it.
+  - user: Done — take it off that screen.
+    expect:
+      calls_any: [cast_to_screen, vcast_screen_cast]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 12
