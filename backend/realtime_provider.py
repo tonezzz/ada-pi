@@ -149,7 +149,7 @@ _PHANTOM_CLAIM_RE = re.compile(
 ACTUATING_TOOLS = frozenset({
     "control_entity", "control_cover", "control_media_player",
     "press_button", "tv_action", "yt_cast", "yt_cast_stop",
-    "cast_to_screen", "cctv_snapshot",
+    "cast_to_screen", "vcast_say", "cctv_snapshot",
     "ada_doc_archive", "ada_doc_print", "ada_set_voice",
     "devin_dispatch",
     "calendar_create_event", "calendar_delete_event",
