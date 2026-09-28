@@ -74,6 +74,17 @@ RESERVED_NAMES = {"guest", "unknown", "someone", "anon", "anonymous",
 # identification still accepts a single confident chunk.
 SWITCH_AFTER = 2
 
+# Enrollment capture window — seconds of trailing audio kept for
+# enroll_from_buffer. 6s (the old MAX_BUFFER_BYTES cap) only ever held the
+# speaker's last reply; 30s spans several utterances so an enroll call has
+# real voice to work with (2026-09-28: repeated "insufficient audio"
+# failures mid-conversation).
+RECENT_SECONDS = float(os.environ.get("ADA_SPEAKER_RECENT_S", "30"))
+# Auto-learn floor: an identification at or above this confidence appends
+# the chunk as an extra print — profiles improve with use instead of
+# staying frozen at first-enrollment quality.
+AUTO_LEARN_MIN_CONF = float(os.environ.get("ADA_SPEAKER_AUTO_LEARN_MIN", "0.60"))
+
 # Per-speaker print cap (ADA_SPEAKER_MAX_PRINTS). When full, the print least
 # similar to the speaker's own centroid is dropped — outlier pruning keeps
 # the centroid clean without letting a bad capture live forever.
@@ -400,6 +411,39 @@ class SpeakerIdentifier:
                 "duration_s": round(len(pcm16) / 2 / sample_rate, 1),
                 "ha_person": prev.get("ha_person"), "display_name": prev.get("display_name")}
 
+    def auto_learn(self, name: str, pcm16: bytes,
+                   sample_rate: int = SAMPLE_RATE) -> bool:
+        """Append a confidently-identified chunk as an extra print.
+
+        Called from SpeakerSession when a chunk already identified as
+        *name* at >= AUTO_LEARN_MIN_CONF — the profile self-improves with
+        use rather than staying frozen at first-enrollment quality. The
+        own-voice guard re-checks the chunk against the speaker's best
+        stored print (a confident-but-marginal edge hit doesn't get to
+        pull the centroid toward a foreign voice). No audio file, no
+        event-log spam — this fires per identified chunk."""
+        if name not in self._enrolled or self.is_media(name):
+            return False
+        emb = self._compute_embedding(pcm16, sample_rate)
+        prints = self._prints.setdefault(name, [self._enrolled[name]])
+        own = max(_cosine_similarity(emb, p) for p in prints)
+        if own < AUTO_LEARN_MIN_CONF:
+            return False
+        prints.append(emb)
+        centroid = _centroid(prints)
+        while len(prints) > _max_prints():
+            worst = min(range(len(prints)),
+                        key=lambda i: _cosine_similarity(prints[i], centroid))
+            prints.pop(worst)
+            centroid = _centroid(prints)
+        self._enrolled[name] = centroid
+        meta = self._metadata.setdefault(name, {})
+        meta["samples"] = len(prints)
+        self._save_enrolled()
+        logger.info("auto-learned voiceprint for '%s' (own=%.2f, samples=%d)",
+                    name, own, len(prints))
+        return True
+
     def _save_sample_audio(self, name: str, pcm16: bytes) -> str | None:
         """Persist the enrollment clip under speaker_samples/<slug>/ and
         return its path relative to the profiles dir, or None on failure."""
@@ -538,19 +582,32 @@ class SpeakerSession:
         self._switch_count = 0
         # Rolling tail of ALL fed audio (not consumed by identification) —
         # enroll_from_buffer needs the voice that was just speaking even
-        # after identify() consumed its chunk.
+        # after identify() consumed its chunk. Capped at RECENT_SECONDS.
         self._recent = bytearray()
+        # Voiced audio accrued while the speaker is UNRECOGNIZED — the
+        # "yes, enroll me" fix: by the time an unknown speaker agrees to
+        # enroll, their voice has been accruing all along, so the call
+        # doesn't depend on how much they said in the last reply.
+        self._pending_voice = bytearray()
+        # Diagnostics (D): distinguish "bridge fed nothing" from "user
+        # didn't speak" when enrollment reports insufficient audio.
+        self._fed_bytes = 0
+        self._voiced_bytes = 0
 
     async def feed(self, pcm16: bytes) -> None:
         if self._closed:
             return
         self._buffer.extend(pcm16)
         self._recent.extend(pcm16)
+        self._fed_bytes += len(pcm16)
         # Drop excess if the buffer grew while identification was running.
         if len(self._buffer) > MAX_BUFFER_BYTES:
             del self._buffer[: len(self._buffer) - MAX_BUFFER_BYTES]
-        if len(self._recent) > MAX_BUFFER_BYTES:
-            del self._recent[: len(self._recent) - MAX_BUFFER_BYTES]
+        recent_cap = int(RECENT_SECONDS * SAMPLE_RATE * 2)
+        if len(self._recent) > recent_cap:
+            del self._recent[: len(self._recent) - recent_cap]
+        if len(self._pending_voice) > recent_cap:
+            del self._pending_voice[: len(self._pending_voice) - recent_cap]
         if self._identifying or len(self._buffer) < MIN_CHUNK_BYTES:
             return
         # Quick energy check — skip near-silence buffers.
@@ -559,6 +616,7 @@ class SpeakerSession:
         if _rms(audio) < SILENCE_RMS:
             self._buffer.clear()
             return
+        self._voiced_bytes += MIN_CHUNK_BYTES
         # Consume the chunk and start identification.
         del self._buffer[:MIN_CHUNK_BYTES]
         self._identifying = True
@@ -588,7 +646,13 @@ class SpeakerSession:
                 self._last_name = name
                 self._miss_count = 0
                 self._unrecognized_notified = False
+                # The accrued unknown-voice buffer is now attributed —
+                # drop it so a later enroll can't claim it under the
+                # wrong name.
+                self._pending_voice.clear()
                 logger.info("speaker identified: %s (%.0f%%)", name, confidence * 100)
+                if confidence >= AUTO_LEARN_MIN_CONF:
+                    self._identifier.auto_learn(name, chunk)
                 await self._on_identified(name, confidence)
             else:
                 # stable same-speaker hit or a miss — either way a pending
@@ -596,8 +660,14 @@ class SpeakerSession:
                 # count toward changing identity)
                 self._switch_pending = None
                 self._switch_count = 0
+                if name is not None and confidence >= AUTO_LEARN_MIN_CONF:
+                    # stable hit — profile still improves with use
+                    self._identifier.auto_learn(name, chunk)
                 if name is None:
                     self._miss_count += 1
+                    # Unrecognized voiced speech — keep accruing so a
+                    # later "yes, enroll me" has more than the reply tail.
+                    self._pending_voice.extend(chunk)
                 if (
                     self._on_unrecognized is not None
                     and self._miss_count >= UNKNOWN_AFTER_MISSES
@@ -624,25 +694,39 @@ class SpeakerSession:
         name: str,
         ha_person: str | None = None,
         display_name: str | None = None,
-        seconds: float = 5.0,
+        seconds: float = 15.0,
     ) -> dict[str, Any]:
-        """Capture the last *seconds* of buffered audio and enroll *name*.
+        """Capture buffered audio and enroll *name*.
 
-        Uses whatever audio is currently in the buffer — the user's voice
-        that was just speaking is already there. Returns the enroll result
-        dict from SpeakerIdentifier.enroll().
+        Two sources, best-first:
+          1. _pending_voice — voiced audio accrued while the speaker was
+             unrecognized (spans the whole unidentified stretch, not just
+             the last reply).
+          2. _recent — the trailing RECENT_SECONDS ring of all fed audio.
+
+        Returns the enroll result dict from SpeakerIdentifier.enroll().
         """
-        # Cap at available audio
-        max_bytes = min(len(self._recent), int(seconds * SAMPLE_RATE * 2))
-        if max_bytes < MIN_CHUNK_BYTES // 2:
+        want = int(seconds * SAMPLE_RATE * 2)
+        src = self._pending_voice if len(self._pending_voice) >= MIN_CHUNK_BYTES else self._recent
+        take = min(len(src), want)
+        pcm16 = bytes(src[-take:])
+        if len(pcm16) < MIN_CHUNK_BYTES // 2:
+            fed_s = self._fed_bytes / (SAMPLE_RATE * 2)
+            voiced_s = self._voiced_bytes / (SAMPLE_RATE * 2)
+            if self._fed_bytes == 0:
+                diag = "no audio arrived on this session — the capture bridge may be dead; restart the conversation"
+            elif self._voiced_bytes < MIN_CHUNK_BYTES:
+                diag = f"{voiced_s:.1f}s voiced audio seen of {fed_s:.1f}s fed — ask for a longer natural sentence"
+            else:
+                diag = "speak for a few more seconds"
             raise ValueError(
-                f"not enough audio buffered ({max_bytes / (SAMPLE_RATE * 2):.1f}s); "
-                "speak for a few seconds first"
+                f"not enough speech captured ({len(pcm16) / (SAMPLE_RATE * 2):.1f}s); {diag}"
             )
-        pcm16 = bytes(self._recent[-max_bytes:])
         result = self._identifier.enroll(
             name, pcm16, ha_person=ha_person, display_name=display_name
         )
+        # Enrolled — the pending voice has been claimed by a profile.
+        self._pending_voice.clear()
         return result
 
     async def close(self) -> None:

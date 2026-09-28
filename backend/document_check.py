@@ -36,6 +36,12 @@ from google.genai import types
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except Exception:
+    pass
+
 logger = logging.getLogger("documents.check")
 
 DOC_MODEL = os.environ.get("DOC_MODEL", "gemini-2.5-flash")
