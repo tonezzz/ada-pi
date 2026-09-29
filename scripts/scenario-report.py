@@ -23,7 +23,10 @@ Usage:
 
 Env fallbacks: ADA_LIVE_URL, MDDB_BASE_URL, ADA_API_KEY, ADA_KEYS_FILE.
 Exit code: 1 when any scenario fails (after one retry — a pass-on-retry
-is recorded as 'flaky').
+is recorded as 'flaky'). Failures whose output shows upstream throttling
+(429/quota/rate-limit) are recorded 'quota'; two in a row trips the quota
+sentinel and the rest of the tier is recorded 'skip-quota' — neither
+counts toward the exit-1 failure set.
 """
 from __future__ import annotations
 
@@ -31,6 +34,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -41,6 +45,18 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)  # so 'backend.event_log' resolves from any cwd
 COLLECTION = "ada-ha-scenario-reports"
 REPORT_TTL_DAYS = 14
+
+# Upstream throttling (Gemini/MDDB/search) marks a scenario "quota" instead of
+# "fail"; QUOTA_STREAK_LIMIT consecutive quota-bound failures trips the
+# sentinel and remaining scenarios are recorded "skip-quota" without running —
+# a shared outage must not read as N independent regressions.
+QUOTA_RE = re.compile(
+    r"429|quota|rate.?limit|resource.?exhaust|too many requests", re.I)
+QUOTA_STREAK_LIMIT = 2
+
+
+def _is_quota(text: str) -> bool:
+    return bool(QUOTA_RE.search(text or ""))
 
 
 def _keys(path: str) -> dict:
@@ -156,6 +172,7 @@ def main() -> int:
 
     import glob as _glob
     pattern = os.path.join(args.scenarios_dir, "*.yaml")
+    selected: list[tuple[str, dict]] = []
     for path in sorted(_glob.glob(pattern)):
         spec = yaml.safe_load(open(path).read()) or {}
         name = spec.get("name") or os.path.basename(path)
@@ -163,6 +180,22 @@ def main() -> int:
         if args.only and args.only not in name:
             continue
         if args.tier == "smoke" and tier != "smoke":
+            continue
+        selected.append((path, spec))
+
+    quota_streak = 0
+    sentinel = False
+    for path, spec in selected:
+        name = spec.get("name") or os.path.basename(path)
+        tier = spec.get("tier") or "full"
+        if sentinel:
+            print(f"== {name}: skip-quota (upstream throttle sentinel)")
+            results.append((name, "skip-quota"))
+            try:
+                from backend.event_log import log_event
+                log_event("scenario-run", name, args.tier, "skip-quota")
+            except Exception:
+                pass
             continue
 
         url = spec.get("url") or args.url
@@ -204,6 +237,15 @@ def main() -> int:
             if proc.returncode == 0:
                 status = "flaky" if attempt == 2 else "pass"
                 break
+
+        if status == "fail" and _is_quota(out):
+            status, quota_streak = "quota", quota_streak + 1
+            if quota_streak >= QUOTA_STREAK_LIMIT:
+                sentinel = True
+                print("   quota sentinel tripped — remaining scenarios "
+                      "will be recorded skip-quota")
+        else:
+            quota_streak = 0
 
         print(f"== {name}: {status} ({runs} run{'s' if runs > 1 else ''})")
         if not args.dry_run:
