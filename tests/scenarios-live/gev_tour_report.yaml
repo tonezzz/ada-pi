@@ -11,6 +11,14 @@ turns:
       timeout_s: 45
       settle_s: 4
 
+  - user: "First, stop the camera walls bound to screen 4 — the traffic and rama9 zones. I want it fully idle."
+    expect:
+      calls_any: [cctv_wall, cast_to_screen]
+      timeout_s: 120
+      settle_s: 10
+      # traffic+rama9 zones hold a screen-4 binding and re-assert the wall
+      # over any split layout — release the binding before the tour
+
   - user: "Split screen 4 — God's Eye View on the left, a camera pane on the right."
     expect:
       response_nonempty: true
