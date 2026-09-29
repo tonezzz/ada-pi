@@ -743,8 +743,9 @@ async def voice_socket(ws: WebSocket) -> None:
             await provider_ref[0].send_text_turn(UNRECOGNIZED_SPEAKER_NOTE)
     # Send 'ready' as soon as Gemini is live; reconnect-context lookup and
     # memory priming can stall on MDDB, so they run in the background.
+    # session_id included so /api/notify can target this exact session.
     try:
-        await ws.send_text(json.dumps({"type": "ready"}))
+        await ws.send_text(json.dumps({"type": "ready", "session": session_id}))
     except Exception:
         return
     asyncio.create_task(_prime_session_task(provider_ref[0], ws))
@@ -916,7 +917,7 @@ async def voice_socket(ws: WebSocket) -> None:
                             # Fresh Gemini context — re-prime so the new
                             # session starts aware of recent/general memory.
                             await _prime_session(new_provider)
-                        await ws.send_text(json.dumps({"type": "ready"}))
+                        await ws.send_text(json.dumps({"type": "ready", "session": session_id}))
                         logger.info("session=%s provider reconnected (resumed=%s)", session_id, bool(handle))
                         break
                     except Exception as exc:
@@ -1658,8 +1659,17 @@ async def api_notify(request: Request) -> dict:
     urgent = str(body.get("urgent") or "").lower() in ("1", "true", "yes")
     if not _live_sessions:
         return {"delivered": False, "error": "no live session"}
-    sid, sess = max(_live_sessions.items(),
-                    key=lambda kv: kv[1]["connected_at"])
+    target_sid = str(body.get("session") or "").strip()
+    if target_sid:
+        # Explicit target (scenarios, per-screen notifies) — the newest-
+        # session heuristic would otherwise steal it mid-test.
+        sess = _live_sessions.get(target_sid)
+        if sess is None:
+            return {"delivered": False, "error": f"session {target_sid} not live"}
+        sid = target_sid
+    else:
+        sid, sess = max(_live_sessions.items(),
+                        key=lambda kv: kv[1]["connected_at"])
     pref = sess.get("provider")
     if not pref or not pref[0]:
         return {"delivered": False, "error": "session has no provider"}

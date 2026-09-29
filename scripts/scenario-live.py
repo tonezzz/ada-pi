@@ -190,14 +190,19 @@ def doc_upload_note(filename: str, out: dict) -> str:
     )
 
 
-async def fire_notify(http_base: str, api_key: str, spec: dict) -> None:
+async def fire_notify(http_base: str, api_key: str, spec: dict,
+                      session_id: str | None = None) -> None:
     """POST /api/notify after spec.delay_s — a data-package arrival landing
-    mid-response, concurrent with the in-flight turn."""
+    mid-response, concurrent with the in-flight turn. session_id pins the
+    notify to our own ws — newest-session targeting would otherwise hand it
+    to whichever client connected most recently."""
     import urllib.request
     await asyncio.sleep(float(spec.get("delay_s") or 0))
     payload = {"text": str(spec.get("text") or "notification")}
     if spec.get("urgent"):
         payload["urgent"] = True
+    if session_id:
+        payload["session"] = session_id
     req = urllib.request.Request(
         f"{http_base}/api/notify",
         data=json.dumps(payload).encode(),
@@ -392,12 +397,17 @@ async def main() -> int:
                  .replace("ws://", "http://").replace("wss://", "https://")
                  .rsplit("/ws", 1)[0])
 
+    my_session: list[str] = [""]
+
     async def connect(target: str) -> Any:
         ws = await websockets.connect(target, max_size=8 * 1024 * 1024)
         while True:
             raw = await asyncio.wait_for(ws.recv(), timeout=30)
-            if isinstance(raw, str) and json.loads(raw).get("type") == "ready":
-                return ws
+            if isinstance(raw, str):
+                msg = json.loads(raw)
+                if msg.get("type") == "ready":
+                    my_session[0] = str(msg.get("session") or "")
+                    return ws
 
     turns = spec.get("turns") or []
     print(f"scenario: {spec.get('name') or args.scenario.stem} -> {url.split('?')[0]}")
@@ -492,7 +502,8 @@ async def main() -> int:
                     if turn.get("notify"):
                         notify_task = asyncio.create_task(
                             fire_notify(http_base, api_key,
-                                        dict(turn["notify"])))
+                                        dict(turn["notify"]),
+                                        session_id=my_session[0] or None))
                     try:
                         events, failures = await run_turn(
                             ws, text, expect, args.verbose, audio=audio_bytes
