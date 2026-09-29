@@ -28,7 +28,9 @@ turns:
   - user: Fly the view to Bangkok.
     expect:
       calls_any: [gev_command]
-      result_contains_any: [delivered, ok, true]
+      # relay must actually deliver — delivered:0 / relay errors must fail
+      result_contains: ['"ok": true']
+      result_not_contains: ['"delivered": 0', 'gev command relay', 'no GEV clients']
       response_nonempty: true
       timeout_s: 90
       settle_s: 15   # the fly animation takes a few seconds
@@ -36,6 +38,8 @@ turns:
   - user: Now zoom out so I can see the whole globe.
     expect:
       calls_any: [gev_command]
+      result_contains: ['"ok": true']
+      result_not_contains: ['"delivered": 0', 'gev command relay', 'no GEV clients']
       response_nonempty: true
       timeout_s: 90
       settle_s: 15
@@ -43,6 +47,10 @@ turns:
   - user: Confirm the camera actually moved — ask it for the current view state.
     expect:
       calls_any: [gev_command]
+      # the verify loop: a live GEV page must return a tool_response —
+      # 'responses' in the relay result is the real check
+      result_contains: ['"responses"']
+      result_not_contains: ['gev command relay', 'no GEV clients']
       response_nonempty: true
       timeout_s: 90
       settle_s: 10
