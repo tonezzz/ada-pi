@@ -20,7 +20,7 @@ turns:
       timeout_s: 120
       settle_s: 20   # Cesium init
 
-  - user: "Turn on the flights layer and find the nearest aircraft over Bangkok."
+  - user: "Turn on the flights layer and find the nearest aircraft over Tokyo."
     expect:
       calls_any: [gev_command]
       result_contains: ['delivered']
