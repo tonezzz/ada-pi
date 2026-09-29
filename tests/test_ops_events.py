@@ -8,10 +8,14 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-os.environ.setdefault("ADA_INSTANCE_ID", "tony")
 os.environ.setdefault("GEMINI_API_KEY", "x")
 
+from unittest.mock import patch  # noqa: E402
 from backend.realtime_provider import GeminiLiveProvider  # noqa: E402
+
+# This file asserts the 'tony' collection names — pin the env around
+# provider construction (conftest sets the suite default to 'test').
+_INSTANCE_ENV = {"ADA_INSTANCE_ID": "tony"}
 
 
 def _provider():
@@ -32,7 +36,8 @@ def _provider():
 
 def test_emit_posts_ops_event():
     async def run():
-        p, calls = _provider()
+        with patch.dict(os.environ, _INSTANCE_ENV):
+            p, calls = _provider()
         p._emit_ops_event("tool_storm", "budget tripped", tool="control_entity")
         await asyncio.sleep(0.2)
         return calls
@@ -49,7 +54,8 @@ def test_emit_posts_ops_event():
 
 def test_emit_capped_at_five_per_session():
     async def run():
-        p, calls = _provider()
+        with patch.dict(os.environ, _INSTANCE_ENV):
+            p, calls = _provider()
         for _ in range(9):
             p._emit_ops_event("tool_storm", "x")
         await asyncio.sleep(0.2)
@@ -59,10 +65,7 @@ def test_emit_capped_at_five_per_session():
 
 
 def test_emit_disabled_without_instance():
-    os.environ.pop("ADA_INSTANCE_ID", None)
-    try:
+    with patch.dict(os.environ, {"ADA_INSTANCE_ID": ""}):
         p, calls = _provider()
         p._emit_ops_event("tool_storm", "x")
         assert calls == []
-    finally:
-        os.environ["ADA_INSTANCE_ID"] = "tony"
