@@ -19,10 +19,18 @@ turns:
 
   - user: "Split screen 4 into two panes — put the traffic camera wall on the left and the iTIC traffic page on the right."
     expect:
-      calls_any: [cast_to_screen, cctv_wall]
       response_nonempty: true
       timeout_s: 120
       settle_s: 8
+      # the cam wall is a single-lease capture — if it's running elsewhere
+      # she should ask before moving it; the next turn affirms
+
+  - user: "Yes, move the wall if it's busy — do the split."
+    expect:
+      calls_any: [cast_to_screen, cctv_wall]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 10
 
   - user: "Zoom in on the left pane."
     expect:
