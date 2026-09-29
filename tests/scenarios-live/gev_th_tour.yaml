@@ -52,6 +52,15 @@ turns:
       timeout_s: 150
       settle_s: 14
 
+  - user: "Ask the map where the camera is right now — read back the actual coordinates."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
+      # the client echoes real lat/lon — honest verification, not her word
+
   - user: "Take a snapshot of screen 4 — I want to see the final view."
     expect:
       calls_any: [vcast_snapshot]
