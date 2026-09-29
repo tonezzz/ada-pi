@@ -1,0 +1,62 @@
+# Europe leg — London landmarks via TfL JamCams (890 cams, free public
+# API). Same tour shape as gev_tour_report: fly to each camera's real
+# coordinates, pop its live frame on the right pane, narrate.
+# TfL frames are public JPEGs — no camwall pull needed.
+# Tier: full — actuates real displays.
+name: gev_eu_tour
+tier: full
+turns:
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  - user: "Split screen 4 — God's Eye View on the left, a camera pane on the right."
+    expect:
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Yes — set up the split and load God's Eye View on the left."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 150
+      settle_s: 30   # Cesium init
+
+  # stop 1 — Parliament Square / Westminster (0.2km from the Abbey)
+  - user: "London tour, stop 1: fly the map to 51.5011, -0.1263 — that's Parliament Square by Westminster Abbey. Then put this traffic camera frame on the right pane: https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06501.jpg — and narrate what it shows on that screen."
+    expect:
+      calls_any: [gev_command, cast_to_screen]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      timeout_s: 240
+      settle_s: 16
+
+  # stop 2 — York Road by the London Eye (0.3km)
+  - user: "Stop 2: fly to 51.5024, -0.1163 — York Road, right next to the London Eye. Swap the right pane to this frame: https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04226.jpg — narrate it."
+    expect:
+      calls_any: [gev_command, cast_to_screen]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      timeout_s: 240
+      settle_s: 16
+
+  # stop 3 — Piccadilly Circus (0.07km — dead on target)
+  - user: "Final stop: fly to 51.5096, -0.1348 — Piccadilly Circus. Right pane gets this frame: https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.07450.jpg — narrate it."
+    expect:
+      calls_any: [gev_command, cast_to_screen]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      timeout_s: 240
+      settle_s: 16
+
+  - user: "Write it up — 'London Traffic Cam Tour' — the three stops and what each camera showed."
+    expect:
+      calls_any: [cms_publish_page]
+      response_nonempty: true
+      timeout_s: 150
+      settle_s: 12
+
+  - user: "Snapshot screen 4, then clear it back to idle."
+    expect:
+      calls_any: [vcast_snapshot]
+      timeout_s: 120
+      settle_s: 10
