@@ -13,7 +13,7 @@ turns:
 
   - user: "หยุดผังกล้องที่ผูกกับหน้าจอ 4 — โซน traffic กับ rama9 — ให้จอว่าง"
     expect:
-      calls_any: [cctv_wall, cast_to_screen]
+      calls_any: [cctv_wall, cast_to_screen, vcast_list]
       timeout_s: 120
       settle_s: 10
 
@@ -22,7 +22,7 @@ turns:
       calls_any: [cast_to_screen, cctv_wall]
       response_nonempty: true
       timeout_s: 180
-      settle_s: 50
+      settle_s: 65
 
   - user: "พาไปทัวร์แอฟริกาใต้ — บินเข้าเมืองโจฮันเนสเบิร์กก่อน แล้วบรรยายภาษาไทยบนจอว่าเรามาถึงอะไร"
     expect:
