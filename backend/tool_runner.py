@@ -148,6 +148,12 @@ _CALLER_SPEAKER_SESSION: contextvars.ContextVar = contextvars.ContextVar(
 _CALLER_IDENTITY: contextvars.ContextVar = contextvars.ContextVar(
     "ada_caller_identity", default=None)
 
+# Per-call identified speaker (person.*): the provider passes the SESSION's
+# identified speaker so a concurrent session's speaker-ID can't bleed into
+# this one's secondary-owner check — same hazard class as _CALLER_IDENTITY.
+_CALLER_SPEAKER: contextvars.ContextVar = contextvars.ContextVar(
+    "ada_caller_speaker", default=None)
+
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -622,9 +628,16 @@ class ToolRunner:
         v = _CALLER_IDENTITY.get()
         if v is not None:
             return v
-        return (self.current_speaker_ha_person
+        return (self._current_speaker()
                 or self.session_caller_ha_person
                 or self.session_caller_name)
+
+    def _current_speaker(self) -> str | None:
+        """Session-scoped identified speaker — the ContextVar set by
+        execute() wins; the shared field is only a fallback for non-ws
+        callers (REST/tests) that never pass one."""
+        v = _CALLER_SPEAKER.get()
+        return v if v is not None else self.current_speaker_ha_person
 
     def policy_identity(self) -> str | None:
         """Authorization identity: the session owner pinned at connect.
@@ -639,7 +652,7 @@ class ToolRunner:
         unrecognized voice can never be proven non-owner, so it keeps the
         owner's rights (unenrolled owners must not lock themselves out).
         """
-        speaker = self.current_speaker_ha_person
+        speaker = self._current_speaker()
         owner = self.session_owner_identity
         if not speaker or not owner or speaker == owner:
             return False
@@ -694,6 +707,7 @@ class ToolRunner:
 
     async def execute(self, name: str, args: dict[str, Any] | None = None,
                       *, identity: Any = _IDENTITY_UNSET,
+                      speaker: Any = _IDENTITY_UNSET,
                       speaker_session: Any = _IDENTITY_UNSET) -> Any:
         method = getattr(self, name, None)
         if not method:
@@ -704,6 +718,12 @@ class ToolRunner:
         # mutable identity fields can race when sessions overlap.
         ident = self._memory_identity() if identity is _IDENTITY_UNSET else identity
         _ident_token = _CALLER_IDENTITY.set(ident)
+        # Same for the identified speaker: another session's voice ID must
+        # not flip this session's secondary-owner gate mid-call.
+        _spk_token = (
+            _CALLER_SPEAKER.set(speaker)
+            if speaker is not _IDENTITY_UNSET else None
+        )
         # Same for the speaker session: the provider passes its own so a
         # concurrent ws connect can't swap the buffer out from under an
         # in-flight enroll call.
@@ -715,6 +735,8 @@ class ToolRunner:
             return await self._execute_gated(name, call_args, ident)
         finally:
             _CALLER_IDENTITY.reset(_ident_token)
+            if _spk_token is not None:
+                _CALLER_SPEAKER.reset(_spk_token)
             if _ss_token is not None:
                 _CALLER_SPEAKER_SESSION.reset(_ss_token)
 
@@ -735,11 +757,11 @@ class ToolRunner:
             ):
                 self._log_session_event(
                     "tool_denied", tool=name,
-                    speaker=self.current_speaker_ha_person,
+                    speaker=self._current_speaker(),
                     owner=self.session_owner_identity)
                 logger.warning(
                     "denied %s: secondary speaker %r (owner %r)",
-                    name, self.current_speaker_ha_person,
+                    name, self._current_speaker(),
                     self.session_owner_identity)
                 raise PermissionError(
                     "Only the session owner can run this action — propose it "

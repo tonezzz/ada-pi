@@ -4469,6 +4469,7 @@ class GeminiLiveProvider(RealtimeProvider):
                                         str(call.name), call_args,
                                         identity=(owner
                                                   or self.current_speaker_ha_person),
+                                        speaker=self.current_speaker_ha_person,
                                         speaker_session=self.speaker_session)
                                     result = {"output": output}
                                     if call.name == "ada_memory_search":

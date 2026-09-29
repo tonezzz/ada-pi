@@ -1,14 +1,14 @@
-# GEV on screen 1 — incremental interaction chain.
-#   cast /apps/gev/ -> screen 1 (iPad)
+# GEV on screen 4 — incremental interaction chain.
+#   cast /apps/gev/ -> screen 4 (browser)
 #   verify via get_current_view_state (nav casts sit in an iframe — the
 #   display-side snapshot can't read cross-origin pixels, so GEV's own
 #   state endpoint is the verification path)
 #   fly to Bangkok -> zoom out -> track entity -> clear -> stop cast
 # tier: full — actuates a real display.
-name: gev_screen1_interact
+name: gev_screen4_interact
 tier: full
 turns:
-  - user: Put God's Eye View on screen 1 for me.
+  - user: Put God's Eye View on screen 4 for me.
     expect:
       response_nonempty: true
       timeout_s: 90
@@ -16,7 +16,7 @@ turns:
       # if the screen is busy she may ask before replacing its content —
       # the confirm contract; the next turn affirms
 
-  - user: "Yes, go ahead — screen 1 is fine to use."
+  - user: "Yes, go ahead — screen 4 is fine to use."
     expect:
       # she may already have cast on the previous turn — then there's
       # nothing to do here; downstream gev_command turns carry the weight
