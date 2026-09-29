@@ -85,7 +85,10 @@ CALENDAR_INSTRUCTIONS = (
     "calendar_list_events and calendar_freebusy read the schedule, "
     "plan_day returns one merged view of events plus open tasks for a day, "
     "calendar_create_event and calendar_delete_event modify the calendar, and "
-    "tasks_list, tasks_add, and tasks_complete manage the task list. "
+    "tasks_list, tasks_add, tasks_move, and tasks_complete manage the task list, and "
+    "calendar_shift_overdue moves every overdue task plus already-ended event to a "
+    "new day in one call (to='tomorrow' default; restate the target date and get a "
+    "yes first). "
     "For any schedule question call calendar_list_events or plan_day first and answer "
     "from the result; never recite a schedule from memory. "
     "Interpret relative dates ('tomorrow', 'Friday') in the user's local timezone and "
@@ -160,7 +163,8 @@ ACTUATING_TOOLS = frozenset({
     "ada_doc_archive", "ada_doc_print", "ada_set_voice",
     "devin_dispatch",
     "calendar_create_event", "calendar_delete_event",
-    "tasks_add", "tasks_complete",
+    "calendar_shift_overdue",
+    "tasks_add", "tasks_complete", "tasks_move",
 })
 
 # 'confirmed=true' in a tool arg is only honored when the user's own
@@ -3460,6 +3464,66 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["task_id"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "tasks_move",
+                    "description": (
+                        "Reschedule a task's due date by its provider-qualified id "
+                        "(from tasks_list) — same task, new date. Confirm which task "
+                        "first, then pass confirmed=true."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {
+                                "type": "string",
+                                "description": "Provider-qualified task id exactly as returned by tasks_list.",
+                            },
+                            "due": {
+                                "type": "string",
+                                "description": "New due date: 'today', 'tomorrow', or 'YYYY-MM-DD'.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
+                        },
+                        "required": ["task_id", "due"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "calendar_shift_overdue",
+                    "description": (
+                        "Move every overdue item to a new day in one call: open tasks "
+                        "whose due date is in the past, and calendar events that "
+                        "already ended (they keep their duration and same id — the old "
+                        "slot disappears, the new one shows on the target day). "
+                        "Default to='tomorrow'. Restate the target date aloud, get an "
+                        "explicit yes, then call with confirmed=true. Report the moved "
+                        "list back to the user."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "to": {
+                                "type": "string",
+                                "description": "Target day: 'tomorrow' (default) or 'YYYY-MM-DD'.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
+                        },
+                        "required": [],
                         "additionalProperties": False,
                     },
                 }, {

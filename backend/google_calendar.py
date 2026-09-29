@@ -207,6 +207,27 @@ class GoogleCalendarProvider:
             raise CalendarError(f"{self.name}: malformed event id {raw_id!r}")
         await self._req("DELETE", f"{CAL_API}/calendars/{_q(calid)}/events/{_q(event_id)}")
 
+    async def update_event(
+        self, raw_id: str,
+        start: datetime | date | None = None,
+        end: datetime | date | None = None,
+    ) -> CalendarEvent:
+        """Move/reschedule an existing event in place — same id, new time."""
+        calid, _, event_id = raw_id.partition("/")
+        if not event_id:
+            raise CalendarError(f"{self.name}: malformed event id {raw_id!r}")
+        body: dict[str, Any] = {}
+        if start is not None:
+            body["start"] = _when_payload(start)
+        if end is not None:
+            body["end"] = _when_payload(end)
+        if not body:
+            raise CalendarError(f"{self.name}: update_event needs start and/or end")
+        data = await self._req(
+            "PATCH", f"{CAL_API}/calendars/{_q(calid)}/events/{_q(event_id)}",
+            json=body)
+        return self._norm_event(data, calid)
+
     async def freebusy(self, start: datetime, end: datetime) -> list[dict[str, Any]]:
         data = await self._req("POST", f"{CAL_API}/freeBusy", json={
             "timeMin": start.isoformat(),
@@ -261,6 +282,17 @@ class GoogleCalendarProvider:
             "PATCH", f"{TASKS_API}/lists/{_q(lid)}/tasks/{_q(task_id)}",
             json={"status": "completed"},
         )
+
+    async def move_task(self, raw_id: str, due: date) -> Task:
+        """Reschedule a task's due date in place — same id, new date."""
+        lid, _, task_id = raw_id.partition("/")
+        if not task_id:
+            raise CalendarError(f"{self.name}: malformed task id {raw_id!r}")
+        body = {"due": datetime(due.year, due.month, due.day).isoformat() + "Z"}
+        data = await self._req(
+            "PATCH", f"{TASKS_API}/lists/{_q(lid)}/tasks/{_q(task_id)}",
+            json=body)
+        return self._norm_task(data, lid)
 
     # -- normalization ---------------------------------------------------------
 

@@ -1,0 +1,67 @@
+name: shift-overdue
+# Live scenario — "shift all my overdue calendar/tasks to the next day".
+#
+# Full QA round-trip on the real Google account:
+#   T0  seed: create a probe task due YESTERDAY (confirm flow)
+#   T1  confirm the seed
+#   T2  ask Ada to shift all overdue tasks to tomorrow
+#   T3  confirm the shift
+#   T4  verify: task list shows the probe on tomorrow's date
+#   T5  cleanup: complete the probe task
+#
+# Expected: the overdue item disappears from yesterday and shows with
+# tomorrow's due — same task id, moved in place (not delete+recreate).
+#
+# tier: full — writes real tasks to the Google account (probe is
+# completed at the end).
+
+tier: full
+
+turns:
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  - user: "Add a task called 'qa shift probe' due yesterday — it's for a test."
+    expect:
+      calls_any: [tasks_add]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Yes, go ahead."
+    expect:
+      calls_any: [tasks_add]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Now shift all my overdue tasks to tomorrow."
+    expect:
+      calls_any: [calendar_shift_overdue, tasks_list, plan_day]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Yes, do it."
+    expect:
+      calls_any: [calendar_shift_overdue]
+      result_contains: ["moved"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Show me my task list — what date is the shift probe on now?"
+    expect:
+      calls_any: [tasks_list, plan_day]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Mark the shift probe task complete."
+    expect:
+      calls_any: [tasks_complete]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6

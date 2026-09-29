@@ -444,3 +444,112 @@ class CalendarService:
             raise CalendarError(f"provider {pname!r} does not support tasks")
         await provider.complete_task(raw)
         return f"completed {task_id}"
+
+    async def move_task(self, task_id: str, due: str) -> dict[str, Any]:
+        """Reschedule a task's due date — same task, new date."""
+        pname, raw = split_qualified(task_id)
+        provider = self._provider(pname)
+        if not isinstance(provider, TasksProvider):
+            raise CalendarError(f"provider {pname!r} does not support tasks")
+        if not hasattr(provider, "move_task"):
+            raise CalendarError(f"provider {pname!r} cannot move tasks")
+        task = await provider.move_task(raw, parse_day(due, self.tz))
+        task.id = _qualify(provider.name, task.id)
+        return asdict(task)
+
+    async def shift_overdue(self, to: str = "tomorrow") -> dict[str, Any]:
+        """Move every overdue task + already-ended event to a new day.
+
+        'Overdue' = task with due date before target day, or event whose
+        end is already past. Events keep their duration (moved to the same
+        time on the target day); tasks keep the same id with a new due.
+        """
+        target = parse_day(to, self.tz)
+        now = datetime.now(self.tz)
+        moved: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        errors: list[str] = []
+
+        # --- overdue events (ended before now, within the last 7 days) ---
+        try:
+            evs = await self.list_events(day=(now.date() - timedelta(days=7)),
+                                         days=8)
+            for e in evs["events"]:
+                try:
+                    if e.get("all_day"):
+                        eday = date.fromisoformat(str(e["start"])[:10])
+                        if eday >= target:
+                            continue
+                        delta = target - eday
+                        pname, raw = split_qualified(e["id"])
+                        p = self._provider(pname)
+                        if not hasattr(p, "update_event"):
+                            skipped.append({"id": e["id"], "title": e["title"],
+                                            "reason": "provider cannot move events"})
+                            continue
+                        s = date.fromisoformat(str(e["start"])[:10]) + delta
+                        en = date.fromisoformat(str(e["end"])[:10]) + delta
+                        await p.update_event(raw, start=s, end=en)
+                        moved.append({"kind": "event", "id": e["id"],
+                                      "title": e["title"],
+                                      "from": e["start"], "to": s.isoformat()})
+                        continue
+                    end_s = str(e.get("end") or "")
+                    et = datetime.fromisoformat(end_s.replace("Z", "+00:00"))
+                    if et.tzinfo is None:
+                        et = et.replace(tzinfo=self.tz)
+                    if et >= now:
+                        continue
+                    pname, raw = split_qualified(e["id"])
+                    p = self._provider(pname)
+                    if not hasattr(p, "update_event"):
+                        skipped.append({"id": e["id"], "title": e["title"],
+                                        "reason": "provider cannot move events"})
+                        continue
+                    st = datetime.fromisoformat(
+                        str(e["start"]).replace("Z", "+00:00"))
+                    if st.tzinfo is None:
+                        st = st.replace(tzinfo=self.tz)
+                    dur = et - st
+                    base = datetime.combine(target, st.time(), tzinfo=st.tzinfo)
+                    await p.update_event(raw, start=base, end=base + dur)
+                    moved.append({"kind": "event", "id": e["id"],
+                                  "title": e["title"], "from": e["start"],
+                                  "to": base.isoformat()})
+                except Exception as exc:
+                    errors.append(f"event {e.get('title')}: {exc}")
+        except Exception as exc:
+            errors.append(f"events: {exc}")
+
+        # --- overdue tasks (due date before target day) ---
+        try:
+            tasks = await self.list_tasks()
+            for t in tasks["tasks"]:
+                due_s = (t.get("due") or "")[:10]
+                if not due_s:
+                    continue
+                try:
+                    d = date.fromisoformat(due_s)
+                except ValueError:
+                    continue
+                if d >= now.date() or t.get("status") == "completed":
+                    continue
+                try:
+                    pname, raw = split_qualified(t["id"])
+                    p = self._provider(pname)
+                    if not hasattr(p, "move_task"):
+                        skipped.append({"id": t["id"], "title": t["title"],
+                                        "reason": "provider cannot move tasks"})
+                        continue
+                    await p.move_task(raw, target)
+                    moved.append({"kind": "task", "id": t["id"],
+                                  "title": t["title"], "from": due_s,
+                                  "to": target.isoformat()})
+                except Exception as exc:
+                    errors.append(f"task {t.get('title')}: {exc}")
+        except Exception as exc:
+            errors.append(f"tasks: {exc}")
+
+        return {"target": target.isoformat(), "moved": moved,
+                "skipped": skipped, "errors": errors,
+                "moved_count": len(moved)}

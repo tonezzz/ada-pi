@@ -51,7 +51,8 @@ MEMORY_WRITE_TOOLS = {"ada_remember", "ada_forget", "ada_outcome"}
 # user's real calendar, so all writes require confirmed=true.
 CALENDAR_WRITE_TOOLS = {
     "calendar_create_event", "calendar_delete_event",
-    "tasks_add", "tasks_complete",
+    "calendar_shift_overdue",
+    "tasks_add", "tasks_complete", "tasks_move",
 }
 
 # Miniapp/CMS page writes: publishing or deleting a page changes what the
@@ -1708,6 +1709,16 @@ class ToolRunner:
 
     async def tasks_complete(self, task_id: str) -> str:
         return await self._calendar_svc().complete_task(str(task_id))
+
+    async def tasks_move(self, task_id: str, due: str) -> dict[str, Any]:
+        """Reschedule one task's due date — same task, new date."""
+        return await self._calendar_svc().move_task(
+            str(task_id), str(due))
+
+    async def calendar_shift_overdue(self, to: str = "tomorrow") -> dict[str, Any]:
+        """Move every overdue task + already-ended event to a new day.
+        Returns per-item old->new so Ada can report exactly what moved."""
+        return await self._calendar_svc().shift_overdue(to=str(to))
 
     async def plan_day(self, day: str = "today") -> dict[str, Any]:
         return await self._calendar_svc().plan_day(day=str(day))
