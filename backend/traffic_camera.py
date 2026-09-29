@@ -90,11 +90,6 @@ def _dist_km(a_lat, a_lon, b_lat, b_lon) -> float:
 
 
 def _bearing(a_lat, a_lon, b_lat, b_lon) -> float:
-    dy = math.radians(b_lon - a_lon)
-    dx = math.radians(b_lat - a_lat)
-    y = math.sin(dy) * 1.0
-    x = math.cos(dy) * math.tan(0)  # placeholder, replaced below
-    # standard bearing formula
     y = math.sin(math.radians(b_lon - a_lon)) * math.cos(math.radians(b_lat))
     x = (math.cos(math.radians(a_lat)) * math.sin(math.radians(b_lat))
          - math.sin(math.radians(a_lat)) * math.cos(math.radians(b_lat))
@@ -141,7 +136,9 @@ def find_cams(query: str = "", lat: float | None = None,
         if lat is not None and lon is not None and c["_lat"] and c["_lon"]:
             d = _dist_km(lat, lon, c["_lat"], c["_lon"])
             c["_dist"] = round(d, 1)
-            c["_score"] -= min(d, 100)          # nearer is better
+            # base +60 so a geo-only query (no tokens) still ranks the
+            # nearest cams — pure negative scoring returns "no match"
+            c["_score"] += 60.0 - min(d, 100)
             if heading is not None:
                 b = _bearing(lat, lon, c["_lat"], c["_lon"])
                 diff = abs((b - heading + 180) % 360 - 180)
