@@ -2955,6 +2955,8 @@ class ToolRunner:
                     "device": s.get("label") or s["name"],
                     "online": s.get("connected", False),
                     "state": s.get("state") or "idle",
+                    "detail": s.get("state_detail") or "",
+                    "panes": s.get("panes"),
                 }
                 for s in data.get("screens", [])
             ],
@@ -2970,6 +2972,24 @@ class ToolRunner:
             zones = wall.get("zones") or {}
             out["camwall_zones"] = {
                 z: v for z, v in zones.items() if v.get("enabled")}
+            # Ground-truth check: the zone registry says a wall is on a
+            # screen, but the screen's own state report is authoritative —
+            # a user nav/reconnect can leave them diverged (2026-09-29:
+            # wall claimed on screen 1 while the user saw a single cam).
+            mismatches = []
+            for z, v in out["camwall_zones"].items():
+                scr = v.get("screen")
+                s = next((x for x in out["screens"]
+                          if x.get("screen") == scr), None)
+                if s and s.get("online") and "camwall" not in (
+                        s.get("detail") or ""):
+                    mismatches.append(
+                        f"zone '{z}' registered on screen {scr} but the "
+                        f"screen reports '{s.get('state')}: "
+                        f"{s.get('detail') or 'no detail'}' — trust the "
+                        "screen state, the zone flag is stale")
+            if mismatches:
+                out["state_mismatch"] = mismatches
         except Exception:
             pass
         return out
