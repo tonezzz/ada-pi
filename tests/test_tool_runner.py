@@ -301,6 +301,174 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         finally:
             os.environ.pop("ADA_READ_ONLY", None)
 
+    async def test_publish_merges_existing_meta_and_stamps_schema(self):
+        # Republishing a generated page must preserve provenance meta and
+        # fill the memory-schema fields (the drift the normalizer kept fixing).
+        self.runner.mddb.get_document.return_value = {
+            "key": "flood-report", "contentMd": "# old",
+            "meta": {"generated_by": ["flood-news-update.py --page flood-report"],
+                     "report_role": ["leaf"], "parent": ["flood-report-nongdon"],
+                     "status": ["draft"], "subject": ["flood-report"],
+                     "custom": "kept"},
+        }
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "cms_publish_page",
+                {"slug": "flood-report", "title": "Flood", "content": "# Flood\nnew"},
+            )
+        await self.runner.execute(
+            "cms_publish_page",
+            {"slug": "flood-report", "title": "Flood",
+             "content": "# Flood\nnew", "confirmed": True},
+        )
+        meta = self.runner.mddb.add_document.call_args.kwargs["meta"]
+        self.assertEqual(meta["generated_by"],
+                         ["flood-news-update.py --page flood-report"])
+        self.assertEqual(meta["report_role"], ["leaf"])
+        self.assertEqual(meta["status"], ["draft"])  # existing value wins
+        self.assertEqual(meta["custom"], ["kept"])   # strings normalized
+        self.assertEqual(meta["bank"], ["cms"])
+        self.assertEqual(meta["scope"], ["tony"])
+        self.assertEqual(meta["source"], ["api"])
+        self.assertEqual(meta["written_by"], ["cms_publish_page"])
+        self.assertIn("valid_from", meta)
+        self.assertIn("last_verified", meta)
+
+
+class CmsAutomationTests(unittest.IsolatedAsyncioTestCase):
+    """cms_automation — Ada's switches/knobs over the ada-cms-automation
+    registry the flood-news worker honors."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.add_document.return_value = {"status": "ok"}
+        self.runner.mddb.get_document.return_value = {
+            "key": "flood-report", "lang": "en",
+            "contentMd": '{"enabled": true, "interval_min": 240,'
+                        ' "feeds": [["bangkok", "https://news.google.com/rss/x"]],'
+                        ' "last_status": "ok", "last_count": 6}',
+            "meta": {"kind": ["automation-config"], "slug": ["flood-report"]},
+        }
+        self.runner.mddb.search_documents.return_value = [
+            {"key": "flood-report",
+             "contentMd": '{"enabled": true, "last_status": "ok"}'},
+            {"key": "flood-report-nongdon",
+             "contentMd": '{"enabled": false, "interval_min": 120}'},
+        ]
+
+    async def test_list_and_get_are_not_gated(self):
+        out = await self.runner.execute("cms_automation", {"action": "list"})
+        self.assertEqual(out["count"], 2)
+        self.assertEqual(out["pages"][0]["slug"], "flood-report")
+        self.assertTrue(out["pages"][0]["enabled"])
+        self.assertFalse(out["pages"][1]["enabled"])
+
+        out = await self.runner.execute("cms_automation",
+                                        {"action": "get", "slug": "flood-report"})
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(out["config"]["interval_min"], 240)
+        self.assertEqual(out["last_status"], "ok")
+        self.assertEqual(out["last_count"], 6)
+
+    async def test_get_missing_doc(self):
+        self.runner.mddb.get_document.return_value = None
+        out = await self.runner.execute("cms_automation",
+                                        {"action": "get", "slug": "nope"})
+        self.assertEqual(out["status"], "not_found")
+
+    async def test_writes_require_confirmation(self):
+        for args in ({"action": "disable", "slug": "flood-report"},
+                     {"action": "run", "slug": "flood-report"},
+                     {"action": "set", "slug": "flood-report", "interval_min": 60}):
+            with self.assertRaises(PermissionError):
+                await self.runner.execute("cms_automation", args)
+        self.runner.mddb.add_document.assert_not_awaited()
+
+    async def test_read_actions_pass_under_read_only(self):
+        os.environ["ADA_READ_ONLY"] = "true"
+        try:
+            out = await self.runner.execute("cms_automation", {"action": "list"})
+            self.assertEqual(out["count"], 2)
+            with self.assertRaises(PermissionError):
+                await self.runner.execute(
+                    "cms_automation",
+                    {"action": "disable", "slug": "flood-report",
+                     "confirmed": True})
+        finally:
+            os.environ.pop("ADA_READ_ONLY", None)
+
+    async def test_disable_merges_and_writes_back(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "cms_automation", {"action": "disable", "slug": "flood-report"})
+        out = await self.runner.execute(
+            "cms_automation",
+            {"action": "disable", "slug": "flood-report", "confirmed": True})
+        self.assertEqual(out["status"], "updated")
+        self.assertEqual(out["changes"], {"enabled": False})
+        args, kwargs = self.runner.mddb.add_document.call_args
+        self.assertEqual(args[:3],
+                         ("ada-cms-automation", "flood-report", "en"))
+        body = json.loads(args[3])
+        self.assertFalse(body["enabled"])
+        # untouched knobs and worker state survive the merge
+        self.assertEqual(body["interval_min"], 240)
+        self.assertEqual(body["last_status"], "ok")
+        self.assertEqual(kwargs["meta"]["kind"], ["automation-config"])
+
+    async def test_run_sets_run_now(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "cms_automation", {"action": "run", "slug": "flood-report"})
+        out = await self.runner.execute(
+            "cms_automation",
+            {"action": "run", "slug": "flood-report", "confirmed": True})
+        self.assertTrue(out["queued"])
+        body = json.loads(self.runner.mddb.add_document.call_args[0][3])
+        self.assertTrue(body["run_now"])
+        self.assertTrue(body["enabled"])  # existing config preserved
+
+    async def test_set_validates_knobs(self):
+        good = await self.runner.execute(
+            "cms_automation",
+            {"action": "set", "slug": "flood-report", "confirmed": True,
+             "interval_min": 60, "max_items": 5, "since_hours": 48,
+             "require": "น้ำ|flood", "langs": ["en", "th"],
+             "feeds": [["bkk", "https://news.google.com/rss/x"]],
+             "parent": "flood-report-nongdon"})
+        body = json.loads(self.runner.mddb.add_document.call_args[0][3])
+        self.assertEqual(body["interval_min"], 60)
+        self.assertEqual(body["feeds"], [["bkk", "https://news.google.com/rss/x"]])
+        self.assertEqual(body["parent"], "flood-report-nongdon")
+
+        for bad in ({"action": "set", "slug": "flood-report", "confirmed": True,
+                     "interval_min": -5},
+                    {"action": "set", "slug": "flood-report", "confirmed": True,
+                     "max_items": 0},
+                    {"action": "set", "slug": "flood-report", "confirmed": True,
+                     "require": "[unclosed"},
+                    {"action": "set", "slug": "flood-report", "confirmed": True,
+                     "feeds": [["x", "ftp://nope"]]},
+                    {"action": "set", "slug": "flood-report", "confirmed": True,
+                     "langs": ["de"]}):
+            with self.assertRaises(ValueError):
+                await self.runner.execute("cms_automation", bad)
+
+    async def test_bad_action_and_empty_set(self):
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "cms_automation",
+                {"action": "bogus", "slug": "flood-report", "confirmed": True})
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "cms_automation",
+                {"action": "set", "slug": "flood-report", "confirmed": True})
+
 
 class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):
     """The flexible-but-bound confirmation gate: truthy spellings pass,

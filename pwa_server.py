@@ -1756,6 +1756,21 @@ async def cms_verify_page(request: Request, slug: str) -> dict:
     return report
 
 
+@app.post("/api/cms/pages/{slug}/regenerate")
+async def cms_regenerate_page(request: Request, slug: str) -> dict:
+    """Queue a regeneration for a generated page — sets run_now in its
+    ada-cms-automation registry doc; the worker re-runs the recorded
+    generator on its next pass and clears the flag. The button click plus
+    the API key is the user's explicit action, so this calls the runner
+    method directly rather than going through the voice confirm gate."""
+    _require_api_key(request)
+    try:
+        result = await tool_runner.cms_automation("run", slug=slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return result
+
+
 static_dir = ROOT / "frontend"
 pwa_dir = ROOT / "pwa"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")

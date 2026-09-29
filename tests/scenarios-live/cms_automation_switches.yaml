@@ -1,0 +1,35 @@
+# CMS automation switches — exercises the registry control surface:
+# free reads (list/get), gated writes (disable needs the confirm round-trip),
+# and run-now queueing. Ends by re-enabling so state is left unchanged.
+name: cms_automation_switches
+turns:
+  - user: >-
+      Which miniapp pages have automation configured? Just list them.
+    expect:
+      calls_any: [cms_automation]
+      timeout_s: 60
+      settle_s: 10
+  - user: >-
+      What is the automation state of flood-report-nongdon?
+    expect:
+      calls_any: [cms_automation]
+      timeout_s: 60
+      settle_s: 10
+  - user: >-
+      Pause automatic updates on flood-report-nongdon-saraburi.
+    expect:
+      calls_any: [cms_automation]
+      timeout_s: 60
+      settle_s: 10
+  - user: Yes, go ahead.
+    expect:
+      calls_any: [cms_automation]
+      timeout_s: 60
+      settle_s: 10
+  - user: >-
+      Turn its automation back on, then queue one regeneration of
+      flood-report-nongdon.
+    expect:
+      calls_any: [cms_automation]
+      timeout_s: 60
+      settle_s: 10
