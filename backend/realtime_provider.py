@@ -593,6 +593,10 @@ class GeminiLiveProvider(RealtimeProvider):
         # explicitly for policy checks.
         self.caller_name = caller_name
         self.caller_person = caller_person
+        # Per-session pinned owner — identical value pwa_server pins on the
+        # shared tool_runner, but kept here so execute() can pass it without
+        # reading the shared (racy) field back (2026-09-29 owner-stomp bug).
+        self.session_owner = caller_person or caller_name
         self.home_assistant_client = home_assistant_client
         self.habit_state_getter = habit_state_getter
         # Callers may share one ConversationMemory across provider reconnects
@@ -617,8 +621,9 @@ class GeminiLiveProvider(RealtimeProvider):
         base_instructions = instructions or os.environ.get("GEMINI_LIVE_INSTRUCTIONS") or DEFAULT_ADA_INSTRUCTIONS
         self.instructions = (
             f"{base_instructions}\n\n"
-            "Your name is Ada (เอด้า in Thai). Never use a different name for "
-            "yourself — not แก้วตา, เอดา, or anything else; if asked your name "
+            "Your name is Ada (เอด้า in Thai). KK calls you แก้วตา as a "
+            "nickname — acknowledge it warmly if she uses it, but introduce "
+            "yourself as Ada and never invent other names; if asked your name "
             "repeatedly, answer Ada every time. You have a visible animated face. Use the "
             "set_facial_expression tool to select the expression that best matches "
             "your response and attitude. Call it once per reply — if you need a memory "
@@ -4461,16 +4466,14 @@ class GeminiLiveProvider(RealtimeProvider):
                                     # OWNER pinned at connect — the speaking
                                     # voice only personalizes, it never
                                     # upgrades permissions mid-session (P1).
-                                    owner = (
-                                        self.tool_runner.session_owner_identity
-                                        or self.caller_person or self.caller_name
-                                    )
+                                    owner = self.session_owner
                                     output = await self.tool_runner.execute(
                                         str(call.name), call_args,
                                         identity=(owner
                                                   or self.current_speaker_ha_person),
                                         speaker=self.current_speaker_ha_person,
-                                        speaker_session=self.speaker_session)
+                                        speaker_session=self.speaker_session,
+                                        owner=owner)
                                     result = {"output": output}
                                     if call.name == "ada_memory_search":
                                         self._note_search_result(output)

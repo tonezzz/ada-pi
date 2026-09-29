@@ -145,6 +145,13 @@ def _slug(text: str | None) -> str:
 _CALLER_SPEAKER_SESSION: contextvars.ContextVar = contextvars.ContextVar(
     "caller_speaker_session", default=None)
 
+# Same shared-runner race for session_owner_identity: a second ws connect
+# overwrote the owner mid-session (2026-09-29 — Tony on the HA satellite
+# was denied as "secondary speaker" because a browser 'admin' session
+# stomped the shared field). Provider passes the pinned owner per call.
+_CALLER_OWNER: contextvars.ContextVar = contextvars.ContextVar(
+    "caller_owner", default=None)
+
 _CALLER_IDENTITY: contextvars.ContextVar = contextvars.ContextVar(
     "ada_caller_identity", default=None)
 
@@ -642,11 +649,16 @@ class ToolRunner:
             return self.current_speaker_ha_person
         return v
 
+    def _owner(self) -> str | None:
+        """The calling session's pinned owner — per-call contextvar first
+        (shared runner can't race it), shared field as fallback."""
+        return _CALLER_OWNER.get() or self.session_owner_identity
+
     def policy_identity(self) -> str | None:
         """Authorization identity: the session owner pinned at connect.
         Falls back to the live speaker identity only when no session owner
         exists (REST calls, anonymous/test sessions)."""
-        return self.session_owner_identity or self._memory_identity()
+        return self._owner() or self._memory_identity()
 
     def _is_secondary_turn(self) -> bool:
         """True while the identified speaker is not the session owner.
@@ -656,7 +668,7 @@ class ToolRunner:
         owner's rights (unenrolled owners must not lock themselves out).
         """
         speaker = self._current_speaker()
-        owner = self.session_owner_identity
+        owner = self._owner()
         if not speaker or not owner or speaker == owner:
             return False
         caller = self.session_caller_name
@@ -711,7 +723,8 @@ class ToolRunner:
     async def execute(self, name: str, args: dict[str, Any] | None = None,
                       *, identity: Any = _IDENTITY_UNSET,
                       speaker: Any = _IDENTITY_UNSET,
-                      speaker_session: Any = _IDENTITY_UNSET) -> Any:
+                      speaker_session: Any = _IDENTITY_UNSET,
+                      owner: Any = _IDENTITY_UNSET) -> Any:
         method = getattr(self, name, None)
         if not method:
             raise KeyError(f"Unknown tool: {name}")
@@ -734,6 +747,12 @@ class ToolRunner:
             _CALLER_SPEAKER_SESSION.set(speaker_session)
             if speaker_session is not _IDENTITY_UNSET else None
         )
+        # And the pinned owner: another session's connect must not re-pin
+        # the owner this call authorizes against.
+        _owner_token = (
+            _CALLER_OWNER.set(owner)
+            if owner is not _IDENTITY_UNSET else None
+        )
         try:
             return await self._execute_gated(name, call_args, ident)
         finally:
@@ -742,6 +761,8 @@ class ToolRunner:
                 _CALLER_SPEAKER.reset(_spk_token)
             if _ss_token is not None:
                 _CALLER_SPEAKER_SESSION.reset(_ss_token)
+            if _owner_token is not None:
+                _CALLER_OWNER.reset(_owner_token)
 
     async def _execute_gated(self, name: str, call_args: dict[str, Any],
                              ident: str | None) -> Any:
