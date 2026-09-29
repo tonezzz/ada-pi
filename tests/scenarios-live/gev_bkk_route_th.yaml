@@ -34,7 +34,7 @@ turns:
       settle_s: 15
 
   # fly it smoothly — fly_route uses the drawn path
-  - user: "บินตามเส้นทางนั้นเลย แบบช้าๆ พร้อมบรรยายบนจอด้วยว่าเรากำลังผ่านอะไร"
+  - user: "บินตามเส้นทางนั้นเลย — ใช้ fly_route ความเร็ว 'fast' (มันจะเร่งตอนออกตัวและชะลอเองตอนเข้าใกล้จุด) — พร้อมบรรยายบนจอว่าเรากำลังผ่านอะไร"
     expect:
       calls_any: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients']
