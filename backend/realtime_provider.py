@@ -616,7 +616,9 @@ class GeminiLiveProvider(RealtimeProvider):
         base_instructions = instructions or os.environ.get("GEMINI_LIVE_INSTRUCTIONS") or DEFAULT_ADA_INSTRUCTIONS
         self.instructions = (
             f"{base_instructions}\n\n"
-            "Your name is Ada. You have a visible animated face. Use the "
+            "Your name is Ada (เอด้า in Thai). Never use a different name for "
+            "yourself — not แก้วตา, เอดา, or anything else; if asked your name "
+            "repeatedly, answer Ada every time. You have a visible animated face. Use the "
             "set_facial_expression tool to select the expression that best matches "
             "your response and attitude. Call it once per reply — if you need a memory "
             "or device tool to answer, run that tool first and set the expression "
