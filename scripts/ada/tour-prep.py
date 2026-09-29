@@ -97,6 +97,8 @@ def main() -> int:
     ap.add_argument("--cam", action="append", default=[],
                     help="slug@zone to select a specific camera")
     ap.add_argument("--out-dir", default="/tmp")
+    ap.add_argument("--publish", action="store_true",
+                    help="scp the report HTML to the live vcast webroot")
     a = ap.parse_args()
     zones = a.zone or sorted({s.split("@")[1] for s in a.cam})
     if not zones:
@@ -108,6 +110,14 @@ def main() -> int:
     hp = Path(a.out_dir) / f"tour-{a.name}.html"
     jp.write_text(json.dumps(tour, ensure_ascii=False, indent=1))
     hp.write_text(render_html(a.name, stops, skipped))
+    if a.publish:
+        # report wall goes to the live vcast webroot — castable as a pane
+        dst = ("/home/tony/CascadeProjects/chaba-tony-dell/stacks/web/"
+               f"public/apps/camwall/{hp.name}")
+        import subprocess
+        subprocess.run(["scp", "-q", str(hp), f"tony-dell:{dst}"],
+                       check=True)
+        print(f"  published: {BASE}{hp.name}")
     have_xy = sum(1 for s in stops if s.get("lat"))
     print(f"{len(stops)} live stops ({have_xy} with coords), "
           f"{len(skipped)} skipped/offline\n  {jp}\n  {hp}")
