@@ -22,7 +22,15 @@ turns:
       calls_any: [cast_to_screen, cctv_wall]
       response_nonempty: true
       timeout_s: 180
-      settle_s: 30   # pip layout + Cesium init + wall thumbs
+      settle_s: 50   # pip layout + slow Cesium cold-load + wall thumbs
+
+  - user: "Check screen 4's state — tell me its layout."
+    expect:
+      calls_any: [vcast_list]
+      result_contains: ['pip']
+      timeout_s: 90
+      settle_s: 8
+      # the display reports '2 panes (pip)' when the floating mode took
 
   - user: "Fly into Johannesburg, South Africa — over the city — and narrate it on that screen."
     expect:
