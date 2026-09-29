@@ -79,6 +79,7 @@ policy:
     - gev_tour_report
     - gev_eu_tour
     - gev_bkk_pip
+    - gev_bkk_route_th
     - gev_za_pip
     - split_screen
     - cast_switch_flow
@@ -207,6 +208,7 @@ suites:
     - gev_tour_report
     - gev_eu_tour
     - gev_bkk_pip
+    - gev_bkk_route_th
     - gev_za_pip
     - gev_layers_track
     - gev_screen1_interact
