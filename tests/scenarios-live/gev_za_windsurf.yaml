@@ -12,15 +12,15 @@ turns:
       timeout_s: 45
       settle_s: 4
 
-  - user: "First, stop every camera wall bound to screen 4 — check vcast_list for which zones hold it and disable them all. I want it fully idle."
+  - user: "First, stop every camera wall bound to screen 1 — check vcast_list for which zones hold it and disable them all. I want it fully idle."
     expect:
       calls_any: [cctv_wall, cast_to_screen]
       timeout_s: 120
       settle_s: 10
-      # traffic+rama9 zones hold a screen-4 binding and re-assert the wall
+      # traffic+rama9 zones hold a screen-1 binding and re-assert the wall
       # over any split layout — release the binding before the tour
 
-  - user: "Put God's Eye View on screen 4, full screen."
+  - user: "Put God's Eye View on screen 1, full screen."
     expect:
       calls_any: [cast_to_screen]
       response_nonempty: true
@@ -81,14 +81,14 @@ turns:
       settle_s: 10
       # get_current_view_state echoes real lat/lon/camera — honest verify
 
-  - user: "Take a snapshot of screen 4 — I want to see the three spots framed."
+  - user: "Take a snapshot of screen 1 — I want to see the three spots framed."
     expect:
       calls_any: [vcast_snapshot]
       response_nonempty: true
       timeout_s: 90
       settle_s: 8
 
-  - user: "Done — clear screen 4 back to idle."
+  - user: "Done — clear screen 1 back to idle."
     expect:
       calls_any: [cast_to_screen]
       response_nonempty: true
