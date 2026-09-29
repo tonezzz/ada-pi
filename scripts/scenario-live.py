@@ -306,7 +306,9 @@ def _gev_view_position(screen: Any) -> tuple[float, float, float] | None:
     walk(out)
     if not lats or not lons:
         return None
-    return (lats[0], lons[0], 0.0)
+    # multiple remotes can answer — the last response is the freshest
+    # (stale tabs still answer first sometimes; 2026-09-29 Austin race)
+    return (lats[-1], lons[-1], 0.0)
 
 
 def _result_geo_within(result: Any, want_lat: float, want_lon: float,
