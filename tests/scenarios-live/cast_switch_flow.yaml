@@ -1,0 +1,63 @@
+# Cast source/destination switching on vcast displays.
+#
+#   1. ask for traffic cam wall on screen 4 -> she may ask before taking
+#      over a busy screen (capture-contract: confirm before replacing)
+#   2. confirm -> wall goes up (cctv_wall or cast_to_screen both fine)
+#   3. "switch it to GEV" -> new SOURCE on the same screen
+#   4. "move it to screen 2" -> new DESTINATION; she may check what's on
+#      screen 2 and ask before replacing its content (correct etiquette)
+#   5. affirm -> the move executes
+#   6. tear everything down
+#
+# Note: 'error' in tool results is EXPECTED when she hits a confirm gate —
+# only 'denied'/relay failures count as breakage.
+#
+# tier: full — actuates real displays. Screen 2 is often in use (camwall);
+# restore its content afterward if the run left it changed.
+name: cast_switch_flow
+tier: full
+
+turns:
+  - user: "Put the traffic camera wall on screen 4."
+    expect:
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  - user: "Yes, screen 4 is free — go ahead."
+    expect:
+      calls_any: [cast_to_screen, cctv_wall, vcast_screen_cast]
+      result_not_contains: ['denied']
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 12
+
+  - user: "Actually, switch that screen to God's Eye View instead."
+    expect:
+      calls_any: [cast_to_screen, gev_command, vcast_screen_cast]
+      result_not_contains: ['denied', 'gev command relay']
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 15   # GEV/Cesium needs a moment inside the iframe
+
+  - user: "Move that over to screen 2."
+    expect:
+      response_nonempty: true
+      # she SHOULD pause if screen 2 is busy — asking is correct
+      timeout_s: 90
+      settle_s: 8
+
+  - user: "Yes, replace whatever's on it."
+    expect:
+      calls_any: [cast_to_screen, gev_command, vcast_screen_cast]
+      result_not_contains: ['denied']
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
+
+  - user: "All done — clear both screens."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
