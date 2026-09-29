@@ -288,27 +288,29 @@ def _gev_view_position(screen: Any) -> tuple[float, float, float] | None:
         out = json.loads(urllib.request.urlopen(req, timeout=15).read())
     except Exception:
         return None
-    lats, lons = [], []
+    # the response nests the camera at responses[].response.camera
+    # — only that position counts; annotation path/waypoint coords
+    # elsewhere in the payload are NOT the camera (2026-09-29: a route's
+    # path coords were mistaken for the camera mid-flight)
+    cams = []
     def walk(x):
         if isinstance(x, dict):
-            for k, v in x.items():
-                lk = str(k).lower()
-                if isinstance(v, (int, float)):
-                    if lk in ("latitude", "lat"):
-                        lats.append(float(v))
-                    elif lk in ("longitude", "lon", "lng"):
-                        lons.append(float(v))
-                else:
-                    walk(v)
+            cam = x.get("camera")
+            if isinstance(cam, dict):
+                la, lo = cam.get("latitude"), cam.get("longitude")
+                if isinstance(la, (int, float)) and isinstance(
+                        lo, (int, float)):
+                    cams.append((float(la), float(lo)))
+            for v in x.values():
+                walk(v)
         elif isinstance(x, list):
             for v in x:
                 walk(v)
     walk(out)
-    if not lats or not lons:
+    if not cams:
         return None
-    # multiple remotes can answer — the last response is the freshest
-    # (stale tabs still answer first sometimes; 2026-09-29 Austin race)
-    return (lats[-1], lons[-1], 0.0)
+    # last answer = freshest (stale tabs can respond first)
+    return (cams[-1][0], cams[-1][1], 0.0)
 
 
 def _result_geo_within(result: Any, want_lat: float, want_lon: float,
