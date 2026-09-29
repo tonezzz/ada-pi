@@ -47,8 +47,10 @@ SAMPLE_RATE = 16000
 MIN_CHUNK_BYTES = SAMPLE_RATE * 2 * 2  # 64 000 bytes
 # RMS threshold below which a buffer is treated as silence and skipped.
 SILENCE_RMS = 0.01
-# Minimum cosine similarity to accept a match.
-DEFAULT_THRESHOLD = 0.45
+# Minimum cosine similarity to accept a match. Env override per service:
+# far-field/satellite mics score ~0.1-0.2 below clean enrollment captures —
+# on ada-ha-tony 0.45 sat above Tony's live voice even with a clean profile.
+DEFAULT_THRESHOLD = float(os.environ.get("ADA_SPEAKER_THRESHOLD", "0.45"))
 # Drop the buffer if it grows beyond this (prevents unbounded growth when
 # identification is slower than audio arrival).
 MAX_BUFFER_BYTES = SAMPLE_RATE * 6 * 2  # 6 s
