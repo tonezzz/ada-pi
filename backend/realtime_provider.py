@@ -1417,6 +1417,11 @@ class GeminiLiveProvider(RealtimeProvider):
                 base + path, data=data,
                 headers={"Content-Type": "application/json"} if data else {})
             return urllib.request.urlopen(req, timeout=10)
+        def _req_post_gev(url: str, payload: dict):
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"})
+            return urllib.request.urlopen(req, timeout=10)
         try:
             r = await asyncio.to_thread(
                 _req, "/pub",
@@ -1428,6 +1433,21 @@ class GeminiLiveProvider(RealtimeProvider):
                                   "check vcast_list for online displays."}, None)
         except Exception as exc:
             return ({"error": f"snap-request failed: {exc}"}, None)
+        # GEV pages live in a same-origin iframe the vcast page can't read —
+        # but the iframe's own remote client can grab its Cesium canvas.
+        # Fire capture_frame at that screen's GEV remotes; whichever lands
+        # the frame at /frame first wins the poll below.
+        gev_cmd = os.environ.get(
+            "GEV_CMD_URL",
+            "https://tony-dell.taila0626a.ts.net/apps/gev-cmd/command")
+        try:
+            await asyncio.to_thread(
+                _req_post_gev, gev_cmd,
+                {"name": "capture_frame",
+                 "args": {"token": token},
+                 "screen": screen, "wait": 0})
+        except Exception:
+            pass  # bridge down or no GEV client — snap-request may still work
         for _ in range(15):
             try:
                 r = await asyncio.to_thread(
@@ -2196,7 +2216,9 @@ class GeminiLiveProvider(RealtimeProvider):
                         "to check an overlay, or when the user asks what's on a screen) — do not rely on "
                         "the reported state flag alone. One still frame per call, a few seconds old. "
                         "If the result reports uncapturable-iframe, the screen is showing a framed web "
-                        "page the browser cannot capture — say so rather than guessing. Not for the TV."
+                        "page the browser cannot capture — EXCEPT God's Eye View (/apps/gev/), whose "
+                        "iframe grabs its own Cesium canvas automatically — you DO get real pixels there. "
+                        "Not for the TV."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2273,10 +2295,13 @@ class GeminiLiveProvider(RealtimeProvider):
                         "then drive it with gev_command. Useful names: fly_to_location {location}, zoom_to_globe {}, "
                         "adjust_camera_zoom {factor}, set_layer_visibility {layer, visible}, track_entity {entity_id}, "
                         "stop_tracking {}, move_camera {dx, dy}, analyst_query {query}, annotate_map {text, lat, lon}, "
-                        "clear_annotations {}, get_current_view_state {}. Optional 'screen' targets one vcast "
-                        "display (omit to hit every page showing GEV); the client replies are collected and "
-                        "returned in 'responses' — get_current_view_state actually answers. Returns error if "
-                        "no GEV client is connected — that means nothing is showing the app, cast it first."
+                        "clear_annotations {}, get_current_view_state {}, capture_frame {token} (grabs the map "
+                        "canvas to the input-bridge frame store — vcast_snapshot does this automatically for "
+                        "GEV pages). Optional 'screen' targets one vcast display and 'pane' narrows to one "
+                        "split-screen pane (omit to hit every page showing GEV); the client replies are "
+                        "collected and returned in 'responses' — get_current_view_state actually answers. "
+                        "Returns error if no GEV client is connected — that means nothing is showing the app, "
+                        "cast it first."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2285,6 +2310,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             "name": {"type": "string", "description": "GEV tool name."},
                             "args": {"type": "object", "description": "Tool arguments (per GEV tools.json)."},
                             "screen": {"type": "integer", "description": "Limit to this vcast screen (omit = all GEV pages)."},
+                            "pane": {"type": "integer", "description": "Limit to this split-screen pane (0-based; omit = all panes)."},
                             "wait": {"type": "number", "description": "Seconds to wait for client responses (0 = fire-and-forget). Default 3."},
                         },
                         "required": ["name"],
@@ -3097,6 +3123,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "display_name": {
                                 "type": "string",
                                 "description": "Display name for personalization (defaults to name).",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Owner-confirmed force-replace for a stale/poisoned voice profile — set true only after the speaker explicitly confirms.",
                             },
                         },
                         "required": ["name"],

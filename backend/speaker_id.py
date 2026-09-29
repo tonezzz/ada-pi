@@ -314,42 +314,52 @@ class SpeakerIdentifier:
 
     def enroll(self, name: str, pcm16: bytes, sample_rate: int = SAMPLE_RATE,
                ha_person: str | None = None,
-               display_name: str | None = None) -> dict[str, Any]:
+               display_name: str | None = None,
+               force: bool = False) -> dict[str, Any]:
         """Compute and store an embedding for *name*.
 
         Contamination guard: if the buffered audio matches a DIFFERENT
         enrolled speaker above the identify threshold, refuse — enrolling it
         under *name* would poison that profile (this happened: Tony's voice
-        overwrote 'KK' after a borderline misidentification)."""
+        overwrote 'KK' after a borderline misidentification).
+
+        force=True (owner-confirmed only) skips BOTH guards and REPLACES
+        the profile — the recovery path when a real speaker is locked out
+        by a stale/poisoned print."""
         if name.strip().lower() in RESERVED_NAMES:
             raise ValueError(
                 f"'{name}' is a placeholder, not a real name — ask the "
                 "speaker for their name first, then enroll under that."
             )
         emb = self._compute_embedding(pcm16, sample_rate)
-        # Contamination guard: match against EVERY stored print of every
-        # other speaker (max), not just centroids — a foreign voice sitting
-        # near any single sample is still foreign.
-        best_other, best_other_score = None, 0.0
-        for other in self._enrolled:
-            if other == name:
-                continue
-            for ref in self._prints.get(other) or [self._enrolled[other]]:
-                score = _cosine_similarity(emb, ref)
-                if score > best_other_score:
-                    best_other, best_other_score = other, score
-        if best_other is not None and best_other_score >= DEFAULT_THRESHOLD:
-            raise ValueError(
-                f"this voice matches enrolled speaker '{best_other}' "
-                f"({best_other_score:.0%}) — refusing to enroll it as '{name}'. "
-                "Confirm who is actually speaking, or remove the stale profile first."
-            )
+        if not force:
+            # Contamination guard: match against EVERY stored print of every
+            # other speaker (max), not just centroids — a foreign voice sitting
+            # near any single sample is still foreign.
+            best_other, best_other_score = None, 0.0
+            for other in self._enrolled:
+                if other == name:
+                    continue
+                for ref in self._prints.get(other) or [self._enrolled[other]]:
+                    score = _cosine_similarity(emb, ref)
+                    if score > best_other_score:
+                        best_other, best_other_score = other, score
+            if best_other is not None and best_other_score >= DEFAULT_THRESHOLD:
+                raise ValueError(
+                    f"this voice matches enrolled speaker '{best_other}' "
+                    f"({best_other_score:.0%}) — refusing to enroll it as '{name}'. "
+                    "Confirm who is actually speaking, or remove the stale profile first."
+                )
         prev = self._metadata.get(name, {})
-        if name not in self._prints and name in self._enrolled:
+        if force:
+            # replace outright — merging into a stale/poisoned profile is
+            # the failure mode we're recovering from
+            self._prints[name] = []
+        elif name not in self._prints and name in self._enrolled:
             # v1→v2 migration: seed prints with the existing centroid so the
             # first v2 enrollment extends rather than replaces the profile.
             self._prints[name] = [self._enrolled[name]]
-        if name in self._prints:
+        if self._prints.get(name) and not force:
             # Own-voice check vs the speaker's best stored print (max) —
             # centroids alone get diluted as samples accumulate and would
             # reject a legitimate re-enrollment.
@@ -707,6 +717,7 @@ class SpeakerSession:
         ha_person: str | None = None,
         display_name: str | None = None,
         seconds: float = 15.0,
+        force: bool = False,
     ) -> dict[str, Any]:
         """Capture buffered audio and enroll *name*.
 
@@ -735,7 +746,8 @@ class SpeakerSession:
                 f"not enough speech captured ({len(pcm16) / (SAMPLE_RATE * 2):.1f}s); {diag}"
             )
         result = self._identifier.enroll(
-            name, pcm16, ha_person=ha_person, display_name=display_name
+            name, pcm16, ha_person=ha_person, display_name=display_name,
+            force=force,
         )
         # Enrolled — the pending voice has been claimed by a profile.
         self._pending_voice.clear()

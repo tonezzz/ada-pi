@@ -1034,12 +1034,14 @@ class ToolRunner:
                 not in {"stop", "settings", "status"})
             or name == "cctv_snapshot"
         )
-        if gated and confirmed is not True:
-            logger.warning("denied %s %r: camera capture without confirmed=true", name, args)
+        if gated and confirmed is not True and self._is_secondary_turn():
+            logger.warning(
+                "denied %s %r: camera capture by secondary speaker "
+                "without confirmed=true", name, args)
             raise PermissionError(
-                f"{name} starts a camera capture — ask the user explicitly "
-                "first, then call again with confirmed=true only after "
-                "they say yes."
+                f"{name} starts a camera capture — a guest asked for it. "
+                "Confirm with the session owner first, then call again "
+                "with confirmed=true."
             )
 
     def _check_memory_write_allowed(
@@ -2197,6 +2199,7 @@ class ToolRunner:
         name: str,
         ha_person: str | None = None,
         display_name: str | None = None,
+        confirmed: bool = False,
     ) -> dict[str, Any]:
         """Enroll the current speaker's voice from buffered audio.
 
@@ -2241,7 +2244,7 @@ class ToolRunner:
                     "session — propose it to them aloud and let them ask "
                     "in their own voice.")
             cur = self._current_speaker()
-            if cur:
+            if cur and not confirmed:
                 try:
                     buf_name, _buf_score = speaker_session.identify_buffer()
                     buf_person = (
@@ -2251,22 +2254,38 @@ class ToolRunner:
                     buf_person = None
                 if buf_person and buf_person == cur:
                     raise PermissionError(
-                        f"the buffered voice still matches {buf_name} — "
-                        "the identified speaker must stop talking before "
-                        "the owner can re-enroll.")
+                        f"the buffered voice still matches {buf_name}. "
+                        "If this is the owner being MISIDENTIFIED (their "
+                        "stale print matches another enrolled speaker), "
+                        "say so aloud, ask them to confirm the fix "
+                        "out loud, then retry with confirmed=true — that "
+                        "overwrites the stale profile. Otherwise the "
+                        "identified speaker must stop talking first.")
+        # force replaces a stale/poisoned profile — only ever allowed for
+        # the session OWNER's own enrollment, and only after the user
+        # explicitly confirms the fix (confirmed=true)
+        owner = self._owner()
+        target_person = ha_person or f"person.{_slug(name)}"
+        force = bool(confirmed) and owner is not None and \
+            target_person == owner
         try:
             result = speaker_session.enroll_from_buffer(
                 str(name),
                 ha_person=ha_person or None,
                 display_name=display_name or None,
+                force=force,
             )
-            return {
+            out = {
                 "status": "enrolled",
                 "name": result.get("name"),
                 "ha_person": result.get("ha_person"),
                 "display_name": result.get("display_name"),
                 "duration_s": result.get("duration_s"),
             }
+            if force:
+                out["note"] = ("profile was force-replaced — if another "
+                               "speaker still gets matched to you, they "
+                               "may need to re-enroll.")
         except ValueError as exc:
             return {"error": str(exc)}
         except Exception as exc:
@@ -2851,6 +2870,24 @@ class ToolRunner:
             nav_msg["pane"] = int(pane)
         out = await asyncio.to_thread(
             self._vcast_api, "/pub", {"screen": n, "msg": nav_msg})
+        # wall health from the manifest — Ada warns immediately when the
+        # zone is dead instead of the user discovering a blank wall
+        try:
+            st = await self.cctv_wall("status", zone)
+            out["live_cams"] = st.get("live")
+            out["total_cams"] = st.get("total")
+            if st.get("ok") is False or (st.get("total") and not st.get("live")):
+                out["note_extra"] = (
+                    "ALL cameras in this wall are currently down — "
+                    "warn the user the wall will show errors until the "
+                    "source recovers.")
+            elif st.get("live") is not None and st.get("live") < st.get("total"):
+                out["note_extra"] = (
+                    f"only {st['live']}/{st['total']} cameras are live — "
+                    "tell the user which are down (see 'cams' in a status "
+                    "call if they ask).")
+        except Exception:
+            pass
         out.update({
             "zone": zone, "screen": n, "url": url,
             "note": ("thumbs refresh in the background (VMS cams ~60s, "
@@ -2899,12 +2936,14 @@ class ToolRunner:
 
     async def gev_command(self, name: str, args: dict[str, Any] | None = None,
                           screen: int | None = None,
+                          pane: int | None = None,
                           wait: float = 3.0) -> dict[str, Any]:
         """Send a command to God's Eye View clients — forwards a
         function_call frame through the gev-gemini bridge to connected GEV
         browsers (including casted ones). screen=N targets that display;
-        wait (seconds, 0=fire-and-forget) collects the clients'
-        tool_response so queries like get_current_view_state can answer."""
+        pane=N narrows to that split-screen pane; wait (seconds,
+        0=fire-and-forget) collects the clients' tool_response so queries
+        like get_current_view_state can answer."""
         import asyncio
         import urllib.request
         base = os.environ.get(
@@ -2913,6 +2952,7 @@ class ToolRunner:
         payload = json.dumps({
             "name": name, "args": args or {},
             "screen": screen,
+            "pane": pane,
             "wait": min(float(wait or 0), 10.0),
         }).encode()
         def _post():
