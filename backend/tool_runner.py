@@ -152,7 +152,7 @@ _CALLER_IDENTITY: contextvars.ContextVar = contextvars.ContextVar(
 # identified speaker so a concurrent session's speaker-ID can't bleed into
 # this one's secondary-owner check — same hazard class as _CALLER_IDENTITY.
 _CALLER_SPEAKER: contextvars.ContextVar = contextvars.ContextVar(
-    "ada_caller_speaker", default=None)
+    "ada_caller_speaker", default=_IDENTITY_UNSET)
 
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
@@ -634,10 +634,13 @@ class ToolRunner:
 
     def _current_speaker(self) -> str | None:
         """Session-scoped identified speaker — the ContextVar set by
-        execute() wins; the shared field is only a fallback for non-ws
-        callers (REST/tests) that never pass one."""
+        execute() wins (a session with NO identified speaker passes None,
+        which must NOT fall back to the shared field); the shared field is
+        only a fallback for non-ws callers (REST/tests)."""
         v = _CALLER_SPEAKER.get()
-        return v if v is not None else self.current_speaker_ha_person
+        if v is _IDENTITY_UNSET:
+            return self.current_speaker_ha_person
+        return v
 
     def policy_identity(self) -> str | None:
         """Authorization identity: the session owner pinned at connect.
