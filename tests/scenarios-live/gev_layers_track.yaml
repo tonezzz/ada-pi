@@ -1,0 +1,56 @@
+# GEV data layers + entity tracking on a real display (screen 4).
+#   cast -> flights layer on -> nearest-aircraft/tracking -> VISUAL verify
+#   (vcast_snapshot should now return real Cesium canvas pixels via the
+#   GEV remote client's capture_frame path) -> cleanup
+# tier: full — actuates a real display.
+name: gev_layers_track
+tier: full
+turns:
+  - user: "Put God's Eye View on screen 4."
+    expect:
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  - user: "Yes, go ahead."
+    expect:
+      result_not_contains: ['denied']
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 20   # Cesium init
+
+  - user: "Turn on the flights layer and find the nearest aircraft over Bangkok."
+    expect:
+      calls_any: [gev_command]
+      result_contains: ['delivered']
+      result_not_contains: ['"delivered": 0', '\\"delivered\\": 0',
+                            'gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 12
+
+  - user: "Track it — keep the camera on it."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
+
+  # THE visual readback test: vcast_snapshot on a GEV iframe must now
+  # return real pixels (iframe canvas capture) — she should describe
+  # something concrete, not say it can't be captured.
+  - user: "Show me — what's literally on the screen right now?"
+    expect:
+      calls_any: [vcast_snapshot, gev_command]
+      result_not_contains: ['uncapturable', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 10
+
+  - user: "Turn the flights layer off and take GEV off screen 4."
+    expect:
+      calls_any: [gev_command, cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
