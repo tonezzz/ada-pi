@@ -759,6 +759,10 @@ class GeminiLiveProvider(RealtimeProvider):
         self._closed = False
         self._send_lock = asyncio.Lock()
         self.session_id = session_id or "-"
+        # The session's own SpeakerSession — pwa_server sets this so tool
+        # calls execute against THIS session's audio buffer even when other
+        # ws sessions share the ToolRunner (2026-09-29 enroll 0.0s bug).
+        self.speaker_session: Any | None = None
         self.resumption_handle: str | None = None
         self.go_away_time_left: str | None = None
         # Turn watchdog state — stall detection for a silently-dead Gemini
@@ -4012,6 +4016,10 @@ class GeminiLiveProvider(RealtimeProvider):
         if self._session is None:
             raise RuntimeError("provider is not connected")
         self._last_user_at = time.monotonic()
+        # A real turn is now open through turn_complete — text turns produce
+        # no input_transcription, so this is the only signal covering the
+        # tool-call/generation gap where context sends get dropped.
+        self._turn_open = True
         async with self._send_lock:
             await self._session.send_client_content(
                 turns=types.Content(

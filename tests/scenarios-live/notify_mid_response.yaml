@@ -43,10 +43,8 @@ turns:
       urgent: true
       delay_s: 2
     expect:
-      # The real contract: the urgent turn interrupts her mid-response.
-      # (Her follow-up announcement's transcript deltas are suppressed by
-      # the interrupted-turn path — she speaks it, but the runner can't
-      # assert on words. Verified via server log 2026-09-29 07:17.)
+      # Urgent lands as a real turn — she must verbalize it this turn,
+      # whether that means interrupting the count or answering after it.
       timeout_s: 150
       settle_s: 15
-      events_contain: [{type: response_interrupted}]
+      response_contains_any: ["leak", "water", "kitchen", "urgent"]
