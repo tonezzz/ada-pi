@@ -1,0 +1,67 @@
+# Thailand camera-to-camera tour: GEV flies between Bangkok-area
+# locations while the right pane pops the nearest live traffic-cam still
+# and the display narrates each stop.
+# NOTE: the Longdo/iTIC feed has live frames for Bangkok + Nonthaburi
+# only — the tour stays in that area (Nonthaburi -> Pak Kret -> Bang Bua Thong).
+# tier: full — actuates a real display.
+name: gev_th_tour
+tier: full
+turns:
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  - user: "On screen 4 — split it: God's Eye View on the left, the camera wall (rama9 zone) on the right."
+    expect:
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Yes — go ahead and set it up."
+    expect:
+      calls_any: [cast_to_screen, cctv_wall]
+      response_nonempty: true
+      timeout_s: 150
+      settle_s: 30   # Cesium init + camwall
+
+  # stop 1 — Sukhumvit/Asoke
+  - user: "Fly to Nonthaburi town — and point the camera pane at the nearest live cam still; tell the screen what you see."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 150
+      settle_s: 14
+
+  # stop 2 — Bang Na
+  - user: "Now fly over to Pak Kret — same thing: nearest camera picture on the right, narrate it on the screen."
+    expect:
+      calls_any: [gev_command, traffic_camera, cast_to_screen]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 150
+      settle_s: 14
+
+  # stop 3 — Nonthaburi
+  - user: "One more — fly to Bang Bua Thong, refresh the camera pane with the nearest cam, and narrate again."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 150
+      settle_s: 14
+
+  - user: "Take a snapshot of screen 4 — I want to see the final view."
+    expect:
+      calls_any: [vcast_snapshot]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  - user: "Tour over — clear screen 4 back to idle."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8

@@ -69,6 +69,14 @@ policy:
     - tv_power
     - tv_cast_control
     - gev_cast_control
+    - gev_screen1_interact
+    - gev_screen4_interact
+    - gev_layers_track
+    - gev_bkk_tour
+    - gev_th_tour
+    - split_screen
+    - cast_switch_flow
+    - uplink_confirm_flow
     - cctv_snapshot_to_screen
     - vcast_screen_cast
     - vcast_owner_allow
@@ -186,6 +194,12 @@ suites:
     - vcast_gesture_recall
     - tv_cast_control
     - gev_cast_control
+    - gev_bkk_tour
+    - gev_th_tour
+    - gev_layers_track
+    - gev_screen1_interact
+    - gev_screen4_interact
+    - split_screen
     - camera_describe
     - traffic_camera_describe
     - zone_describe
