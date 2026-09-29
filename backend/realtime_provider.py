@@ -76,7 +76,7 @@ CALENDAR_TOOLS = {
 # CMS declarations and their instruction paragraph together.
 CMS_TOOLS = {
     "cms_list_pages", "cms_get_page", "cms_verify_page",
-    "cms_publish_page", "cms_delete_page",
+    "cms_publish_page", "cms_delete_page", "cms_automation",
 }
 
 CALENDAR_INSTRUCTIONS = (
@@ -131,7 +131,13 @@ CMS_INSTRUCTIONS = (
     "log, slug like 'flood-report'), check the live conditions with the "
     "home/weather tools, and keep the page current as new details arrive; "
     "the user's report is the consent — pass confirmed=true directly and do "
-    "not ask for confirmation."
+    "not ask for confirmation. "
+    "Generated pages (news digests, flood reports) have an automation registry "
+    "you control with cms_automation: list/get are free reads; set, enable, "
+    "disable, and run adjust a page's feeds, refresh interval, relevance "
+    "filter, language variants, or queue a regeneration — writes need "
+    "confirmed=true like other CMS writes. When the user asks to refresh a "
+    "generated page, prefer cms_automation action='run' over republishing."
 )
 
 # Same constant pattern as CALENDAR_TOOLS/CMS_TOOLS: lets ADA_EXCLUDED_TOOLS
@@ -3675,6 +3681,92 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["slug"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "cms_automation",
+                    "description": (
+                        "Inspect and adjust a generated miniapp page's automation "
+                        "switches and knobs — the registry the scheduled news worker "
+                        "honors. list shows every configured page with its switch state "
+                        "and last-run status; get reads one page's full config; set "
+                        "changes knobs (interval_min, max_items, since_hours, feeds, "
+                        "require relevance regex, langs, parent/children); enable/disable "
+                        "pause updates; run queues a one-shot regeneration (sets run_now). "
+                        "list and get are free reads — set/enable/disable/run require "
+                        "confirmed=true after restating what will change."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["list", "get", "set", "enable", "disable", "run"],
+                                "description": "Registry operation.",
+                            },
+                            "slug": {
+                                "type": "string",
+                                "description": "Page slug the config belongs to (required except for list).",
+                            },
+                            "enabled": {
+                                "type": "boolean",
+                                "description": "set: turn the page's automation on/off.",
+                            },
+                            "interval_min": {
+                                "type": "integer",
+                                "description": "set: minutes between automatic runs (0 = every run, max 10080).",
+                            },
+                            "run_now": {
+                                "type": "boolean",
+                                "description": "set: queue (true) or cancel (false) a one-shot regeneration.",
+                            },
+                            "max_items": {
+                                "type": "integer",
+                                "description": "set: max news items per update (1-50).",
+                            },
+                            "since_hours": {
+                                "type": "integer",
+                                "description": "set: only include items published within N hours (1-720).",
+                            },
+                            "require": {
+                                "type": "string",
+                                "description": "set: relevance regex matched against item title+summary; empty string clears it.",
+                            },
+                            "feeds": {
+                                "type": "array",
+                                "items": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "minItems": 2,
+                                    "maxItems": 2,
+                                },
+                                "description": "set: RSS feeds as [[name, url], ...] pairs.",
+                            },
+                            "langs": {
+                                "type": "array",
+                                "items": {"type": "string", "enum": ["en", "th"]},
+                                "description": "set: which language variants to update.",
+                            },
+                            "parent": {
+                                "type": "string",
+                                "description": "set: parent report slug this page rolls up into (empty clears).",
+                            },
+                            "children": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "set: child report slugs this page aggregates.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required for writes; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
+                        },
+                        "required": ["action"],
                         "additionalProperties": False,
                     },
                 }, {

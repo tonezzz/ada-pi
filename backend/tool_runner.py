@@ -57,7 +57,7 @@ CALENDAR_WRITE_TOOLS = {
 
 # Miniapp/CMS page writes: publishing or deleting a page changes what the
 # miniapp renders, so all writes require confirmed=true.
-CMS_WRITE_TOOLS = {"cms_publish_page", "cms_delete_page"}
+CMS_WRITE_TOOLS = {"cms_publish_page", "cms_delete_page", "cms_automation"}
 
 # Devin dispatch: launching an unattended agent session (devin_dispatch),
 # injecting a message into one (devin_followup), or delivering the user's
@@ -171,6 +171,12 @@ _CALLER_VERIFIED_AFFIRM: contextvars.ContextVar = contextvars.ContextVar(
 
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
+# Per-page automation registry: one doc per CMS slug holding the switches
+# (enabled, run_now) and knobs (interval_min, feeds, require, …) the
+# flood-news worker honors, plus worker write-back state (last_run…).
+CMS_AUTOMATION_COLLECTION = os.environ.get(
+    "ADA_CMS_AUTOMATION_COLLECTION", "ada-cms-automation")
+CMS_AUTOMATION_READ_ACTIONS = {"list", "get"}
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # Confirmation gate: `confirmed` is a self-asserted flag — the server cannot
@@ -1194,6 +1200,10 @@ class ToolRunner:
         pending confirmation; a resubmit with confirmed=true must match it —
         the model cannot jump straight to confirmed without the ask-step.
         Raises PermissionError on denial."""
+        if (name == "cms_automation"
+                and str(args.get("action") or "").lower()
+                in CMS_AUTOMATION_READ_ACTIONS):
+            return  # list/get read the registry — no confirmation needed
         if os.environ.get("ADA_READ_ONLY") == "true":
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("CMS writes are disabled (ADA_READ_ONLY=true)")
@@ -2447,12 +2457,22 @@ class ToolRunner:
                 return str(v[0])
             return str(v) if isinstance(v, str) else None
 
-        return {
+        page = {
             "slug": first("slug") or doc.get("key"),
             "title": first("title") or doc.get("key"),
             "format": first("format") or "markdown",
             "updated": first("updated"),
         }
+        # Provenance passthrough — generated pages carry these; the CMS
+        # viewer uses generated_by to offer a Regenerate control.
+        for name in ("generated_by", "report_role", "parent"):
+            v = first(name)
+            if v:
+                page[name] = v
+        children = meta.get("children")
+        if isinstance(children, list) and children:
+            page["children"] = [str(c) for c in children]
+        return page
 
     async def cms_list_pages(self, limit: int = 50) -> list[dict[str, Any]]:
         """List pages in the miniapp CMS collection, grouped by slug with
@@ -2521,21 +2541,45 @@ class ToolRunner:
             )
         if not (title or "").strip():
             raise ValueError("title is required")
-        updated = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = datetime.now(timezone.utc)
+        updated = now.isoformat(timespec="seconds")
+        # Merge the existing doc's meta instead of replacing it — generated
+        # pages carry provenance (generated_by/sources/parent/children) and
+        # memory-schema fields a wholesale replace would silently strip.
+        try:
+            existing = await self.mddb.get_document(CMS_COLLECTION, slug, lang)
+        except Exception:
+            existing = None
+        if not isinstance(existing, dict):
+            existing = None
+        meta = {
+            k: (v if isinstance(v, list) else [v])
+            for k, v in ((existing or {}).get("meta") or {}).items()
+        }
+        meta.setdefault("bank", ["cms"])
+        meta.setdefault("scope", ["tony"])
+        meta.setdefault("status", ["active"])
+        meta.setdefault("source", ["api"])
+        meta["written_by"] = ["cms_publish_page"]
+        meta.setdefault("subject", [slug])
+        meta.setdefault("attribute", ["page"])
+        meta.setdefault("valid_from", [now.date().isoformat()])
+        meta["last_verified"] = [now.date().isoformat()]
+        meta.update({
+            "kind": ["page"],
+            "slug": [slug],
+            "title": [title.strip()],
+            "format": [fmt],
+            "lang": [lang],
+            "updated": [updated],
+            "instance": [self._instance_id or "ada"],
+        })
         result = await self.mddb.add_document(
             CMS_COLLECTION,
             slug,
             lang,
             content,
-            meta={
-                "kind": ["page"],
-                "slug": [slug],
-                "title": [title.strip()],
-                "format": [fmt],
-                "lang": [lang],
-                "updated": [updated],
-                "instance": [self._instance_id or "ada"],
-            },
+            meta=meta,
         )
         if result is None:
             return {"status": "error", "error": "mddb write failed", "slug": slug}
@@ -2568,6 +2612,211 @@ class ToolRunner:
         if result is None:
             return {"status": "not_found", "slug": slug}
         return {"status": "deleted", "slug": slug}
+
+    # -- CMS automation registry (ada-cms-automation) -----------------------
+    # One doc per page slug, contentMd = JSON of the page's switches/knobs
+    # and the worker's write-back state. The flood-news worker merges this
+    # over its seed config, so Ada flips switches by editing the doc here.
+
+    @staticmethod
+    def _cms_automation_cfg(doc: dict[str, Any] | None) -> dict[str, Any]:
+        if not doc:
+            return {}
+        try:
+            cfg = json.loads(doc.get("contentMd") or "{}")
+        except (TypeError, ValueError):
+            return {}
+        return cfg if isinstance(cfg, dict) else {}
+
+    async def _cms_automation_doc(self, slug: str) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        doc = await self.mddb.get_document(CMS_AUTOMATION_COLLECTION, slug, "en")
+        return doc, self._cms_automation_cfg(doc)
+
+    async def _cms_automation_save(self, slug: str, cfg: dict[str, Any]) -> None:
+        now = datetime.now(timezone.utc)
+        await self.mddb.add_document(
+            CMS_AUTOMATION_COLLECTION,
+            slug,
+            "en",
+            json.dumps(cfg, ensure_ascii=False, indent=2),
+            meta={
+                "kind": ["automation-config"], "bank": ["cms"],
+                "scope": ["tony"], "status": ["active"], "source": ["api"],
+                "written_by": ["ada:cms_automation"], "subject": [slug],
+                "attribute": ["automation"], "slug": [slug],
+                "title": [f"CMS automation: {slug}"], "format": ["json"],
+                "lang": ["en"], "updated": [now.isoformat(timespec="seconds")],
+                "last_verified": [now.date().isoformat()],
+            },
+        )
+
+    @staticmethod
+    def _cms_automation_state(cfg: dict[str, Any], slug: str) -> dict[str, Any]:
+        return {
+            "slug": slug,
+            "enabled": cfg.get("enabled", True),
+            "interval_min": cfg.get("interval_min", 0),
+            "run_now": cfg.get("run_now", False),
+            "last_run": cfg.get("last_run"),
+            "last_status": cfg.get("last_status"),
+            "last_count": cfg.get("last_count"),
+            "last_error": cfg.get("last_error"),
+            "last_duration_s": cfg.get("last_duration_s"),
+        }
+
+    def _cms_automation_knobs(
+        self, slug: str, *, enabled=None, interval_min=None, run_now=None,
+        max_items=None, since_hours=None, require=None, feeds=None,
+        langs=None, parent=None, children=None,
+    ) -> dict[str, Any]:
+        """Validate and collect the writable knobs. Raises ValueError on
+        bad input; returns only the keys the caller actually passed."""
+        out: dict[str, Any] = {}
+        if enabled is not None:
+            out["enabled"] = bool(enabled)
+        if run_now is not None:
+            out["run_now"] = bool(run_now)
+        if interval_min is not None:
+            try:
+                v = int(interval_min)
+            except (TypeError, ValueError):
+                raise ValueError("interval_min must be an integer")
+            if not 0 <= v <= 7 * 24 * 60:
+                raise ValueError("interval_min must be 0-10080 (max 7 days)")
+            out["interval_min"] = v
+        if max_items is not None:
+            try:
+                v = int(max_items)
+            except (TypeError, ValueError):
+                raise ValueError("max_items must be an integer")
+            if not 1 <= v <= 50:
+                raise ValueError("max_items must be 1-50")
+            out["max_items"] = v
+        if since_hours is not None:
+            try:
+                v = int(since_hours)
+            except (TypeError, ValueError):
+                raise ValueError("since_hours must be an integer")
+            if not 1 <= v <= 720:
+                raise ValueError("since_hours must be 1-720 (max 30 days)")
+            out["since_hours"] = v
+        if require is not None:
+            require = str(require).strip()
+            if require:
+                if len(require) > 200:
+                    raise ValueError("require regex too long (max 200 chars)")
+                try:
+                    re.compile(require, re.IGNORECASE)
+                except re.error as exc:
+                    raise ValueError(f"invalid require regex: {exc}")
+            out["require"] = require
+        if feeds is not None:
+            if not isinstance(feeds, list):
+                raise ValueError(
+                    "feeds must be a list of [name, url] pairs")
+            norm = []
+            for f in feeds:
+                if (not isinstance(f, (list, tuple)) or len(f) != 2):
+                    raise ValueError("each feed must be a [name, url] pair")
+                fname, url = str(f[0]).strip().lower(), str(f[1]).strip()
+                if not _SLUG_RE.match(fname):
+                    raise ValueError(f"invalid feed name {fname!r}")
+                if not re.match(r"https?://", url):
+                    raise ValueError(f"feed url must be http(s): {url!r}")
+                norm.append([fname, url])
+            if not norm:
+                raise ValueError("feeds list cannot be empty")
+            out["feeds"] = norm
+        if langs is not None:
+            if not isinstance(langs, list) or not langs:
+                raise ValueError("langs must be a non-empty list")
+            bad = [l for l in langs if str(l) not in ("en", "th")]
+            if bad:
+                raise ValueError(
+                    f"invalid langs {bad!r}: supported are 'en' and 'th'")
+            out["langs"] = [str(l) for l in langs]
+        if parent is not None:
+            out["parent"] = self._cms_slug(parent) if str(parent).strip() else None
+        if children is not None:
+            if not isinstance(children, list):
+                raise ValueError("children must be a list of page slugs")
+            out["children"] = [self._cms_slug(str(c)) for c in children]
+        return out
+
+    async def cms_automation(
+        self,
+        action: str,
+        slug: str = "",
+        enabled: bool | None = None,
+        interval_min: int | None = None,
+        run_now: bool | None = None,
+        max_items: int | None = None,
+        since_hours: int | None = None,
+        require: str | None = None,
+        feeds: list | None = None,
+        langs: list | None = None,
+        parent: str | None = None,
+        children: list | None = None,
+    ) -> dict[str, Any]:
+        """Inspect and adjust a miniapp page's automation switches and knobs.
+
+        Each generated page has a registry doc in ada-cms-automation that the
+        scheduled news worker honors: 'enabled' pauses updates, 'interval_min'
+        throttles them, 'run_now' queues a one-shot regeneration, 'feeds' and
+        'require' control what is fetched, 'parent'/'children' link reports
+        into a hierarchy. Actions: list (all pages), get (one page),
+        set/enable/disable/run (writes — confirmation-gated).
+        """
+        action = (action or "").strip().lower()
+        if action == "list":
+            docs = await self.mddb.search_documents(
+                CMS_AUTOMATION_COLLECTION, limit=200)
+            pages = []
+            for d in docs or []:
+                slug = d.get("key") or ""
+                pages.append(
+                    self._cms_automation_state(
+                        self._cms_automation_cfg(d), slug))
+            pages.sort(key=lambda p: p["slug"])
+            return {"pages": pages, "count": len(pages)}
+
+        key = self._cms_slug(slug)
+        doc, cfg = await self._cms_automation_doc(key)
+
+        if action == "get":
+            if not doc:
+                return {"status": "not_found", "slug": key,
+                        "note": "no automation config yet — the worker "
+                                "creates one on its first run"}
+            return {"status": "ok", "config": cfg,
+                    **self._cms_automation_state(cfg, key)}
+
+        # Write actions: merge validated knobs into the stored config.
+        knobs = self._cms_automation_knobs(
+            key, enabled=enabled, interval_min=interval_min,
+            run_now=run_now, max_items=max_items, since_hours=since_hours,
+            require=require, feeds=feeds, langs=langs, parent=parent,
+            children=children)
+        if action == "enable":
+            knobs["enabled"] = True
+        elif action == "disable":
+            knobs["enabled"] = False
+        elif action == "run":
+            knobs["run_now"] = True
+        elif action != "set":
+            raise ValueError(
+                f"invalid action {action!r}: expected list/get/set/"
+                "enable/disable/run")
+        if not knobs:
+            raise ValueError(f"action {action!r}: nothing to change")
+        cfg.update(knobs)
+        await self._cms_automation_save(key, cfg)
+        out = {"status": "updated", "slug": key, "changes": knobs}
+        if action == "run":
+            out["queued"] = True
+            out["note"] = ("regeneration queued — the worker picks it up on "
+                           "its next pass and clears run_now when done")
+        return out
 
     async def cms_verify_page(self, slug: str) -> dict[str, Any]:
         """Re-read a page and check its content parses for its declared format.
