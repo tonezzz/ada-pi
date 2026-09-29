@@ -43,6 +43,8 @@ turns:
       urgent: true
       delay_s: 2
     expect:
-      timeout_s: 150
-      settle_s: 12
+      # The injected urgent turn queues behind the in-flight generation —
+      # the announcement lands as a follow-up turn, so settle long.
+      timeout_s: 180
+      settle_s: 30
       response_contains_any: ["urgent", "leak", "water", "kitchen"]
