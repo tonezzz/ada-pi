@@ -957,6 +957,21 @@ class GeminiLiveProvider(RealtimeProvider):
             logger.info(
                 "session=%s jev_advisory tool=%s regex=%s jev=%.3f diverged=%s",
                 session_id, tool, regex_says, score, diverged)
+            # Corpus capture: every probed turn becomes a labeled row
+            # (transcript + regex label + Jev score). This is the training
+            # data for a distilled confirm-gate student — divergent rows
+            # are the cases worth hand-reviewing.
+            try:
+                corpus_dir = os.path.expanduser("~/.local/share/ada")
+                row = {
+                    "ts": time.time(), "session": session_id, "tool": tool,
+                    "text": transcript[:300], "regex": bool(regex_says),
+                    "jev": round(score, 4), "diverged": diverged,
+                }
+                with open(os.path.join(corpus_dir, "jev-corpus.jsonl"), "a") as fh:
+                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            except Exception as exc:
+                logger.info("jev corpus append failed: %s", exc)
             self._emit_ops_event(
                 "jev_advisory",
                 f"{tool}: regex={'yes' if regex_says else 'no'} "
