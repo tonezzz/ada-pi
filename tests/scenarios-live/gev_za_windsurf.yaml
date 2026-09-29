@@ -1,0 +1,96 @@
+# South-coast recon — from Johannesburg down to the Cape Town windsurf
+# strip. GEV-only: each stop is a beach launch point — Bloubergstrand,
+# Big Bay, Sunset Beach — annotated and narrated. The "spy" framing tests
+# that she uses get_current_view_state / get_entity_context to describe
+# what's actually in frame rather than reciting a script.
+# tier: full — actuates a real display.
+name: gev_za_windsurf
+tier: full
+turns:
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  - user: "First, stop the camera walls bound to screen 4 — the traffic and rama9 zones. I want it fully idle."
+    expect:
+      calls_any: [cctv_wall, cast_to_screen]
+      timeout_s: 120
+      settle_s: 10
+      # traffic+rama9 zones hold a screen-4 binding and re-assert the wall
+      # over any split layout — release the binding before the tour
+
+  - user: "Put God's Eye View on screen 4, full screen."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 150
+      settle_s: 30   # Cesium init
+
+  - user: "Start in Johannesburg — fly the map over the city first."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 12
+
+  # leg 1 — the long hop south: Joburg → Cape Town coastline
+  - user: "Now fly south — all the way down to Cape Town. When you arrive, frame Bloubergstrand beach on the west coast, north of the city — that's the windsurf strip."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 240
+      settle_s: 20
+      # long fly — geocoder resolves Cape Town, then the beach hop
+
+  # stop 1 — Bloubergstrand / Kite Beach (-33.794, 18.462)
+  - user: "Spy the windsurf clubs: fly to -33.7940, 18.4620 — that's Bloubergstrand, the main kite and windsurf launch. Zoom low, annotate the beach, and narrate what you'd look for — sail colors, launch area, parking."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 240
+      settle_s: 16
+
+  # stop 2 — Big Bay (-33.788, 18.455) — 1km south along the same strip
+  - user: "Slide down the coast to -33.7880, 18.4550 — Big Bay, the next launch south. Annotate and narrate it too."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 240
+      settle_s: 16
+
+  # stop 3 — Sunset Beach (-33.841, 18.480) — the downwind finish
+  - user: "One more down the strip: -33.8410, 18.4800 — Sunset Beach, where the downwind runs end. Annotate it, narrate, then pull back so all three spots are in frame together."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 240
+      settle_s: 18
+
+  - user: "Read me what the map is actually looking at right now — the real view state."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
+      # get_current_view_state echoes real lat/lon/camera — honest verify
+
+  - user: "Take a snapshot of screen 4 — I want to see the three spots framed."
+    expect:
+      calls_any: [vcast_snapshot]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  - user: "Done — clear screen 4 back to idle."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8

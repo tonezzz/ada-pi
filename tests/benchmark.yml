@@ -74,6 +74,8 @@ policy:
     - gev_layers_track
     - gev_bkk_tour
     - gev_th_tour
+    - gev_za_tour
+    - gev_za_windsurf
     - gev_tour_report
     - gev_eu_tour
     - split_screen
@@ -198,6 +200,8 @@ suites:
     - gev_cast_control
     - gev_bkk_tour
     - gev_th_tour
+    - gev_za_tour
+    - gev_za_windsurf
     - gev_tour_report
     - gev_eu_tour
     - gev_layers_track

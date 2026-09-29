@@ -1,0 +1,86 @@
+# Johannesburg fly-over tour — GEV-only stops (no public traffic-cam feed
+# in Joburg, so instead of camera frames each stop gets a map annotation
+# + on-screen narration). Same shape as gev_bkk_tour minus the cam pane.
+# tier: full — actuates a real display.
+name: gev_za_tour
+tier: full
+turns:
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  - user: "First, stop the camera walls bound to screen 4 — the traffic and rama9 zones. I want it fully idle."
+    expect:
+      calls_any: [cctv_wall, cast_to_screen]
+      timeout_s: 120
+      settle_s: 10
+      # traffic+rama9 zones hold a screen-4 binding and re-assert the wall
+      # over any split layout — release the binding before the tour
+
+  - user: "Put God's Eye View on screen 4 — full screen this time, no split."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 150
+      settle_s: 30   # Cesium init
+
+  - user: "Fly the map into Johannesburg, South Africa — right over the city."
+    expect:
+      calls_any: [gev_command]
+      result_contains: ['delivered']
+      result_not_contains: ['gev command relay', 'no GEV clients',
+                            '"ok": false', '\\"ok\\": false']
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 12
+
+  # stop 1 — FNB Stadium (Soccer City), 2010 World Cup final venue
+  - user: "Stop 1: fly to -26.2348, 27.9824 — FNB Stadium, the big calabash-shaped World Cup stadium. Drop a map annotation on it and tell the screen what we're looking at."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 240
+      settle_s: 16
+
+  # stop 2 — Nelson Mandela Square, Sandton
+  - user: "Stop 2: fly to -26.1076, 28.0567 — Nelson Mandela Square in Sandton. Annotate it and narrate again on the screen."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 240
+      settle_s: 16
+
+  # stop 3 — Constitution Hill, Hillbrow
+  - user: "Last stop: fly to -26.1889, 28.0431 — Constitution Hill. Annotate, narrate, then pull back so the whole city is in frame."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 240
+      settle_s: 16
+
+  - user: "Ask the map where the camera is right now — read back the actual coordinates."
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
+      # the client echoes real lat/lon — honest verification, not her word
+
+  - user: "Take a snapshot of screen 4 — I want to see the final view."
+    expect:
+      calls_any: [vcast_snapshot]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  - user: "Tour over — clear screen 4 back to idle."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
