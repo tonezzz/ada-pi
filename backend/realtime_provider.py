@@ -2037,6 +2037,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "tv_action",
                     "description": (
                         "Send a command to the TV casting controller (cast-browser) through the Home Assistant rest_command.tv_action service. "
+                        "This is for the LG TV only — vcast display panes (screen 1/2/3/4) zoom/scroll via "
+                        "cast_to_screen action='zoom'/'unzoom' pane=N, NOT tv_action. "
                         "ONLY when the user wants something shown on a screen — never use this to answer "
                         "questions or display search results unprompted (answer via web_search instead). "
                         "Cast targets via cmd='nav': text='<URL>' shows a page in the TV's browser (fully controllable afterwards), "
