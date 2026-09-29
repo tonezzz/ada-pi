@@ -30,9 +30,12 @@ turns:
       timeout_s: 120
       settle_s: 12
 
-  - user: "Track it — keep the camera on it."
+  # select_nearest_aircraft may already have started tracking — this turn
+  # verifies tracking state rather than demanding a fresh call
+  - user: "Confirm — what is it tracking right now? Ask the map."
     expect:
       calls_any: [gev_command]
+      result_contains: ['delivered']
       result_not_contains: ['gev command relay', 'no GEV clients']
       response_nonempty: true
       timeout_s: 90
