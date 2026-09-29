@@ -470,9 +470,21 @@ class SpeakerIdentifier:
             logger.warning("speaker sample audio save failed: %s", exc)
             return None
 
+    @staticmethod
+    def _name_slug(name: str) -> str:
+        return "".join(c if c.isalnum() else " " for c in name.lower()).strip()
+
     def remove(self, name: str) -> bool:
         if name not in self._enrolled:
-            return False
+            # Slug-tolerant lookup — callers pass 'guest-tester',
+            # 'guest tester', 'Guest_Tester' for the same profile; an
+            # unambiguous normalized match is enough.
+            want = self._name_slug(name)
+            hits = [n for n in self._enrolled if self._name_slug(n) == want]
+            if len(hits) == 1:
+                name = hits[0]
+            else:
+                return False
         del self._enrolled[name]
         self._prints.pop(name, None)
         meta = self._metadata.pop(name, {})

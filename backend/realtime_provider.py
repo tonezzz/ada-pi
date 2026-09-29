@@ -161,6 +161,22 @@ _PHANTOM_CLAIM_RE = re.compile(
     # display/cast completion claims in Thai — "แสดงผล...แล้ว", "ขึ้นจอ 3 แล้ว"
     r"|(?:แสดงผล|ขึ้น(?:ที่)?จอ|บนจอ|ส่ง(?:ไป)?(?:ที่)?จอ)[^.\n]{0,40}(?:แล้ว|เรียบร้อย)"
 )
+# Negated/inability statements aren't claims — "I can't put it on screen"
+# fired phantom_write_claim as often as real phantoms (sampled 2026-09-29:
+# 41 events in 72h, ~half inability reports). Guard scans the ~48 chars
+# before the match for a negation word.
+_PHANTOM_NEGATION_RE = re.compile(
+    r"(?i)(?:can't|cannot|couldn't|won't|wouldn't|not|isn't|aren't"
+    r"|unable|ไม่ได้|ยังไม่|ไม่สามารถ)\W*(?:\w+\W+){0,5}$")
+
+
+def _phantom_claim(text: str) -> bool:
+    m = _PHANTOM_CLAIM_RE.search(text)
+    while m:
+        if not _PHANTOM_NEGATION_RE.search(text[: m.start()][-48:]):
+            return True
+        m = _PHANTOM_CLAIM_RE.search(text, m.end())
+    return False
 
 ACTUATING_TOOLS = frozenset({
     "control_entity", "control_cover", "control_media_player",
@@ -4909,7 +4925,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     input_transcript = ""
                     n_tools_this_turn = tool_calls_this_turn
                     if (tool_calls_this_turn == 0
-                            and _PHANTOM_CLAIM_RE.search(assistant_turn_text)):
+                            and _phantom_claim(assistant_turn_text)):
                         self._emit_ops_event(
                             "phantom_write_claim",
                             "assistant claimed a write with no tool call this "

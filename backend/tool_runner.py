@@ -2321,11 +2321,6 @@ class ToolRunner:
         enroll their voice or when Ada offers enrollment.
         """
         speaker_session = _CALLER_SPEAKER_SESSION.get() or self.speaker_session
-        if speaker_session is None:
-            return {
-                "error": "speaker identification is not active on this session "
-                "(speaker ID may be disabled or not configured)"
-            }
         if not ha_person:
             # Auto-resolve 'Name' -> person.<slug> so the enrollment maps to
             # the speaker's HA person (memory banks + actuation ACL follow)
@@ -2373,6 +2368,11 @@ class ToolRunner:
                         "out loud, then retry with confirmed=true — that "
                         "overwrites the stale profile. Otherwise the "
                         "identified speaker must stop talking first.")
+        if speaker_session is None:
+            return {
+                "error": "speaker identification is not active on this session "
+                "(speaker ID may be disabled or not configured)"
+            }
         # force replaces a stale/poisoned profile — only ever allowed for
         # the session OWNER's own enrollment, and only after the user
         # explicitly confirms the fix (confirmed=true)
