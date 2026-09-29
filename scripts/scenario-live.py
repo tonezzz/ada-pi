@@ -94,6 +94,43 @@ from typing import Any
 import websockets
 import yaml
 
+# Date tokens expand in Asia/Bangkok — the container/host clock may be UTC
+# while Ada's local timezone is Bangkok; relative-day assertions must match
+# HER calendar, not the runner's.
+_DOW_TH = ["วันจันทร์", "วันอังคาร", "วันพุธ", "วันพฤหัสบดี",
+           "วันศุกร์", "วันเสาร์", "วันอาทิตย์"]
+_DOW_EN = ["Monday", "Tuesday", "Wednesday", "Thursday",
+           "Friday", "Saturday", "Sunday"]
+
+
+def _expand_tokens(obj: Any) -> Any:
+    """Substitute {today}, {tomorrow}, {today_dow}, {tomorrow_dow},
+    {today_dow_th}, {tomorrow_dow_th}, {today_dom}, {tomorrow_dom}
+    in all strings of the loaded scenario."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    today = datetime.now(ZoneInfo("Asia/Bangkok")).date()
+    tomo = today + timedelta(days=1)
+    table = {
+        "{today}": today.isoformat(),
+        "{tomorrow}": tomo.isoformat(),
+        "{today_dow}": _DOW_EN[today.weekday()],
+        "{tomorrow_dow}": _DOW_EN[tomo.weekday()],
+        "{today_dow_th}": _DOW_TH[today.weekday()],
+        "{tomorrow_dow_th}": _DOW_TH[tomo.weekday()],
+        "{today_dom}": str(today.day),
+        "{tomorrow_dom}": str(tomo.day),
+    }
+    if isinstance(obj, str):
+        for k, v in table.items():
+            obj = obj.replace(k, v)
+        return obj
+    if isinstance(obj, list):
+        return [_expand_tokens(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _expand_tokens(v) for k, v in obj.items()}
+    return obj
+
 
 def check_turn(events: list[dict], expect: dict) -> list[str]:
     failures: list[str] = []
@@ -389,7 +426,7 @@ async def main() -> int:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}no_persist=1"
 
-    spec = yaml.safe_load(args.scenario.read_text())
+    spec = _expand_tokens(yaml.safe_load(args.scenario.read_text()))
     for k, v in (spec.get("params") or {}).items():
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}{k}={v}"
