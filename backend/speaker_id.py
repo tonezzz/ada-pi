@@ -689,6 +689,18 @@ class SpeakerSession:
     def current_speaker(self) -> str | None:
         return self._last_name
 
+    def identify_buffer(self, seconds: float = 15.0) -> tuple[str | None, float]:
+        """Identify the voice in the enroll buffer WITHOUT enrolling —
+        used by the owner-enrollment carve-out to prove the buffered
+        voice isn't the currently-identified secondary speaker."""
+        want = int(seconds * SAMPLE_RATE * 2)
+        src = self._pending_voice if len(self._pending_voice) >= MIN_CHUNK_BYTES else self._recent
+        take = min(len(src), want)
+        pcm16 = bytes(src[-take:])
+        if len(pcm16) < MIN_CHUNK_BYTES // 2:
+            return None, 0.0
+        return self._identifier.identify(pcm16, SAMPLE_RATE)
+
     def enroll_from_buffer(
         self,
         name: str,

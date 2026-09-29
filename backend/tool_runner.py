@@ -725,7 +725,18 @@ class ToolRunner:
                       speaker: Any = _IDENTITY_UNSET,
                       speaker_session: Any = _IDENTITY_UNSET,
                       owner: Any = _IDENTITY_UNSET) -> Any:
+        # Gemini sometimes spells underscore-heavy tool names phonetically
+        # (c_c_t_v_wall) — normalize back so the call lands.
         method = getattr(self, name, None)
+        if not method and isinstance(name, str) and "_" in name:
+            bare = name.replace("_", "")
+            for attr in dir(self):
+                if attr.replace("_", "") == bare:
+                    logger.info("tool name normalized %s -> %s",
+                                name, attr)
+                    name = attr
+                    method = getattr(self, name, None)
+                    break
         if not method:
             raise KeyError(f"Unknown tool: {name}")
         call_args = dict(args or {})
@@ -775,7 +786,12 @@ class ToolRunner:
         if self._is_secondary_turn():
             action = str(call_args.get("action") or "").lower()
             blocked = self._secondary_blocked_tools()
-            if name in blocked or (
+            # ada_enroll_speaker is exempt here — its own check is smarter:
+            # the owner can re-enroll even while a secondary voice is
+            # identified, as long as the buffer voice isn't the secondary's
+            # (2026-09-29 deadlock: Tony locked out of his own session
+            # because KK's identification was sticky and enroll refused).
+            if (name in blocked and name != "ada_enroll_speaker") or (
                 name == "ada_persona" and action in ("set", "reset")
                 and "persona_write" in blocked
             ):
@@ -1014,7 +1030,8 @@ class ToolRunner:
             (name == "cast_to_screen"
              and str(args.get("action") or "").lower() == "uplink")
             or (name == "cctv_wall"
-                and str(args.get("action") or "").lower() != "stop")
+                and str(args.get("action") or "").lower()
+                not in {"stop", "settings", "status"})
             or name == "cctv_snapshot"
         )
         if gated and confirmed is not True:
@@ -2212,6 +2229,31 @@ class ToolRunner:
                             ha_person = candidate
                     except Exception:
                         pass
+        # Secondary-turn carve-out: while a non-owner voice is identified,
+        # only an enrollment targeting the OWNER is allowed — and only if
+        # the buffered voice doesn't score as the secondary speaker
+        # (otherwise e.g. KK could enroll her own voice under 'Tony').
+        if self._is_secondary_turn():
+            target = ha_person or f"person.{_slug(name)}"
+            if target != self._owner():
+                raise PermissionError(
+                    "Only the session owner can enroll voices on this "
+                    "session — propose it to them aloud and let them ask "
+                    "in their own voice.")
+            cur = self._current_speaker()
+            if cur:
+                try:
+                    buf_name, _buf_score = speaker_session.identify_buffer()
+                    buf_person = (
+                        speaker_session._identifier.get_ha_person(buf_name)
+                        if buf_name else None)
+                except Exception:
+                    buf_person = None
+                if buf_person and buf_person == cur:
+                    raise PermissionError(
+                        f"the buffered voice still matches {buf_name} — "
+                        "the identified speaker must stop talking before "
+                        "the owner can re-enroll.")
         try:
             result = speaker_session.enroll_from_buffer(
                 str(name),
@@ -2712,7 +2754,8 @@ class ToolRunner:
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.load(r)
 
-    async def cctv_wall(self, action: str, zone: str, screen: int = 0) -> dict[str, Any]:
+    async def cctv_wall(self, action: str, zone: str, screen: int = 0,
+                        settings: dict[str, Any] | None = None) -> dict[str, Any]:
         """Start/stop the periodic-thumbnail camera wall on a vcast screen.
         Enables the zone in the relay's /camwall state (the puller on
         tony-dell refreshes thumbs into /apps/camwall/data/<zone>/) and casts
@@ -2720,7 +2763,12 @@ class ToolRunner:
         vms-noble-a, rama9 (demo traffic wall), traffic (DOH Bangkok),
         burapha (Bangna–Burapha expressway), chonburi (Chonburi corridor).
         Walls keep warm thumbs even while disabled, so casting an area is
-        instant — the puller refreshes in the background."""
+        instant — the puller refreshes in the background.
+        settings (optional) tunes the zone in the relay: {"interval": s,
+        "jpeg_q": 1-8, "thumb_w": px, "cams_skip": [key], "cams_extra":
+        [{label,kind,url}], "effects": ["timestamp","grid",
+        "yolo:person,car@0.35"]}. yolo overlays detections and appends a
+        rolling detections-<zone>.jsonl while the effect stays on."""
         import asyncio
         action = (action or "start").strip().lower()
         zone = (zone or "").strip().lower().replace(" ", "-")
@@ -2729,6 +2777,38 @@ class ToolRunner:
                  "traffic", "burapha", "chonburi"}
         if zone not in valid:
             return {"error": f"unknown zone {zone!r} — valid: {sorted(valid)}"}
+        if action == "settings":
+            if not settings:
+                return {"error": "settings action requires a settings object"}
+            return await asyncio.to_thread(
+                self._vcast_api, "/camwall",
+                {"zone": zone, "settings": settings})
+        if action == "status":
+            # read the zone manifest (public static file on tony-dell) —
+            # roster, per-cam freshness, yolo counts, wall health
+            import urllib.request
+            man_url = (os.environ.get(
+                           "ADA_CAMWALL_BASE",
+                           "https://tony-dell.taila0626a.ts.net/apps/camwall/")
+                       + f"data/{zone}/manifest-{zone}.json")
+            try:
+                man = await asyncio.to_thread(
+                    lambda: json.load(urllib.request.urlopen(
+                        urllib.request.Request(man_url), timeout=15)))
+            except Exception as exc:
+                return {"ok": False, "zone": zone,
+                        "error": f"manifest fetch failed: {exc}"}
+            now = time.time()
+            cams = [{
+                "label": c.get("label"), "ok": bool(c.get("ok")),
+                "age_s": int(now - c["ts"]) if c.get("ts") else None,
+                "det": c.get("det"), "err": c.get("err"),
+            } for c in man.get("cams", [])]
+            return {"ok": True, "zone": zone,
+                    "live": sum(1 for c in cams if c["ok"]),
+                    "total": len(cams), "cams": cams,
+                    "wall_url": man_url.rsplit("/data/", 1)[0]
+                                + f"/?zone={zone}"}
         if action == "stop":
             await asyncio.to_thread(
                 self._vcast_api, "/camwall", {"zone": zone, "enabled": False})
@@ -2744,12 +2824,13 @@ class ToolRunner:
                     pass
             return {"ok": True, "zone": zone, "stopped": True}
         n = int(screen or 1)
+        payload = {"zone": zone, "enabled": True, "screen": n}
+        if settings:
+            payload["settings"] = settings
         if n:
             await self._check_screen_owner(n, self._memory_identity())
         busy = await self._screen_busy(n) if n else None
-        await asyncio.to_thread(
-            self._vcast_api, "/camwall",
-            {"zone": zone, "enabled": True, "screen": n})
+        await asyncio.to_thread(self._vcast_api, "/camwall", payload)
         try:
             await asyncio.to_thread(self._vcast_api, "/capture", {
                 "screen": n, "source": "camwall", "ch": zone,
