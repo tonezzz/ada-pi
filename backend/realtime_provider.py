@@ -2193,6 +2193,10 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "integer",
                                 "description": "For action=layout: split the screen into 2-5 panes.",
                             },
+                            "mode": {
+                                "type": "string",
+                                "description": "For action=layout: 'pip' floats panes 1..N top-right over a fullscreen pane 0 (picture-in-picture); omit for the normal grid split.",
+                            },
                             "confirmed": {
                                 "type": "boolean",
                                 "description": "Required for action='uplink' (camera capture) and for interrupting a busy screen (capture/camwall/playing — see needs_confirm) — set true only after the user explicitly confirms.",

@@ -3242,6 +3242,7 @@ class ToolRunner:
     async def cast_to_screen(self, screen: int, action: str = "nav",
                              url: str = "", pane: int | None = None,
                              panes: int | None = None,
+                             mode: str | None = None,
                              confirmed: bool = False) -> dict[str, Any]:
         """Cast to a numbered vcast virtual display (NOT the TV).
         action: nav|play|image|audio|stop|layout|zoom|unzoom|uplink|
@@ -3276,8 +3277,10 @@ class ToolRunner:
                             "replace it, then call again with "
                             "confirmed=true only after they say yes.")}
         if action == "layout":
-            msg: dict[str, Any] = {
-                "type": "layout", "panes": int(panes or 1)}
+            msg: dict[str, Any] = {"type": "layout",
+                                   "panes": int(panes or 1)}
+            if mode:
+                msg["mode"] = str(mode)
         elif action in {"zoom", "unzoom"}:
             msg = {"type": "zoom",
                    "pane": -1 if action == "unzoom" else int(pane or 0)}
