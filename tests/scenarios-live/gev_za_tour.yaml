@@ -10,7 +10,7 @@ turns:
       timeout_s: 45
       settle_s: 4
 
-  - user: "First, stop the camera walls bound to screen 4 — the traffic and rama9 zones. I want it fully idle."
+  - user: "First, stop every camera wall bound to screen 4 — check vcast_list for which zones hold it and disable them all. I want it fully idle."
     expect:
       calls_any: [cctv_wall, cast_to_screen]
       timeout_s: 120
