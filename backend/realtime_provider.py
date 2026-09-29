@@ -68,7 +68,8 @@ EXPRESSION_NAMES = (
 CALENDAR_TOOLS = {
     "calendar_list_calendars", "calendar_list_events", "calendar_freebusy",
     "plan_day", "calendar_create_event", "calendar_delete_event",
-    "tasks_list", "tasks_add", "tasks_complete", "ada_resolve_action",
+    "tasks_list", "tasks_add", "tasks_complete", "tasks_move",
+    "calendar_shift_overdue", "ada_resolve_action",
 }
 
 # Same constant pattern as CALENDAR_TOOLS: lets ADA_EXCLUDED_TOOLS strip the
@@ -1448,6 +1449,7 @@ class GeminiLiveProvider(RealtimeProvider):
                  "screen": screen, "wait": 0})
         except Exception:
             pass  # bridge down or no GEV client — snap-request may still work
+        last_err = None
         for _ in range(15):
             try:
                 r = await asyncio.to_thread(
@@ -1470,6 +1472,13 @@ class GeminiLiveProvider(RealtimeProvider):
                 else:
                     body = json.loads(r.read() or b"{}")
                     if body.get("error") and body.get("ok"):
+                        # uncapturable-iframe isn't final: a GEV iframe's own
+                        # remote client may still post a canvas capture for
+                        # this token — keep polling. image-load-failed is.
+                        if body["error"] != "image-load-failed":
+                            last_err = body
+                            await asyncio.sleep(0.8)
+                            continue
                         detail = body.get("detail")
                         msg = (f"screen {screen} could not capture: {body['error']} "
                                f"(state={body.get('state') or 'unknown'})."
@@ -1487,6 +1496,13 @@ class GeminiLiveProvider(RealtimeProvider):
             except Exception as exc:
                 logger.warning("session=%s vcast frame poll: %s", self.session_id, exc)
             await asyncio.sleep(0.8)
+        if last_err:
+            detail = last_err.get("detail")
+            msg = (f"screen {screen} could not capture: {last_err['error']} "
+                   f"(state={last_err.get('state') or 'unknown'})."
+                   + (f" Failed URL: {detail}." if detail else "")
+                   + " The framed page cannot be screenshotted by the browser.")
+            return ({"error": msg}, None)
         return ({"error": f"screen {screen} did not return a frame in time — "
                           "it may be offline or stuck."}, None)
 
