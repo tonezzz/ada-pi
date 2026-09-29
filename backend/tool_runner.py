@@ -3301,7 +3301,7 @@ class ToolRunner:
         # them as a silent blank — "it never changes" (2026-09-29:
         # surf-forecast.com XFO=SAMEORIGIN). Warn before the pub so Ada
         # can pick another source instead of chasing a dead iframe.
-        if action == "nav" and str(url).startswith(("http://", "https://")):
+        if action in {"nav", "play"} and str(url).startswith(("http://", "https://")):
             try:
                 warn = await asyncio.to_thread(self._frame_check, str(url))
             except Exception:
@@ -3339,9 +3339,25 @@ class ToolRunner:
 
     @staticmethod
     def _frame_check(url: str) -> str | None:
-        """HEAD the nav target and return a warning if its headers forbid
-        iframe embedding (X-Frame-Options / CSP frame-ancestors)."""
+        """HEAD the nav/play target; warn if it forbids iframe embedding
+        (XFO/CSP frame-ancestors) or — for YouTube — the video is dead
+        (oembed 404 caught a 'Video unavailable' cast 2026-09-29)."""
         import urllib.request
+        import urllib.parse
+        if re.search(r"(youtube\.com|youtu\.be|youtube-nocookie\.com)", url):
+            try:
+                oe = urllib.request.urlopen(
+                    "https://www.youtube.com/oembed?format=json&url="
+                    + urllib.parse.quote(url, safe=""), timeout=6)
+                if oe.status == 200:
+                    return None
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    return (f"{url} is not a playable video (oembed 404 — "
+                            "dead/removed/unlisted). Do NOT cast it; find "
+                            "another video id first.")
+            except Exception:
+                return None  # inconclusive — let the display try
         req = urllib.request.Request(url, method="HEAD",
                                      headers={"User-Agent": "ada-vcast/1.0"})
         try:
