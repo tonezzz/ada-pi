@@ -169,8 +169,11 @@ ACTUATING_TOOLS = frozenset({
 _CONFIRM_RE = re.compile(
     r"\b(yes|yeah|yep|yup|confirm(ed)?|go ahead|do it|sure|okay?|"
     r"approved?|proceed|absolutely|mhm|uh huh|sounds good)\b|"
-    r"ใช่|ยืนยัน|ตกลง|เอาเลย|ทำเลย|ได้เลย|ทำได้|โอเค|ออเค|เออ|อือ|"
-    r"ต่อไป|จัดไป|เอาสิ|ไปเลย|ทำไป|เผยแพร่เลย|ส่งเลย",
+    # STT often splits Thai syllables with spaces ("เริ่ม เลย") — \s* keeps
+    # compounds matching.
+    r"ใช่|ยืน\s*ยัน|ตก\s*ลง|เอา\s*เลย|ทำ\s*เลย|ได้\s*เลย|ทำ\s*ได้|โอเค|ออเค|เออ|อือ|"
+    r"เริ่ม\s*เลย|จัดการ\s*เลย|ลอง\s*เลย|ต่อไป|จัด\s*ไป|เอา\s*สิ|ไป\s*เลย|"
+    r"ทำ\s*ไป|เผยแพร่\s*เลย|ส่ง\s*เลย",
     re.IGNORECASE,
 )
 
@@ -523,6 +526,11 @@ Conversation discipline:
   hits, tool results, or (system) notes in English do NOT change your
   spoken language — keep it consistent for the speaker.
 - Always answer the user's most recent question before ending a turn — never drop it or pivot to a different topic unprompted.
+- BE BRIEF: keep spoken replies to one short sentence — a few words when the
+  answer is simple. Never narrate your own mechanics ("let me check",
+  "the system says", "please wait while I…"), tool names, or
+  permission plumbing unless the result needs it. Just do the thing or
+  give the answer.
 - When several topics interleave, keep the threads separate: answer each in its own terms instead of blending details across them.
 - "Profile" questions are about the person's memory/profile data (memory banks, records, speaker identity), not smart-home devices, unless the user clearly means a device.
 - Questions about ongoing work, development, projects, or "where we left off" are memory questions — search memory first with ada_memory_search (bank='all') or ada_session_recall. Calendar/task tools (plan_day, tasks_list) are only for schedules and todos, never for project status.
@@ -2116,7 +2124,10 @@ class GeminiLiveProvider(RealtimeProvider):
                         "interrupted. Camera captures (uplink, cctv walls) are permission-gated: ask the user BEFORE "
                         "starting one, and if the result's active_captures shows a running capture, "
                         "acknowledge it and ask before stopping — never silently stop or leave it unmentioned "
-                        "when the user changes the subject."
+                        "when the user changes the subject. When the user EXPLICITLY asked for the camera "
+                        "(e.g. 'show me the pool cam'), that request IS the consent — call it directly with "
+                        "confirmed=true, do NOT re-ask. Confirmation only applies when YOU propose a capture "
+                        "the user didn't ask for, or when a guest voice requests one."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2247,7 +2258,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "confirmed": {
                                 "type": "boolean",
-                                "description": "Required for action='start' (camera capture) — set true only after the user explicitly confirms.",
+                                "description": "When the user explicitly asked for the wall, set true — their request is the consent. Only needed for guest voices or captures you propose unprompted.",
                             },
                         },
                         "required": ["zone"],
