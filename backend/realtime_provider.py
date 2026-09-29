@@ -2316,8 +2316,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         "(additionalProperties are rejected, the call fails silently if names are wrong). "
                         "Useful names + real arg names: fly_to_location {locationId} — one of the "
                         "preset cities (austin, sf, nyc, tokyo, london, paris, dubai, dc); free-text 'query' "
-                        "geocoding is NOT configured (no Google key) — for any other place use explicit "
-                        "latitude/longitude args or say you can't fly there, zoom_to_globe {}, "
+                        "geocodes via OSM Nominatim (Google key is invalid — Nominatim is the live path), "
+                        "or latitude/longitude args, zoom_to_globe {}, "
                         "adjust_camera_zoom {factor}, set_layer_visibility {layerId, enabled}, "
                         "select_nearest_aircraft {layerId:'flights', locationId:<preset>} — finds AND starts "
                         "tracking the nearest plane near a preset city (this is how to 'track a flight near X'), "
@@ -4616,6 +4616,13 @@ class GeminiLiveProvider(RealtimeProvider):
                                                 f"confirmed=true on {call.name} — "
                                                 f"no user affirmation found.",
                                                 tool=str(call.name))
+                                        else:
+                                            # User actually affirmed — the
+                                            # pending-register step is
+                                            # redundant friction (observed
+                                            # 2026-09-29: 'approve' → denied
+                                            # 'no pending' → double-ask loop).
+                                            call_args["_verified_affirm"] = True
                                     if call.name == "ada_memory_search":
                                         q = call_args.get("query")
                                         if q:

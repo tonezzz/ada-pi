@@ -162,6 +162,13 @@ _CALLER_IDENTITY: contextvars.ContextVar = contextvars.ContextVar(
 _CALLER_SPEAKER: contextvars.ContextVar = contextvars.ContextVar(
     "ada_caller_speaker", default=_IDENTITY_UNSET)
 
+# Provider-verified user affirmation for this call — the model's
+# confirmed=true was checked against actual user speech before dispatch.
+# Lets gates skip the register→re-ask round-trip without weakening the
+# policy (a bare confirmed=true still goes through the full check).
+_CALLER_VERIFIED_AFFIRM: contextvars.ContextVar = contextvars.ContextVar(
+    "ada_verified_affirm", default=False)
+
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -769,6 +776,7 @@ class ToolRunner:
             return await self._execute_gated(name, call_args, ident)
         finally:
             _CALLER_IDENTITY.reset(_ident_token)
+            _CALLER_VERIFIED_AFFIRM.set(False)
             if _spk_token is not None:
                 _CALLER_SPEAKER.reset(_spk_token)
             if _ss_token is not None:
@@ -783,6 +791,11 @@ class ToolRunner:
             call_args.pop("confirmed", None),
             call_args.pop("confirm_token", None),
         )
+        # Provider-verified user affirmation: the user actually said yes in
+        # this session, so a confirmed call may satisfy a register-then-
+        # confirm gate in one step (the pending key is still recorded).
+        _affirm_token = _CALLER_VERIFIED_AFFIRM.set(
+            bool(call_args.pop("_verified_affirm", None)))
         policy_ident = self.policy_identity()
         if self._is_secondary_turn():
             action = str(call_args.get("action") or "").lower()
@@ -1167,8 +1180,12 @@ class ToolRunner:
             if pending is None:
                 pending = self._cms_pending = {}
             if confirmed is True:
-                if pending.get(pkey) is not None:
-                    del pending[pkey]
+                if pending.get(pkey) is not None or _CALLER_VERIFIED_AFFIRM.get():
+                    # A provider-verified user affirmation already covers the
+                    # ask-step — the register round-trip is friction, not
+                    # safety (2026-09-29: user said 'อนุมัติ', model called
+                    # confirmed=true, denied 'no pending' twice).
+                    pending.pop(pkey, None)
                     return
                 logger.warning("denied %s %r: confirmed without pending request", name, args)
                 raise PermissionError(
