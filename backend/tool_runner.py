@@ -3296,8 +3296,22 @@ class ToolRunner:
             msg = {"type": action, "url": url}
         if pane is not None and action not in {"layout", "unzoom"}:
             msg["pane"] = int(pane)
+        # Frameability pre-flight for nav: lots of cam/stream sites send
+        # X-Frame-Options / CSP frame-ancestors, and an iframe renders
+        # them as a silent blank — "it never changes" (2026-09-29:
+        # surf-forecast.com XFO=SAMEORIGIN). Warn before the pub so Ada
+        # can pick another source instead of chasing a dead iframe.
+        if action == "nav" and str(url).startswith(("http://", "https://")):
+            try:
+                warn = await asyncio.to_thread(self._frame_check, str(url))
+            except Exception:
+                warn = None
+        else:
+            warn = None
         out = await asyncio.to_thread(
             self._vcast_api, "/pub", {"screen": screen, "msg": msg})
+        if warn:
+            out["frame_warn"] = warn
         # capture lease bookkeeping — the relay's /capture state is ground
         # truth for the ask-before-stopping contract; the display also POSTs
         # on uplink-start, but this covers display-offline cases
@@ -3322,6 +3336,32 @@ class ToolRunner:
                            "running — acknowledge it to the user "
                            f"({busy['desc']}).")
         return out
+
+    @staticmethod
+    def _frame_check(url: str) -> str | None:
+        """HEAD the nav target and return a warning if its headers forbid
+        iframe embedding (X-Frame-Options / CSP frame-ancestors)."""
+        import urllib.request
+        req = urllib.request.Request(url, method="HEAD",
+                                     headers={"User-Agent": "ada-vcast/1.0"})
+        try:
+            resp = urllib.request.urlopen(req, timeout=6)
+        except urllib.error.HTTPError as exc:
+            resp = exc  # still carries headers
+        hdrs = resp.headers
+        xfo = (hdrs.get("X-Frame-Options") or "").upper()
+        if xfo.startswith(("DENY", "SAMEORIGIN")):
+            return (f"{url} forbids iframe embedding "
+                    f"(X-Frame-Options: {xfo}) — the screen will show "
+                    "blank. Pick a different source or snapshot the feed "
+                    "instead of nav-ing the page.")
+        csp = hdrs.get("Content-Security-Policy") or ""
+        m = re.search(r"frame-ancestors\s+([^;]+)", csp, re.I)
+        if m and "'*'" not in m.group(1) and "https:" not in m.group(1):
+            return (f"{url} restricts framing via CSP frame-ancestors "
+                    f"({m.group(1).strip()}) — the screen may show blank; "
+                    "prefer a different source.")
+        return None
 
     async def vcast_say(self, screen: int, text: str) -> dict[str, Any]:
         """Speak a short narration line on a vcast display (Web Speech
