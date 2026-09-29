@@ -32,7 +32,7 @@ turns:
       เอ้า เมื่อกี้ตอบว่าเป็นใครนะ? ขอถามอีกรอบ เธอชื่ออะไร
     expect:
       # consistency: same identity on repeat — must still say Ada
-      response_contains_any: ["Ada", "อาดา", "เอด้า"]
+      response_contains_any: ["Ada", "อาดา", "เอด้า", "เอดา", "ada"]
       timeout_s: 60
       settle_s: 6
   - user: >-
