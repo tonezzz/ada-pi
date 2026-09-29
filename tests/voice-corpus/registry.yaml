@@ -24,3 +24,191 @@ speakers:
   - yt-eglcvo5UUyQ-spk0-02.wav
   - yt-eglcvo5UUyQ-spk0-03.wav
   - yt-eglcvo5UUyQ-spk0-04.wav
+- id: yt-iG9CE55wbtY-spk0
+  source: https://www.youtube.com/watch?v=iG9CE55wbtY
+  lang: th
+  kind: person
+  qualified: ok
+  note: 30 segments, 194s speech
+  clips:
+  - yt-iG9CE55wbtY-spk0-01.wav
+  - yt-iG9CE55wbtY-spk0-02.wav
+  - yt-iG9CE55wbtY-spk0-03.wav
+  - yt-iG9CE55wbtY-spk0-04.wav
+  - yt-iG9CE55wbtY-spk0-05.wav
+  - yt-iG9CE55wbtY-spk0-06.wav
+- id: yt-UF8uR6Z6KLc-spk0
+  source: https://www.youtube.com/watch?v=UF8uR6Z6KLc
+  lang: th
+  kind: person
+  qualified: ok
+  note: 2 segments, 12s speech
+  clips:
+  - yt-UF8uR6Z6KLc-spk0-01.wav
+  - yt-UF8uR6Z6KLc-spk0-02.wav
+- id: yt-iCvmsMzlF7o-spk0
+  source: https://www.youtube.com/watch?v=iCvmsMzlF7o
+  lang: th
+  kind: person
+  qualified: ok
+  note: 38 segments, 265s speech
+  clips:
+  - yt-iCvmsMzlF7o-spk0-01.wav
+  - yt-iCvmsMzlF7o-spk0-02.wav
+  - yt-iCvmsMzlF7o-spk0-03.wav
+  - yt-iCvmsMzlF7o-spk0-04.wav
+  - yt-iCvmsMzlF7o-spk0-05.wav
+  - yt-iCvmsMzlF7o-spk0-06.wav
+- id: yt-lwLmOI6r_XY-spk0
+  source: https://www.youtube.com/watch?v=lwLmOI6r_XY
+  lang: th
+  kind: person
+  qualified: ok
+  note: 12 segments, 75s speech
+  clips:
+  - yt-lwLmOI6r_XY-spk0-01.wav
+  - yt-lwLmOI6r_XY-spk0-02.wav
+  - yt-lwLmOI6r_XY-spk0-03.wav
+  - yt-lwLmOI6r_XY-spk0-04.wav
+  - yt-lwLmOI6r_XY-spk0-05.wav
+  - yt-lwLmOI6r_XY-spk0-06.wav
+- id: yt-D9Ihs241zeg-spk0
+  source: https://www.youtube.com/watch?v=D9Ihs241zeg
+  lang: th
+  kind: person
+  qualified: ok
+  note: 46 segments, 319s speech
+  clips:
+  - yt-D9Ihs241zeg-spk0-01.wav
+  - yt-D9Ihs241zeg-spk0-02.wav
+  - yt-D9Ihs241zeg-spk0-03.wav
+  - yt-D9Ihs241zeg-spk0-04.wav
+  - yt-D9Ihs241zeg-spk0-05.wav
+  - yt-D9Ihs241zeg-spk0-06.wav
+- id: yt-XuoqKYxDHVc-spk0
+  source: https://www.youtube.com/watch?v=XuoqKYxDHVc
+  lang: th
+  kind: person
+  qualified: ok
+  note: 96 segments, 785s speech
+  clips:
+  - yt-XuoqKYxDHVc-spk0-01.wav
+  - yt-XuoqKYxDHVc-spk0-02.wav
+  - yt-XuoqKYxDHVc-spk0-03.wav
+  - yt-XuoqKYxDHVc-spk0-04.wav
+  - yt-XuoqKYxDHVc-spk0-05.wav
+  - yt-XuoqKYxDHVc-spk0-06.wav
+- id: yt-XuoqKYxDHVc-spk1
+  source: https://www.youtube.com/watch?v=XuoqKYxDHVc
+  lang: th
+  kind: person
+  qualified: reject
+  note: 'DUPLICATE voice — bench: matches yt-XuoqKYxDHVc-spk0 at 46-52%, contamination
+    refused. Excluded.'
+  clips:
+  - yt-XuoqKYxDHVc-spk1-01.wav
+  - yt-XuoqKYxDHVc-spk1-02.wav
+  - yt-XuoqKYxDHVc-spk1-03.wav
+  - yt-XuoqKYxDHVc-spk1-04.wav
+  - yt-XuoqKYxDHVc-spk1-05.wav
+  - yt-XuoqKYxDHVc-spk1-06.wav
+- id: yt-XuoqKYxDHVc-spk2
+  source: https://www.youtube.com/watch?v=XuoqKYxDHVc
+  lang: th
+  kind: person
+  qualified: ok
+  note: 3 segments, 16s speech
+  clips:
+  - yt-XuoqKYxDHVc-spk2-01.wav
+  - yt-XuoqKYxDHVc-spk2-02.wav
+  - yt-XuoqKYxDHVc-spk2-03.wav
+- id: yt-XuoqKYxDHVc-spk3
+  source: https://www.youtube.com/watch?v=XuoqKYxDHVc
+  lang: th
+  kind: person
+  qualified: ok
+  note: 32 segments, 200s speech
+  clips:
+  - yt-XuoqKYxDHVc-spk3-01.wav
+  - yt-XuoqKYxDHVc-spk3-02.wav
+  - yt-XuoqKYxDHVc-spk3-03.wav
+  - yt-XuoqKYxDHVc-spk3-04.wav
+  - yt-XuoqKYxDHVc-spk3-05.wav
+  - yt-XuoqKYxDHVc-spk3-06.wav
+- id: yt-v_qnXhkhLgU-spk0
+  source: https://www.youtube.com/watch?v=v_qnXhkhLgU
+  lang: th
+  kind: person
+  qualified: ok
+  note: 20 segments, 162s speech
+  clips:
+  - yt-v_qnXhkhLgU-spk0-01.wav
+  - yt-v_qnXhkhLgU-spk0-02.wav
+  - yt-v_qnXhkhLgU-spk0-03.wav
+  - yt-v_qnXhkhLgU-spk0-04.wav
+  - yt-v_qnXhkhLgU-spk0-05.wav
+  - yt-v_qnXhkhLgU-spk0-06.wav
+- id: yt-7t8ByTm--aY-spk1
+  source: https://www.youtube.com/watch?v=7t8ByTm--aY
+  lang: th
+  kind: person
+  qualified: ok
+  note: 7 segments, 42s speech
+  clips:
+  - yt-7t8ByTm--aY-spk1-01.wav
+  - yt-7t8ByTm--aY-spk1-02.wav
+  - yt-7t8ByTm--aY-spk1-03.wav
+  - yt-7t8ByTm--aY-spk1-04.wav
+  - yt-7t8ByTm--aY-spk1-05.wav
+  - yt-7t8ByTm--aY-spk1-06.wav
+- id: yt-NOqlpTAFv3g-spk0
+  source: https://www.youtube.com/watch?v=NOqlpTAFv3g
+  lang: th
+  kind: person
+  qualified: ok
+  note: 12 segments, 81s speech
+  clips:
+  - yt-NOqlpTAFv3g-spk0-01.wav
+  - yt-NOqlpTAFv3g-spk0-02.wav
+  - yt-NOqlpTAFv3g-spk0-03.wav
+  - yt-NOqlpTAFv3g-spk0-04.wav
+  - yt-NOqlpTAFv3g-spk0-05.wav
+  - yt-NOqlpTAFv3g-spk0-06.wav
+- id: yt-wRM-azvEBZg-spk0
+  source: https://www.youtube.com/watch?v=wRM-azvEBZg
+  lang: th
+  kind: person
+  qualified: ok
+  note: 8 segments, 87s speech
+  clips:
+  - yt-wRM-azvEBZg-spk0-01.wav
+  - yt-wRM-azvEBZg-spk0-02.wav
+  - yt-wRM-azvEBZg-spk0-03.wav
+  - yt-wRM-azvEBZg-spk0-04.wav
+  - yt-wRM-azvEBZg-spk0-05.wav
+  - yt-wRM-azvEBZg-spk0-06.wav
+- id: yt-wRM-azvEBZg-spk1
+  source: https://www.youtube.com/watch?v=wRM-azvEBZg
+  lang: th
+  kind: person
+  qualified: reject
+  note: 'DUPLICATE voice — bench: matches yt-v_qnXhkhLgU-spk0 at 46-52%, contamination
+    refused. Excluded.'
+  clips:
+  - yt-wRM-azvEBZg-spk1-01.wav
+  - yt-wRM-azvEBZg-spk1-02.wav
+  - yt-wRM-azvEBZg-spk1-03.wav
+  - yt-wRM-azvEBZg-spk1-04.wav
+  - yt-wRM-azvEBZg-spk1-05.wav
+  - yt-wRM-azvEBZg-spk1-06.wav
+- id: yt-wRM-azvEBZg-spk4
+  source: https://www.youtube.com/watch?v=wRM-azvEBZg
+  lang: th
+  kind: person
+  qualified: ok
+  note: 4 segments, 26s speech
+  clips:
+  - yt-wRM-azvEBZg-spk4-01.wav
+  - yt-wRM-azvEBZg-spk4-02.wav
+  - yt-wRM-azvEBZg-spk4-03.wav
+  - yt-wRM-azvEBZg-spk4-04.wav
