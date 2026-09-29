@@ -591,6 +591,10 @@ class ToolRunner:
             self.memory = AdaMemoryStore(ha_client, mddb_client=self.mddb, instance_id=instance_id)
             self.events = HaEventRecorder(ha_client, mddb_client=self.mddb, instance_id=instance_id)
         self._instance_id = instance_id
+        # Dedup breaker: tracks identical needs_confirm denials so a model
+        # that retries the same gated call instead of asking the user gets
+        # a hard stop. {(tool, args-key): [timestamps]}
+        self._denials: dict[tuple[str, str], list[float]] = {}
         # Voice session that invoked the current tool call; the realtime
         # provider sets this so memory writes carry provenance.
         self.session_id: str | None = None
@@ -867,7 +871,37 @@ class ToolRunner:
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
         result = await method(**call_args)
+        result = self._denial_breaker(name, call_args, result)
         return await self._capture_reminder(name, result)
+
+    def _denial_breaker(self, name: str, args: dict[str, Any],
+                        result: Any) -> Any:
+        """The model sometimes retries an identical needs_confirm-gated
+        call over and over (self-asserted confirmed=true gets stripped, so
+        it can never pass) instead of asking the user aloud and waiting a
+        turn. After the 3rd identical denial in 3min, return a hard stop."""
+        if not isinstance(result, dict) or "needs_confirm" not in result:
+            return result
+        import hashlib
+        key_args = json.dumps(
+            {k: args.get(k) for k in ("screen", "action", "url")},
+            sort_keys=True, default=str)
+        key = (name, hashlib.md5(key_args.encode()).hexdigest())
+        now = time.time()
+        hits = [t for t in self._denials.get(key, []) if now - t < 180]
+        hits.append(now)
+        self._denials[key] = hits
+        if len(hits) >= 3:
+            self._denials[key] = []
+            return {"error": (
+                "STOP RETRYING — this exact call was refused " +
+                str(len(hits)) +
+                " times: the screen is busy and self-asserted confirmed=true "
+                "does not count. Do NOT call this tool again right now — "
+                "tell the user aloud what is running on the screen, ask if "
+                "they want it replaced, and wait for their spoken yes in "
+                "the next turn.")}
+        return result
 
     # Tools that already carry capture state — a reminder on them would
     # be noise (the capture IS the subject of these calls).
@@ -3159,12 +3193,39 @@ class ToolRunner:
             pass
         try:
             wall = await asyncio.to_thread(self._vcast_api, "/camwall")
-            for z, v in (wall.get("zones") or {}).items():
-                if (v.get("enabled")
-                        and str(v.get("screen") or "") == str(screen)):
+            zones = {z for z, v in (wall.get("zones") or {}).items()
+                     if v.get("enabled")
+                     and str(v.get("screen") or "") == str(screen)}
+            if zones:
+                # A zone's screen binding goes stale constantly: the puller
+                # keeps refreshing thumbs long after the display moved on.
+                # Trust the screen's own reported state over the flag —
+                # only treat the wall as "busy" if the display still shows
+                # it (or the display didn't answer at all).
+                try:
+                    disp = await asyncio.to_thread(
+                        self._vcast_api, "/displays")
+                    scr = next(
+                        (s for s in disp.get("screens", [])
+                         if str(s.get("screen") or "") == str(screen)), {})
+                except Exception:
+                    scr = {}
+                detail = str(scr.get("state_detail") or "")
+                live_wall = ("camwall" in detail
+                             or any(z in detail for z in zones))
+                if scr.get("state") is None or live_wall:
+                    z = sorted(zones)[0]
                     return {"kind": "camwall", "zone": z,
                             "desc": f"the '{z}' camera wall is "
                                     "refreshing on it"}
+                # stale flag — clear it so the next check is clean
+                for z in zones:
+                    try:
+                        await asyncio.to_thread(
+                            self._vcast_api, "/camwall",
+                            {"zone": z, "screen": None})
+                    except Exception:
+                        pass
         except Exception:
             pass
         try:
