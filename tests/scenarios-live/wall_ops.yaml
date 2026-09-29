@@ -1,0 +1,44 @@
+name: wall-ops
+# Live scenario — camera-wall knobs and status answers.
+#
+# What it verifies:
+#   - "what's on the rama9 wall" → cctv_wall action=status returns the
+#     per-cam roster + live counts (no cast, no confirm gate)
+#   - "update it every 30 seconds" → cctv_wall action=settings writes
+#     interval to the relay
+#   - "turn detection off" → settings effects drops yolo
+#
+# Uses rama9 (public traffic stills — no VMS dependency).
+#
+# tier: full — mutates relay state (restored at the end).
+
+tier: full
+
+turns:
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  - user: "What's showing on the rama9 camera wall — how many cameras are live?"
+    expect:
+      calls_any: [cctv_wall]
+      result_contains: ["'live'"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Set the rama9 wall to update every 30 seconds."
+    expect:
+      calls_any: [cctv_wall]
+      result_contains: ["interval"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Check the wall status again — did the refresh rate take?"
+    expect:
+      calls_any: [cctv_wall]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6

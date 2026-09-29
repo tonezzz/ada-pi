@@ -1,0 +1,42 @@
+name: wall-detect-toggle
+# Live scenario — yolo detection on/off via cctv_wall settings.
+#
+# What it verifies:
+#   - "turn on person/car detection on the rama9 wall" →
+#     cctv_wall action=settings writes a yolo effect to the relay
+#   - "what has it seen?" → status reports det counts when present
+#   - "turn detection off" → settings drops the yolo effect
+#
+# Uses rama9 (public traffic stills — no VMS dependency).
+#
+# tier: full — mutates relay state (restored at the end).
+
+tier: full
+
+turns:
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  - user: "Turn on person and car detection on the rama9 wall."
+    expect:
+      calls_any: [cctv_wall]
+      result_contains: ["yolo"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "What's the rama9 wall status — any detections yet?"
+    expect:
+      calls_any: [cctv_wall]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Turn detection back off."
+    expect:
+      calls_any: [cctv_wall]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6

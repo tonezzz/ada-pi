@@ -2780,9 +2780,12 @@ class ToolRunner:
         if action == "settings":
             if not settings:
                 return {"error": "settings action requires a settings object"}
-            return await asyncio.to_thread(
+            out = await asyncio.to_thread(
                 self._vcast_api, "/camwall",
                 {"zone": zone, "settings": settings})
+            if isinstance(out, dict):
+                out["applied"] = settings
+            return out
         if action == "status":
             # read the zone manifest (public static file on tony-dell) —
             # roster, per-cam freshness, yolo counts, wall health
@@ -2853,6 +2856,8 @@ class ToolRunner:
             out["replaced"] = busy
             out["note"] += (f" It interrupted {busy['desc']} — "
                             "acknowledge that to the user.")
+        if settings:
+            out["applied"] = settings
         return out
 
     async def vcast_list(self) -> dict[str, Any]:

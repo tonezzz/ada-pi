@@ -2196,7 +2196,11 @@ class GeminiLiveProvider(RealtimeProvider):
                         "'traffic' (DOH Bangkok cams), 'burapha' (Bangna–Burapha expressway), "
                         "'chonburi' (Chonburi corridor). Walls keep warm thumbnails even while off — "
                         "for an AREA question prefer the matching wall over a slow single snap; it loads "
-                        "instantly and refreshes in the background. Use when the user's focus shifts to a camera zone — "
+                        "instantly and refreshes in the background. action='settings' tunes a zone without "
+                        "casting (interval seconds, jpeg_q 1-8, thumb_w px, cams_skip keys, effects like "
+                        "'yolo:person,car@0.35' — yolo overlays detections and records them while on). "
+                        "settings and status are NOT confirmation-gated — apply them immediately when asked. "
+                        "Use when the user's focus shifts to a camera zone — "
                         "e.g. they ask to check the pool or the front road — OFFER to put the wall up "
                         "('want the Zone A wall on screen 1?') rather than doing it unprompted for a "
                         "single one-off look; a single look is ada_camera_snapshot. action='start' "
@@ -2209,7 +2213,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "description": "'start' (default) or 'stop'.",
+                                "description": "'start' (default), 'stop', 'settings' (tune zone knobs — no cast, no confirm needed), or 'status' (per-cam live/down, ages, yolo counts — for 'what's on the wall' questions).",
                             },
                             "zone": {
                                 "type": "string",
@@ -2218,6 +2222,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "screen": {
                                 "type": "integer",
                                 "description": "vcast screen number (vcast_list) — default 1.",
+                            },
+                            "settings": {
+                                "type": "object",
+                                "description": "Zone knobs: interval (s), jpeg_q (1-8), thumb_w (px), cams_skip [keys], cams_extra [{label,kind,url}], effects ['timestamp','grid','yolo:person,car@0.35'].",
                             },
                             "confirmed": {
                                 "type": "boolean",
