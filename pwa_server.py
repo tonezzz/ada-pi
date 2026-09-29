@@ -54,6 +54,38 @@ UNRECOGNIZED_SPEAKER_NOTE = (
 # (or when speechbrain/torch are not installed), the voice path is unchanged.
 SPEAKER_ID_ENABLED = os.environ.get("ADA_SPEAKER_ID", "true").lower() == "true"
 
+# Raw user audio archive: every pcm16 frame the client sends is appended
+# to ~/.local/share/ada/audio/<date>-<session>.pcm (16kHz mono s16le) so
+# sessions can be replayed for speaker-id debugging, scenario audio
+# feeds, and "what did the STT actually hear" inspection. Same privacy
+# posture as transcripts — local only, never synced. ADA_AUDIO_ARCHIVE=0
+# disables; retention prunes files older than ADA_AUDIO_DAYS (default 3)
+# and trims the dir to ADA_AUDIO_MAX_MB (default 500) oldest-first.
+AUDIO_ARCHIVE_ENABLED = os.environ.get("ADA_AUDIO_ARCHIVE", "1") != "0"
+AUDIO_ARCHIVE_DAYS = int(os.environ.get("ADA_AUDIO_DAYS", "3"))
+AUDIO_ARCHIVE_MAX_MB = int(os.environ.get("ADA_AUDIO_MAX_MB", "500"))
+AUDIO_DIR = Path.home() / ".local/share/ada/audio"
+
+
+def _prune_audio_archive() -> None:
+    try:
+        files = sorted(AUDIO_DIR.glob("*.pcm"), key=lambda p: p.stat().st_mtime)
+        cutoff = time.time() - AUDIO_ARCHIVE_DAYS * 86400
+        for f in files:
+            if f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        files = [f for f in files if f.exists()]
+        total = sum(f.stat().st_size for f in files)
+        cap = AUDIO_ARCHIVE_MAX_MB * 1024 * 1024
+        for f in files:
+            if total <= cap:
+                break
+            size = f.stat().st_size
+            f.unlink(missing_ok=True)
+            total -= size
+    except Exception as exc:
+        logger.info("audio archive prune failed: %s", exc)
+
 # CHABA_MEMORY=1 runs this service as the Chaba guest assistant: file-backed
 # public memory under ~/.local/share/chaba/, no MDDB/NotebookLM. See
 # backend/chaba_memory.py and docs/ssot/chaba/ssot.chaba.memory.yml.
@@ -742,6 +774,14 @@ async def voice_socket(ws: WebSocket) -> None:
             }))
         with suppress(Exception):
             await provider_ref[0].send_text_turn(UNRECOGNIZED_SPEAKER_NOTE)
+    # Test hook: ?simulate_speaker=KK runs the real _on_speaker path with a
+    # fake identification — exercises ha_person lookup, secondary-turn
+    # rules, and the owner-vs-guest persona boundary without audio.
+    if speaker_session is not None:
+        sim_name = (ws.query_params.get("simulate_speaker") or "").strip()
+        if sim_name:
+            with suppress(Exception):
+                await _on_speaker(sim_name, 0.99)
     # Send 'ready' as soon as Gemini is live; reconnect-context lookup and
     # memory priming can stall on MDDB, so they run in the background.
     # session_id included so /api/notify can target this exact session.
@@ -751,6 +791,15 @@ async def voice_socket(ws: WebSocket) -> None:
         return
     asyncio.create_task(_prime_session_task(provider_ref[0], ws))
 
+    audio_fh = None
+    if AUDIO_ARCHIVE_ENABLED:
+        try:
+            AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+            _prune_audio_archive()
+            audio_fh = open(AUDIO_DIR / f"{time.strftime('%Y-%m-%d')}-{session_id}.pcm", "ab")
+        except Exception as exc:
+            logger.info("session=%s audio archive disabled: %s", session_id, exc)
+
     async def browser_to_provider() -> None:
         try:
             while True:
@@ -759,6 +808,9 @@ async def voice_socket(ws: WebSocket) -> None:
                     break
                 pcm16 = message.get("bytes")
                 if pcm16:
+                    if audio_fh is not None:
+                        with suppress(Exception):
+                            audio_fh.write(pcm16)
                     with suppress(Exception):
                         await provider_ref[0].send_audio(pcm16)
                     if speaker_session is not None:
@@ -961,6 +1013,9 @@ async def voice_socket(ws: WebSocket) -> None:
                 await task
         with suppress(Exception):
             await provider_ref[0].close()
+        if audio_fh is not None:
+            with suppress(Exception):
+                audio_fh.close()
         if speaker_session is not None:
             with suppress(Exception):
                 await speaker_session.close()
