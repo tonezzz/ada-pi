@@ -86,6 +86,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 import time
@@ -222,6 +223,32 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
             failures.append(
                 f"result_geo_near: no tool_result within {km} km of "
                 f"({want_lat}, {want_lon})")
+    # out-of-band ground truth: ask the GEV bridge for the live camera
+    # position — verifies where the map ACTUALLY is, not what a tool
+    # result claimed. Needs expect.gev_screen for targeting.
+    view = expect.get("gev_view_near")
+    if view:
+        want_lat, want_lon = float(view[0]), float(view[1])
+        km = float(view[2]) if len(view) > 2 else 25.0
+        pos = _gev_view_position(expect.get("gev_screen"))
+        if pos is None:
+            failures.append(
+                "gev_view_near: no GEV view state — no client on "
+                f"screen {expect.get('gev_screen')}")
+        else:
+            import math
+            dlat = math.radians(pos[0] - want_lat)
+            dlon = math.radians(pos[1] - want_lon)
+            aa = (math.sin(dlat / 2) ** 2
+                  + math.cos(math.radians(want_lat))
+                  * math.cos(math.radians(pos[0]))
+                  * math.sin(dlon / 2) ** 2)
+            dist = 6371 * 2 * math.asin(math.sqrt(aa))
+            if dist > km:
+                failures.append(
+                    f"gev_view_near: camera at "
+                    f"({pos[0]:.4f},{pos[1]:.4f}) is {dist:.0f} km "
+                    f"from target — limit {km} km")
     # narration content: a listed tool's call args must contain each
     # substring — proves the say/prompt carried the place, not filler
     for tool, subs in (expect.get("call_args_contain") or {}).items():
@@ -239,6 +266,47 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
                     f"call_args_contain: none of {alts} in "
                     f"{tool} args")
     return failures
+
+
+_GEV_CMD_URL = os.environ.get(
+    "GEV_CMD_URL",
+    "https://tony-dell.taila0626a.ts.net/apps/gev-cmd/command")
+
+
+def _gev_view_position(screen: Any) -> tuple[float, float, float] | None:
+    """POST get_current_view_state to the GEV command relay; returns
+    (lat, lon, dist_km-placeholder 0) — caller computes distance. None if
+    no client answered."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            _GEV_CMD_URL,
+            data=json.dumps({
+                "name": "get_current_view_state", "args": {},
+                "screen": screen, "wait": 5}).encode(),
+            headers={"Content-Type": "application/json"})
+        out = json.loads(urllib.request.urlopen(req, timeout=15).read())
+    except Exception:
+        return None
+    lats, lons = [], []
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                lk = str(k).lower()
+                if isinstance(v, (int, float)):
+                    if lk in ("latitude", "lat"):
+                        lats.append(float(v))
+                    elif lk in ("longitude", "lon", "lng"):
+                        lons.append(float(v))
+                else:
+                    walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+    walk(out)
+    if not lats or not lons:
+        return None
+    return (lats[0], lons[0], 0.0)
 
 
 def _result_geo_within(result: Any, want_lat: float, want_lon: float,

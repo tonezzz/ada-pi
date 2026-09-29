@@ -36,7 +36,8 @@ turns:
       calls_any: [gev_command]
       no_unattempted_refusal: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients']
-      result_geo_near: [-26.2041, 28.0473, 60]
+      gev_view_near: [-26.2041, 28.0473, 60]
+      gev_screen: 4
       call_args_contain: {vcast_say: [['Johannesburg']]}
       timeout_s: 240
       settle_s: 16
@@ -46,7 +47,8 @@ turns:
       calls_any: [gev_command]
       no_unattempted_refusal: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients']
-      result_geo_near: [-33.9249, 18.4241, 60]
+      gev_view_near: [-33.9249, 18.4241, 60]
+      gev_screen: 4
       call_args_contain: {vcast_say: [['Cape Town', 'Table Mountain']]}
       timeout_s: 240
       settle_s: 16
@@ -56,7 +58,8 @@ turns:
       calls_any: [gev_command]
       no_unattempted_refusal: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients']
-      result_geo_near: [-33.0965, 18.0299, 40]
+      gev_view_near: [-33.0965, 18.0299, 40]
+      gev_screen: 4
       call_args_contain: {vcast_say: [['Langebaan', 'lagoon']]}
       timeout_s: 240
       settle_s: 16

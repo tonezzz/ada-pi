@@ -30,7 +30,8 @@ turns:
       calls_any: [gev_command, cast_to_screen]
       no_unattempted_refusal: [gev_command, cast_to_screen]
       result_not_contains: ['gev command relay', 'no GEV clients']
-      result_geo_near: [13.8399, 100.5412, 15]
+      gev_view_near: [13.8399, 100.5412, 15]
+      gev_screen: 4
       call_args_contain: {vcast_say: ['ประชานิเวศน์']}
       timeout_s: 240
       settle_s: 18
@@ -41,7 +42,8 @@ turns:
       calls_any: [gev_command, cast_to_screen]
       no_unattempted_refusal: [gev_command, cast_to_screen]
       result_not_contains: ['gev command relay', 'no GEV clients']
-      result_geo_near: [13.7226, 100.5533, 15]
+      gev_view_near: [13.7226, 100.5533, 15]
+      gev_screen: 4
       call_args_contain: {vcast_say: [['พระราม', 'Rama']]}
       timeout_s: 240
       settle_s: 18
@@ -52,7 +54,8 @@ turns:
       calls_any: [gev_command, cast_to_screen]
       no_unattempted_refusal: [gev_command, cast_to_screen]
       result_not_contains: ['gev command relay', 'no GEV clients']
-      result_geo_near: [13.6689, 100.6292, 15]
+      gev_view_near: [13.6689, 100.6292, 15]
+      gev_screen: 4
       call_args_contain: {vcast_say: [['บูรพา', 'บางนา', 'Bang Na']]}
       timeout_s: 240
       settle_s: 18
