@@ -1743,7 +1743,12 @@ class GeminiLiveProvider(RealtimeProvider):
             # so time-sensitive tool calls (calendar 'in 2 hours', 'Friday')
             # anchor to the user's local time at session start.
             "system_instruction": self.instructions + _now_context(),
-            "input_audio_transcription": {},
+            "input_audio_transcription": {
+                # Restrict ASR to Thai/English — unhinted input
+                # transcription wandered into Korean/Chinese/Portuguese
+                # on noisy Thai speech (transcript 2026-09-29 855a65dab8).
+                "language_codes": ["th-TH", "en-US"],
+            },
             "output_audio_transcription": {},
             "speech_config": {
                 "voice_config": {
