@@ -2179,7 +2179,11 @@ class GeminiLiveProvider(RealtimeProvider):
                         "for a camera zone. Zones: 'zone-a' (estate perimeter: roads, walkway, guard), "
                         "'noble-park' (pool, tennis, playground, mini mart), 'tony-house' (home cams "
                         "c100/c201/coffee), 'vms-noble-club' (every noble-club DVR channel), "
-                        "'vms-noble-a' (every noble-a DVR channel). Use when the user's focus shifts to a camera zone — "
+                        "'vms-noble-a' (every noble-a DVR channel), 'rama9' (Rama 9 demo traffic wall), "
+                        "'traffic' (DOH Bangkok cams), 'burapha' (Bangna–Burapha expressway), "
+                        "'chonburi' (Chonburi corridor). Walls keep warm thumbnails even while off — "
+                        "for an AREA question prefer the matching wall over a slow single snap; it loads "
+                        "instantly and refreshes in the background. Use when the user's focus shifts to a camera zone — "
                         "e.g. they ask to check the pool or the front road — OFFER to put the wall up "
                         "('want the Zone A wall on screen 1?') rather than doing it unprompted for a "
                         "single one-off look; a single look is ada_camera_snapshot. action='start' "
@@ -2196,7 +2200,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "zone": {
                                 "type": "string",
-                                "description": "'zone-a', 'noble-park', 'tony-house', 'vms-noble-club', 'vms-noble-a', or 'rama9' (traffic demo — Bangkok road cams).",
+                                "description": "'zone-a', 'noble-park', 'tony-house', 'vms-noble-club', 'vms-noble-a', 'rama9' (traffic demo — Bangkok road cams), 'traffic' (DOH Bangkok), 'burapha' (Bangna–Burapha expressway), or 'chonburi' (Chonburi corridor).",
                             },
                             "screen": {
                                 "type": "integer",

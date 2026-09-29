@@ -2671,12 +2671,16 @@ class ToolRunner:
         Enables the zone in the relay's /camwall state (the puller on
         tony-dell refreshes thumbs into /apps/camwall/data/<zone>/) and casts
         the wall page. Zones: zone-a, noble-park, tony-house, vms-noble-club,
-        vms-noble-a, rama9 (demo traffic wall — Longdo stills + YouTube)."""
+        vms-noble-a, rama9 (demo traffic wall), traffic (DOH Bangkok),
+        burapha (Bangna–Burapha expressway), chonburi (Chonburi corridor).
+        Walls keep warm thumbs even while disabled, so casting an area is
+        instant — the puller refreshes in the background."""
         import asyncio
         action = (action or "start").strip().lower()
         zone = (zone or "").strip().lower().replace(" ", "-")
         valid = {"zone-a", "noble-park", "tony-house",
-                 "vms-noble-club", "vms-noble-a", "rama9"}
+                 "vms-noble-club", "vms-noble-a", "rama9",
+                 "traffic", "burapha", "chonburi"}
         if zone not in valid:
             return {"error": f"unknown zone {zone!r} — valid: {sorted(valid)}"}
         if action == "stop":
