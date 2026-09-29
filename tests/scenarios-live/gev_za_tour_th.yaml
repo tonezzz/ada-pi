@@ -1,0 +1,59 @@
+# South Africa tour (Thai) — GEV fullscreen + PiP cam window, fast
+# country-scale hops with fly_to_location, plus a short drawn route over
+# Johannesburg for the smooth in-city leg. No public SA cam feed wired
+# yet, so the PiP carries the rama9 wall as the demo CCTV window.
+# tier: full — actuates a real display.
+name: gev_za_tour_th
+tier: full
+turns:
+  - user: "สวัสดีครับ Ada"
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  - user: "หยุดผังกล้องที่ผูกกับหน้าจอ 4 — โซน traffic กับ rama9 — ให้จอว่าง"
+    expect:
+      calls_any: [cctv_wall, cast_to_screen]
+      timeout_s: 120
+      settle_s: 10
+
+  - user: "เปิด God's Eye View เต็มจอบนหน้าจอ 4 แล้วปักหน้าต่างกล้องลอยมุมขวาบน โซน rama9"
+    expect:
+      calls_any: [cast_to_screen, cctv_wall]
+      response_nonempty: true
+      timeout_s: 180
+      settle_s: 50
+
+  - user: "พาไปทัวร์แอฟริกาใต้ — บินเข้าเมืองโจฮันเนสเบิร์กก่อน แล้วบรรยายภาษาไทยบนจอว่าเรามาถึงอะไร"
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      timeout_s: 240
+      settle_s: 20
+
+  - user: "วาดเส้นทางบินในเมืองโจฮันเนสเบิร์ก: จากตัวเมือง (26.2041, 28.0473) ไปแซนด์ตัน (26.1076, 28.0567) แล้วบินตามเส้นทางนั้นช้าๆ พร้อมบรรยาย"
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      timeout_s: 240
+      settle_s: 60   # route draw + slow fly takes a while
+
+  - user: "บินลงใต้ไปเคปทาวน์ — เทเบิลเมาเทน — บรรยายเป็นภาษาไทยบนจอ"
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      timeout_s: 240
+      settle_s: 20
+
+  - user: "ขึ้นเหนือไปลังก์บานลากูน แล้วบรรยายปิดท้าย"
+    expect:
+      calls_any: [gev_command]
+      result_not_contains: ['gev command relay', 'no GEV clients']
+      timeout_s: 240
+      settle_s: 20
+
+  - user: "จับภาพหน้าจอ 4 ให้ดูหน่อย แล้วเคลียร์จอกลับเป็นว่าง"
+    expect:
+      calls_any: [vcast_snapshot]
+      timeout_s: 120
+      settle_s: 10
