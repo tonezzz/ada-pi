@@ -4432,7 +4432,8 @@ class GeminiLiveProvider(RealtimeProvider):
                                     output = await self.tool_runner.execute(
                                         str(call.name), call_args,
                                         identity=(owner
-                                                  or self.current_speaker_ha_person))
+                                                  or self.current_speaker_ha_person),
+                                        speaker_session=self.speaker_session)
                                     result = {"output": output}
                                     if call.name == "ada_memory_search":
                                         self._note_search_result(output)

@@ -137,6 +137,14 @@ def _slug(text: str | None) -> str:
 # call must see the SESSION's identity, not the runner's mutable fields
 # (which can be overwritten by another session's speaker-ID callback mid-
 # call). execute() sets it; _memory_identity() prefers it.
+# The session's SpeakerSession — set per execute() call by the provider.
+# 2026-09-29 bug: a shared `runner.speaker_session` slot meant a second
+# ws connect (browser tab, HA satellite) stomped it mid-conversation and
+# ada_enroll_speaker read the *other* session's empty buffer — Tony's
+# enrollment reported "no audio arrived" while he was actively speaking.
+_CALLER_SPEAKER_SESSION: contextvars.ContextVar = contextvars.ContextVar(
+    "caller_speaker_session", default=None)
+
 _CALLER_IDENTITY: contextvars.ContextVar = contextvars.ContextVar(
     "ada_caller_identity", default=None)
 
@@ -685,7 +693,8 @@ class ToolRunner:
         return self._decision_engine
 
     async def execute(self, name: str, args: dict[str, Any] | None = None,
-                      *, identity: Any = _IDENTITY_UNSET) -> Any:
+                      *, identity: Any = _IDENTITY_UNSET,
+                      speaker_session: Any = _IDENTITY_UNSET) -> Any:
         method = getattr(self, name, None)
         if not method:
             raise KeyError(f"Unknown tool: {name}")
@@ -695,10 +704,19 @@ class ToolRunner:
         # mutable identity fields can race when sessions overlap.
         ident = self._memory_identity() if identity is _IDENTITY_UNSET else identity
         _ident_token = _CALLER_IDENTITY.set(ident)
+        # Same for the speaker session: the provider passes its own so a
+        # concurrent ws connect can't swap the buffer out from under an
+        # in-flight enroll call.
+        _ss_token = (
+            _CALLER_SPEAKER_SESSION.set(speaker_session)
+            if speaker_session is not _IDENTITY_UNSET else None
+        )
         try:
             return await self._execute_gated(name, call_args, ident)
         finally:
             _CALLER_IDENTITY.reset(_ident_token)
+            if _ss_token is not None:
+                _CALLER_SPEAKER_SESSION.reset(_ss_token)
 
     async def _execute_gated(self, name: str, call_args: dict[str, Any],
                              ident: str | None) -> Any:
@@ -2124,7 +2142,8 @@ class ToolRunner:
         no separate recording needed. Call this when the user asks to
         enroll their voice or when Ada offers enrollment.
         """
-        if self.speaker_session is None:
+        speaker_session = _CALLER_SPEAKER_SESSION.get() or self.speaker_session
+        if speaker_session is None:
             return {
                 "error": "speaker identification is not active on this session "
                 "(speaker ID may be disabled or not configured)"
@@ -2148,7 +2167,7 @@ class ToolRunner:
                     except Exception:
                         pass
         try:
-            result = self.speaker_session.enroll_from_buffer(
+            result = speaker_session.enroll_from_buffer(
                 str(name),
                 ha_person=ha_person or None,
                 display_name=display_name or None,
