@@ -852,7 +852,47 @@ class ToolRunner:
             call_args["confirm_token"] = confirm[1]
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
-        return await method(**call_args)
+        result = await method(**call_args)
+        return await self._capture_reminder(name, result)
+
+    # Tools that already carry capture state — a reminder on them would
+    # be noise (the capture IS the subject of these calls).
+    _CAPTURE_AWARE_TOOLS = {
+        "cast_to_screen", "cctv_wall", "cctv_snapshot", "vcast_list",
+        "ada_camera_snapshot", "traffic_camera", "vcast_say",
+    }
+    _capture_reminded_ts = 0.0
+
+    async def _capture_reminder(self, name: str, result: Any) -> Any:
+        """While a camera capture/uplink/wall is live, tag unrelated tool
+        results with a one-line reminder so Ada can't silently walk away
+        from a running capture mid-conversation (2026-09-29 transcript:
+        topic-shift to calendar left the zone-a wall unacknowledged).
+        Throttled to once a minute."""
+        if (name in self._CAPTURE_AWARE_TOOLS
+                or not isinstance(result, dict)
+                or result.get("capture_reminder")
+                or time.time() - self._capture_reminded_ts < 60):
+            return result
+        try:
+            import asyncio
+            caps = await asyncio.to_thread(self._vcast_api, "/capture")
+            live = {s: c for s, c in (caps.get("captures") or {}).items()
+                    if c.get("active")}
+            if not live:
+                return result
+            self._capture_reminded_ts = time.time()
+            desc = ", ".join(
+                f"screen {s}: {c.get('source') or 'cam'}"
+                + (f" ({c['ch']})" if c.get("ch") else "")
+                for s, c in live.items())
+            result["capture_reminder"] = (
+                f"heads-up — camera capture still live ({desc}); "
+                "acknowledge it to the user or ask before ending "
+                "the topic.")
+        except Exception:
+            pass
+        return result
 
     @staticmethod
     def _normalize_args(name: str, method: Any, call_args: dict[str, Any]) -> dict[str, Any]:
