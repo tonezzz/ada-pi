@@ -12,8 +12,9 @@ turns:
       timeout_s: 90
       settle_s: 8
 
-  - user: "Yes, go ahead."
+  - user: "Yes — replace whatever is on screen 4 with God's Eye View."
     expect:
+      calls_any: [cast_to_screen]
       result_not_contains: ['denied']
       response_nonempty: true
       timeout_s: 120
