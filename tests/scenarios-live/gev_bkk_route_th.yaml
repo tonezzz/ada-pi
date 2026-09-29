@@ -28,6 +28,7 @@ turns:
   - user: "วาดเส้นทางบินบนแผนที่: จากแยกประชานิเวศน์ (13.8399, 100.5412) ลงมาที่ทางด่วนพระราม 4 (13.7226, 100.5533) แล้วไปต่อที่ทางพิเศษบูรพาวิถี กม.0 บางนา (13.6689, 100.6292)"
     expect:
       calls_any: [gev_command]
+      no_unattempted_refusal: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients',
                             '"ok": false', '\\"ok\\": false']
       timeout_s: 240
@@ -37,6 +38,7 @@ turns:
   - user: "บินตามเส้นทางนั้นเลย — ใช้ fly_route ความเร็ว 'fast' (มันจะเร่งตอนออกตัวและชะลอเองตอนเข้าใกล้จุด) — พร้อมบรรยายบนจอว่าเรากำลังผ่านอะไร"
     expect:
       calls_any: [gev_command]
+      no_unattempted_refusal: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients']
       timeout_s: 240
       settle_s: 60   # the route flight itself takes a while

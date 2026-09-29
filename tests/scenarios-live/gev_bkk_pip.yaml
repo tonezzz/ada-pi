@@ -28,6 +28,7 @@ turns:
   - user: "Tour stop 1: fly the map to 13.8399, 100.5412 — the Pracha Niwet intersection in north Bangkok. Then swap the floating window to this camera: https://tony-dell.taila0626a.ts.net/apps/camwall/data/traffic/itic---pracha-niwet-intersection--bangkok.jpg — and narrate it properly on the screen: where we are, what this camera looks at, and what the frame shows right now."
     expect:
       calls_any: [gev_command, cast_to_screen]
+      no_unattempted_refusal: [gev_command, cast_to_screen]
       result_not_contains: ['gev command relay', 'no GEV clients']
       timeout_s: 240
       settle_s: 18
@@ -36,6 +37,7 @@ turns:
   - user: "Stop 2: fly to 13.7226, 100.5533 — the Rama 4 expressway interchange downtown. Point the floating window at this camera: https://tony-dell.taila0626a.ts.net/apps/camwall/data/traffic/itic---expressway--rama-4-interchange.jpg — narrate it: the junction, the expressway, what the frame is showing."
     expect:
       calls_any: [gev_command, cast_to_screen]
+      no_unattempted_refusal: [gev_command, cast_to_screen]
       result_not_contains: ['gev command relay', 'no GEV clients']
       timeout_s: 240
       settle_s: 18
@@ -44,6 +46,7 @@ turns:
   - user: "Last stop: fly to 13.6689, 100.6292 — the Burapha Withi expressway at Bang Na km zero. Put this camera in the floating window: https://tony-dell.taila0626a.ts.net/apps/camwall/data/burapha/%E0%B8%97%E0%B8%B2%E0%B8%87%E0%B8%9E-%E0%B9%80%E0%B8%A8%E0%B8%A9%E0%B8%9A-%E0%B8%A3%E0%B8%9E%E0%B8%B2%E0%B8%A7-%E0%B8%96----bangna-trat-km-0--east.jpg — narrate it, then tell me we're done."
     expect:
       calls_any: [gev_command, cast_to_screen]
+      no_unattempted_refusal: [gev_command, cast_to_screen]
       result_not_contains: ['gev command relay', 'no GEV clients']
       timeout_s: 240
       settle_s: 18

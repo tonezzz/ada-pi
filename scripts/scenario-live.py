@@ -86,6 +86,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -197,6 +198,18 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
     for bad in expect.get("events_not_contain") or []:
         if any(all(e.get(k) == v for k, v in bad.items()) for e in events):
             failures.append(f"events_not_contain: matched {bad}")
+    # claim-vs-action drift: transcript refuses ("can't / ไม่สามารถ /
+    # unable") yet none of the listed tools were even attempted — the
+    # 2026-09-29 ZA tour skipped fly_route this way.
+    refusal_tools = expect.get("no_unattempted_refusal") or []
+    if refusal_tools and not names & set(refusal_tools):
+        if re.search(
+                r"(ไม่สามารถ|cannot|can't|unable to|not able to|ไม่ได้)",
+                transcript, re.I):
+            failures.append(
+                "unattempted_refusal: transcript claims inability but "
+                f"none of {refusal_tools} were attempted "
+                f"(calls: {sorted(names)})")
     return failures
 
 
