@@ -14,7 +14,11 @@ turns:
       Ada — quick check before I plan anything: what day and date is
       tomorrow exactly?
     expect:
-      response_contains_any: ["{tomorrow_dow}", "{tomorrow_dow_th}"]
+      response_contains_any:
+        - "{tomorrow_dow}"
+        - "{tomorrow_dow_th}"
+        - "{tomorrow_date_th}"
+        - "{tomorrow_date_en}"
       timeout_s: 60
       settle_s: 6
 
@@ -22,8 +26,13 @@ turns:
       ใส่ task ให้หน่อย: พรุ่งนี้เช็คน้ำในตู้เย็น
     expect:
       # confirm gate restates the task — the echo rule requires the
-      # resolved day/date in the restatement, either language
-      response_contains_any: ["{tomorrow_dow}", "{tomorrow_dow_th}"]
+      # resolved date in the restatement: weekday name or dom+month,
+      # either language
+      response_contains_any:
+        - "{tomorrow_dow}"
+        - "{tomorrow_dow_th}"
+        - "{tomorrow_date_th}"
+        - "{tomorrow_date_en}"
       timeout_s: 90
       settle_s: 8
 

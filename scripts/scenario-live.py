@@ -101,11 +101,19 @@ _DOW_TH = ["วันจันทร์", "วันอังคาร", "วั
            "วันศุกร์", "วันเสาร์", "วันอาทิตย์"]
 _DOW_EN = ["Monday", "Tuesday", "Wednesday", "Thursday",
            "Friday", "Saturday", "Sunday"]
+_MON_TH = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม",
+           "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม",
+           "พฤศจิกายน", "ธันวาคม"]
+_MON_EN = ["January", "February", "March", "April", "May", "June",
+           "July", "August", "September", "October", "November",
+           "December"]
 
 
 def _expand_tokens(obj: Any) -> Any:
     """Substitute {today}, {tomorrow}, {today_dow}, {tomorrow_dow},
-    {today_dow_th}, {tomorrow_dow_th}, {today_dom}, {tomorrow_dom}
+    {today_dow_th}, {tomorrow_dow_th}, {today_dom}, {tomorrow_dom},
+    {today_date_th}/{tomorrow_date_th} ("30 กันยายน") and
+    {today_date_en}/{tomorrow_date_en} ("September 30")
     in all strings of the loaded scenario."""
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
@@ -120,6 +128,10 @@ def _expand_tokens(obj: Any) -> Any:
         "{tomorrow_dow_th}": _DOW_TH[tomo.weekday()],
         "{today_dom}": str(today.day),
         "{tomorrow_dom}": str(tomo.day),
+        "{today_date_th}": f"{today.day} {_MON_TH[today.month - 1]}",
+        "{tomorrow_date_th}": f"{tomo.day} {_MON_TH[tomo.month - 1]}",
+        "{today_date_en}": f"{_MON_EN[today.month - 1]} {today.day}",
+        "{tomorrow_date_en}": f"{_MON_EN[tomo.month - 1]} {tomo.day}",
     }
     if isinstance(obj, str):
         for k, v in table.items():
