@@ -19,6 +19,7 @@ from typing import Any
 from backend import memory_ops
 from backend import chaba_memory
 from backend import devin_dispatch as devin_dispatch_mod
+from backend import tools_loader
 from backend import doc_archive_client
 from backend import summary_rollups
 from backend.calendar_providers import CalendarService
@@ -101,6 +102,15 @@ DOC_CONFIRMED_TOOLS = {"ada_doc_archive", "ada_doc_print"}
 # document metadata for an ID card).
 DOC_TOOLS = DOC_CONFIRMED_TOOLS | {"ada_doc_search", "ada_doc_get"}
 DOC_BANK = "documents"
+
+# Google Drive / Photos tools — same access scope as DOC_TOOLS (the whole
+# Drive is owner-tier data). drive_update replaces file content in place,
+# so it needs confirmed=true; search/get/show/pick are read-side.
+DRIVE_CONFIRMED_TOOLS = {"drive_update"}
+DRIVE_TOOLS = DRIVE_CONFIRMED_TOOLS | {
+    "drive_search", "drive_get", "drive_show",
+    "photos_pick", "photos_picked",
+}
 # Sentinel: identity unset → fall back to runner-level _memory_identity();
 # None is a real identity (anonymous) and must be distinguishable.
 _IDENTITY_UNSET = object()
@@ -111,7 +121,7 @@ _IDENTITY_UNSET = object()
 # stores; anything useful becomes a proposal for the owner to confirm.
 SECONDARY_BLOCKED_TOOLS = (
     CONTROL_TOOLS | MEMORY_WRITE_TOOLS | CALENDAR_WRITE_TOOLS
-    | CMS_WRITE_TOOLS | DEVIN_CONFIRMED_TOOLS | DOC_TOOLS
+    | CMS_WRITE_TOOLS | DEVIN_CONFIRMED_TOOLS | DOC_TOOLS | DRIVE_TOOLS
     | {
         "ada_enroll_speaker", "ada_memory_search",
         "ada_ha_set_device_confidence", "ada_resolve_action",
@@ -127,7 +137,7 @@ _SECONDARY_BLOCKED_GROUPS = {
     "calendar_write": CALENDAR_WRITE_TOOLS,
     "cms_write": CMS_WRITE_TOOLS,
     "devin_confirmed": DEVIN_CONFIRMED_TOOLS,
-    "doc": DOC_TOOLS,
+    "doc": DOC_TOOLS | DRIVE_TOOLS,
 }
 
 
@@ -755,8 +765,12 @@ class ToolRunner:
                     name = attr
                     method = getattr(self, name, None)
                     break
+        dyn_spec = None
         if not method:
-            raise KeyError(f"Unknown tool: {name}")
+            dyn_spec = self._dynamic_tools.tools.get(name)
+            if dyn_spec is None:
+                raise KeyError(f"Unknown tool: {name}")
+            method = self._bind_dynamic(dyn_spec)
         call_args = dict(args or {})
         # Per-call identity override: the provider passes the SESSION's
         # resolved identity — the runner is shared across sessions, so its
@@ -783,7 +797,8 @@ class ToolRunner:
             if owner is not _IDENTITY_UNSET else None
         )
         try:
-            return await self._execute_gated(name, call_args, ident)
+            return await self._execute_gated(name, call_args, ident,
+                                             method=method, dyn_spec=dyn_spec)
         finally:
             _CALLER_IDENTITY.reset(_ident_token)
             _CALLER_VERIFIED_AFFIRM.set(False)
@@ -794,9 +809,24 @@ class ToolRunner:
             if _owner_token is not None:
                 _CALLER_OWNER.reset(_owner_token)
 
+    @property
+    def _dynamic_tools(self) -> tools_loader.ToolRegistry:
+        return tools_loader.registry()
+
+    def _bind_dynamic(self, spec: "tools_loader.DynamicTool") -> Any:
+        """Wrap a tools.d run(runner, **args) as a method-like callable with
+        the manifest's timeout enforced."""
+        async def _bound(**kwargs: Any) -> Any:
+            import asyncio
+            return await asyncio.wait_for(
+                spec.run(self, **kwargs), timeout=spec.timeout_s)
+        return _bound
+
     async def _execute_gated(self, name: str, call_args: dict[str, Any],
-                             ident: str | None) -> Any:
-        method = getattr(self, name, None)
+                             ident: str | None, method: Any = None,
+                             dyn_spec: Any = None) -> Any:
+        if method is None:
+            method = getattr(self, name, None)
         confirm: tuple[Any, Any] = (
             call_args.pop("confirmed", None),
             call_args.pop("confirm_token", None),
@@ -810,6 +840,10 @@ class ToolRunner:
         if self._is_secondary_turn():
             action = str(call_args.get("action") or "").lower()
             blocked = self._secondary_blocked_tools()
+            # Dynamic (tools.d) tools default to owner-only on secondary
+            # turns — the manifest must explicitly set secondary_allowed.
+            if dyn_spec is not None and not dyn_spec.secondary_allowed:
+                blocked = blocked | {name}
             # ada_enroll_speaker is exempt here — its own check is smarter:
             # the owner can re-enroll even while a secondary voice is
             # identified, as long as the buffer voice isn't the secondary's
@@ -849,6 +883,8 @@ class ToolRunner:
                 self._check_cms_write_allowed(name, call_args, *confirm)
             elif name in DEVIN_CONFIRMED_TOOLS:
                 self._check_devin_confirmed(name, call_args, *confirm)
+            elif dyn_spec is not None:
+                self._check_dynamic_allowed(name, dyn_spec, call_args, *confirm)
             elif name in DOC_TOOLS:
                 if not self.banks.bank_allowed(DOC_BANK, policy_ident):
                     logger.warning(
@@ -858,6 +894,21 @@ class ToolRunner:
                         "document tools are outside this session's access policy")
                 if name in DOC_CONFIRMED_TOOLS:
                     self._check_doc_confirmed(name, call_args, *confirm)
+            elif name in DRIVE_TOOLS:
+                # Whole-Drive + Photos access is owner-tier: same bank
+                # policy as the document tools.
+                if not self.banks.bank_allowed(DOC_BANK, policy_ident):
+                    logger.warning(
+                        "denied %s for identity %r: documents bank policy",
+                        name, ident)
+                    raise PermissionError(
+                        "drive/photos tools are outside this session's access policy")
+                if name in DRIVE_CONFIRMED_TOOLS:
+                    self._require_confirmation(
+                        name, call_args, *confirm,
+                        f"{name} modifies a Drive file. Restate the file "
+                        "and change, get an explicit yes, then call again "
+                        "with confirmed=true.")
         except PermissionError as exc:
             # Phantom-save guard (2026-09-28): the model papered over refused
             # writes and claimed success aloud. Every gate denial now carries
@@ -1249,6 +1300,26 @@ class ToolRunner:
             f"{name} requires confirmation. Restate the page slug, title, and "
             "what will change, get an explicit yes, then call again with confirmed=true.",
         )
+
+    def _check_dynamic_allowed(
+        self, name: str, spec: Any, args: dict[str, Any],
+        confirmed: Any, confirm_token: Any = None,
+    ) -> None:
+        """Policy gate for tools.d drop-in tools. Raises PermissionError."""
+        if spec.policy == "owner_only":
+            ident = self.policy_identity()
+            policy = self.banks.policy_for(ident) or {}
+            if not policy.get("full"):
+                logger.warning("denied %s for identity %r: owner_only tool",
+                               name, ident)
+                raise PermissionError(
+                    f"{name} is restricted to the owner's identities")
+        if spec.policy == "confirmed":
+            self._require_confirmation(
+                name, args, confirmed, confirm_token,
+                f"{name} requires confirmation. Describe what it will do, "
+                "get an explicit yes, then call again with confirmed=true.",
+            )
 
     def _check_devin_confirmed(
         self, name: str, args: dict[str, Any], confirmed: Any,
@@ -1657,6 +1728,99 @@ class ToolRunner:
         out = await doc_archive_client.doc_print_pdf(slug, pages, ts)
         self._doc_record("print", slug=slug, pages=out.get("pages"),
                          queue=out.get("queue"))
+        return out
+
+    # -- Google Drive / Photos tools (doc-archive /v1/drive + /v1/photos) --
+
+    async def drive_search(self, query: str, mime: str | None = None,
+                           limit: int = 10) -> Any:
+        """Search the whole Drive by name or content. mime narrows it:
+        'image/', 'video/', 'application/pdf', 'text/'."""
+        files = await doc_archive_client.drive_search(
+            query, mime=mime, limit=limit)
+        return {"files": files, "count": len(files)}
+
+    async def drive_get(self, file_id: str) -> dict[str, Any]:
+        """Read one Drive file by id (from drive_search). Text and Google
+        docs come back inline; binary types return a castable media_url."""
+        return await doc_archive_client.drive_get(file_id)
+
+    async def drive_update(self, file_id: str, content: str,
+                           confirmed: bool = False) -> dict[str, Any]:
+        """Replace a regular Drive file's content in place (text/md/json/
+        csv). Google-native docs can't be media-updated — the service
+        returns 400 with the export/re-upload guidance."""
+        out = await doc_archive_client.drive_update(file_id, content)
+        self._doc_record("drive-update", file_id=file_id)
+        return out
+
+    async def drive_show(self, file_id: str, screen: int = 0,
+                         target: str = "screen") -> dict[str, Any]:
+        """Show a Drive photo/video/file on a vcast screen (default) or the
+        TV (target='tv'). Picks image/play/nav from the file's mimeType —
+        the media URL is minted server-side so the display needs no auth."""
+        info = await doc_archive_client.drive_get(file_id)
+        mime = str(info.get("mimeType") or "")
+        media_url = info.get("media_url")
+        if media_url:
+            url = doc_archive_client.DOC_ARCHIVE_URL + str(media_url)
+        else:
+            # text/inline types: mint a media URL anyway so the display
+            # can fetch the raw file
+            url = await doc_archive_client.drive_media_url(file_id)
+        if str(target or "screen").lower() == "tv":
+            out = await self.tv_action(cmd="nav", text=url)
+            if isinstance(out, dict):
+                out.update({"name": info.get("name"), "mimeType": mime})
+            return out
+        if mime.startswith("video/") or mime.startswith("audio/"):
+            action = "play"
+        elif mime.startswith("image/"):
+            action = "image"
+        else:
+            action = "nav"
+        n = int(screen or 1)
+        out = await self.cast_to_screen(screen=n, action=action, url=url)
+        if isinstance(out, dict):
+            out.update({"name": info.get("name"), "mimeType": mime})
+        return out
+
+    async def photos_pick(self) -> dict[str, Any]:
+        """Start a Google Photos picker session — returns a picker_uri the
+        user opens on their signed-in phone/browser to choose items, plus a
+        session_id to pass to photos_picked. Google's Library API was
+        limited to app-created data in 2025, so picking is the only way to
+        reach library photos."""
+        out = await doc_archive_client.photos_picker_create()
+        out["note"] = ("Send the user picker_uri — it must be opened where "
+                       "their Google account is signed in (phone/laptop). "
+                       "Then call photos_picked with session_id.")
+        return out
+
+    async def photos_picked(self, session_id: str, screen: int = 0,
+                            show: bool = True) -> dict[str, Any]:
+        """Poll a picker session. When the user has picked items, returns
+        them and (show=true) casts the first item to the screen — images
+        as image, videos as play, using the picker baseUrl directly."""
+        out = await doc_archive_client.photos_picker_poll(session_id)
+        if not out.get("picked"):
+            return out
+        items = out.get("items") or []
+        if items and show:
+            first = items[0]
+            base = str(first.get("baseUrl") or "")
+            if base:
+                n = int(screen or 1)
+                mime = str(first.get("mimeType") or "")
+                action = ("play" if mime.startswith("video/")
+                          else "image")
+                # baseUrl modifiers: =dv fetches playable video bytes,
+                # =w<N> resizes images for a screen.
+                url = base + ("=dv" if mime.startswith("video/") else "=w2048")
+                cast = await self.cast_to_screen(
+                    screen=n, action=action, url=url)
+                out["cast"] = cast
+                out["shown"] = first.get("filename") or first.get("id")
         return out
 
     # -- Token usage reporting (usage_tracker.py) --

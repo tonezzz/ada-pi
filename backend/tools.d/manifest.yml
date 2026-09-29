@@ -1,0 +1,15 @@
+# Drop-in tools for Ada — each entry maps a tool name to a module in this
+# directory. See docs/ada-tool-dev.md for the authoring contract.
+#
+# policy:
+#   read        — callable by any identified session, no confirmation
+#   confirmed   — requires confirmed=true after a spoken yes
+#   owner_only  — restricted to owner identities (full person_policies)
+# secondary_allowed: let non-owner identified speakers call it (default false)
+# timeout_s: hard cap on run() (default 20)
+tools:
+  ada_mddb_health:
+    module: ada_mddb_health
+    policy: read
+    secondary_allowed: false
+    timeout_s: 20

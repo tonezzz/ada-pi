@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 
-from backend import chaba_memory, voice_config, vms_camera
+from backend import chaba_memory, tools_loader, voice_config, vms_camera
 from backend.instance import ada_instance_id
 from backend.conversation_memory import ConversationMemory
 from backend.tool_runner import (
@@ -286,6 +286,30 @@ DOC_INSTRUCTIONS = (
     "archive promptly rather than deferring. If ada_doc_archive reports "
     "duplicates or near-duplicates, say so plainly and ask whether it's a "
     "re-scan or a new version before proceeding."
+)
+
+
+# Google Drive / Photos tools — excluded together with the declarations.
+DRIVE_TOOLS = {
+    "drive_search", "drive_get", "drive_update", "drive_show",
+    "photos_pick", "photos_picked",
+}
+
+DRIVE_INSTRUCTIONS = (
+    " You can reach the operator's Google Drive: drive_search finds files "
+    "by name or content (narrow with mime like 'image/' or 'video/'), "
+    "drive_get reads a file (text comes back inline, binary gets a "
+    "media_url), drive_show puts a Drive photo, video, or file on the "
+    "user's screen or the TV, and drive_update replaces a text file's "
+    "content — that one needs confirmed=true after restating the file and "
+    "change, and it cannot edit Google-native Docs/Sheets/Slides. "
+    "Photos in Google Photos are NOT browsable — Google limited the "
+    "library API to app-created media, so for 'show my photos' use "
+    "photos_pick: it returns a picker_uri the user opens on their "
+    "signed-in phone or laptop to select items, then photos_picked "
+    "returns and can cast what they chose. If the user means photos saved "
+    "in a Drive folder instead, drive_search with mime='image/' is the "
+    "direct path — prefer that when it fits."
 )
 
 
@@ -796,6 +820,7 @@ class GeminiLiveProvider(RealtimeProvider):
             + CMS_INSTRUCTIONS
             + DEVIN_INSTRUCTIONS
             + DOC_INSTRUCTIONS
+            + DRIVE_INSTRUCTIONS
             + HABIT_INSTRUCTIONS
             + SUMMARY_INSTRUCTIONS
         )
@@ -2261,7 +2286,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         "speech synthesis — e.g. the iPad's speaker). Use it to narrate what you are doing on "
                         "that screen: right after cast_to_screen say what you loaded, before gev_command say "
                         "what the map is about to do, on long waits say what is in progress. Keep it to one "
-                        "short sentence. If the result reports speak-blocked, the display hasn't been tapped "
+                        "short sentence, in the SAME language the user is speaking (Thai user -> Thai text; "
+                        "the display's voice mirrors the session language). If the result reports speak-blocked, the display hasn't been tapped "
                         "for audio yet — tell the user to tap 'audio' once on that screen, then retry once."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
@@ -4135,6 +4161,151 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "drive_search",
+                    "description": (
+                        "Search Google Drive by file name or content — the operator's "
+                        "whole Drive, not just the document archive (for archived deed/ID "
+                        "sets use ada_doc_search instead). Narrow with mime: 'image/', "
+                        "'video/', 'application/pdf', 'text/'. Returns file ids for "
+                        "drive_get / drive_show / drive_update."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "Name or content to find, e.g. 'condo photos', 'รูปบ้าน', 'budget 2026'.",
+                            },
+                            "mime": {
+                                "type": "string",
+                                "description": "Optional mimeType filter: 'image/', 'video/', 'application/pdf', 'text/'.",
+                            },
+                            "limit": {
+                                "type": "number",
+                                "description": "Max results (default 10).",
+                            },
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "drive_get",
+                    "description": (
+                        "Read one Drive file by id (from drive_search). Text files and "
+                        "Google docs come back as inline text; images/video/binary return "
+                        "metadata plus a castable media_url for drive_show."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "file_id": {
+                                "type": "string",
+                                "description": "Drive file id from drive_search.",
+                            },
+                        },
+                        "required": ["file_id"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "drive_update",
+                    "description": (
+                        "Replace a Drive file's content in place — text, markdown, json, "
+                        "csv and other regular files. Google-native docs/sheets/slides "
+                        "can't be media-updated. Requires confirmed=true after restating "
+                        "the file and the change."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "file_id": {
+                                "type": "string",
+                                "description": "Drive file id from drive_search.",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "The complete new file content (replaces, not appends).",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
+                        },
+                        "required": ["file_id", "content"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "drive_show",
+                    "description": (
+                        "Show a Drive file on a display — photos, videos, pdfs, any file "
+                        "from drive_search. Casts to the speaker's vcast screen by "
+                        "default; target='tv' for the living-room TV. Picks the right "
+                        "action from the file type."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "file_id": {
+                                "type": "string",
+                                "description": "Drive file id from drive_search.",
+                            },
+                            "screen": {
+                                "type": "number",
+                                "description": "Vcast screen number (default 1).",
+                            },
+                            "target": {
+                                "type": "string",
+                                "enum": ["screen", "tv"],
+                                "description": "'screen' (vcast display, default) or 'tv' (living-room TV).",
+                            },
+                        },
+                        "required": ["file_id"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "photos_pick",
+                    "description": (
+                        "Browse Google Photos: starts a picker session and returns a "
+                        "picker_uri — the ONLY way to reach library photos since Google "
+                        "limited the Photos API to app-created data. Give the user the "
+                        "picker_uri to open on their signed-in phone or laptop, then call "
+                        "photos_picked with the session_id when they've chosen."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "photos_picked",
+                    "description": (
+                        "Poll a photos_pick session. When the user has picked items, "
+                        "returns them and casts the first one to their screen (images "
+                        "as image, videos as play). Set show=false to only list."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "session_id": {
+                                "type": "string",
+                                "description": "Session id from photos_pick.",
+                            },
+                            "screen": {
+                                "type": "number",
+                                "description": "Vcast screen number (default 1).",
+                            },
+                            "show": {
+                                "type": "boolean",
+                                "description": "Cast the first picked item to the screen (default true).",
+                            },
+                        },
+                        "required": ["session_id"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "ada_usage_summary",
                     "description": (
                         "Returns cumulative Gemini token usage for this Ada process: "
@@ -4258,6 +4429,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 config["system_instruction"] = config["system_instruction"].replace(
                     DOC_INSTRUCTIONS, ""
                 )
+            if DRIVE_TOOLS <= excluded:
+                config["system_instruction"] = config["system_instruction"].replace(
+                    DRIVE_INSTRUCTIONS, ""
+                )
             if HABIT_TOOLS <= excluded:
                 config["system_instruction"] = config["system_instruction"].replace(
                     HABIT_INSTRUCTIONS, ""
@@ -4270,6 +4445,12 @@ class GeminiLiveProvider(RealtimeProvider):
             config["tools"][0]["function_declarations"].append(dict(VMS_DECLARATION))
         if "traffic_camera" not in excluded:
             config["tools"][0]["function_declarations"].append(dict(TRAFFIC_DECLARATION))
+        # Drop-in tools (backend/tools.d) — manifest-declared, excluded-aware.
+        try:
+            config["tools"][0]["function_declarations"].extend(
+                tools_loader.registry().declarations(excluded))
+        except Exception as exc:
+            logger.warning("tools.d declarations failed: %s", exc)
         if chaba_memory.enabled():
             # Guest mode: allowlist the tool surface, append chaba guest tools,
             # and inject the rendered guest context instead of MDDB priming.
