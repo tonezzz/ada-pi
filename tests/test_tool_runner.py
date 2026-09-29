@@ -108,7 +108,7 @@ class ControlGateTests(unittest.IsolatedAsyncioTestCase):
         result = await self.runner.execute(
             "control_cover", {"entity_id": "cover.gate", "action": "open", "confirmed": True}
         )
-        self.assertEqual(result, {"ok": True})
+        self.assertTrue(result.get("ok"))  # upstream may add advisory fields (capture_reminder)
         self.ha_client.control_cover.assert_awaited_once()
 
     async def test_button_inherits_danger_from_cover_prefix(self):
@@ -580,7 +580,7 @@ class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):
             "control_cover",
             {"entity_id": "cover.gate", "action": "open", "confirmed": True},
         )
-        self.assertEqual(result, {"ok": True})
+        self.assertTrue(result.get("ok"))  # upstream may add advisory fields (capture_reminder)
 
     async def test_token_arms_dangerous_control(self):
         with self.assertRaises(PermissionError) as ctx:
@@ -592,7 +592,7 @@ class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):
             "control_cover",
             {"entity_id": "cover.gate", "action": "open", "confirm_token": token},
         )
-        self.assertEqual(result, {"ok": True})
+        self.assertTrue(result.get("ok"))  # upstream may add advisory fields (capture_reminder)
 
 
 class DevinJobReportTests(unittest.IsolatedAsyncioTestCase):
