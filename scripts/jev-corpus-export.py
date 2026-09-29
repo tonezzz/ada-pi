@@ -64,18 +64,24 @@ def main() -> int:
     ap.add_argument("--out", default="jev-corpus-out")
     args = ap.parse_args()
 
-    corpus_path = Path(args.corpus)
+    # live-probe corpus + transcript-mined corpus (mined rows carry
+    # src="transcript:file:line" and no jev score — label = regex only)
+    corpus_paths = [
+        Path(args.corpus),
+        Path(args.corpus).with_name("jev-corpus-mined.jsonl"),
+    ]
     rows = []
-    if corpus_path.exists():
-        for line in corpus_path.read_text().splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    rows.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-    else:
-        print(f"no corpus at {corpus_path} — bench cases only")
+    for corpus_path in corpus_paths:
+        if corpus_path.exists():
+            for line in corpus_path.read_text().splitlines():
+                line = line.strip()
+                if line:
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        else:
+            print(f"no corpus at {corpus_path}")
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
