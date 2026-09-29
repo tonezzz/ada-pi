@@ -29,6 +29,8 @@ turns:
       calls_any: [gev_command]
       no_unattempted_refusal: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients']
+      result_geo_near: [-26.2041, 28.0473, 60]
+      call_args_contain: {vcast_say: ['โจฮัน']}
       timeout_s: 240
       settle_s: 20
 
@@ -37,6 +39,7 @@ turns:
       calls_any: [gev_command]
       no_unattempted_refusal: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients']
+      result_geo_near: [-26.1076, 28.0567, 15]
       timeout_s: 240
       settle_s: 60   # route draw + slow fly takes a while
 
@@ -45,6 +48,8 @@ turns:
       calls_any: [gev_command]
       no_unattempted_refusal: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients']
+      result_geo_near: [-33.9249, 18.4241, 60]
+      call_args_contain: {vcast_say: ['เคปทาวน์']}
       timeout_s: 240
       settle_s: 20
 
@@ -53,6 +58,8 @@ turns:
       calls_any: [gev_command]
       no_unattempted_refusal: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients']
+      result_geo_near: [-33.0965, 18.0299, 40]
+      call_args_contain: {vcast_say: ['ลังก์บาน']}
       timeout_s: 240
       settle_s: 20
 

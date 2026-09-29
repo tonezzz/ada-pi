@@ -81,6 +81,7 @@ policy:
     - gev_bkk_pip
     - gev_bkk_route_th
     - gev_za_pip
+    - gev_za_tour_th
     - split_screen
     - cast_switch_flow
     - uplink_confirm_flow
@@ -210,6 +211,7 @@ suites:
     - gev_bkk_pip
     - gev_bkk_route_th
     - gev_za_pip
+    - gev_za_tour_th
     - gev_layers_track
     - gev_screen1_interact
     - gev_screen4_interact

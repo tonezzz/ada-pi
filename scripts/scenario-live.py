@@ -210,7 +210,72 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
                 "unattempted_refusal: transcript claims inability but "
                 f"none of {refusal_tools} were attempted "
                 f"(calls: {sorted(names)})")
+    # geo-fidelity: a tool_result must contain a lat/lon pair within km of
+    # the target — catches "delivered" flies that landed somewhere else
+    geo = expect.get("result_geo_near")
+    if geo:
+        want_lat, want_lon = float(geo[0]), float(geo[1])
+        km = float(geo[2]) if len(geo) > 2 else 25.0
+        if not any(_result_geo_within(r.get("result"), want_lat,
+                                      want_lon, km)
+                   for r in results):
+            failures.append(
+                f"result_geo_near: no tool_result within {km} km of "
+                f"({want_lat}, {want_lon})")
+    # narration content: a listed tool's call args must contain each
+    # substring — proves the say/prompt carried the place, not filler
+    for tool, subs in (expect.get("call_args_contain") or {}).items():
+        for sub in subs:
+            # a str entry is required; a list entry is any-of alternates
+            # (e.g. narration may name the stop in Thai OR English)
+            alts = sub if isinstance(sub, list) else [sub]
+            if not any(c.get("name") == tool and
+                       any(a in json.dumps(c.get("args") or {},
+                                           ensure_ascii=False,
+                                           default=str)
+                           for a in alts)
+                       for c in calls):
+                failures.append(
+                    f"call_args_contain: none of {alts} in "
+                    f"{tool} args")
     return failures
+
+
+def _result_geo_within(result: Any, want_lat: float, want_lon: float,
+                       km: float) -> bool:
+    """True if `result` (nested dict/list) holds a lat/lon float pair
+    within `km` of the target — loose equirectangular distance is fine
+    at tour scales."""
+    import math
+    lats: list[float] = []
+    lons: list[float] = []
+
+    def walk(x: Any) -> None:
+        if isinstance(x, dict):
+            for k, v in x.items():
+                lk = str(k).lower()
+                if isinstance(v, (int, float)):
+                    if lk in ("latitude", "lat"):
+                        lats.append(float(v))
+                    elif lk in ("longitude", "lon", "lng"):
+                        lons.append(float(v))
+                else:
+                    walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+
+    walk(result)
+    for la in lats:
+        for lo in lons:
+            dlat = math.radians(la - want_lat)
+            dlon = math.radians(lo - want_lon)
+            a = (math.sin(dlat / 2) ** 2
+                 + math.cos(math.radians(want_lat))
+                 * math.cos(math.radians(la)) * math.sin(dlon / 2) ** 2)
+            if 6371 * 2 * math.asin(math.sqrt(a)) <= km:
+                return True
+    return False
 
 
 def intake_upload(http_base: str, api_key: str, path: Path,

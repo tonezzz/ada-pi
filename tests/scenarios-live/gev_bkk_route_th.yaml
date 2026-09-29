@@ -31,6 +31,7 @@ turns:
       no_unattempted_refusal: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients',
                             '"ok": false', '\\"ok\\": false']
+      result_geo_near: [13.7226, 100.5533, 15]
       timeout_s: 240
       settle_s: 15
 
