@@ -74,6 +74,7 @@ policy:
     - gev_layers_track
     - gev_bkk_tour
     - gev_th_tour
+    - gev_tour_report
     - split_screen
     - cast_switch_flow
     - uplink_confirm_flow
@@ -196,6 +197,7 @@ suites:
     - gev_cast_control
     - gev_bkk_tour
     - gev_th_tour
+    - gev_tour_report
     - gev_layers_track
     - gev_screen1_interact
     - gev_screen4_interact
