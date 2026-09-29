@@ -24,9 +24,10 @@ Usage:
 Env fallbacks: ADA_LIVE_URL, MDDB_BASE_URL, ADA_API_KEY, ADA_KEYS_FILE.
 Exit code: 1 when any scenario fails (after one retry — a pass-on-retry
 is recorded as 'flaky'). Failures whose output shows upstream throttling
-(429/quota/rate-limit) are recorded 'quota'; two in a row trips the quota
-sentinel and the rest of the tier is recorded 'skip-quota' — neither
-counts toward the exit-1 failure set.
+(429/quota/rate-limit) are recorded 'quota'; connect-level failures
+(backend restarting/down) are recorded 'infra'. Two consecutive
+quota/infra results trip the sentinel and the rest of the tier is
+recorded 'skip-quota' — none of these count toward the exit-1 set.
 """
 from __future__ import annotations
 
@@ -47,16 +48,24 @@ COLLECTION = "ada-ha-scenario-reports"
 REPORT_TTL_DAYS = 14
 
 # Upstream throttling (Gemini/MDDB/search) marks a scenario "quota" instead of
-# "fail"; QUOTA_STREAK_LIMIT consecutive quota-bound failures trips the
-# sentinel and remaining scenarios are recorded "skip-quota" without running —
-# a shared outage must not read as N independent regressions.
+# "fail"; connect-level failures (backend restarting/down) mark it "infra".
+# INFRA_STREAK_LIMIT consecutive infra/quota failures trips the sentinel and
+# remaining scenarios are recorded "skip-quota" without running — a shared
+# outage must not read as N independent regressions.
 QUOTA_RE = re.compile(
     r"429|quota|rate.?limit|resource.?exhaust|too many requests", re.I)
-QUOTA_STREAK_LIMIT = 2
+INFRA_RE = re.compile(
+    r"connect call failed|connection refused|no ready event|invalid handshake",
+    re.I)
+INFRA_STREAK_LIMIT = 2
 
 
 def _is_quota(text: str) -> bool:
     return bool(QUOTA_RE.search(text or ""))
+
+
+def _is_infra(text: str) -> bool:
+    return bool(INFRA_RE.search(text or ""))
 
 
 def _keys(path: str) -> dict:
@@ -183,13 +192,13 @@ def main() -> int:
             continue
         selected.append((path, spec))
 
-    quota_streak = 0
+    outage_streak = 0
     sentinel = False
     for path, spec in selected:
         name = spec.get("name") or os.path.basename(path)
         tier = spec.get("tier") or "full"
         if sentinel:
-            print(f"== {name}: skip-quota (upstream throttle sentinel)")
+            print(f"== {name}: skip-quota (upstream outage sentinel)")
             results.append((name, "skip-quota"))
             try:
                 from backend.event_log import log_event
@@ -239,13 +248,15 @@ def main() -> int:
                 break
 
         if status == "fail" and _is_quota(out):
-            status, quota_streak = "quota", quota_streak + 1
-            if quota_streak >= QUOTA_STREAK_LIMIT:
-                sentinel = True
-                print("   quota sentinel tripped — remaining scenarios "
-                      "will be recorded skip-quota")
+            status, outage_streak = "quota", outage_streak + 1
+        elif status == "fail" and _is_infra(out):
+            status, outage_streak = "infra", outage_streak + 1
         else:
-            quota_streak = 0
+            outage_streak = 0
+        if outage_streak >= INFRA_STREAK_LIMIT:
+            sentinel = True
+            print("   outage sentinel tripped — remaining scenarios "
+                  "will be recorded skip-quota")
 
         print(f"== {name}: {status} ({runs} run{'s' if runs > 1 else ''})")
         if not args.dry_run:
