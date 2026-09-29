@@ -553,6 +553,8 @@ Conversation discipline:
   hits, tool results, or (system) notes in English do NOT change your
   spoken language — keep it consistent for the speaker.
 - Always answer the user's most recent question before ending a turn — never drop it or pivot to a different topic unprompted.
+- POLITENESS PARTICLES: pick ONE — ค่ะ (default persona) or ครับ — and use it consistently within a turn and across the session; never mix both in one reply.
+- NO ROUTINE CLOSER: do not end turns with "มีอะไรให้ช่วยไหมคะ" / "anything else?" — it's noise. Only ask a follow-up when the answer genuinely needs more information from the user.
 - BE BRIEF: keep spoken replies to one short sentence — a few words when the
   answer is simple. Never narrate your own mechanics ("let me check",
   "the system says", "please wait while I…"), tool names, or
@@ -932,6 +934,26 @@ class GeminiLiveProvider(RealtimeProvider):
     _CONFIRM_LEAD_WINDOW = 20
     _CONFIRM_MAX_TURN = 60
 
+    # Letters outside Thai/Latin (Hangul, Han, Kana, Cyrillic, Arabic, …).
+    # STT renders ambient noise and mumbled syllables in whatever script it
+    # half-heard — "연연", "준연", "我 问 了 道 念". A turn dominated by
+    # foreign-script letters is unintelligible junk, not consent; it must
+    # never satisfy a pending confirmation (2026-09-30 transcript: '연연'
+    # after a screen-swap ask was treated as a yes).
+    _FOREIGN_SCRIPT_RE = re.compile(
+        r"[㐀-䶿一-鿿豈-﫿぀-ヿ가-힯ᄀ-ᇿⰀ-ⳟ؀-ۿ]")
+
+    def _is_junk_turn(self, text: str) -> bool:
+        """Foreign-script-dominated turn = noise, not speech to act on."""
+        if not text.strip():
+            return False
+        normal = sum(
+            1 for ch in text
+            if ch.isalpha()
+            and ("ก" <= ch <= "๙" or "a" <= ch.lower() <= "z"))
+        foreign = len(self._FOREIGN_SCRIPT_RE.findall(text))
+        return foreign > 0 and foreign >= normal
+
     def _confirm_source_text(self, input_transcript: str) -> str:
         """The text the confirm gate judges — the live transcript, or the
         most recent real user speech (skipping (system) notes stored as
@@ -952,7 +974,7 @@ class GeminiLiveProvider(RealtimeProvider):
         """True when the user's own recent speech affirms — `confirmed=true`
         tool args are honored only when this is true."""
         text = self._confirm_source_text(input_transcript)
-        if not text:
+        if not text or self._is_junk_turn(text):
             return False
         if len(text) <= self._CONFIRM_MAX_TURN:
             return bool(_CONFIRM_RE.search(text))

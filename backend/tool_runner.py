@@ -2582,7 +2582,15 @@ class ToolRunner:
             meta=meta,
         )
         if result is None:
-            return {"status": "error", "error": "mddb write failed", "slug": slug}
+            return {
+                "status": "error",
+                "error": "mddb write failed",
+                "slug": slug,
+                "note": ("This is a storage failure, NOT a confirmation "
+                         "problem — do not ask the user to re-confirm. "
+                         "Report the failure plainly and suggest checking "
+                         "the mddb service."),
+            }
         # Give the model the REAL URLs — she has invented /cms/<slug> paths
         # on tony-dell before (404). view_url is the CMS viewer; cast_url adds
         # the api key so a vcast display can render it without a stored key.
@@ -3584,6 +3592,30 @@ class ToolRunner:
             out["note"] = ("this cast interrupted something that was "
                            "running — acknowledge it to the user "
                            f"({busy['desc']}).")
+        # Post-cast ground truth: pub only means the relay accepted the
+        # frame — the display may still be showing the old page (iframe
+        # refused, browser didn't navigate, stale client).  Re-read the
+        # screen's own report so Ada claims only what the display claims.
+        try:
+            await asyncio.sleep(0.8)  # let the display ack state
+            disp = await asyncio.to_thread(self._vcast_api, "/displays")
+            scr = next(
+                (s for s in disp.get("screens", [])
+                 if str(s.get("screen") or "") == str(screen)), None)
+            if scr is not None:
+                detail = str(scr.get("state_detail") or "")
+                out["screen_state"] = scr.get("state")
+                out["screen_detail"] = detail
+                if action in {"nav", "play", "image", "audio"} and url:
+                    host = str(url).split("/")[2] if "//" in str(url) else str(url)
+                    if url not in detail and host not in detail:
+                        out["verify_warn"] = (
+                            f"screen {screen} still reports "
+                            f"'{detail[:80] or scr.get('state')}' — the new "
+                            "page may not have loaded; do not claim it "
+                            "changed.")
+        except Exception:
+            pass
         return out
 
     @staticmethod

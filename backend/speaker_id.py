@@ -75,6 +75,11 @@ RESERVED_NAMES = {"guest", "unknown", "someone", "anon", "anonymous",
 # 2026-09-27 (same voice enrolled twice under two names). First-time
 # identification still accepts a single confident chunk.
 SWITCH_AFTER = 2
+# First-time identification accepts immediately only above this confidence;
+# below it the same name must win FIRST_AFTER consecutive chunks — a single
+# ambient-noise hit once greeted a session as the wrong speaker.
+FIRST_ID_MIN_CONF = float(os.environ.get("ADA_SPEAKER_FIRST_ID_CONF", "0.70"))
+FIRST_AFTER = int(os.environ.get("ADA_SPEAKER_FIRST_AFTER", "2"))
 
 # Enrollment capture window — seconds of trailing audio kept for
 # enroll_from_buffer. 6s (the old MAX_BUFFER_BYTES cap) only ever held the
@@ -654,10 +659,11 @@ class SpeakerSession:
                 None, self._identifier.identify, chunk, SAMPLE_RATE, self._threshold
             )
             if name is not None and name != self._last_name:
-                # Hysteresis: switching to a different speaker needs
-                # SWITCH_AFTER consecutive wins for that name; first-time
-                # identification (no prior speaker) accepts immediately.
-                if self._last_name is not None:
+                # Hysteresis: first-time identification AND switching both
+                # need SWITCH_AFTER consecutive wins for that name — a
+                # single junk-frame hit once greeted ambient noise as KK
+                # (2026-09-29 transcript 855a65dab8).
+                if self._last_name is not None or confidence < FIRST_ID_MIN_CONF:
                     if name == self._switch_pending:
                         self._switch_count += 1
                     else:
