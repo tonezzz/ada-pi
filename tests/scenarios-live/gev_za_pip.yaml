@@ -1,7 +1,5 @@
 # South Africa tour — GEV fullscreen + floating CCTV picture-in-picture
-# in the top-right corner (layout mode='pip'). No live SA cam feed wired
-# yet, so the PiP shows the rama9 camwall zone (puller-fresh) — upgrade
-# to an SA source when one lands.
+# in the top-right corner (layout mode='pip'). The PiP shows Africam's 24/7 YouTube live safari (embeddable).
 # tier: full — actuates a real display.
 name: gev_za_pip
 tier: full
@@ -17,7 +15,7 @@ turns:
       timeout_s: 120
       settle_s: 10
 
-  - user: "Put God's Eye View on screen 4 fullscreen, with a floating camera view pinned to the top-right corner — picture-in-picture style — show the rama9 camera zone there."
+  - user: "Put God's Eye View on screen 4 fullscreen, with a floating camera view pinned to the top-right corner — picture-in-picture style — play the Africam live safari stream there: https://www.youtube.com/watch?v=ZwxMY_3XZ_A"
     expect:
       calls_any: [cast_to_screen, cctv_wall]
       response_nonempty: true

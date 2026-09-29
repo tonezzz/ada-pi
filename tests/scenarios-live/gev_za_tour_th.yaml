@@ -17,7 +17,7 @@ turns:
       timeout_s: 120
       settle_s: 10
 
-  - user: "เปิด God's Eye View เต็มจอบนหน้าจอ 4 แล้วปักหน้าต่างกล้องลอยมุมขวาบน โซน rama9"
+  - user: "เปิด God's Eye View เต็มจอบนหน้าจอ 4 แล้วปักหน้าต่างกล้องลอยมุมขวาบน — เอาไลฟ์สตรีมซาฟารี Africam จาก YouTube: https://www.youtube.com/watch?v=ZwxMY_3XZ_A"
     expect:
       calls_any: [cast_to_screen, cctv_wall]
       response_nonempty: true
