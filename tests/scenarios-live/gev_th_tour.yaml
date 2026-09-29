@@ -31,8 +31,8 @@ turns:
       calls_any: [gev_command]
       result_not_contains: ['gev command relay', 'no GEV clients']
       response_nonempty: true
-      timeout_s: 150
-      settle_s: 14
+      timeout_s: 240   # fly + cam-search + cast + narrate is a long chain
+      settle_s: 16
 
   # stop 2 — Bang Na
   - user: "Now fly over to Pak Kret — same thing: nearest camera picture on the right, narrate it on the screen."
