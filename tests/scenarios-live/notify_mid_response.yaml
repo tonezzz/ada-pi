@@ -1,0 +1,48 @@
+name: notify-mid-response
+# The 2026-09-28 complaint: a data-package arrival mid-task made Ada
+# "stop responding" — the injected turn was absorbed by the in-flight
+# generation. Now /api/notify splits on `urgent`:
+#
+#   non-urgent → 'notify_voice' ws event -> client machine voice
+#                (speechSynthesis) announces it; a silent context note
+#                lets Ada circle back later. She must NOT stop or pivot.
+#   urgent     → injected user turn; Ada interrupts and announces.
+#
+# Run:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/notify_mid_response.yaml \
+#   --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY" -v
+
+turns:
+  # 1. Long-running answer with a non-urgent arrival mid-response.
+  #    The machine-voice event must reach the client AND her answer must
+  #    still complete — the arrival can't swallow her turn.
+  - user: "Explain step by step how you would plan a birthday dinner party for six people. Take your time."
+    notify:
+      text: "New data package arrived: 3 flood-watch articles queued for review."
+      delay_s: 3
+    expect:
+      timeout_s: 150
+      settle_s: 15
+      response_nonempty: true
+      events_contain: [{type: notify_voice}]
+      # The machine voice owns the announcement — Ada must not pivot to
+      # the package mid-answer.
+      response_not_contains: ["flood-watch", "data package"]
+
+  # 2. The silent context note should let her recall it when asked.
+  - user: "Did anything arrive while you were explaining?"
+    expect:
+      timeout_s: 90
+      settle_s: 10
+      response_contains_any: ["flood", "article", "package", "notification"]
+
+  # 3. Urgent: must interrupt — she should verbalize it this turn.
+  - user: "Count slowly from one to twenty, one number per sentence."
+    notify:
+      text: "URGENT: water leak sensor tripped in the kitchen."
+      urgent: true
+      delay_s: 2
+    expect:
+      timeout_s: 150
+      settle_s: 12
+      response_contains_any: ["urgent", "leak", "water", "kitchen"]

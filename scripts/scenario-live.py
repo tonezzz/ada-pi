@@ -190,6 +190,26 @@ def doc_upload_note(filename: str, out: dict) -> str:
     )
 
 
+async def fire_notify(http_base: str, api_key: str, spec: dict) -> None:
+    """POST /api/notify after spec.delay_s — a data-package arrival landing
+    mid-response, concurrent with the in-flight turn."""
+    import urllib.request
+    await asyncio.sleep(float(spec.get("delay_s") or 0))
+    payload = {"text": str(spec.get("text") or "notification")}
+    if spec.get("urgent"):
+        payload["urgent"] = True
+    req = urllib.request.Request(
+        f"{http_base}/api/notify",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "x-api-key": api_key},
+        method="POST")
+    try:
+        await asyncio.to_thread(
+            lambda: urllib.request.urlopen(req, timeout=30).read())
+    except Exception as exc:
+        print(f"      notify POST failed: {exc}")
+
+
 def load_audio(path: Path) -> bytes:
     """Return raw PCM16 16 kHz mono bytes from .pcm or .wav."""
     if path.suffix.lower() == ".wav":
@@ -465,9 +485,21 @@ async def main() -> int:
                 if upload_error:
                     events, failures = [], [f"upload: {upload_error}"]
                 else:
-                    events, failures = await run_turn(
-                        ws, text, expect, args.verbose, audio=audio_bytes
-                    )
+                    # turn.notify: {text, urgent, delay_s} — fires
+                    # POST /api/notify concurrently while the response is
+                    # in flight (mid-response interruption test).
+                    notify_task = None
+                    if turn.get("notify"):
+                        notify_task = asyncio.create_task(
+                            fire_notify(http_base, api_key,
+                                        dict(turn["notify"])))
+                    try:
+                        events, failures = await run_turn(
+                            ws, text, expect, args.verbose, audio=audio_bytes
+                        )
+                    finally:
+                        if notify_task:
+                            notify_task.cancel()
             if args.timing:
                 for e in events:
                     t = e.get("type")
