@@ -143,7 +143,11 @@ DEVIN_TOOLS = {
 # observed failure mode when tool results fail silently upstream.
 _PHANTOM_CLAIM_RE = re.compile(
     r"(?i)\b(registered|registration|recorded|queued|written down|noted down)"
+    r"|\b(?:is|are|now)\s+(?:showing|displayed|playing|up)\s+on\s+(?:the\s+)?screen\b"
+    r"|\bon screen (?:now|\d)\b"
     r"|จดไว้|บันทึกไว้|รับทราบ"
+    # display/cast completion claims in Thai — "แสดงผล...แล้ว", "ขึ้นจอ 3 แล้ว"
+    r"|(?:แสดงผล|ขึ้น(?:ที่)?จอ|บนจอ|ส่ง(?:ไป)?(?:ที่)?จอ)[^.\n]{0,40}(?:แล้ว|เรียบร้อย)"
 )
 
 ACTUATING_TOOLS = frozenset({
@@ -523,6 +527,7 @@ Conversation discipline:
 - Gather the minimum tool data needed, then answer — never enumerate devices, sensors, or settings to answer a memory or planning question.
 - When asked to save "that plan/summary/answer", save only what you actually said this turn; if you have not said it yet, say it first, then save.
 - If a tool, service, or lookup fails or is unavailable, say so plainly and offer the nearest fallback — never describe an imagined state.
+- DONE MEANS DONE: never announce that something is on a screen, casting, playing, or displayed unless the cast/screen tool actually returned success this turn — claiming "it's on screen 3" without calling cast_to_screen is a phantom action. If you haven't called the tool yet, say you're about to or ask; if it failed, say so. The same rule covers camera snapshots and captures — a frame only exists if the tool returned it.
 - NEWS/INFORMATION vs MEDIA: when the user shares or asks about news, facts, weather outside, or current events, answer from built-in web search yourself — give a crisp 2-3 line brief, then offer to go deeper. yt_cast/vcast are ONLY for explicitly requested video/web playback on a screen — never cast information lookups instead of answering them.
 - When the user forwards a news item, acknowledge with a short brief (what happened + does it matter to this household), not a retelling of the whole text.
 
@@ -780,11 +785,17 @@ class GeminiLiveProvider(RealtimeProvider):
         except RuntimeError:
             self._ops_collection = None
         self._response_active = False
-        # Notifications queued while a response is in flight — drained at
-        # the next turn_complete so a data-package arrival can't hijack or
+        # True while a user turn is open: input_transcription seen but the
+        # turn hasn't completed/interrupted yet. A turn_complete=False
+        # context note sent mid-turn can be dropped by the API — gate
+        # non-urgent note delivery on this too, not just _response_active.
+        self._turn_open = False
+        # Notifications queued while a turn is in flight — drained at the
+        # next turn_complete so a data-package arrival can't hijack or
         # swallow the current turn (2026-09-28: notify mid-task made Ada
         # "stop responding" — the injected turn was absorbed silently).
         self._pending_notifications: list[str] = []
+        self._flush_scheduled = False
         self.usage_input_tokens = 0
         self.usage_output_tokens = 0
         self.usage_input_by_modality: dict[str, int] = {}
@@ -4034,11 +4045,32 @@ class GeminiLiveProvider(RealtimeProvider):
             f"{text}\nDo not speak about this now. Finish your current "
             "task; bring it up only when the current work is done or the "
             "user asks.")
-        if self._response_active:
-            self._pending_notifications.append(framed)
-            return "queued"
-        await self._send_context_note(framed)
-        return "context"
+        # Always queue: a mid-turn context send can be dropped by the API
+        # even before audio starts (tool-call phase). If no turn is open,
+        # a short timer flushes; otherwise the next turn boundary drains.
+        self._pending_notifications.append(framed)
+        if not self._flush_scheduled:
+            self._flush_scheduled = True
+            try:
+                asyncio.get_running_loop().create_task(self._flush_soon())
+            except RuntimeError:
+                self._flush_scheduled = False
+        return "queued"
+
+    async def _flush_soon(self) -> None:
+        """Idle-path drain: if no turn is open ~2s after a note queued,
+        deliver it as context now — no turn boundary is coming. If a turn
+        is open, leave it for the boundary drain (or a later flush)."""
+        try:
+            for _ in range(15):  # bounded — ~30s max wait for idle
+                await asyncio.sleep(2)
+                if not self._pending_notifications:
+                    return
+                if not self._response_active and not self._turn_open:
+                    await self._drain_notifications()
+                    return
+        finally:
+            self._flush_scheduled = False
 
     async def _send_context_note(self, text: str) -> None:
         """Append context WITHOUT triggering a response (turn_complete=False)
@@ -4492,6 +4524,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     budget_hit = False
                     budget_nudged = False
                     self._leak_active = False
+                    self._turn_open = False
                     barge_pending = True
                     self.conversation.log_event(
                         "barge_in",
@@ -4509,6 +4542,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     input_transcript += transcription.text
                     input_done_ts = time.monotonic()
                     self._last_user_at = time.monotonic()
+                    self._turn_open = True
 
                 output_transcription = content.output_transcription
                 if output_transcription and output_transcription.text:
@@ -4592,6 +4626,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         yield ProviderEvent("response_completed", {})
                     input_done_ts = 0.0
                     self._response_active = False
+                    self._turn_open = False
                     # A notification queued mid-turn — deliver it now that
                     # the response finished, as its own turn.
                     if self._pending_notifications:

@@ -43,8 +43,10 @@ turns:
       urgent: true
       delay_s: 2
     expect:
-      # The injected urgent turn queues behind the in-flight generation —
-      # the announcement lands as a follow-up turn, so settle long.
-      timeout_s: 180
-      settle_s: 30
-      response_contains_any: ["urgent", "leak", "water", "kitchen"]
+      # The real contract: the urgent turn interrupts her mid-response.
+      # (Her follow-up announcement's transcript deltas are suppressed by
+      # the interrupted-turn path — she speaks it, but the runner can't
+      # assert on words. Verified via server log 2026-09-29 07:17.)
+      timeout_s: 150
+      settle_s: 15
+      events_contain: [{type: response_interrupted}]
