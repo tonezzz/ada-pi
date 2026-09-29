@@ -1,0 +1,46 @@
+name: split-screen
+# Live scenario — split-screen layouts on a vcast display.
+#
+# What it verifies (screen 4):
+#   - cast_to_screen action=layout panes=2 splits the screen
+#   - different content lands in different panes (pane=0 vs pane=1)
+#   - zoom pane=N takes a pane fullscreen; unzoom restores the grid
+#   - stop resets the whole screen to single-pane idle
+#
+# tier: full — casts to a real display.
+
+tier: full
+
+turns:
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  - user: "Split screen 4 into two panes — put the traffic camera wall on the left and the iTIC traffic page on the right."
+    expect:
+      calls_any: [cast_to_screen, cctv_wall]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Zoom in on the left pane."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Zoom back out to the split view."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Now clear screen 4 back to normal."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6

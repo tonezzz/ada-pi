@@ -2100,6 +2100,10 @@ class GeminiLiveProvider(RealtimeProvider):
                         "shows a snapshot, 'audio' url plays sound or TTS, 'stop' returns it to idle, "
                         "'uplink' starts the display's camera uplink (frames available via "
                         "GET /frame?screen=N&token=cam), 'uplink-stop' stops it. "
+                        "SPLIT-SCREEN: action='layout' panes=N (2-5) splits the screen into sub-panes — "
+                        "then cast each thing to its own pane (pane=0..N-1, 0=left/top) with nav/play/image. "
+                        "action='zoom' pane=N makes one pane fullscreen; 'unzoom' returns to the grid. "
+                        "stop with pane=N clears just that pane; stop alone resets to single-pane idle. "
                         "Screens are numbered — call vcast_list first if you need to pick one. "
                         "Some screens are private to their owner — casting to another person's screen is denied. "
                         "INTERRUPT RULE: a cast onto a screen that is busy (a running camera capture/uplink, "
@@ -2122,11 +2126,19 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "action": {
                                 "type": "string",
-                                "description": "nav | play | image | audio | stop | uplink | uplink-stop (default nav).",
+                                "description": "nav | play | image | audio | stop | layout | zoom | unzoom | uplink | uplink-stop (default nav).",
                             },
                             "url": {
                                 "type": "string",
-                                "description": "Target URL for nav/play/image/audio. Not needed for stop.",
+                                "description": "Target URL for nav/play/image/audio. Not needed for stop/layout/zoom/unzoom.",
+                            },
+                            "pane": {
+                                "type": "integer",
+                                "description": "Sub-pane index 0..N-1 on a split screen (0=left/top). Also used by zoom and pane-targeted stop.",
+                            },
+                            "panes": {
+                                "type": "integer",
+                                "description": "For action=layout: split the screen into 2-5 panes.",
                             },
                             "confirmed": {
                                 "type": "boolean",
@@ -2222,6 +2234,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "screen": {
                                 "type": "integer",
                                 "description": "vcast screen number (vcast_list) — default 1.",
+                            },
+                            "pane": {
+                                "type": "integer",
+                                "description": "sub-pane index on a split screen — cast the wall into one pane instead of the whole screen.",
                             },
                             "settings": {
                                 "type": "object",

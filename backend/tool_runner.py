@@ -2755,6 +2755,7 @@ class ToolRunner:
             return json.load(r)
 
     async def cctv_wall(self, action: str, zone: str, screen: int = 0,
+                        pane: int | None = None,
                         settings: dict[str, Any] | None = None) -> dict[str, Any]:
         """Start/stop the periodic-thumbnail camera wall on a vcast screen.
         Enables the zone in the relay's /camwall state (the puller on
@@ -2832,21 +2833,24 @@ class ToolRunner:
             payload["settings"] = settings
         if n:
             await self._check_screen_owner(n, self._memory_identity())
-        busy = await self._screen_busy(n) if n else None
+        busy = await self._screen_busy(n, pane) if n else None
         await asyncio.to_thread(self._vcast_api, "/camwall", payload)
-        try:
-            await asyncio.to_thread(self._vcast_api, "/capture", {
-                "screen": n, "source": "camwall", "ch": zone,
-                "active": True, "by": "ada"})
-        except Exception:
-            pass
+        if pane is None:
+            try:
+                await asyncio.to_thread(self._vcast_api, "/capture", {
+                    "screen": n, "source": "camwall", "ch": zone,
+                    "active": True, "by": "ada"})
+            except Exception:
+                pass
         url = (os.environ.get(
                    "ADA_CAMWALL_BASE",
                    "https://tony-dell.taila0626a.ts.net/apps/camwall/")
                + f"?zone={zone}")
+        nav_msg: dict[str, Any] = {"type": "nav", "url": url}
+        if pane is not None:
+            nav_msg["pane"] = int(pane)
         out = await asyncio.to_thread(
-            self._vcast_api, "/pub",
-            {"screen": n, "msg": {"type": "nav", "url": url}})
+            self._vcast_api, "/pub", {"screen": n, "msg": nav_msg})
         out.update({
             "zone": zone, "screen": n, "url": url,
             "note": ("thumbs refresh in the background (VMS cams ~60s, "
@@ -2996,11 +3000,25 @@ class ToolRunner:
             return
         raise self._private_screen_denial(source, owner, person)
 
-    async def _screen_busy(self, screen: int) -> dict[str, Any] | None:
+    async def _screen_busy(self, screen: int,
+                           pane: int | None = None) -> dict[str, Any] | None:
         """Is a screen running a flow a new cast would interrupt? Returns
         {'kind','desc'} for active capture leases, enabled camwall zones
-        and playing media; None for idle/nav/image/speak states."""
+        and playing media; None for idle/nav/image/speak states.
+        pane=N targets a sub-pane: exempt when the screen is actually
+        split (panes>1 in the registry) — it fills a cell, not the whole
+        display. On a non-split screen pane 0 is the whole screen."""
         import asyncio
+        if pane is not None:
+            try:
+                disp = await asyncio.to_thread(self._vcast_api, "/displays")
+                n = next((s.get("panes") or 1
+                          for s in disp.get("screens", [])
+                          if str(s.get("screen") or "") == str(screen)), 1)
+                if n > 1:
+                    return None
+            except Exception:
+                pass
         try:
             caps = await asyncio.to_thread(self._vcast_api, "/capture")
             for k, cap in (caps.get("captures") or {}).items():
@@ -3033,11 +3051,20 @@ class ToolRunner:
         return None
 
     async def cast_to_screen(self, screen: int, action: str = "nav",
-                             url: str = "",
+                             url: str = "", pane: int | None = None,
+                             panes: int | None = None,
                              confirmed: bool = False) -> dict[str, Any]:
         """Cast to a numbered vcast virtual display (NOT the TV).
-        action: nav|play|image|audio|stop|uplink|uplink-stop.
-        url required except for stop/uplink/uplink-stop."""
+        action: nav|play|image|audio|stop|layout|zoom|unzoom|uplink|
+        uplink-stop. url required except for stop/layout/zoom/unzoom/
+        uplink/uplink-stop.
+
+        Split-screen: action='layout' + panes=2..5 splits the screen into
+        that many sub-panes; subsequent casts take pane=0..N-1 (0 is
+        left/top). action='zoom' + pane=N makes one pane fullscreen,
+        'unzoom' (or zoom pane=-1) returns to the grid. A stop with pane=N
+        clears just that pane; stop alone resets the whole screen to
+        single-pane idle."""
         import asyncio
         action = str(action or "nav").lower()
         screen = int(screen)
@@ -3045,9 +3072,12 @@ class ToolRunner:
         # Interrupt gate: replacing content on a busy screen (camera
         # capture, camwall zone, playing stream) needs the user's yes —
         # Ada must say what's running and get consent before clobbering.
+        # layout alone is exempt: it reshapes the screen but keeps the
+        # content panes it can carry (a capture lease isn't clobbered by
+        # regridding). zoom/unzoom/stop-of-pane are user-directed UI ops.
         busy = None
         if action in {"nav", "play", "image", "audio", "uplink"}:
-            busy = await self._screen_busy(screen)
+            busy = await self._screen_busy(screen, pane)
             if busy and confirmed is not True:
                 return {"ok": False, "delivered": 0,
                         "would_interrupt": busy,
@@ -3056,16 +3086,24 @@ class ToolRunner:
                             "Tell the user what is running, ask whether to "
                             "replace it, then call again with "
                             "confirmed=true only after they say yes.")}
-        if action in {"stop", "uplink", "uplink-stop"}:
+        if action == "layout":
             msg: dict[str, Any] = {
+                "type": "layout", "panes": int(panes or 1)}
+        elif action in {"zoom", "unzoom"}:
+            msg = {"type": "zoom",
+                   "pane": -1 if action == "unzoom" else int(pane or 0)}
+        elif action in {"stop", "uplink", "uplink-stop"}:
+            msg = {
                 "type": "uplink-start" if action == "uplink" else action}
         else:
             if action not in {"nav", "play", "image", "audio"}:
                 raise ValueError(
-                    f"unknown action {action!r} (nav|play|image|audio|stop|uplink|uplink-stop)")
+                    f"unknown action {action!r} (nav|play|image|audio|stop|layout|zoom|unzoom|uplink|uplink-stop)")
             if not url:
                 raise ValueError("url is required for " + action)
             msg = {"type": action, "url": url}
+        if pane is not None and action not in {"layout", "unzoom"}:
+            msg["pane"] = int(pane)
         out = await asyncio.to_thread(
             self._vcast_api, "/pub", {"screen": screen, "msg": msg})
         # capture lease bookkeeping — the relay's /capture state is ground
