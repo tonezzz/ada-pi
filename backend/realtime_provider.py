@@ -2089,7 +2089,12 @@ class GeminiLiveProvider(RealtimeProvider):
                         "GET /frame?screen=N&token=cam), 'uplink-stop' stops it. "
                         "Screens are numbered — call vcast_list first if you need to pick one. "
                         "Some screens are private to their owner — casting to another person's screen is denied. "
-                        "Camera captures (uplink, cctv walls) are permission-gated: ask the user BEFORE "
+                        "INTERRUPT RULE: a cast onto a screen that is busy (a running camera capture/uplink, "
+                        "an enabled camera wall, or media playing) returns needs_confirm with would_interrupt "
+                        "details and does NOT happen — tell the user what is running on that screen, ask if "
+                        "they want it replaced, then retry with confirmed=true only after they say yes. When "
+                        "a successful cast result carries a 'replaced' field, acknowledge aloud what was "
+                        "interrupted. Camera captures (uplink, cctv walls) are permission-gated: ask the user BEFORE "
                         "starting one, and if the result's active_captures shows a running capture, "
                         "acknowledge it and ask before stopping — never silently stop or leave it unmentioned "
                         "when the user changes the subject."
@@ -2112,7 +2117,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "confirmed": {
                                 "type": "boolean",
-                                "description": "Required for action='uplink' (camera capture) — set true only after the user explicitly confirms.",
+                                "description": "Required for action='uplink' (camera capture) and for interrupting a busy screen (capture/camwall/playing — see needs_confirm) — set true only after the user explicitly confirms.",
                             },
                         },
                         "required": ["screen"],
@@ -2196,6 +2201,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "screen": {
                                 "type": "integer",
                                 "description": "vcast screen number (vcast_list) — default 1.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Required for action='start' (camera capture) — set true only after the user explicitly confirms.",
                             },
                         },
                         "required": ["zone"],

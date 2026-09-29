@@ -189,6 +189,7 @@ suites:
     - camera_describe
     - traffic_camera_describe
     - zone_describe
+    - cast_interrupt_gate
 
   # Everything — the full picture (slow; expects ~1h+).
   full: '@all'

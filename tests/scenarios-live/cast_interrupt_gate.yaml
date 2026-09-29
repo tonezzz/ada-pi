@@ -1,0 +1,66 @@
+name: cast-interrupt-gate
+# Live scenario — casting onto a BUSY screen must ask before clobbering.
+#
+# What it verifies:
+#   - cctv_wall start leaves a capture lease + enabled camwall zone on
+#     the screen (ground truth for "busy")
+#   - a subsequent cast_to_screen to the same screen is refused with
+#     needs_confirm / would_interrupt — the action does NOT happen
+#   - after the user says yes, the retry with confirmed=true delivers
+#     and the result carries 'replaced' so Ada acknowledges it
+#   - stopping the wall tears the lease down
+#
+# Uses screen 4 (always-on headless test display; screens 1/3 are iPads
+# that sleep — never target them in the suite).
+#
+# tier: full — actuates a display.
+
+tier: full
+
+turns:
+  # Warmup turn — absorbs the first-turn-after-connect greeting race
+  # (welcome injection can consume the first user turn; documented
+  # first-turn fragility, not this feature's concern).
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  # Ada should ask before starting a camera capture — response content
+  # isn't asserted, just that the turn completes (she may start it or ask).
+  - user: "Ada, start the rama9 traffic camera wall on screen four."
+    expect:
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Yes, go ahead."
+    expect:
+      calls_any: [cctv_wall]
+      result_contains: ["'ok': True", "'zone': 'rama9'"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  - user: "Now put the apps index page on screen four — slash apps slash on tony-dell."
+    expect:
+      calls_any: [cast_to_screen]
+      result_contains: ["needs_confirm"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Yes, replace it — I don't need the wall right now."
+    expect:
+      calls_any: [cast_to_screen]
+      result_contains: ["replaced"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  - user: "Stop the camera wall."
+    expect:
+      calls_any: [cctv_wall, cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6

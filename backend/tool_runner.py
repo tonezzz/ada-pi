@@ -2696,6 +2696,7 @@ class ToolRunner:
         n = int(screen or 1)
         if n:
             await self._check_screen_owner(n, self._memory_identity())
+        busy = await self._screen_busy(n) if n else None
         await asyncio.to_thread(
             self._vcast_api, "/camwall",
             {"zone": zone, "enabled": True, "screen": n})
@@ -2717,6 +2718,10 @@ class ToolRunner:
             "note": ("thumbs refresh in the background (VMS cams ~60s, "
                      "house ~30s) — the wall fills in within a minute."),
         })
+        if busy:
+            out["replaced"] = busy
+            out["note"] += (f" It interrupted {busy['desc']} — "
+                            "acknowledge that to the user.")
         return out
 
     async def vcast_list(self) -> dict[str, Any]:
@@ -2855,8 +2860,45 @@ class ToolRunner:
             return
         raise self._private_screen_denial(source, owner, person)
 
+    async def _screen_busy(self, screen: int) -> dict[str, Any] | None:
+        """Is a screen running a flow a new cast would interrupt? Returns
+        {'kind','desc'} for active capture leases, enabled camwall zones
+        and playing media; None for idle/nav/image/speak states."""
+        import asyncio
+        try:
+            caps = await asyncio.to_thread(self._vcast_api, "/capture")
+            for k, cap in (caps.get("captures") or {}).items():
+                if str(k) == str(screen) and cap.get("active"):
+                    return {"kind": "capture",
+                            "desc": f"a camera capture/uplink "
+                                    f"({cap.get('source') or 'cam'}) is "
+                                    "live on it"}
+        except Exception:
+            pass
+        try:
+            wall = await asyncio.to_thread(self._vcast_api, "/camwall")
+            for z, v in (wall.get("zones") or {}).items():
+                if (v.get("enabled")
+                        and str(v.get("screen") or "") == str(screen)):
+                    return {"kind": "camwall", "zone": z,
+                            "desc": f"the '{z}' camera wall is "
+                                    "refreshing on it"}
+        except Exception:
+            pass
+        try:
+            disp = await asyncio.to_thread(self._vcast_api, "/displays")
+            st = next((s.get("state") for s in disp.get("screens", [])
+                       if str(s.get("screen") or "") == str(screen)), None)
+            if st == "playing":
+                return {"kind": "playing",
+                        "desc": "a stream/video is playing on it"}
+        except Exception:
+            pass
+        return None
+
     async def cast_to_screen(self, screen: int, action: str = "nav",
-                             url: str = "") -> dict[str, Any]:
+                             url: str = "",
+                             confirmed: bool = False) -> dict[str, Any]:
         """Cast to a numbered vcast virtual display (NOT the TV).
         action: nav|play|image|audio|stop|uplink|uplink-stop.
         url required except for stop/uplink/uplink-stop."""
@@ -2864,6 +2906,20 @@ class ToolRunner:
         action = str(action or "nav").lower()
         screen = int(screen)
         await self._check_screen_owner(screen, self._memory_identity())
+        # Interrupt gate: replacing content on a busy screen (camera
+        # capture, camwall zone, playing stream) needs the user's yes —
+        # Ada must say what's running and get consent before clobbering.
+        busy = None
+        if action in {"nav", "play", "image", "audio", "uplink"}:
+            busy = await self._screen_busy(screen)
+            if busy and confirmed is not True:
+                return {"ok": False, "delivered": 0,
+                        "would_interrupt": busy,
+                        "needs_confirm": (
+                            f"screen {screen} is busy: {busy['desc']} "
+                            "Tell the user what is running, ask whether to "
+                            "replace it, then call again with "
+                            "confirmed=true only after they say yes.")}
         if action in {"stop", "uplink", "uplink-stop"}:
             msg: dict[str, Any] = {
                 "type": "uplink-start" if action == "uplink" else action}
@@ -2894,6 +2950,11 @@ class ToolRunner:
             out["active_captures"] = caps.get("captures") or {}
         except Exception:
             pass
+        if busy:
+            out["replaced"] = busy
+            out["note"] = ("this cast interrupted something that was "
+                           "running — acknowledge it to the user "
+                           f"({busy['desc']}).")
         return out
 
     async def vcast_say(self, screen: int, text: str) -> dict[str, Any]:
