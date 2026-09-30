@@ -202,3 +202,99 @@ async def doc_print_pdf(slug: str, pages: str | None = None,
 
 def configured() -> bool:
     return bool(DOC_ARCHIVE_API_KEY)
+
+
+# ---------------------------------------------------------------- Google Drive
+# Browse/read/edit any file on the operator's Drive (not just the
+# ada-documents archive tree) via the doc-archive service's /v1/drive/*
+# endpoints — same X-API-Key auth.
+
+async def drive_search(query: str, mime: str | None = None,
+                       limit: int = 10) -> list[dict[str, Any]]:
+    """files.list — name/fullText match + optional mime filter."""
+    import urllib.parse
+    qs = urllib.parse.urlencode(
+        {"q": query, "limit": max(1, min(int(limit), 25)),
+         **({"mime": mime} if mime else {})})
+    def _run() -> list[dict[str, Any]]:
+        return json.loads(_get(f"{DOC_ARCHIVE_URL}/v1/drive/search?{qs}",
+                               headers=_api_headers())).get("files", [])
+    return await asyncio.to_thread(_run)
+
+
+async def drive_get(file_id: str) -> dict[str, Any]:
+    """File metadata + inline text (text/google-docs) or media_url
+    (binary) — see the service's /v1/drive/file/{id}."""
+    def _run() -> dict[str, Any]:
+        try:
+            return json.loads(_get(
+                f"{DOC_ARCHIVE_URL}/v1/drive/file/{file_id}",
+                headers=_api_headers()))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"drive get failed: HTTP {exc.code} "
+                f"{exc.read().decode(errors='replace')[:200]}") from exc
+    return await asyncio.to_thread(_run)
+
+
+async def drive_update(file_id: str, content: str,
+                       mime: str = "text/plain") -> dict[str, Any]:
+    """Replace a regular file's content (media PATCH)."""
+    def _run() -> dict[str, Any]:
+        try:
+            return _put(f"{DOC_ARCHIVE_URL}/v1/drive/file/{file_id}",
+                        {"content": content, "mime": mime},
+                        timeout=60.0, headers=_api_headers())
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"drive update failed: HTTP {exc.code} "
+                f"{exc.read().decode(errors='replace')[:200]}") from exc
+    return await asyncio.to_thread(_run)
+
+
+def _put(url: str, payload: dict, timeout: float = 30.0,
+         headers: dict | None = None) -> Any:
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", **(headers or {})},
+        method="PUT")
+    return json.loads(urllib.request.urlopen(req, timeout=timeout).read())
+
+
+async def drive_media_url(file_id: str) -> str:
+    """Minted fetch URL (15 min TTL) a vcast display can load without
+    headers — returns the absolute http://.../v1/drive/media/...?t= URL."""
+    def _run() -> str:
+        out = _post(f"{DOC_ARCHIVE_URL}/v1/drive/media-token",
+                    {"file_id": file_id}, headers=_api_headers())
+        return DOC_ARCHIVE_URL + out["url"]
+    return await asyncio.to_thread(_run)
+
+
+# ---------------------------------------------------------------- Photos Picker
+
+async def photos_picker_create() -> dict[str, Any]:
+    """Create a Picker session → {session_id, picker_uri, expire_time}.
+    501 from the service → not configured (run gphoto-auth.py)."""
+    def _run() -> dict[str, Any]:
+        try:
+            return _post(f"{DOC_ARCHIVE_URL}/v1/photos/picker", {},
+                         headers=_api_headers())
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"photos picker failed: HTTP {exc.code} "
+                f"{exc.read().decode(errors='replace')[:200]}") from exc
+    return await asyncio.to_thread(_run)
+
+
+async def photos_picker_poll(session_id: str) -> dict[str, Any]:
+    """Poll → {picked, items[{id,type,baseUrl,mimeType,filename}]}."""
+    def _run() -> dict[str, Any]:
+        try:
+            return json.loads(_get(
+                f"{DOC_ARCHIVE_URL}/v1/photos/picker/{session_id}",
+                headers=_api_headers()))
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"photos poll failed: HTTP {exc.code}") from exc
+    return await asyncio.to_thread(_run)
