@@ -65,9 +65,25 @@ class ToolRegistry:
 
     def declarations(self, excluded: set[str] | None = None) -> list[dict[str, Any]]:
         return [
-            dict(t.declaration) for n, t in self.tools.items()
+            _strip_unsupported_schema_keys(dict(t.declaration))
+            for n, t in self.tools.items()
             if not excluded or n not in excluded
         ]
+
+
+def _strip_unsupported_schema_keys(node: Any) -> Any:
+    """Gemini Live rejects schema keys outside its subset (the 1007
+    'Unknown name additional_properties' rejection on session connect).
+    Strip recursively — drop-in declarations may carry them."""
+    if isinstance(node, dict):
+        return {
+            k: _strip_unsupported_schema_keys(v)
+            for k, v in node.items()
+            if k not in ("additionalProperties", "additional_properties")
+        }
+    if isinstance(node, list):
+        return [_strip_unsupported_schema_keys(v) for v in node]
+    return node
 
 
 def _load_module(path: Path) -> Any:
