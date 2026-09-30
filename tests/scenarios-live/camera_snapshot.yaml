@@ -13,7 +13,7 @@ turns:
     expect:
       calls: [ada_camera_snapshot]
       response_nonempty: true
-      timeout_s: 160
+      timeout_s: 220
       settle_s: 8
 
   # Second view in the same session — re-selection path, and she should
@@ -22,5 +22,5 @@ turns:
     expect:
       calls: [ada_camera_snapshot]
       response_nonempty: true
-      timeout_s: 160
+      timeout_s: 220
       settle_s: 8

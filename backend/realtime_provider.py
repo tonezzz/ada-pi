@@ -1338,6 +1338,22 @@ class GeminiLiveProvider(RealtimeProvider):
         except Exception as exc:
             logger.warning("session=%s voice-switch close failed: %s", self.session_id, exc)
 
+    @staticmethod
+    def _frame_followup_note(hint: str = "people, water, weather, vehicles, anything notable") -> str:
+        """What the result text should promise about the follow-up frame turn.
+        In ADA_VISION_MODE=describe the follow-up is helper TEXT, not pixels —
+        the model must not stall waiting for an image that never comes."""
+        if vision_describe.configured() and vision_describe.mode() == "describe":
+            return ("A short description from the vision helper arrives as a "
+                    "separate message right after this result — relay it to "
+                    "the user naturally (the raw image is only sent if the "
+                    "helper is unreachable). It describes a single frame "
+                    "taken seconds ago — not live video.")
+        return ("The image arrives as a separate message right after this "
+                "result — wait for it, then describe what it shows: "
+                f"{hint}. It is a single frame taken seconds ago — not "
+                "live video.")
+
     async def _camera_snapshot(self, args: dict) -> tuple[dict, tuple[str, bytes] | None]:
         """ada_camera_snapshot — pull one still frame through the vms-snap
         shim. Returns (tool_result, (channel, png)); the caller delivers the
@@ -1357,12 +1373,8 @@ class GeminiLiveProvider(RealtimeProvider):
             return ({"error": f"camera snapshot failed: {exc}"}, None)
         result = {
             "output": (
-                f"Still frame captured from camera '{resolved}'. The image "
-                "arrives as a separate message right after this result — "
-                "wait for it, then describe what it shows: people, water, "
-                "weather, vehicles, anything notable. It is a single frame "
-                "taken seconds ago — not live video."
-            ),
+                f"Still frame captured from camera '{resolved}'. "
+                + self._frame_followup_note()),
             "channel": resolved,
         }
         # Publish the frame two ways and prefer the relay copy for casting:
@@ -1477,11 +1489,9 @@ class GeminiLiveProvider(RealtimeProvider):
         dist = f" (~{cam['dist_km']} km away)" if cam.get("dist_km") else ""
         result = {
             "output": (
-                f"Traffic camera '{cam['title']}'{dist} — the current frame "
-                "arrives as a separate message right after this result. "
-                "Describe what it shows honestly: traffic density, weather, "
-                "flooding, incidents. It is one still taken seconds ago — "
-                "not live video."),
+                f"Traffic camera '{cam['title']}'{dist} — "
+                + self._frame_followup_note(
+                    hint="traffic density, weather, flooding, incidents")),
             "camid": cam["camid"], "title": cam["title"],
             "matches": len(cams),
         }
@@ -1556,11 +1566,9 @@ class GeminiLiveProvider(RealtimeProvider):
                         label = f"vcast screen {screen}"
                         result = {
                             "output": (
-                                f"Still frame captured from {label}. The image "
-                                "arrives as a separate message right after this "
-                                "result — wait for it, then describe what the "
-                                "screen is actually showing. It is a single "
-                                "frame taken a moment ago — not live video."),
+                                f"Still frame captured from {label}. "
+                                + self._frame_followup_note(
+                                    hint="what the screen is actually showing")),
                             "screen": screen,
                         }
                         return result, (label, jpeg, "image/jpeg")

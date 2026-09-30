@@ -37,7 +37,7 @@ turns:
   - user: "Yes, go ahead."
     expect:
       calls_any: [cctv_snapshot, ada_camera_snapshot, cast_to_screen]
-      or_state: {vcast_screen: 2, state: image}
+      or_state: {vcast_screen: "{real_screen}", state: image}
       response_nonempty: true
       max_calls: 10
       timeout_s: 160

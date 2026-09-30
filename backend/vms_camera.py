@@ -31,11 +31,11 @@ async def snapshot(channel: str, settle: float | None = None) -> tuple[bytes, st
         params["settle"] = str(settle)
     import asyncio
     r = None
-    # Serial shim: a snap holds a global lock and can take ~110s worst
-    # case (select, settle, 8-frame poll, one re-select on dead attach).
-    # 75s was fitting the old fail-fast path — timeouts surfaced as
-    # "service unreachable" mid-turn (2026-09-30 transcript).
-    async with httpx.AsyncClient(timeout=httpx.Timeout(150.0)) as client:
+    # Serial shim: a snap holds a global lock and can take ~160s worst
+    # case (select, settle, up to 3 attach rounds — each 8-poll × 1.5s +
+    # re-select). 75s was fitting the old fail-fast path — timeouts
+    # surfaced as "service unreachable" mid-turn (2026-09-30 transcript).
+    async with httpx.AsyncClient(timeout=httpx.Timeout(200.0)) as client:
         for _try in range(2):
             try:
                 r = await client.get(f"{base}/snap", params=params)
