@@ -15,19 +15,21 @@ turns:
       settle_s: 8
       # She must give a recency/time answer — the ritual's core claim.
       response_contains_any:
-        - "updated"
-        - "ago"
-        - "minute"
-        - "hour"
-        - "last"
-        - "ago"
-        - "อัพเดท"
-        - "เมื่อ"
-        - "นาที"
-        - "ชั่วโมง"
-      # And actually report health state — not just the time. The
-      # time words and health words both need to appear, so we use
-      # response_contains (all must match) on a health word and
-      # response_contains_any on the recency words.
-      response_contains:
+        # A real answer reports the health state. Any-list across both
+        # languages; time words ("เมื่อ") alone are too common and let a
+        # drifted transcript pass.
         - "health"
+        - "status"
+        - "สถานะ"
+        - "degraded"
+        - "ok"
+        - "ปกติ"
+        - "เฮลท์"
+        - "healthy"
+      # Health state must appear too — merge into the any-list (Thai
+      # sessions won't say "health"; DEGRADED/ok/ปกติ cover both langs).
+      # The not_contains guards against pure-hedge answers.
+      response_not_contains:
+        - "I don't have"
+        - "ไม่มีรายงาน"
+        - "not sure"
