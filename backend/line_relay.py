@@ -47,6 +47,12 @@ IDLE_SESSION_S = float(os.environ.get("LINE_IDLE_SESSION_S", "600"))
 LINE_LISTEN = os.environ.get("LINE_WEBHOOK_LISTEN", "127.0.0.1:8912")
 LINE_PATH = os.environ.get("LINE_WEBHOOK_PATH", "/webhook/line")
 REPLY_CHUNK = 4900  # LINE text message limit is 5000 chars
+# LINE image messages can only reference public HTTPS URLs — snapshots get
+# hosted transiently on this relay and proxied out via Caddy /relay-img/*.
+LINE_PUBLIC_IMG_BASE = os.environ.get(
+    "LINE_PUBLIC_IMG_BASE",
+    "https://157.85.110.99.sslip.io/relay-img")
+IMG_TTL_S = float(os.environ.get("LINE_IMG_TTL_S", "3600"))
 
 ADA_KEYS_FILE = os.environ.get(
     "ADA_KEYS_FILE",
@@ -90,6 +96,22 @@ def _key_for_user(user_id: str) -> str:
     return ADA_API_KEY
 
 
+def _images_from(results: list[dict]) -> list[tuple[str, str]]:
+    """(url, caption) pairs found in tool_result payloads — a camera
+    snapshot's cast_url turns into an image message in the chat."""
+    out: list[tuple[str, str]] = []
+    for res in results:
+        if not isinstance(res, dict):
+            continue
+        url = res.get("cast_url") or res.get("image_url") or res.get("url")
+        if not (isinstance(url, str) and url.startswith("http")):
+            continue
+        cap = str(res.get("channel") or res.get("camera")
+                  or res.get("title") or "")
+        out.append((url, cap))
+    return out
+
+
 class ChatSession:
     """One Ada WS session per LINE user, kept for continuity."""
 
@@ -125,8 +147,8 @@ class ChatSession:
         finally:
             await self._current.put({"type": "_ws_closed"})
 
-    async def send_turn(self, text: str) -> str:
-        """Send one user turn, return the full assistant transcript."""
+    async def send_turn(self, text: str) -> tuple[str, list[tuple[str, str]]]:
+        """Send one user turn; returns (transcript, image urls+captions)."""
         async with self._lock:
             self.last_active = time.monotonic()
             await self.ensure()
@@ -134,6 +156,7 @@ class ChatSession:
                 self._current.get_nowait()
             await self.ws.send(json.dumps({"type": "text", "text": text}))
             parts: list[str] = []
+            results: list[dict] = []
             deadline = time.monotonic() + 180
             completed_at = 0.0
             while time.monotonic() < deadline:
@@ -147,6 +170,8 @@ class ChatSession:
                 t = msg.get("type")
                 if t == "assistant_transcript_delta":
                     parts.append(str(msg.get("text") or msg.get("delta") or ""))
+                elif t == "tool_result":
+                    results.append(msg.get("result") or {})
                 elif t == "response_completed":
                     completed_at = time.monotonic()
                 elif t == "_ws_closed":
@@ -156,7 +181,7 @@ class ChatSession:
                     logger.warning("user %s ada error: %s", self.user_id, msg)
                 if completed_at and time.monotonic() - completed_at > 6:
                     break
-            return "".join(parts).strip()
+            return "".join(parts).strip(), _images_from(results)
 
     async def close(self) -> None:
         ws, self.ws = self.ws, None
@@ -173,6 +198,7 @@ class LineRelay:
     def __init__(self) -> None:
         self.sessions: dict[str, ChatSession] = {}
         self.http: httpx.AsyncClient | None = None
+        self._imgs: dict[str, tuple[bytes, float]] = {}
 
     def _verify(self, body: bytes, signature: str) -> bool:
         mac = hmac.new(CHANNEL_SECRET.encode(), body, hashlib.sha256)
@@ -191,10 +217,14 @@ class LineRelay:
             return
         msgs = [{"type": "text", "text": text[i:i + REPLY_CHUNK]}
                 for i in range(0, len(text), REPLY_CHUNK)][:5]
+        await self._deliver(user_id, msgs, reply_token)
+
+    async def _deliver(self, user_id: str, msgs: list[dict],
+                       reply_token: str | None = None) -> None:
         if reply_token:
             try:
                 r = await self.line("reply", {
-                    "replyToken": reply_token, "messages": msgs})
+                    "replyToken": reply_token, "messages": msgs[:5]})
                 if r.status_code == 200:
                     return
                 logger.info("replyToken failed (%s) — falling back to push",
@@ -202,10 +232,48 @@ class LineRelay:
             except Exception as exc:
                 logger.info("reply call failed (%s) — falling back to push",
                             exc)
-        r = await self.line("push", {"to": user_id, "messages": msgs})
+        r = await self.line("push", {"to": user_id, "messages": msgs[:5]})
         if r.status_code != 200:
             logger.warning("push to %s failed: %s %s",
                            user_id, r.status_code, r.text[:200])
+
+    def _preview_jpeg(self, png: bytes) -> bytes:
+        """LINE previews want a small JPEG — downscale to <=240px."""
+        try:
+            import io
+            from PIL import Image
+            im = Image.open(io.BytesIO(png))
+            im.thumbnail((240, 240))
+            buf = io.BytesIO()
+            im.convert("RGB").save(buf, "JPEG", quality=70)
+            return buf.getvalue()
+        except Exception:
+            return png
+
+    async def _image_msgs(self, url: str, caption: str) -> list[dict]:
+        """Fetch the frame, host it publicly, return LINE image messages."""
+        assert self.http is not None
+        try:
+            r = await self.http.get(url, timeout=60)
+            if r.status_code != 200 or len(r.content) < 500:
+                raise RuntimeError(f"fetch {r.status_code} {len(r.content)}B")
+            import secrets
+            nonce = secrets.token_urlsafe(12)
+            self._imgs[nonce] = (r.content, time.time())
+            pnonce = nonce + "-p"
+            self._imgs[pnonce] = (self._preview_jpeg(r.content), time.time())
+            msgs: list[dict] = [{"type": "image",
+                                 "originalContentUrl":
+                                     f"{LINE_PUBLIC_IMG_BASE}/{nonce}",
+                                 "previewImageUrl":
+                                     f"{LINE_PUBLIC_IMG_BASE}/{pnonce}"}]
+            if caption:
+                msgs.append({"type": "text", "text": caption[:4900]})
+            return msgs
+        except Exception as exc:
+            logger.warning("image %s failed: %s", url, exc)
+            return [{"type": "text",
+                     "text": f"(image failed: {caption or url})"}]
 
     async def handle_event(self, ev: dict[str, Any]) -> None:
         src = ev.get("source") or {}
@@ -242,18 +310,20 @@ class LineRelay:
         sess = self.sessions.setdefault(
             user_id, ChatSession(user_id, self))
         try:
-            reply = await sess.send_turn(text)
+            reply, images = await sess.send_turn(text)
         except Exception as exc:
             logger.warning("user %s turn failed: %s", user_id, exc)
-            reply = "Ada didn't answer that turn — her session dropped. " \
-                    "Try again."
+            reply, images = ("Ada didn't answer that turn — her session "
+                             "dropped. Try again."), []
             sess = ChatSession(user_id, self)
             self.sessions[user_id] = sess
-        if not reply:
-            reply = "(no reply)"
+        msgs: list[dict] = [{"type": "text",
+                             "text": (reply or "(no reply)")[:REPLY_CHUNK]}]
+        for url, cap in images[:3]:
+            msgs.extend(await self._image_msgs(url, cap))
         try:
-            await self.send_text(user_id, reply,
-                                 reply_token=reply_token if len(text) else None)
+            await self._deliver(user_id, msgs[:5],
+                                reply_token=reply_token if len(text) else None)
         except Exception as exc:
             logger.warning("user %s reply send failed: %s", user_id, exc)
 
@@ -268,6 +338,9 @@ class LineRelay:
                         now - sess.last_active > IDLE_SESSION_S:
                     logger.info("user %s idle close", uid)
                     await sess.close()
+            for nonce, (_data, ts) in list(self._imgs.items()):
+                if time.time() - ts > IMG_TTL_S:
+                    self._imgs.pop(nonce, None)
 
     async def _webhook_server(self) -> None:
         if not CHANNEL_SECRET:
@@ -296,9 +369,20 @@ class LineRelay:
         async def health(request):
             return JSONResponse({"ok": True, "mode": "webhook"})
 
+        async def img(request):
+            from starlette.responses import Response
+            nonce = request.path_params.get("nonce", "")
+            hit = self._imgs.get(nonce)
+            if not hit:
+                return JSONResponse({"ok": False}, status_code=404)
+            data, _ = hit
+            ct = "image/jpeg" if nonce.endswith("-p") else "image/png"
+            return Response(data, media_type=ct)
+
         app = Starlette(routes=[
             Route(LINE_PATH, webhook, methods=["POST"]),
             Route("/webhook/line-health", health, methods=["GET"]),
+            Route("/relay-img/{nonce}", img, methods=["GET"]),
         ])
         host, _, port = LINE_LISTEN.rpartition(":")
         server = uvicorn.Server(uvicorn.Config(

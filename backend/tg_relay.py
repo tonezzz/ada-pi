@@ -101,6 +101,22 @@ def _key_for_chat(chat_id: int) -> str:
     return ADA_API_KEY
 
 
+def _images_from(results: list[dict]) -> list[tuple[str, str]]:
+    """(url, caption) pairs found in tool_result payloads — a camera
+    snapshot's cast_url turns into a photo in the chat."""
+    out: list[tuple[str, str]] = []
+    for res in results:
+        if not isinstance(res, dict):
+            continue
+        url = res.get("cast_url") or res.get("image_url") or res.get("url")
+        if not (isinstance(url, str) and url.startswith("http")):
+            continue
+        cap = str(res.get("channel") or res.get("camera")
+                  or res.get("title") or "")
+        out.append((url, cap))
+    return out
+
+
 def _allowed_chats() -> set[int]:
     raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
     out = set()
@@ -146,8 +162,8 @@ class ChatSession:
         finally:
             await self._current.put({"type": "_ws_closed"})
 
-    async def send_turn(self, text: str) -> str:
-        """Send one user turn, return the full assistant transcript."""
+    async def send_turn(self, text: str) -> tuple[str, list[tuple[str, str]]]:
+        """Send one user turn; returns (transcript, image urls+captions)."""
         async with self._lock:
             self.last_active = time.monotonic()
             await self.ensure()
@@ -156,6 +172,7 @@ class ChatSession:
                 self._current.get_nowait()
             await self.ws.send(json.dumps({"type": "text", "text": text}))
             parts: list[str] = []
+            results: list[dict] = []
             deadline = time.monotonic() + 180
             completed_at = 0.0
             while time.monotonic() < deadline:
@@ -169,6 +186,8 @@ class ChatSession:
                 t = msg.get("type")
                 if t == "assistant_transcript_delta":
                     parts.append(str(msg.get("text") or msg.get("delta") or ""))
+                elif t == "tool_result":
+                    results.append(msg.get("result") or {})
                 elif t == "response_completed":
                     completed_at = time.monotonic()
                 elif t == "_ws_closed":
@@ -179,7 +198,7 @@ class ChatSession:
                 # Allow a short settle after completion for a late delta.
                 if completed_at and time.monotonic() - completed_at > 6:
                     break
-            return "".join(parts).strip()
+            return "".join(parts).strip(), _images_from(results)
 
     async def close(self) -> None:
         ws, self.ws = self.ws, None
@@ -227,6 +246,25 @@ class TgRelay:
             await self.tg("sendMessage", chat_id=chat_id,
                           text=text[i:i + REPLY_CHUNK])
 
+    async def send_photo(self, chat_id: int, url: str, caption: str) -> None:
+        """Fetch image bytes (tailnet-reachable) and sendPhoto them."""
+        assert self.http is not None
+        try:
+            r = await self.http.get(url, timeout=60)
+            if r.status_code != 200 or len(r.content) < 500:
+                raise RuntimeError(f"fetch {r.status_code} {len(r.content)}B")
+            ct = r.headers.get("content-type", "image/png")
+            ext = ".jpg" if "jpeg" in ct else ".png"
+            resp = await self.http.post(
+                f"{TG_API}/bot{BOT_TOKEN}/sendPhoto",
+                data={"chat_id": str(chat_id), "caption": caption[:1000]},
+                files={"photo": (f"cam{ext}", r.content, ct)})
+            if not resp.json().get("ok"):
+                raise RuntimeError(str(resp.json()))
+        except Exception as exc:
+            logger.warning("chat %s photo %s failed: %s", chat_id, url, exc)
+            await self.send_text(chat_id, f"(image failed: {caption or url})")
+
     async def handle(self, upd: dict[str, Any]) -> None:
         msg = upd.get("message") or upd.get("edited_message") or {}
         chat = msg.get("chat") or {}
@@ -252,10 +290,11 @@ class TgRelay:
         except Exception:
             pass
         try:
-            reply = await sess.send_turn(text)
+            reply, images = await sess.send_turn(text)
         except Exception as exc:
             logger.warning("chat %s turn failed: %s", chat_id, exc)
-            reply = "Ada didn't answer that turn — her session dropped. Try again."
+            reply, images = ("Ada didn't answer that turn — her session "
+                             "dropped. Try again."), []
             sess = ChatSession(chat_id, self)
             self.sessions[chat_id] = sess
         if not reply:
@@ -264,6 +303,8 @@ class TgRelay:
             await self.send_text(chat_id, reply)
         except Exception as exc:
             logger.warning("chat %s reply send failed: %s", chat_id, exc)
+        for url, cap in images[:3]:
+            await self.send_photo(chat_id, url, cap)
 
     async def sweeper(self) -> None:
         """Close WS sessions idle longer than IDLE_SESSION_S so Ada's
