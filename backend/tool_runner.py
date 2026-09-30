@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import hashlib
 import inspect
@@ -2685,9 +2686,15 @@ class ToolRunner:
         content: str,
         format: str = "markdown",
         lang: str = "en",
+        summary: str = "",
+        domain: str = "",
+        fresh_for: str = "",
     ) -> dict[str, Any]:
         """Create or update a miniapp page. Upserts by (slug, lang) — 'en'
-        and 'th' variants of the same slug coexist; the viewer toggles."""
+        and 'th' variants of the same slug coexist; the viewer toggles.
+        summary/domain/fresh_for feed reports-index: a one-line brief Ada
+        can answer from without cms_get_page, the grouping domain, and a
+        staleness hint ('1h', '6h', '1d') the index flags when exceeded."""
         slug = self._cms_slug(slug)
         fmt = (format or "markdown").strip().lower()
         lang = (lang or "en").strip().lower()
@@ -2738,6 +2745,20 @@ class ToolRunner:
             "updated": [updated],
             "instance": [self._instance_id or "ada"],
         })
+        # Report-structure fields — summary is the one-line brief the
+        # reports-index shows so Ada answers without re-reading the page;
+        # fresh_for is a staleness hint the index renders as stale/FRESH.
+        if summary.strip():
+            meta["summary"] = [summary.strip()[:240]]
+        if domain.strip():
+            meta["domain"] = [domain.strip().lower()]
+        if fresh_for.strip():
+            meta["fresh_for"] = [fresh_for.strip()]
+        # Timeline — append-only audit of what changed and when. Cap at 40
+        # entries; visible via cms_get_page meta and the report pages.
+        tl = [x for x in meta.get("timeline", []) if isinstance(x, str)]
+        tl.append(f"{updated[:16]} published: {title.strip()[:80]}")
+        meta["timeline"] = tl[-40:]
         result = await self.mddb.add_document(
             CMS_COLLECTION,
             slug,
@@ -2763,6 +2784,9 @@ class ToolRunner:
         view_url = f"{base}#/{slug}"
         key = os.environ.get("ADA_API_KEY", "")
         cast_url = f"{base}?api_key={key}#/{slug}" if key else view_url
+        # Refresh the reports index in the background — cheap page Ada reads
+        # instead of re-querying per report.
+        asyncio.create_task(self._cms_reports_index())
         return {
             "status": "published",
             "slug": slug,
@@ -2783,7 +2807,119 @@ class ToolRunner:
         result = await self.mddb.delete_document(CMS_COLLECTION, slug)
         if result is None:
             return {"status": "not_found", "slug": slug}
+        asyncio.create_task(self._cms_reports_index())
         return {"status": "deleted", "slug": slug}
+
+    async def cms_note_update(
+        self, slug: str, note: str, lang: str = "en", summary: str = ""
+    ) -> dict[str, Any]:
+        """Append a timeline note to an existing page — the lightweight
+        'this report learned something new' path. Unlike cms_publish_page it
+        merges content (adds a Timeline section entry) and never replaces,
+        so it needs no confirmation. Optionally refreshes the page's
+        one-line summary shown in reports-index."""
+        slug = self._cms_slug(slug)
+        lang = (lang or "en").strip().lower()
+        if not (note or "").strip():
+            raise ValueError("note is required")
+        doc = await self.mddb.get_document(CMS_COLLECTION, slug, lang)
+        if doc is None and lang != "en":
+            doc = await self.mddb.get_document(CMS_COLLECTION, slug, "en")
+        if not isinstance(doc, dict):
+            return {"status": "not_found", "slug": slug,
+                    "error": "no such page — use cms_publish_page to create it"}
+        meta = {
+            k: (v if isinstance(v, list) else [v])
+            for k, v in (doc.get("meta") or {}).items()
+        }
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        entry = f"{now[:16]} {note.strip()[:200]}"
+        tl = [x for x in meta.get("timeline", []) if isinstance(x, str)]
+        tl.append(entry)
+        meta["timeline"] = tl[-40:]
+        meta["updated"] = [now]
+        meta["written_by"] = ["cms_note_update"]
+        if summary.strip():
+            meta["summary"] = [summary.strip()[:240]]
+        content = doc.get("contentMd") or ""
+        marker = "## Timeline"
+        line = f"- {entry}"
+        if marker in content:
+            content = content.rstrip() + "\n" + line + "\n"
+        else:
+            content = content.rstrip() + f"\n\n{marker}\n\n{line}\n"
+        result = await self.mddb.add_document(
+            CMS_COLLECTION, slug, doc.get("lang") or lang, content, meta=meta)
+        if result is None:
+            return {"status": "error", "error": "mddb write failed", "slug": slug}
+        asyncio.create_task(self._cms_reports_index())
+        return {"status": "noted", "slug": slug, "timeline_entries": len(meta["timeline"])}
+
+    async def _cms_reports_index(self) -> None:
+        """Regenerate the reports-index page — one row per report/tagged
+        page with slug, domain, one-line summary, updated, and a stale flag
+        when 'updated' exceeds its fresh_for hint. Ada reads THIS to answer
+        'what reports exist / what changed' without per-page cms_get_page."""
+        try:
+            docs = await self.mddb.search_documents(
+                CMS_COLLECTION, limit=200)
+        except Exception as exc:
+            logger.warning("reports-index list failed: %s", exc)
+            return
+        now = datetime.now(timezone.utc)
+        def stale(meta: dict) -> bool:
+            ff = (meta.get("fresh_for") or [""])[0]
+            upd = (meta.get("updated") or [""])[0]
+            if not ff or not upd:
+                return False
+            try:
+                m = {"h": 3600, "d": 86400, "m": 60}
+                secs = int(float(ff[:-1]) * m[ff[-1]])
+                dt = datetime.fromisoformat(upd.replace("Z", "+00:00"))
+                return (now - dt).total_seconds() > secs
+            except Exception:
+                return False
+        rows = []
+        for d in docs:
+            meta = d.get("meta") or {}
+            kind = (meta.get("kind") or [""])[0]
+            if kind not in ("report", "page"):
+                continue
+            slug = (meta.get("slug") or [d.get("key") or "?"])[0]
+            if slug == "reports-index":
+                continue
+            rows.append({
+                "slug": slug,
+                "title": (meta.get("title") or [slug])[0],
+                "domain": (meta.get("domain") or ["-"])[0],
+                "summary": (meta.get("summary") or [""])[0],
+                "updated": (meta.get("updated") or ["-"])[0][:16],
+                "fresh": (meta.get("fresh_for") or ["-"])[0],
+                "stale": stale(meta),
+            })
+        rows.sort(key=lambda r: r["updated"], reverse=True)
+        lines = [f"# Reports index — {now:%Y-%m-%d %H:%M}Z\n",
+                 "Brief summaries of every report page — read the linked page",
+                 "only when the summary isn't enough.\n",
+                 "| slug | domain | updated | fresh | summary |",
+                 "|---|---|---|---|---|"]
+        for r in rows[:60]:
+            flag = " ⚠STALE" if r["stale"] else ""
+            summ = (r["summary"] or r["title"])[:80]
+            lines.append(f"| {r['slug']} | {r['domain']} | {r['updated']}"
+                         f"{flag} | {r['fresh']} | {summ} |")
+        md = "\n".join(lines)
+        await self.mddb.add_document(
+            CMS_COLLECTION, "reports-index", "en", md,
+            meta={"kind": ["page"], "slug": ["reports-index"],
+                  "title": [f"Reports index — {now:%Y-%m-%d %H:%M}Z"],
+                  "format": ["markdown"], "domain": ["meta"],
+                  "summary": ["Auto-generated index of report pages — "
+                              "slug, domain, staleness, one-line brief."],
+                  "fresh_for": ["6h"],
+                  "updated": [now.isoformat(timespec="seconds")],
+                  "instance": [self._instance_id or "ada"],
+                  "written_by": ["_cms_reports_index"]})
 
     # -- CMS automation registry (ada-cms-automation) -----------------------
     # One doc per page slug, contentMd = JSON of the page's switches/knobs

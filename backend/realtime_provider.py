@@ -77,6 +77,7 @@ CALENDAR_TOOLS = {
 CMS_TOOLS = {
     "cms_list_pages", "cms_get_page", "cms_verify_page",
     "cms_publish_page", "cms_delete_page", "cms_automation",
+    "cms_note_update",
 }
 
 CALENDAR_INSTRUCTIONS = (
@@ -112,8 +113,13 @@ CMS_INSTRUCTIONS = (
     " You maintain the user's miniapp — a small multi-page site whose pages you own. "
     "cms_list_pages lists existing pages with their language variants, cms_get_page reads one, "
     "cms_publish_page creates or fully replaces a page (slugs are lowercase, e.g. 'pool-notes'; "
-    "en/th variants coexist — publish the user's language plus the other when asked), and "
+    "en/th variants coexist — publish the user's language plus the other when asked), "
+    "cms_note_update appends a timeline note to an existing page without replacing content, and "
     "cms_delete_page removes one. Page content is written as markdown, html, yaml, or slides markdown. "
+    "For 'what's new' or 'status' questions, read the 'reports-index' page first — it lists every "
+    "report with a one-line summary and staleness flag; only cms_get_page the linked page when the "
+    "summary isn't enough. When a tool call gives you new information tied to a report (flood status, "
+    "weather, benchmarks), call cms_note_update on that report so the index stays current. "
     "Inside markdown pages you can embed rich blocks as fenced code blocks: "
     "```chart <yaml echarts option> for 2D charts (line/bar/pie/scatter), "
     "```chart3d <yaml echarts-gl option> for 3D (surface3d/bar3d/scatter3d — set "
@@ -3743,6 +3749,18 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "enum": ["en", "th"],
                                 "description": "Language variant to publish (default en). 'en' and 'th' variants of the same slug coexist — the viewer has a language toggle.",
                             },
+                            "summary": {
+                                "type": "string",
+                                "description": "One-line brief for reports-index — the gist Ada can answer from without re-reading the page (max ~240 chars).",
+                            },
+                            "domain": {
+                                "type": "string",
+                                "description": "Grouping tag for reports-index, e.g. 'flood', 'health', 'bench', 'news'.",
+                            },
+                            "fresh_for": {
+                                "type": "string",
+                                "description": "Staleness hint, e.g. '1h', '6h', '1d' — reports-index flags the page as STALE past this window.",
+                            },
                             "confirmed": {
                                 "type": "boolean",
                                 "description": "Required; set true only after explicit user confirmation.",
@@ -3753,6 +3771,40 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["slug", "title", "content"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "cms_note_update",
+                    "description": (
+                        "Append a timeline note to an existing page — the 'this report "
+                        "learned something new' path. Merges into the page's Timeline "
+                        "section, refreshes updated, and re-summarizes; never replaces "
+                        "content. No confirmation needed. Use after tool calls that "
+                        "return newer info for a report (flood status, benchmarks)."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {
+                                "type": "string",
+                                "description": "Page slug to annotate (from cms_list_pages or reports-index).",
+                            },
+                            "note": {
+                                "type": "string",
+                                "description": "One-line note appended to the page Timeline and index entry (max ~200 chars).",
+                            },
+                            "summary": {
+                                "type": "string",
+                                "description": "Optional replacement for the page's one-line reports-index brief.",
+                            },
+                            "lang": {
+                                "type": "string",
+                                "enum": ["en", "th"],
+                                "description": "Variant to annotate (default en).",
+                            },
+                        },
+                        "required": ["slug", "note"],
                         "additionalProperties": False,
                     },
                 }, {
