@@ -5,7 +5,7 @@ turns:
   expect:
     timeout_s: 45
     settle_s: 4
-- user: หยุดผังกล้องที่ผูกกับหน้าจอ 4 — โซน traffic กับ rama9 — ให้จอว่าง
+- user: หยุดผังกล้องที่ผูกกับหน้าจอ {real_screen} — โซน traffic กับ rama9 — ให้จอว่าง
   expect:
     calls_any:
     - cctv_wall
@@ -13,7 +13,7 @@ turns:
     - vcast_list
     timeout_s: 120
     settle_s: 10
-- user: 'เปิด God''s Eye View เต็มจอบนหน้าจอ 4 แล้วปักหน้าต่างกล้องลอยมุมขวาบน — เอาไลฟ์สตรีมซาฟารี
+- user: 'เปิด God''s Eye View เต็มจอบนหน้าจอ {real_screen} แล้วปักหน้าต่างกล้องลอยมุมขวาบน — เอาไลฟ์สตรีมซาฟารี
     Africam จาก YouTube: https://www.youtube.com/watch?v=ZwxMY_3XZ_A'
   expect:
     calls_any:
@@ -35,7 +35,7 @@ turns:
     - -26.2041
     - 28.0473
     - 60
-    gev_screen: 4
+    gev_screen: "{real_screen}"
     call_args_contain:
       vcast_say:
       - โจฮัน
@@ -57,7 +57,7 @@ turns:
     - -26.1076
     - 28.0567
     - 15
-    gev_screen: 4
+    gev_screen: "{real_screen}"
     timeout_s: 240
     settle_s: 60
     no_failed_result:
@@ -75,7 +75,7 @@ turns:
     - -33.9249
     - 18.4241
     - 60
-    gev_screen: 4
+    gev_screen: "{real_screen}"
     call_args_contain:
       vcast_say:
       - เคปทาวน์
@@ -96,7 +96,7 @@ turns:
     - -33.0965
     - 18.0299
     - 40
-    gev_screen: 4
+    gev_screen: "{real_screen}"
     call_args_contain:
       vcast_say:
       - ลังก์บาน
@@ -104,7 +104,7 @@ turns:
     settle_s: 20
     no_failed_result:
     - gev_command
-- user: จับภาพหน้าจอ 4 ให้ดูหน่อย แล้วเคลียร์จอกลับเป็นว่าง
+- user: จับภาพหน้าจอ {real_screen} ให้ดูหน่อย แล้วเคลียร์จอกลับเป็นว่าง
   expect:
     calls_any:
     - vcast_snapshot

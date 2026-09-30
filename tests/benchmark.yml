@@ -70,7 +70,7 @@ policy:
     - tv_cast_control
     - gev_cast_control
     - gev_screen1_interact
-    - gev_screen4_interact
+    - gev_real_screen_interact
     - gev_layers_track
     - gev_bkk_tour
     - gev_th_tour
@@ -257,7 +257,7 @@ suites:
     - gev_za_tour_th
     - gev_layers_track
     - gev_screen1_interact
-    - gev_screen4_interact
+    - gev_real_screen_interact
     - split_screen
     - camera_describe
     - traffic_camera_describe

@@ -178,13 +178,20 @@ _MON_EN = ["January", "February", "March", "April", "May", "June",
 def _expand_tokens(obj: Any) -> Any:
     """Substitute {today}, {tomorrow}, {today_dow}, {tomorrow_dow},
     {today_dow_th}, {tomorrow_dow_th}, {today_dom}, {tomorrow_dom},
-    {today_date_th}/{tomorrow_date_th} ("30 กันยายน") and
-    {today_date_en}/{tomorrow_date_en} ("September 30")
-    in all strings of the loaded scenario."""
+    {today_date_th}/{tomorrow_date_th} ("30 กันยายน"),
+    {today_date_en}/{tomorrow_date_en} ("September 30") and
+    {real_screen} in all strings of the loaded scenario.
+
+    {real_screen} = the real-browser lab display (vcast-real@N on idc02;
+    VCAST_REAL_SCREEN env, default 6). A string that is ONLY the token
+    expands to int so `gev_screen: "{real_screen}"` / `screens: [...]`
+    stay numeric; embedded uses ("fly screen {real_screen} to…") stay
+    strings."""
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
     today = datetime.now(ZoneInfo("Asia/Bangkok")).date()
     tomo = today + timedelta(days=1)
+    real = os.environ.get("VCAST_REAL_SCREEN") or "6"
     table = {
         "{today}": today.isoformat(),
         "{tomorrow}": tomo.isoformat(),
@@ -198,10 +205,13 @@ def _expand_tokens(obj: Any) -> Any:
         "{tomorrow_date_th}": f"{tomo.day} {_MON_TH[tomo.month - 1]}",
         "{today_date_en}": f"{_MON_EN[today.month - 1]} {today.day}",
         "{tomorrow_date_en}": f"{_MON_EN[tomo.month - 1]} {tomo.day}",
+        "{real_screen}": real,
     }
     if isinstance(obj, str):
         for k, v in table.items():
             obj = obj.replace(k, v)
+        if obj.strip() == real:
+            return int(real)
         return obj
     if isinstance(obj, list):
         return [_expand_tokens(x) for x in obj]

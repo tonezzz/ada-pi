@@ -1,6 +1,6 @@
 # Cast source/destination switching on vcast displays.
 #
-#   1. ask for traffic cam wall on screen 4 -> she may ask before taking
+#   1. ask for traffic cam wall on screen {real_screen} -> she may ask before taking
 #      over a busy screen (capture-contract: confirm before replacing)
 #   2. confirm -> wall goes up (cctv_wall or cast_to_screen both fine)
 #   3. "switch it to GEV" -> new SOURCE on the same screen
@@ -18,13 +18,13 @@ name: cast_switch_flow
 tier: full
 
 turns:
-  - user: "Put the traffic camera wall on screen 4."
+  - user: "Put the traffic camera wall on screen {real_screen}."
     expect:
       response_nonempty: true
       timeout_s: 90
       settle_s: 8
 
-  - user: "Yes, screen 4 is free — go ahead."
+  - user: "Yes, screen {real_screen} is free — go ahead."
     expect:
       calls_any: [cast_to_screen, cctv_wall, vcast_screen_cast]
       result_not_contains: ['denied']

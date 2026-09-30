@@ -5,7 +5,7 @@ turns:
   expect:
     timeout_s: 45
     settle_s: 4
-- user: First, stop the camera walls bound to screen 4 — the traffic and rama9 zones.
+- user: First, stop the camera walls bound to screen {real_screen} — the traffic and rama9 zones.
     I want it fully idle.
   expect:
     calls_any:
@@ -13,7 +13,7 @@ turns:
     - cast_to_screen
     timeout_s: 120
     settle_s: 10
-- user: Put God's Eye View fullscreen on screen 4 with a floating camera window pinned
+- user: Put God's Eye View fullscreen on screen {real_screen} with a floating camera window pinned
     top-right — picture-in-picture — start it on the rama9 camera zone.
   expect:
     calls_any:
@@ -22,7 +22,7 @@ turns:
     response_nonempty: true
     timeout_s: 180
     settle_s: 50
-- user: Check screen 4's state — tell me its layout.
+- user: Check screen {real_screen}'s state — tell me its layout.
   expect:
     calls_any:
     - vcast_list
@@ -52,7 +52,7 @@ turns:
     - 13.8399
     - 100.5412
     - 15
-    gev_screen: 4
+    gev_screen: "{real_screen}"
     call_args_contain:
       vcast_say:
       - ประชานิเวศน์
@@ -77,7 +77,7 @@ turns:
     - 13.7226
     - 100.5533
     - 15
-    gev_screen: 4
+    gev_screen: "{real_screen}"
     call_args_contain:
       vcast_say:
       - - พระราม
@@ -103,7 +103,7 @@ turns:
     - 13.6689
     - 100.6292
     - 15
-    gev_screen: 4
+    gev_screen: "{real_screen}"
     call_args_contain:
       vcast_say:
       - - บูรพา
@@ -113,7 +113,7 @@ turns:
     settle_s: 18
     no_failed_result:
     - gev_command
-- user: Snapshot screen 4, then clear it back to idle.
+- user: Snapshot screen {real_screen}, then clear it back to idle.
   expect:
     calls_any:
     - vcast_snapshot

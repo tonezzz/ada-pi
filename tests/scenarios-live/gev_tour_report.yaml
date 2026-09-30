@@ -5,7 +5,7 @@ turns:
   expect:
     timeout_s: 45
     settle_s: 4
-- user: First, stop the camera walls bound to screen 4 — the traffic and rama9 zones.
+- user: First, stop the camera walls bound to screen {real_screen} — the traffic and rama9 zones.
     I want it fully idle.
   expect:
     calls_any:
@@ -14,7 +14,7 @@ turns:
     - vcast_list
     timeout_s: 120
     settle_s: 10
-- user: Split screen 4 — God's Eye View on the left, a camera pane on the right.
+- user: Split screen {real_screen} — God's Eye View on the left, a camera pane on the right.
   expect:
     response_nonempty: true
     timeout_s: 120
@@ -83,7 +83,7 @@ turns:
     response_nonempty: true
     timeout_s: 150
     settle_s: 12
-- user: Snapshot screen 4, then clear it back to idle.
+- user: Snapshot screen {real_screen}, then clear it back to idle.
   expect:
     calls_any:
     - vcast_snapshot

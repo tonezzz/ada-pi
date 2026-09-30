@@ -18,7 +18,7 @@ tier: full
 # UNIMPLEMENTED (exit 4) instead of FAIL until it lands.
 needs_any: [vcast_gesture, vcast_pose]
 preflight:
-  - {check: vcast_online, screens: [1]}
+  - {check: vcast_online, screens: ["{real_screen}"]}
 
 turns:
   # --- inventory -----------------------------------------------------------
@@ -38,7 +38,7 @@ turns:
   # --- enable room-pose on a screen ---------------------------------------
   # Whichever tool name ships (vcast_gesture / vcast_pose), calls_any catches
   # it; adjust when the tool lands.
-  - user: "Turn on the room-scale pose control on screen 1 — the wave-to-wake mode."
+  - user: "Turn on the room-scale pose control on screen {real_screen} — the wave-to-wake mode."
     expect:
       calls_any: [vcast_gesture, vcast_pose, vcast_screen_cast]
       response_nonempty: true

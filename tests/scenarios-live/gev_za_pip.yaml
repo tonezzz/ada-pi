@@ -5,7 +5,7 @@ turns:
   expect:
     timeout_s: 45
     settle_s: 4
-- user: First, stop the camera walls bound to screen 4 — the traffic and rama9 zones.
+- user: First, stop the camera walls bound to screen {real_screen} — the traffic and rama9 zones.
     I want it fully idle.
   expect:
     calls_any:
@@ -13,7 +13,7 @@ turns:
     - cast_to_screen
     timeout_s: 120
     settle_s: 10
-- user: 'Put God''s Eye View on screen 4 fullscreen, with a floating camera view pinned
+- user: 'Put God''s Eye View on screen {real_screen} fullscreen, with a floating camera view pinned
     to the top-right corner — picture-in-picture style — play the Africam live safari
     stream there: https://www.youtube.com/watch?v=ZwxMY_3XZ_A'
   expect:
@@ -23,7 +23,7 @@ turns:
     response_nonempty: true
     timeout_s: 180
     settle_s: 50
-- user: Check screen 4's state — tell me its layout.
+- user: Check screen {real_screen}'s state — tell me its layout.
   expect:
     calls_any:
     - vcast_list
@@ -46,7 +46,7 @@ turns:
     - -26.2041
     - 28.0473
     - 60
-    gev_screen: 4
+    gev_screen: "{real_screen}"
     call_args_contain:
       vcast_say:
       - - Johannesburg
@@ -67,7 +67,7 @@ turns:
     - -33.9249
     - 18.4241
     - 60
-    gev_screen: 4
+    gev_screen: "{real_screen}"
     call_args_contain:
       vcast_say:
       - - Cape Town
@@ -89,7 +89,7 @@ turns:
     - -33.0965
     - 18.0299
     - 40
-    gev_screen: 4
+    gev_screen: "{real_screen}"
     call_args_contain:
       vcast_say:
       - - Langebaan
@@ -98,13 +98,13 @@ turns:
     settle_s: 16
     no_failed_result:
     - gev_command
-- user: Snapshot screen 4 — I want to see the map with the floating camera window.
+- user: Snapshot screen {real_screen} — I want to see the map with the floating camera window.
   expect:
     calls_any:
     - vcast_snapshot
     timeout_s: 120
     settle_s: 10
-- user: Done — clear screen 4 back to idle.
+- user: Done — clear screen {real_screen} back to idle.
   expect:
     calls_any:
     - cast_to_screen

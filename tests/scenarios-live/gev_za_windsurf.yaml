@@ -5,7 +5,7 @@ turns:
   expect:
     timeout_s: 45
     settle_s: 4
-- user: First, stop every camera wall bound to screen 1 — check vcast_list for which
+- user: First, stop every camera wall bound to screen {real_screen} — check vcast_list for which
     zones hold it and disable them all. I want it fully idle.
   expect:
     calls_any:
@@ -14,7 +14,7 @@ turns:
     - vcast_list
     timeout_s: 120
     settle_s: 10
-- user: Put God's Eye View on screen 1, full screen.
+- user: Put God's Eye View on screen {real_screen}, full screen.
   expect:
     calls_any:
     - cast_to_screen
@@ -99,14 +99,14 @@ turns:
     settle_s: 10
     no_failed_result:
     - gev_command
-- user: Take a snapshot of screen 1 — I want to see the three spots framed.
+- user: Take a snapshot of screen {real_screen} — I want to see the three spots framed.
   expect:
     calls_any:
     - vcast_snapshot
     response_nonempty: true
     timeout_s: 90
     settle_s: 8
-- user: Done — clear screen 1 back to idle.
+- user: Done — clear screen {real_screen} back to idle.
   expect:
     calls_any:
     - cast_to_screen

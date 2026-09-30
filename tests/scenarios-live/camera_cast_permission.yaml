@@ -18,12 +18,12 @@
 name: camera_cast_permission
 tier: full
 
-# The wall must actually land on screen 2 — offline target is INFRA.
+# The wall must actually land on screen {real_screen} — offline target is INFRA.
 preflight:
-  - {check: vcast_online, screens: [2]}
+  - {check: vcast_online, screens: ["{real_screen}"]}
 
 turns:
-  - user: "Ada, put the guardhouse CCTV camera wall on screen 2."
+  - user: "Ada, put the guardhouse CCTV camera wall on screen {real_screen}."
     expect:
       # explicit ask -> direct start; she should still SAY what's running
       calls_any: [cctv_wall, cctv_snapshot, cast_to_screen]
@@ -57,7 +57,7 @@ turns:
       timeout_s: 60
       settle_s: 5
   # teardown — exercises the stop path too
-  - user: "Now stop the camera on screen 2 and clear the screen."
+  - user: "Now stop the camera on screen {real_screen} and clear the screen."
     expect:
       calls_any: [cast_to_screen, cctv_snapshot, ada_camera_snapshot, cctv_wall]
       response_nonempty: true

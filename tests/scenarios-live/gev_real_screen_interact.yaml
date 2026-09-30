@@ -1,12 +1,12 @@
-name: gev_screen4_interact
+name: gev_real_screen_interact
 tier: full
 turns:
-- user: Put God's Eye View on screen 4 for me.
+- user: Put God's Eye View on screen {real_screen} for me.
   expect:
     response_nonempty: true
     timeout_s: 90
     settle_s: 8
-- user: Yes, go ahead — screen 4 is fine to use.
+- user: Yes, go ahead — screen {real_screen} is fine to use.
   expect:
     result_not_contains:
     - denied

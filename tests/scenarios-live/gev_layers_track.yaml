@@ -1,12 +1,12 @@
 name: gev_layers_track
 tier: full
 turns:
-- user: Put God's Eye View on screen 4.
+- user: Put God's Eye View on screen {real_screen}.
   expect:
     response_nonempty: true
     timeout_s: 90
     settle_s: 8
-- user: Yes — replace whatever is on screen 4 with God's Eye View.
+- user: Yes — replace whatever is on screen {real_screen} with God's Eye View.
   expect:
     calls_any:
     - cast_to_screen
@@ -45,7 +45,7 @@ turns:
     settle_s: 10
     no_failed_result:
     - gev_command
-- user: Show me — what's literally on screen 4 right now? Take a snapshot.
+- user: Show me — what's literally on screen {real_screen} right now? Take a snapshot.
   expect:
     calls_any:
     - vcast_snapshot
@@ -58,7 +58,7 @@ turns:
     settle_s: 10
     no_failed_result:
     - gev_command
-- user: Turn the flights layer off and take GEV off screen 4.
+- user: Turn the flights layer off and take GEV off screen {real_screen}.
   expect:
     calls_any:
     - gev_command
