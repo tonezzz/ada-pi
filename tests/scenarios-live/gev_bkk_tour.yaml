@@ -1,80 +1,77 @@
-# GEV Bangkok fly-over + traffic-cam popup + narrated (screen 4).
-#   split screen (GEV left / cam pane right) -> fly Bangkok -> nearest
-#   traffic camera still -> cast it to the right pane -> narrate on the
-#   display -> visual verify -> cleanup
-# tier: full — actuates a real display.
 name: gev_bkk_tour
 tier: full
 turns:
-  - user: "Hi Ada."
-    expect:
-      timeout_s: 45
-      settle_s: 4
-
-  - user: "First, stop the camera walls bound to screen 4 — the traffic and rama9 zones. I want it fully idle."
-    expect:
-      calls_any: [cctv_wall, cast_to_screen]
-      timeout_s: 120
-      settle_s: 10
-      # traffic+rama9 zones hold a screen-4 binding and re-assert the wall
-      # over any split layout — release the binding before the tour
-
-  - user: "Split screen 4 into two panes — God's Eye View on the left, and I'll put camera pictures on the right."
-    expect:
-      response_nonempty: true
-      timeout_s: 120
-      settle_s: 8
-      # screen may be busy — she proposes, next turn affirms
-
-  - user: "Yes — do the split and put God's Eye View on the left pane."
-    expect:
-      calls_any: [cast_to_screen]
-      response_nonempty: true
-      timeout_s: 120
-      settle_s: 25   # Cesium init
-
-  - user: "Fly the map into Bangkok — right over the city."
-    expect:
-      calls_any: [gev_command]
-      result_contains: ['delivered']
-      result_not_contains: ['gev command relay', 'no GEV clients',
-                            '"ok": false', '\\"ok\\": false']
-      response_nonempty: true
-      timeout_s: 120
-      settle_s: 12
-
-  - user: "Put the traffic camera wall on the right pane — the rama9 zone."
-    expect:
-      calls_any: [cast_to_screen, cctv_wall]
-      timeout_s: 120
-      settle_s: 12
-      # the camwall page is puller-refreshed — always alive, unlike the
-      # per-cam iTIC snap path which is flaky
-
-  - user: "Grab one live frame from any Bangkok camera you can — try a couple if needed."
-    expect:
-      calls_any: [traffic_camera]
-      timeout_s: 150
-      settle_s: 12
-      # feed may be suspended — she should try honestly; no hard pass on it
-
-  - user: "Say what you see — narrate it on that screen, out loud."
-    expect:
-      calls_any: [vcast_say]
-      timeout_s: 90
-      settle_s: 8
-      # narrate-only: the tool call IS the reply — no transcript needed
-
-  - user: "Take a snapshot of screen 4 so I can check both panes."
-    expect:
-      calls_any: [vcast_snapshot]
-      response_nonempty: true
-      timeout_s: 90
-      settle_s: 8
-
-  - user: "All done — clear screen 4 completely."
-    expect:
-      calls_any: [cast_to_screen]
-      response_nonempty: true
-      timeout_s: 90
-      settle_s: 8
+- user: Hi Ada.
+  expect:
+    timeout_s: 45
+    settle_s: 4
+- user: First, stop the camera walls bound to screen 4 — the traffic and rama9 zones.
+    I want it fully idle.
+  expect:
+    calls_any:
+    - cctv_wall
+    - cast_to_screen
+    timeout_s: 120
+    settle_s: 10
+- user: Split screen 4 into two panes — God's Eye View on the left, and I'll put camera
+    pictures on the right.
+  expect:
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 8
+- user: Yes — do the split and put God's Eye View on the left pane.
+  expect:
+    calls_any:
+    - cast_to_screen
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 25
+- user: Fly the map into Bangkok — right over the city.
+  expect:
+    calls_any:
+    - gev_command
+    result_contains:
+    - delivered
+    result_not_contains:
+    - gev command relay
+    - no GEV clients
+    - '"ok": false'
+    - '\\"ok\\": false'
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 12
+    no_failed_result:
+    - gev_command
+- user: Put the traffic camera wall on the right pane — the rama9 zone.
+  expect:
+    calls_any:
+    - cast_to_screen
+    - cctv_wall
+    timeout_s: 120
+    settle_s: 12
+- user: Grab one live frame from any Bangkok camera you can — try a couple if needed.
+  expect:
+    calls_any:
+    - traffic_camera
+    timeout_s: 150
+    settle_s: 12
+- user: Say what you see — narrate it on that screen, out loud.
+  expect:
+    calls_any:
+    - vcast_say
+    timeout_s: 90
+    settle_s: 8
+- user: Take a snapshot of screen 4 so I can check both panes.
+  expect:
+    calls_any:
+    - vcast_snapshot
+    response_nonempty: true
+    timeout_s: 90
+    settle_s: 8
+- user: All done — clear screen 4 completely.
+  expect:
+    calls_any:
+    - cast_to_screen
+    response_nonempty: true
+    timeout_s: 90
+    settle_s: 8

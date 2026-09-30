@@ -1,18 +1,17 @@
-# GEV cast + Ada control — the target flow.
-#   cast_to_screen nav /apps/gev/  ->  screen shows the globe
-#   gev_command fly_to_location    ->  globe flies
-# Requires: gev-gemini bridge with /command relay deployed (Caddy
-# /apps/gev-cmd/* -> 127.0.0.1:8790) and a vcast screen online.
 name: gev_cast_control
 tier: full
 turns:
-  - user: Cast God's Eye View to screen 9.
-    expect:
-      calls_any: [cast_to_screen]
-      timeout_s: 120
-      settle_s: 15
-  - user: Fly the map to Bangkok.
-    expect:
-      calls_any: [gev_command]
-      timeout_s: 90
-      settle_s: 15
+- user: Cast God's Eye View to screen 9.
+  expect:
+    calls_any:
+    - cast_to_screen
+    timeout_s: 120
+    settle_s: 15
+- user: Fly the map to Bangkok.
+  expect:
+    calls_any:
+    - gev_command
+    timeout_s: 90
+    settle_s: 15
+    no_failed_result:
+    - gev_command

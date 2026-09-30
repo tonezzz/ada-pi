@@ -1,67 +1,109 @@
-# Bangkok tour — GEV fullscreen + floating CCTV picture-in-picture
-# top-right (layout mode='pip'). Same cam stops as gev_tour_report, but
-# the floating pane tracks the current stop's own camera — the picture
-# matches the map position. Narrations carry area + camera context.
-# tier: full — actuates a real display.
 name: gev_bkk_pip
 tier: full
 turns:
-  - user: "Hi Ada."
-    expect:
-      timeout_s: 45
-      settle_s: 4
-
-  - user: "First, stop the camera walls bound to screen 4 — the traffic and rama9 zones. I want it fully idle."
-    expect:
-      calls_any: [cctv_wall, cast_to_screen]
-      timeout_s: 120
-      settle_s: 10
-
-  - user: "Put God's Eye View fullscreen on screen 4 with a floating camera window pinned top-right — picture-in-picture — start it on the rama9 camera zone."
-    expect:
-      calls_any: [cast_to_screen, cctv_wall]
-      response_nonempty: true
-      timeout_s: 180
-      settle_s: 50   # pip layout + Cesium cold-load + wall thumbs
-
-  # stop 1 — Pracha Niwet (its own frame on the pip pane)
-  - user: "Tour stop 1: fly the map to 13.8399, 100.5412 — the Pracha Niwet intersection in north Bangkok. Then swap the floating window to this camera: https://tony-dell.taila0626a.ts.net/apps/camwall/data/traffic/itic---pracha-niwet-intersection--bangkok.jpg — and narrate it properly on the screen: where we are, what this camera looks at, and what the frame shows right now."
-    expect:
-      calls_any: [gev_command, cast_to_screen]
-      no_unattempted_refusal: [gev_command, cast_to_screen]
-      result_not_contains: ['gev command relay', 'no GEV clients']
-      gev_view_near: [13.8399, 100.5412, 15]
-      gev_screen: 4
-      call_args_contain: {vcast_say: ['ประชานิเวศน์']}
-      timeout_s: 240
-      settle_s: 18
-
-  # stop 2 — Rama 4 expressway interchange
-  - user: "Stop 2: fly to 13.7226, 100.5533 — the Rama 4 expressway interchange downtown. Point the floating window at this camera: https://tony-dell.taila0626a.ts.net/apps/camwall/data/traffic/itic---expressway--rama-4-interchange.jpg — narrate it: the junction, the expressway, what the frame is showing."
-    expect:
-      calls_any: [gev_command, cast_to_screen]
-      no_unattempted_refusal: [gev_command, cast_to_screen]
-      result_not_contains: ['gev command relay', 'no GEV clients']
-      gev_view_near: [13.7226, 100.5533, 15]
-      gev_screen: 4
-      call_args_contain: {vcast_say: [['พระราม', 'Rama']]}
-      timeout_s: 240
-      settle_s: 18
-
-  # stop 3 — Burapha Withi km0
-  - user: "Last stop: fly to 13.6689, 100.6292 — the Burapha Withi expressway at Bang Na km zero. Put this camera in the floating window: https://tony-dell.taila0626a.ts.net/apps/camwall/data/burapha/%E0%B8%97%E0%B8%B2%E0%B8%87%E0%B8%9E-%E0%B9%80%E0%B8%A8%E0%B8%A9%E0%B8%9A-%E0%B8%A3%E0%B8%9E%E0%B8%B2%E0%B8%A7-%E0%B8%96----bangna-trat-km-0--east.jpg — narrate it, then tell me we're done."
-    expect:
-      calls_any: [gev_command, cast_to_screen]
-      no_unattempted_refusal: [gev_command, cast_to_screen]
-      result_not_contains: ['gev command relay', 'no GEV clients']
-      gev_view_near: [13.6689, 100.6292, 15]
-      gev_screen: 4
-      call_args_contain: {vcast_say: [['บูรพา', 'บางนา', 'Bang Na']]}
-      timeout_s: 240
-      settle_s: 18
-
-  - user: "Snapshot screen 4, then clear it back to idle."
-    expect:
-      calls_any: [vcast_snapshot]
-      timeout_s: 120
-      settle_s: 10
+- user: Hi Ada.
+  expect:
+    timeout_s: 45
+    settle_s: 4
+- user: First, stop the camera walls bound to screen 4 — the traffic and rama9 zones.
+    I want it fully idle.
+  expect:
+    calls_any:
+    - cctv_wall
+    - cast_to_screen
+    timeout_s: 120
+    settle_s: 10
+- user: Put God's Eye View fullscreen on screen 4 with a floating camera window pinned
+    top-right — picture-in-picture — start it on the rama9 camera zone.
+  expect:
+    calls_any:
+    - cast_to_screen
+    - cctv_wall
+    response_nonempty: true
+    timeout_s: 180
+    settle_s: 50
+- user: 'Tour stop 1: fly the map to 13.8399, 100.5412 — the Pracha Niwet intersection
+    in north Bangkok. Then swap the floating window to this camera: https://tony-dell.taila0626a.ts.net/apps/camwall/data/traffic/itic---pracha-niwet-intersection--bangkok.jpg
+    — and narrate it properly on the screen: where we are, what this camera looks
+    at, and what the frame shows right now.'
+  expect:
+    calls_any:
+    - gev_command
+    - cast_to_screen
+    no_unattempted_refusal:
+    - gev_command
+    - cast_to_screen
+    result_not_contains:
+    - gev command relay
+    - no GEV clients
+    gev_view_near:
+    - 13.8399
+    - 100.5412
+    - 15
+    gev_screen: 4
+    call_args_contain:
+      vcast_say:
+      - ประชานิเวศน์
+    timeout_s: 240
+    settle_s: 18
+    no_failed_result:
+    - gev_command
+- user: 'Stop 2: fly to 13.7226, 100.5533 — the Rama 4 expressway interchange downtown.
+    Point the floating window at this camera: https://tony-dell.taila0626a.ts.net/apps/camwall/data/traffic/itic---expressway--rama-4-interchange.jpg
+    — narrate it: the junction, the expressway, what the frame is showing.'
+  expect:
+    calls_any:
+    - gev_command
+    - cast_to_screen
+    no_unattempted_refusal:
+    - gev_command
+    - cast_to_screen
+    result_not_contains:
+    - gev command relay
+    - no GEV clients
+    gev_view_near:
+    - 13.7226
+    - 100.5533
+    - 15
+    gev_screen: 4
+    call_args_contain:
+      vcast_say:
+      - - พระราม
+        - Rama
+    timeout_s: 240
+    settle_s: 18
+    no_failed_result:
+    - gev_command
+- user: 'Last stop: fly to 13.6689, 100.6292 — the Burapha Withi expressway at Bang
+    Na km zero. Put this camera in the floating window: https://tony-dell.taila0626a.ts.net/apps/camwall/data/burapha/%E0%B8%97%E0%B8%B2%E0%B8%87%E0%B8%9E-%E0%B9%80%E0%B8%A8%E0%B8%A9%E0%B8%9A-%E0%B8%A3%E0%B8%9E%E0%B8%B2%E0%B8%A7-%E0%B8%96----bangna-trat-km-0--east.jpg
+    — narrate it, then tell me we''re done.'
+  expect:
+    calls_any:
+    - gev_command
+    - cast_to_screen
+    no_unattempted_refusal:
+    - gev_command
+    - cast_to_screen
+    result_not_contains:
+    - gev command relay
+    - no GEV clients
+    gev_view_near:
+    - 13.6689
+    - 100.6292
+    - 15
+    gev_screen: 4
+    call_args_contain:
+      vcast_say:
+      - - บูรพา
+        - บางนา
+        - Bang Na
+    timeout_s: 240
+    settle_s: 18
+    no_failed_result:
+    - gev_command
+- user: Snapshot screen 4, then clear it back to idle.
+  expect:
+    calls_any:
+    - vcast_snapshot
+    timeout_s: 120
+    settle_s: 10
