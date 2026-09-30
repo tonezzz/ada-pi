@@ -1,0 +1,51 @@
+name: drive-browse
+tier: smoke
+# Drive tools end-to-end (2026-09-30): search -> get -> show-on-screen via
+# the doc-archive /v1/drive endpoints + minted media tokens.
+#
+# What this exercises:
+#   1. Routing — "google drive" utterances must reach drive_search, not
+#      ada_doc_search (archive slugs) or home devices
+#   2. Carry-through — the file_id from turn 1 must survive into the
+#      drive_show call in turn 2
+#   3. Cast — drive_show picks image/play/nav from mimeType and casts to
+#      the caller's screen (owner-locked; admin session passes)
+#
+# Read-only + cast — smoke tier, leaves an image on the target screen.
+#
+# Run on idc01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/drive_browse.yaml --url ws://127.0.0.1:8002/ws \
+#   --api-key "$ADA_API_KEY"
+
+turns:
+  - user: "Find a photo on my Google Drive — any jpeg is fine"
+    expect:
+      timeout_s: 100
+      settle_s: 10
+      calls_any: [drive_search]
+      result_contains: ["image/jpeg"]
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - drive_search
+        - drive_get
+      response_contains_any:
+        ["jpg", "jpeg", "photo", "รูป", "found", "เจอ"]
+
+  # --- show it on screen ------------------------------------------------
+  # The file_id from turn 1 must carry through; drive_show is the right
+  # tool (it picks the cast action from mimeType itself).
+  - user: "Put that photo on my screen"
+    expect:
+      timeout_s: 100
+      settle_s: 10
+      calls_any: [drive_show]
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - drive_search
+        - drive_get
+        - drive_show
+        - cast_to_screen
+      response_contains_any:
+        ["screen", "showing", "หน้าจอ", "จอ", "on"]
