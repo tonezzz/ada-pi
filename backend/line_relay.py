@@ -254,7 +254,7 @@ class LineRelay:
         """Fetch the frame, host it publicly, return LINE image messages."""
         assert self.http is not None
         try:
-            r = await self.http.get(url, timeout=60)
+            r = await self.http.get(url, timeout=120)
             if r.status_code != 200 or len(r.content) < 500:
                 raise RuntimeError(f"fetch {r.status_code} {len(r.content)}B")
             import secrets

@@ -250,7 +250,7 @@ class TgRelay:
         """Fetch image bytes (tailnet-reachable) and sendPhoto them."""
         assert self.http is not None
         try:
-            r = await self.http.get(url, timeout=60)
+            r = await self.http.get(url, timeout=120)
             if r.status_code != 200 or len(r.content) < 500:
                 raise RuntimeError(f"fetch {r.status_code} {len(r.content)}B")
             ct = r.headers.get("content-type", "image/png")
