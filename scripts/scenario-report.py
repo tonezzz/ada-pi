@@ -175,6 +175,23 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
+    # Concurrent scenario runs share the Ada session and vcast screens —
+    # they contaminate each other's results (2026-09-30: hourly smoke ran
+    # during a casting suite and every casting scenario failed with 0 tool
+    # calls). Lock is a TCP bind — this runner often lives in a
+    # host-network container whose /tmp is private, so a file lock can't
+    # reach it. A suite holds the port for its whole run; a smoke tier that
+    # arrives while it's held skips cleanly instead of polluting.
+    import socket
+    _lock = socket.socket()
+    try:
+        _lock.bind(("127.0.0.1", 8199))
+    except OSError:
+        print("scenario-report: another scenario run is active — skipping "
+              "this tier entirely (its results would be invalid anyway)")
+        return 0
+    _lock.listen(1)
+
     keys = _keys(args.keys_file) if args.keys_file else {}
     driver = os.path.join(HERE, "scenario-live.py")
     results: list[tuple[str, str]] = []

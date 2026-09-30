@@ -866,7 +866,9 @@ async def main() -> int:
     _locked = False
     for _ in range(120):  # wait up to 10 min for a wedged holder
         try:
-            _lock.bind(("127.0.0.1", 8199))
+            # 8198 = per-scenario turn lock; 8199 = whole-suite lock held
+            # by scenario-benchmark/scenario-report for their full run.
+            _lock.bind(("127.0.0.1", 8198))
             _locked = True
             break
         except OSError:

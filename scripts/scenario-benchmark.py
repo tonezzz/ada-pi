@@ -173,6 +173,23 @@ def main() -> int:
                     help="also publish a markdown page to ada-cms-pages")
     args = ap.parse_args()
 
+    # One benchmark at a time per host — concurrent runs share the same
+    # Ada session and the same vcast screens, so they contaminate each
+    # other (2026-09-30: casting suite scored 0.0 while the hourly smoke
+    # tier held the session; every scenario failed with 0 tool calls).
+    # Lock is a TCP bind — the smoke tier runs in a host-network container
+    # whose /tmp is private, so a file lock can't reach it; a port can.
+    import socket
+    _lock = socket.socket()
+    try:
+        _lock.bind(("127.0.0.1", 8199))
+    except OSError:
+        print("another scenario benchmark is already running — refusing "
+              "(concurrent suites share the Ada session and corrupt each "
+              "other's results)")
+        return 2
+    _lock.listen(1)
+
     bench = _load()
     policy = bench.get("policy") or {}
     required = set(policy.get("required_first_try") or [])
