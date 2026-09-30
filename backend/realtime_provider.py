@@ -1375,6 +1375,10 @@ class GeminiLiveProvider(RealtimeProvider):
         except LookupError as exc:
             return ({"error": str(exc)}, None)
         except Exception as exc:
+            # wait_for cancels the shim call; TimeoutError() is empty —
+            # name it so logs and the stale-frame fallback carry a cause.
+            if isinstance(exc, asyncio.TimeoutError):
+                exc = TimeoutError("vms-snap did not return within 45s")
             logger.warning("session=%s camera snapshot failed: %s",
                            self.session_id, exc)
             # Guaranteed-image contract: serve the last-known frame from the
