@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 
-from backend import chaba_memory, tools_loader, voice_config, vms_camera
+from backend import chaba_memory, tools_loader, voice_config, vms_camera, vision_describe
 from backend.instance import ada_instance_id
 from backend.conversation_memory import ConversationMemory
 from backend.tool_runner import (
@@ -5133,18 +5133,39 @@ class GeminiLiveProvider(RealtimeProvider):
                     # pattern as send_habit_alert) — FunctionResponse.parts
                     # crashes send_tool_response's json.dumps on bytes.
                     for cam_name, cam_img, cam_mime in camera_frames:
+                        # Vision sidecar (ADA_VISION_MODE): a cheap model
+                        # describes the frame so the Live session doesn't
+                        # have to — quota storms stall hardest on image
+                        # turns (2026-09-30 empty-response issue).
+                        desc = None
+                        if vision_describe.configured():
+                            try:
+                                desc = await vision_describe.describe_frame(
+                                    cam_img, cam_mime, cam_name)
+                            except Exception:
+                                desc = None
                         try:
+                            if desc and vision_describe.mode() == "describe":
+                                parts = [types.Part.from_text(text=(
+                                    f"Camera frame from '{cam_name}' was "
+                                    "analyzed by the vision helper (the live "
+                                    "session skipped the image to save quota). "
+                                    f"Helper says: {desc}\nRelay this to the "
+                                    "user naturally — if the description seems "
+                                    "thin, you may look again on request."))]
+                            else:
+                                parts = [types.Part.from_text(text=(
+                                    f"Camera frame from '{cam_name}' "
+                                    "just arrived — describe to the user "
+                                    "what it shows."
+                                    + (f" (helper agrees: {desc})"
+                                       if desc else "")))]
+                                parts.append(types.Part.from_bytes(
+                                    data=cam_img, mime_type=cam_mime))
                             async with self._send_lock:
                                 await self._session.send_client_content(
-                                    turns=types.Content(role="user", parts=[
-                                        types.Part.from_text(text=(
-                                            f"Camera frame from '{cam_name}' "
-                                            "just arrived — describe to the user "
-                                            "what it shows.")),
-                                        types.Part.from_bytes(
-                                            data=cam_img,
-                                            mime_type=cam_mime),
-                                    ]),
+                                    turns=types.Content(
+                                        role="user", parts=parts),
                                     turn_complete=True,
                                 )
                         except Exception as exc:
