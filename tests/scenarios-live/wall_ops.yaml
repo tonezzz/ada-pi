@@ -35,6 +35,10 @@ turns:
       # the relay's stored zone settings are ground truth
       or_state: {camwall_settings: {rama9: {interval: 30}}}
       response_nonempty: true
+      # must not claim inability while the settings call actually lands —
+      # observed 2026-09-30: "ไม่สามารถ ปรับ ช่วงเวลา อัปเดต ได้" then the
+      # write succeeded anyway
+      response_not_contains: ["ไม่สามารถ", "can't", "cannot", "unable to"]
       timeout_s: 90
       settle_s: 6
 
