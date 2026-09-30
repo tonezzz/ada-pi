@@ -2332,6 +2332,32 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "vcast_gesture",
+                    "description": (
+                        "Enable/disable gesture control on a numbered vcast display — the screen's own "
+                        "camera watches for motion. mode='room' = wake-on-motion (a wave or movement "
+                        "in front of the screen wakes it and sends a gesture-wake event), "
+                        "mode='hand' = hand tracking (MediaPipe, on capable displays), "
+                        "'off' stops it. The display reports its actual capability — if the camera is "
+                        "denied or the mode isn't built it answers honestly via its state."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "screen": {
+                                "type": "integer",
+                                "description": "Screen number (the # shown on the display and in vcast_list).",
+                            },
+                            "mode": {
+                                "type": "string",
+                                "description": "off | room | hand (default off).",
+                            },
+                        },
+                        "required": ["screen"],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "cctv_wall",
                     "description": (
                         "Show the live camera wall on a vcast display — a grid of periodic thumbnails "

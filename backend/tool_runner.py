@@ -3485,6 +3485,42 @@ class ToolRunner:
             pass
         return out
 
+    async def vcast_gesture(self, screen: int | None = None,
+                            mode: str = "off") -> dict[str, Any]:
+        """Toggle gesture control on a vcast display — publishes a
+        {type:gesture, mode} command into the screen's room. The display
+        acks via its reported state (gesture:<mode> on success, an
+        error state if the camera or mode is unavailable)."""
+        import asyncio
+        if screen is None:
+            return {"error": "screen required — call vcast_list"}
+        mode = str(mode or "off").lower()
+        if mode not in ("off", "room", "hand"):
+            return {"error": "mode must be off|room|hand"}
+        out = await asyncio.to_thread(
+            self._vcast_api, "/pub",
+            {"screen": screen, "msg": {"type": "gesture", "mode": mode}})
+        if not out.get("ok"):
+            return {"ok": False, "screen": screen, "error": out.get("error")
+                    or "publish failed"}
+        res = {"ok": True, "screen": screen, "mode": mode,
+               "delivered": out.get("delivered", 0)}
+        if not res["delivered"]:
+            res["warning"] = ("screen connected but nothing delivered — "
+                              "check vcast_list")
+        # give the page a beat to report its new state, then echo it back
+        await asyncio.sleep(1.5)
+        try:
+            data = await asyncio.to_thread(self._vcast_api, "/displays")
+            s = next((x for x in data.get("screens", [])
+                      if x.get("screen") == screen), None)
+            if s:
+                res["screen_state"] = s.get("state")
+                res["screen_detail"] = s.get("state_detail")
+        except Exception:
+            pass
+        return res
+
     async def gev_command(self, name: str, args: dict[str, Any] | None = None,
                           screen: int | None = None,
                           pane: int | None = None,
