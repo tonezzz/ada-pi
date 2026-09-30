@@ -1,0 +1,111 @@
+# GEV showcase: user drives a "wow" demo on the real browser display —
+# clean interface, then live entity tracking: a ship (AIS), a satellite,
+# an aircraft, and finally the aircraft's Cockpit view. Each turn must
+# land a gev_command on the real screen — no phantom "it's showing".
+name: gev_showcase
+tier: full
+preflight:
+  vcast_online:
+    screens: ["{real_screen}"]
+turns:
+- user: >-
+    Put God's Eye View on screen {real_screen} and give me a clean
+    view — hide the HUD and panels, just the map.
+  expect:
+    calls_any:
+    - gev_command
+    - cast_to_screen
+    result_not_contains:
+    - gev command relay
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 15
+    no_failed_result:
+    - gev_command
+- user: >-
+    Show me a ship — track a vessel, any vessel that's live right
+    now.
+  expect:
+    calls_any:
+    - gev_command
+    result_contains:
+    - delivered
+    result_not_contains:
+    - '"delivered": 0'
+    - '\\"delivered\\": 0'
+    - no GEV clients
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 15
+    no_failed_result:
+    - gev_command
+- user: Now find me a satellite — the ISS if it's up.
+  expect:
+    calls_any:
+    - gev_command
+    result_contains:
+    - delivered
+    result_not_contains:
+    - '"delivered": 0'
+    - '\\"delivered\\": 0'
+    - no GEV clients
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 15
+    no_failed_result:
+    - gev_command
+- user: >-
+    Pick an airplane near Bangkok and inspect it — track it and get
+    me close to it.
+  expect:
+    calls_any:
+    - gev_command
+    result_contains:
+    - delivered
+    result_not_contains:
+    - '"delivered": 0'
+    - '\\"delivered\\": 0'
+    - no GEV clients
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 15
+    no_failed_result:
+    - gev_command
+- user: Now take me inside it — cockpit view.
+  expect:
+    calls_any:
+    - gev_command
+    result_contains:
+    - delivered
+    result_not_contains:
+    - '"delivered": 0'
+    - '\\"delivered\\": 0'
+    - no GEV clients
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 15
+    no_failed_result:
+    - gev_command
+- user: Good — exit the cockpit and pull back out to the whole globe.
+  expect:
+    calls_any:
+    - gev_command
+    result_contains:
+    - delivered
+    result_not_contains:
+    - '"delivered": 0'
+    - '\\"delivered\\": 0'
+    - no GEV clients
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 15
+    no_failed_result:
+    - gev_command
+- user: Done — take it off the screen.
+  expect:
+    calls_any:
+    - cast_to_screen
+    - vcast_screen_cast
+    response_nonempty: true
+    timeout_s: 90
+    settle_s: 12

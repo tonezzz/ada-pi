@@ -3327,6 +3327,18 @@ class ToolRunner:
         "xiaomi_c100": "xiaomi_c100_hd", "xiaomi_c100_hd": "xiaomi_c100_hd",
         "xiaomi_c201_sd": "xiaomi_c201", "xiaomi_c100_sd": "xiaomi_c100",
     }
+    _YT_CAMS = {
+        # YouTube live "cameras" — a single frame is grabbed server-side
+        # by ~/.local/bin/yt-frame.sh on ADA_CCTV_SSH (yt-dlp + ffmpeg),
+        # published as a relay asset, shown as a plain image. Easier and
+        # more reliable than an iframe for feeds like safari cams.
+        "safari": "https://www.youtube.com/watch?v=ydYDqZQpim8",
+        "africam": "https://www.youtube.com/watch?v=ydYDqZQpim8",
+        "namibia": "https://www.youtube.com/watch?v=ydYDqZQpim8",
+        "namib": "https://www.youtube.com/watch?v=ydYDqZQpim8",
+        "namib desert": "https://www.youtube.com/watch?v=ydYDqZQpim8",
+        "watering hole": "https://www.youtube.com/watch?v=ydYDqZQpim8",
+    }
 
     @staticmethod
     def _vms_publish(camera: str) -> dict[str, Any]:
@@ -3378,6 +3390,38 @@ class ToolRunner:
             return {"ok": False, "error": f"VMS snapshot failed: {exc}"}
 
     @staticmethod
+    def _yt_publish(camera: str, yt_url: str) -> dict[str, Any]:
+        """YouTube-live path: one frame via yt-frame.sh on ADA_CCTV_SSH,
+        published as a relay asset (same-origin /frame?token=) so the
+        vcast canvas stays clean. Returns {"ok", "url"|"error"}."""
+        import base64, subprocess, time
+        host = os.environ.get("ADA_CCTV_SSH", "tony-dell-m2m")
+        try:
+            proc = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                 host, f"~/.local/bin/yt-frame.sh '{yt_url}' /dev/stdout"],
+                capture_output=True, timeout=75)
+            jpg = proc.stdout or b""
+            if len(jpg) < 500:
+                return {"ok": False,
+                        "error": "no frame from youtube "
+                                 f"(stream offline? {proc.stderr.decode()[-160:]})"}
+            slug = "".join(c if c.isalnum() else "-"
+                           for c in camera.lower()).strip("-")
+            token = f"cam:{slug}-{int(time.time())}"
+            ToolRunner._vcast_api("/frame", {
+                "screen": 0, "token": token,
+                "data": "data:image/jpeg;base64," + base64.b64encode(jpg).decode(),
+                "state": "asset"})
+            pub = os.environ.get(
+                "VCAST_PUBLIC_API",
+                "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+            return {"ok": True, "url": f"{pub}/frame?screen=0&token={token}",
+                    "camera": camera}
+        except Exception as exc:
+            return {"ok": False, "error": f"youtube frame failed: {exc}"}
+
+    @staticmethod
     def _cctv_grab(camera: str) -> dict[str, Any]:
         """Fetch one JPEG via go2rtc on tony-dell into the HA /local/ dir.
         Falls back to the VMS shim for estate cameras (front road, pool,
@@ -3386,6 +3430,9 @@ class ToolRunner:
         import time
         src = ToolRunner._CCTV_CAMS.get(camera.strip().lower())
         if not src:
+            yt = ToolRunner._YT_CAMS.get(camera.strip().lower())
+            if yt:
+                return ToolRunner._yt_publish(camera, yt)
             # not a go2rtc home cam — try the VMS estate channel set
             return ToolRunner._vms_publish(camera)
         # Try the preferred stream, then fall back through SD/base variants —

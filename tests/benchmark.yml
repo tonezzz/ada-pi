@@ -258,6 +258,7 @@ suites:
     - gev_layers_track
     - gev_screen1_interact
     - gev_real_screen_interact
+    - gev_showcase
     - split_screen
     - camera_describe
     - traffic_camera_describe

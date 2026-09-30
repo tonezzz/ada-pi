@@ -15,7 +15,7 @@ turns:
     settle_s: 10
 - user: 'Put God''s Eye View on screen {real_screen} fullscreen, with a floating camera view pinned
     to the top-right corner — picture-in-picture style — play the Africam live safari
-    stream there: https://www.youtube.com/watch?v=ZwxMY_3XZ_A'
+    stream there: https://www.youtube.com/watch?v=ydYDqZQpim8'
   expect:
     calls_any:
     - cast_to_screen

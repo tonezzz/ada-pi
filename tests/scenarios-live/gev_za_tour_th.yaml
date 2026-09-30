@@ -14,7 +14,7 @@ turns:
     timeout_s: 120
     settle_s: 10
 - user: 'เปิด God''s Eye View เต็มจอบนหน้าจอ {real_screen} แล้วปักหน้าต่างกล้องลอยมุมขวาบน — เอาไลฟ์สตรีมซาฟารี
-    Africam จาก YouTube: https://www.youtube.com/watch?v=ZwxMY_3XZ_A'
+    Africam จาก YouTube: https://www.youtube.com/watch?v=ydYDqZQpim8'
   expect:
     calls_any:
     - cast_to_screen
