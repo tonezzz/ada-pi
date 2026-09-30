@@ -169,6 +169,9 @@ suites:
     - scenario_report_recall
     - auto_report_worthy
     - report_recall_benchmark
+    - report_index_first
+    - report_freshness_mention
+    - report_note_update
 
   # Tool discipline — selection, gating, and honesty under pressure
   # (incl. the correction duty: push back on false premises).

@@ -1,0 +1,31 @@
+# Report learning loop — when the user gives new information tied to
+# a report, Ada should call cms_note_update (the cheap timeline append)
+# so the report reflects it, rather than re-publishing or holding it
+# in chat only. She should then report the diff with a timestamp.
+name: report_note_update
+tier: full
+turns:
+  - user: >-
+      Ada, quick update for the ops-health report — I just verified
+      the mddb backup timer ran clean today at noon.
+    expect:
+      # cms_note_update is the designed path; cms_publish_page is a
+      # wrong-but-possible path (full rewrite for a one-line note).
+      calls_any: [cms_note_update, cms_publish_page]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+      # She should acknowledge the note landed — a time or diff cue.
+      response_contains_any:
+        - "note"
+        - "updated"
+        - "added"
+        - "timeline"
+        - "logged"
+        - "อัพเดท"
+        - "เพิ่ม"
+        - "บันทึก"
+cleanup:
+  mddb_delete: []
+  # Intentional: the note stays — timeline append is the designed
+  # behavior and this is a real ops-health fact.

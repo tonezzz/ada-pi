@@ -2629,11 +2629,18 @@ class ToolRunner:
             "updated": first("updated"),
         }
         # Provenance passthrough — generated pages carry these; the CMS
-        # viewer uses generated_by to offer a Regenerate control.
-        for name in ("generated_by", "report_role", "parent"):
+        # viewer uses generated_by to offer a Regenerate control. Report
+        # fields too: Ada needs summary/updated/freshness BEFORE deciding
+        # to drill deeper (the report-first ritual).
+        for name in ("generated_by", "report_role", "parent",
+                     "summary", "domain", "fresh_for", "confidence",
+                     "supersedes", "timeline"):
             v = first(name)
             if v:
                 page[name] = v
+        links = meta.get("links")
+        if isinstance(links, list) and links:
+            page["links"] = [str(x) for x in links]
         children = meta.get("children")
         if isinstance(children, list) and children:
             page["children"] = [str(c) for c in children]
@@ -2689,6 +2696,9 @@ class ToolRunner:
         summary: str = "",
         domain: str = "",
         fresh_for: str = "",
+        links: str = "",
+        supersedes: str = "",
+        confidence: str = "",
     ) -> dict[str, Any]:
         """Create or update a miniapp page. Upserts by (slug, lang) — 'en'
         and 'th' variants of the same slug coexist; the viewer toggles.
@@ -2754,6 +2764,17 @@ class ToolRunner:
             meta["domain"] = [domain.strip().lower()]
         if fresh_for.strip():
             meta["fresh_for"] = [fresh_for.strip()]
+        # Linking — comma-separated slugs this report derives from or
+        # supersedes. links = parent/child/source references; supersedes
+        # marks the older report this one replaces (staleness signal).
+        if isinstance(links, str) and links.strip():
+            meta["links"] = [x.strip() for x in links.split(",") if x.strip()]
+        elif isinstance(links, list) and links:
+            meta["links"] = [str(x).strip() for x in links if str(x).strip()]
+        if supersedes.strip():
+            meta["supersedes"] = [supersedes.strip()]
+        if confidence.strip():
+            meta["confidence"] = [confidence.strip()]
         # Timeline — append-only audit of what changed and when. Cap at 40
         # entries; visible via cms_get_page meta and the report pages.
         tl = [x for x in meta.get("timeline", []) if isinstance(x, str)]
@@ -2853,7 +2874,15 @@ class ToolRunner:
         if result is None:
             return {"status": "error", "error": "mddb write failed", "slug": slug}
         asyncio.create_task(self._cms_reports_index())
-        return {"status": "noted", "slug": slug, "timeline_entries": len(meta["timeline"])}
+        # Diff so Ada can report what changed: note text + new summary
+        # when refreshed. Times are the time-of-event stamps already in
+        # the timeline entries.
+        diff = {"note": entry}
+        if summary.strip():
+            diff["summary"] = summary.strip()[:240]
+        return {"status": "noted", "slug": slug,
+                "timeline_entries": len(meta["timeline"]),
+                "updated": now, "diff": diff}
 
     async def _cms_reports_index(self) -> None:
         """Regenerate the reports-index page — one row per report/tagged

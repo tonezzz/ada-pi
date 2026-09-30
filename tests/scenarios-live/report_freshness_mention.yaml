@@ -1,0 +1,33 @@
+# Freshness ritual — when Ada answers from a report she must state
+# when it was last updated (time-of-event) before its content, so the
+# user knows how current the claim is. ops-health is the fixture: it
+# updates every 15min and always has an `updated` timestamp.
+name: report_freshness_mention
+tier: full
+turns:
+  - user: >-
+      Ada, what's the ops health status right now? And when was that
+      report last updated?
+    expect:
+      calls_any: [cms_get_page, cms_list_pages]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+      # She must give a recency/time answer — the ritual's core claim.
+      response_contains_any:
+        - "updated"
+        - "ago"
+        - "minute"
+        - "hour"
+        - "last"
+        - "ago"
+        - "อัพเดท"
+        - "เมื่อ"
+        - "นาที"
+        - "ชั่วโมง"
+      # And actually report health state — not just the time. The
+      # time words and health words both need to appear, so we use
+      # response_contains (all must match) on a health word and
+      # response_contains_any on the recency words.
+      response_contains:
+        - "health"

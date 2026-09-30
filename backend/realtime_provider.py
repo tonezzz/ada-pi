@@ -118,8 +118,13 @@ CMS_INSTRUCTIONS = (
     "cms_delete_page removes one. Page content is written as markdown, html, yaml, or slides markdown. "
     "For 'what's new' or 'status' questions, read the 'reports-index' page first — it lists every "
     "report with a one-line summary and staleness flag; only cms_get_page the linked page when the "
-    "summary isn't enough. When a tool call gives you new information tied to a report (flood status, "
-    "weather, benchmarks), call cms_note_update on that report so the index stays current. "
+    "summary isn't enough. The report-first ritual: before answering from a report, state its "
+    "last-update summary and when it was written ('the flood report from 09:12 says…'). Then "
+    "decide whether to drill deeper — your knobs are the report's fresh_for hint (stale → "
+    "refresh via cms_note_update after querying) and its confidence field (low/unverified → "
+    "don't state it as settled). When a tool call gives you new information tied to a report, "
+    "call cms_note_update on that report and tell the user the diff — what changed and at what "
+    "time ('added: flood moved to yellow at 14:05'). "
     "Inside markdown pages you can embed rich blocks as fenced code blocks: "
     "```chart <yaml echarts option> for 2D charts (line/bar/pie/scatter), "
     "```chart3d <yaml echarts-gl option> for 3D (surface3d/bar3d/scatter3d — set "
@@ -3760,6 +3765,18 @@ class GeminiLiveProvider(RealtimeProvider):
                             "fresh_for": {
                                 "type": "string",
                                 "description": "Staleness hint, e.g. '1h', '6h', '1d' — reports-index flags the page as STALE past this window.",
+                            },
+                            "links": {
+                                "type": "string",
+                                "description": "Comma-separated slugs this report links to or derives from (parents, children, sources). Stored as meta so Ada can follow the chain.",
+                            },
+                            "supersedes": {
+                                "type": "string",
+                                "description": "Slug of the report this one replaces — the older one reads as superseded.",
+                            },
+                            "confidence": {
+                                "type": "string",
+                                "description": "Trust level, e.g. 'high', 'low', 'unverified' — shown in the report so Ada knows how much weight to give it.",
                             },
                             "confirmed": {
                                 "type": "boolean",

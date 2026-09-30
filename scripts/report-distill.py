@@ -1,0 +1,125 @@
+"""Report distill — nightly bank→report rollup for the compound-AI
+memory tier (v1: deterministic, no LLM).
+
+Scans ada-cms-pages, groups kind:report docs by meta.domain, and
+refreshes one digest page per domain (<domain>-digest) plus a
+domains-overview page. Runs after the scenario timers on idc01.
+
+Usage: python3 scripts/report-distill.py [--mddb URL]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import urllib.request
+from datetime import datetime, timezone
+
+MDDB = "http://100.74.146.0:11023/v1"
+COLLECTION = "ada-cms-pages"
+SKIP_PREFIXES = ("report-digest", "domains-overview", "reports-index")
+
+
+def _post(path: str, payload: dict, timeout: int = 60) -> dict:
+    req = urllib.request.Request(
+        MDDB + path, data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def _meta(doc: dict, name: str) -> str:
+    v = (doc.get("meta") or {}).get(name)
+    if isinstance(v, list) and v:
+        return str(v[0])
+    return str(v) if isinstance(v, str) else ""
+
+
+def _meta_list(doc: dict, name: str) -> list[str]:
+    v = (doc.get("meta") or {}).get(name)
+    return [str(x) for x in v] if isinstance(v, list) else []
+
+
+def fresh_for_seconds(hint: str) -> int | None:
+    """'30m' '1h' '6h' '1d' '7d' '30d' → seconds."""
+    u = hint.strip().lower()
+    if not u:
+        return None
+    mult = {"m": 60, "h": 3600, "d": 86400}
+    if u[-1] in mult and u[:-1].isdigit():
+        return int(u[:-1]) * mult[u[-1]]
+    return None
+
+
+def is_stale(doc: dict) -> bool:
+    ttl = fresh_for_seconds(_meta(doc, "fresh_for"))
+    if ttl is None:
+        return False
+    try:
+        up = datetime.fromisoformat(_meta(doc, "updated").replace("Z", "+00:00"))
+        return (datetime.now(timezone.utc) - up).total_seconds() > ttl
+    except (ValueError, TypeError):
+        return False
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mddb", default=MDDB)
+    args = ap.parse_args()
+    globals()["MDDB"] = args.mddb
+
+    res = _post("/search", {"collection": COLLECTION, "limit": 400})
+    docs = res if isinstance(res, list) else (res.get("documents") or [])
+    now = datetime.now(timezone.utc)
+    by_domain: dict[str, list[dict]] = {}
+    for d in docs:
+        slug = _meta(d, "slug") or d.get("key", "")
+        if not slug or slug.startswith(SKIP_PREFIXES):
+            continue
+        if _meta(d, "kind") not in ("report", "page"):
+            continue
+        dom = _meta(d, "domain") or "uncategorized"
+        by_domain.setdefault(dom, []).append(d)
+
+    # one digest page per domain
+    n_domains = 0
+    for dom, ds in sorted(by_domain.items()):
+        ds.sort(key=lambda d: _meta(d, "updated"), reverse=True)
+        stale = [d for d in ds if is_stale(d)]
+        lines = [f"# {dom} digest — {now:%Y-%m-%d %H:%M}Z", "",
+                 f"{len(ds)} reports, {len(stale)} stale.", ""]
+        for d in ds:
+            slug = _meta(d, "slug") or d.get("key")
+            flag = " ⚠STALE" if is_stale(d) else ""
+            conf = _meta(d, "confidence")
+            conf_s = f" [{conf}]" if conf else ""
+            links = ", ".join(_meta_list(d, "links"))
+            links_s = f" → {links}" if links else ""
+            lines.append(
+                f"- **{_meta(d,'title') or slug}** (`{slug}`){flag}{conf_s}"
+                f" — {_meta(d,'summary') or '—'} "
+                f"({_meta(d,'updated')[:16]}){links_s}")
+        lines += ["", "## Timeline", "",
+                  f"- {now.isoformat(timespec='seconds')[:16]} "
+                  f"digest refreshed: {len(ds)} reports, {len(stale)} stale"]
+        meta = {"kind": ["report"], "slug": [f"{dom}-digest"],
+                "title": [f"{dom.title()} digest"], "domain": [dom],
+                "format": ["markdown"], "lang": ["en"],
+                "summary": [f"{len(ds)} {dom} reports, {len(stale)} stale"],
+                "fresh_for": ["1d"],
+                "links": [_meta(d, "slug") or d.get("key") for d in ds[:20]],
+                "generated_by": ["report-distill"],
+                "updated": [now.isoformat(timespec="seconds")],
+                "timeline": [f"{now.isoformat(timespec='seconds')[:16]} digest: {len(ds)} reports"]}
+        _post("/add", {"collection": COLLECTION, "key": f"{dom}-digest",
+                       "lang": "en",
+                       "contentMd": "\n".join(lines), "meta": meta})
+        n_domains += 1
+        print(f"{dom}: {len(ds)} reports ({len(stale)} stale) → {dom}-digest")
+
+    print(f"done — {n_domains} domain digests")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

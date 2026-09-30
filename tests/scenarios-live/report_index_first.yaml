@@ -1,0 +1,25 @@
+# Report-first answering — Ada should answer "what reports exist /
+# what changed lately" from the reports-index page (one summary per
+# report) instead of deep-querying or guessing. The probe question is
+# deliberately index-shaped.
+name: report_index_first
+tier: full
+turns:
+  - user: >-
+      Ada, what reports do you have? Give me a quick list — summaries
+      only, don't open each one.
+    expect:
+      # She should read reports-index (via cms_get_page or cms_list_pages)
+      calls_any: [cms_get_page, cms_list_pages]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+      # A correct answer names at least one real report slug/topic —
+      # not "I don't have reports". These are stable index entries.
+      response_contains_any:
+        - "report"
+        - "health"
+        - "flood"
+        - "bench"
+        - "index"
+        - "รายงาน"
