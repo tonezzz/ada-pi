@@ -1446,17 +1446,28 @@ class GeminiLiveProvider(RealtimeProvider):
             return ({"error": cams[0]["title"] +
                               " — the feed currently has live frames for "
                               "Bangkok and Nonthaburi cams only."}, None)
-        # ~half the live-flagged cams still return dead frames — walk the
-        # ranked list until one produces a real image
+        # ~half the live-flagged cams still return dead frames — snap the
+        # top candidates concurrently with a hard budget, then take the
+        # best-ranked success. Sequential tries with 20s timeouts stalled
+        # a turn for 40-160s whenever a feed segment went dark.
+        cands = cams[:4]
+        try:
+            snaps = await asyncio.wait_for(
+                asyncio.gather(*(
+                    asyncio.to_thread(tc.snap, c, 10) for c in cands),
+                    return_exceptions=True),
+                timeout=30)
+        except asyncio.TimeoutError:
+            return ({"error": "traffic camera feed timed out — it is "
+                              "responding very slowly right now; try "
+                              "again in a minute."}, None)
         cam = jpeg = mime = None
         dead = []
-        for cand in cams[:4]:
-            try:
-                jpeg, mime = await asyncio.to_thread(tc.snap, cand)
-                cam = cand
+        for cand, res in zip(cands, snaps):
+            if isinstance(res, tuple) and res[0]:
+                cam, jpeg, mime = cand, res[0], res[1]
                 break
-            except Exception:
-                dead.append(cand["title"][:60])
+            dead.append(cand["title"][:60])
         if cam is None:
             return ({"error": f"{len(dead)} matched camera(s) returned no usable "
                               f"frame ({', '.join(dead)}). The feed marks many "
