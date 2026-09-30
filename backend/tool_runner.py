@@ -929,8 +929,39 @@ class ToolRunner:
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
         result = await method(**call_args)
+        self._log_change_request(name, call_args, result, ident)
         result = self._denial_breaker(name, call_args, result)
         return await self._capture_reminder(name, result)
+
+    # User-visible state changes Ada applies herself. Transient home
+    # controls (lights, media) and memory-bank writes are deliberately
+    # excluded — noisy, and already tracked elsewhere.
+    _CHANGE_LOG_TOOLS = {
+        "cms_publish_page", "cms_delete_page", "cms_note_update",
+        "cms_automation", "ada_doc_archive", "ada_forget",
+        "ada_ha_set_device_confidence", "devin_dispatch",
+        "devin_followup", "devin_answer", "devin_job_report",
+    }
+
+    def _log_change_request(self, name: str, args: dict[str, Any],
+                            result: Any, ident: Any) -> None:
+        """Mirror every applied system change into the Ada events feed
+        (events.md -> ada-review -> Devin memory render) so changes Tony
+        asks Ada for vocally reach Devin sessions — the team-sync lane."""
+        if name not in self._CHANGE_LOG_TOOLS:
+            return
+        if isinstance(result, dict) and (
+                result.get("error") or result.get("needs_confirm")):
+            return
+        detail = args.get("slug") or args.get("title") or \
+            args.get("task_id") or args.get("key") or \
+            str(args.get("task") or "")[:80] or name
+        try:
+            from backend.event_log import log_event
+            actor = getattr(ident, "name", None) or str(ident or "?")
+            log_event("change-request", actor, name, str(detail)[:120])
+        except Exception:
+            logger.debug("change-request event log failed", exc_info=True)
 
     def _denial_breaker(self, name: str, args: dict[str, Any],
                         result: Any) -> Any:
