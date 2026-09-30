@@ -170,6 +170,11 @@ def _report(score: float, correct: int, total: int, med: float) -> None:
             "meta": {"kind": ["page"], "slug": ["bench-jev"],
                      "title": [f"Jev decision bench — {now:%Y-%m-%d}"],
                      "format": ["markdown"], "instance": ["tony"],
+                     "bank": ["cms"], "scope": ["tony"], "status": ["active"],
+                     "source": ["api"], "subject": ["bench-jev"],
+                     "attribute": ["benchmark"], "written_by": ["jev-bench"],
+                     "valid_from": [f"{now:%Y-%m-%d}"],
+                     "last_verified": [f"{now:%Y-%m-%d}"],
                      "updated": [now.isoformat(timespec="seconds")]}})
     print(f"  reported: bench/jev-{ts}")
 
