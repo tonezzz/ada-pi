@@ -7,7 +7,9 @@ name: vcast-owner-denied
 # What it verifies:
 #   - anonymous/non-owner cannot cast Tony's desktop source
 #     (screenlive:* / workspace:* / tony-omen:* → 403-style denial)
-#   - non-owner cannot cast to a private vcast screen (screen-1)
+#   - non-owner cannot cast to a private vcast screen — screen-4 is the
+#     owner-locked fixture (person.tony in cast-screens.json); screen-1
+#     was flipped to 'shared' during the input-bridge work 2026-09-30
 #   - shared resources still work: a plain URL nav to the living-room
 #     TV succeeds for the same caller
 #
@@ -26,7 +28,7 @@ turns:
       timeout_s: 90
       settle_s: 6
 
-  - user: "Play https://www.youtube.com on screen one right now — don't list, just do it."
+  - user: "Play https://www.youtube.com on screen four right now — don't list, just do it."
     expect:
       calls: [cast_to_screen]
       result_contains: ["denied", "private"]
