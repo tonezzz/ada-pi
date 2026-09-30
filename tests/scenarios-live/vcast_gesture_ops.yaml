@@ -14,6 +14,12 @@
 name: vcast-gesture-ops
 tier: full
 
+# Actuation turns need a gesture tool that has not shipped — score
+# UNIMPLEMENTED (exit 4) instead of FAIL until it lands.
+needs_any: [vcast_gesture, vcast_pose]
+preflight:
+  - {check: vcast_online, screens: [1]}
+
 turns:
   # --- inventory -----------------------------------------------------------
   - user: "What vcast displays are registered right now?"

@@ -122,6 +122,21 @@ Failure taxonomy (decision: scenario-harness-false-negatives):
   interrupts mid-tool-call are a known race) before scoring.
 """
 
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import websockets
+import yaml
+
 # Tool families for @-expansion in calls_any / calls / no_calls_except.
 TOOL_FAMILIES: dict[str, list[str]] = {
     "verify": ["cctv_wall", "vcast_snapshot", "vcast_list",
@@ -143,21 +158,6 @@ def _expand_families(names: list | None) -> list[str]:
         else:
             out.append(n)
     return out
-
-from __future__ import annotations
-
-import argparse
-import asyncio
-import json
-import os
-import re
-import sys
-import time
-from pathlib import Path
-from typing import Any
-
-import websockets
-import yaml
 
 # Date tokens expand in Asia/Bangkok — the container/host clock may be UTC
 # while Ada's local timezone is Bangkok; relative-day assertions must match
@@ -364,17 +364,63 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
             failures.append(
                 f"or_state: screen {or_state['vcast_screen']} "
                 "not registered on the relay")
-        elif contains:
-            detail = str(scr.get("state_detail") or scr.get("state") or "")
-            if contains in detail:
+        else:
+            ok = True
+            if contains:
+                detail = str(scr.get("state_detail") or scr.get("state") or "")
+                if contains not in detail:
+                    ok = False
+                    failures.append(
+                        f"or_state: screen {or_state['vcast_screen']} state "
+                        f"{detail[:100]!r} does not contain {contains!r}")
+            if or_state.get("panes") is not None:
+                if int(scr.get("panes") or 0) != int(or_state["panes"]):
+                    ok = False
+                    failures.append(
+                        f"or_state: screen {or_state['vcast_screen']} panes="
+                        f"{scr.get('panes')} want {or_state['panes']}")
+            if or_state.get("state"):
+                if scr.get("state") != or_state["state"]:
+                    ok = False
+                    failures.append(
+                        f"or_state: screen {or_state['vcast_screen']} "
+                        f"state={scr.get('state')!r} want "
+                        f"{or_state['state']!r}")
+            if ok:
                 failures = [f for f in failures
                             if not f.startswith(
                                 ("calls_any:", "calls:", "max_calls:"))]
-            else:
-                failures.append(
-                    f"or_state: screen {or_state['vcast_screen']} state "
-                    f"{detail[:100]!r} does not contain {contains!r}")
+    if or_state and or_state.get("camwall_settings"):
+        # relay ground truth: the zone's stored settings must equal each
+        # k:v — the tool result doesn't echo applied settings
+        want_zone, want_kv = next(iter(or_state["camwall_settings"].items()))
+        zone_state = _camwall_zone(str(want_zone))
+        cur = (zone_state or {}).get("settings") or {}
+        bad = {k: v for k, v in dict(want_kv).items()
+               if cur.get(k) != v}
+        if zone_state is None:
+            failures.append(f"or_state: camwall zone {want_zone!r} "
+                            "absent from relay")
+        elif bad:
+            failures.append(
+                f"or_state: camwall {want_zone} settings {cur} "
+                f"missing/mismatched {bad}")
+        else:
+            failures = [f for f in failures
+                        if not f.startswith(
+                            ("calls_any:", "calls:", "max_calls:",
+                             "result_contains:"))]
     return failures
+
+
+def _camwall_zone(zone: str) -> dict | None:
+    import urllib.request
+    try:
+        out = json.loads(urllib.request.urlopen(
+            f"{_VCAST_API}/camwall", timeout=10).read())
+    except Exception:
+        return None
+    return (out.get("zones") or {}).get(zone)
 
 
 def _vcast_screen(n: int) -> dict | None:
@@ -450,7 +496,8 @@ def missing_declared_tools(spec: dict, http_base: str,
     unimplemented feature, not a regression."""
     import urllib.request
     want = spec.get("needs_tools") or []
-    if not want:
+    want_any = spec.get("needs_any") or []
+    if not want and not want_any:
         return []
     try:
         req = urllib.request.Request(
@@ -461,7 +508,10 @@ def missing_declared_tools(spec: dict, http_base: str,
     except Exception as e:
         print(f"needs_tools: /api/tools lookup failed ({e}) — skipping gate")
         return []
-    return [t for t in want if t not in have]
+    missing = [t for t in want if t not in have]
+    if want_any and not (have & set(want_any)):
+        missing.append(f"none-of:{want_any}")
+    return missing
 
 
 _GEV_CMD_URL = os.environ.get(
@@ -913,6 +963,17 @@ async def main() -> int:
                         events, failures = await run_turn(
                             ws, text, expect, args.verbose, audio=audio_bytes
                         )
+                        # Live-API interrupts mid-tool-call can produce an
+                        # empty turn; retry once before scoring it.
+                        if (failures == ["response_nonempty: empty transcript"]
+                                and text is not None):
+                            print("      empty turn — retrying once")
+                            events, failures = await run_turn(
+                                ws, text, expect, args.verbose)
+                            if not failures:
+                                events = events + [{
+                                    "type": "_note",
+                                    "text": "passed on empty-turn retry"}]
                     finally:
                         if notify_task:
                             notify_task.cancel()

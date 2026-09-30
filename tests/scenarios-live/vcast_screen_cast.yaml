@@ -14,6 +14,11 @@ name: vcast-screen-cast
 
 tier: full
 
+# 'delivered': 1 is only achievable while screen 1's client is connected —
+# offline displays are INFRA, not a model regression.
+preflight:
+  - {check: vcast_online, screens: [1]}
+
 turns:
   - user: "Put the apps index page on screen one — that's the slash apps slash page on tony-dell."
     expect:

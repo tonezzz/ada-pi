@@ -17,6 +17,11 @@
 #   T5  teardown turn (also covers the stop path)
 name: camera_cast_permission
 tier: full
+
+# The wall must actually land on screen 2 — offline target is INFRA.
+preflight:
+  - {check: vcast_online, screens: [2]}
+
 turns:
   - user: "Ada, put the guardhouse CCTV camera wall on screen 2."
     expect:
@@ -27,7 +32,9 @@ turns:
       settle_s: 8
   - user: "Is the wall up?"
     expect:
-      calls_any: [cctv_wall, vcast_list]
+      # any verification tool counts — visual snapshot is as good as
+      # an API status call
+      calls_any: ["@verify"]
       response_nonempty: true
       timeout_s: 90
       settle_s: 6

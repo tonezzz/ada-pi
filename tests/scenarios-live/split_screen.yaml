@@ -11,6 +11,9 @@ name: split-screen
 
 tier: full
 
+preflight:
+  - {check: vcast_online, screens: [4]}
+
 turns:
   - user: "Hi Ada."
     expect:
@@ -27,7 +30,10 @@ turns:
 
   - user: "Yes, move the wall if it's busy — do the split."
     expect:
-      calls_any: [cast_to_screen, cctv_wall]
+      calls_any: ["@cast"]
+      # if the split already took effect on T2, declining a redundant
+      # cast is correct — check the relay instead of demanding a call
+      or_state: {vcast_screen: 4, panes: 2}
       response_nonempty: true
       timeout_s: 120
       settle_s: 10

@@ -31,7 +31,9 @@ turns:
   - user: "Set the rama9 wall to update every 30 seconds."
     expect:
       calls_any: [cctv_wall]
-      result_contains: ["interval"]
+      # the settings path doesn't echo 'interval' in the tool result —
+      # the relay's stored zone settings are ground truth
+      or_state: {camwall_settings: {rama9: {interval: 30}}}
       response_nonempty: true
       timeout_s: 90
       settle_s: 6
