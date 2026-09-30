@@ -2237,7 +2237,10 @@ class GeminiLiveProvider(RealtimeProvider):
                         "per screen) and camwall_zones (enabled periodic walls). Use when the user refers to "
                         "'screen 1/2/...', asks which screens are available, or when diagnosing a cast — an "
                         "offline screen or a stale capture explains a silent failure; call before "
-                        "cast_to_screen if unsure."
+                        "cast_to_screen if unsure. A camwall_zones entry is NOT proof a wall is visible — "
+                        "when state_mismatch flags it, the wall is down; never claim a wall is on-screen "
+                        "from the registry flag alone, and a user asking you to 'put up' a flagged wall "
+                        "still needs cctv_wall action=start."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {

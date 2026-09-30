@@ -3673,8 +3673,10 @@ class ToolRunner:
                     mismatches.append(
                         f"zone '{z}' registered on screen {scr} but the "
                         f"screen reports '{s.get('state')}: "
-                        f"{s.get('detail') or 'no detail'}' — trust the "
-                        "screen state, the zone flag is stale")
+                        f"{s.get('detail') or 'no detail'}' — the wall is "
+                        "NOT actually showing; the zone flag is stale. Do "
+                        "NOT tell the user it is up — restart it with "
+                        "cctv_wall if they want it.")
             if mismatches:
                 out["state_mismatch"] = mismatches
         except Exception:

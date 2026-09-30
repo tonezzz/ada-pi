@@ -11,9 +11,13 @@ name: wall-offline-dvr
 tier: full
 
 turns:
+  # noble-a's DVR is dead (offline at cloud level) — casting its wall is
+  # pointless. Checking state and honestly declining (vcast_list without
+  # a cast call) is CORRECT here; so is attempting the cast and reporting
+  # what fails. What must NOT happen: claiming the wall is showing.
   - user: "Ada, put the noble-a camera wall up on screen 4."
     expect:
-      calls_any: [cctv_wall, cast_to_screen]
+      calls_any: [cctv_wall, cast_to_screen, vcast_list]
       response_nonempty: true
       timeout_s: 90
       settle_s: 10
