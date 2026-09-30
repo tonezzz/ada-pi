@@ -108,6 +108,12 @@ def _keep_audio() -> bool:
     return os.environ.get("ADA_SPEAKER_KEEP_AUDIO", "1") != "0"
 
 
+# Retained .pcm clips expire after this many days — bounded retention so
+# raw voice audio doesn't accumulate forever (the vectors-only posture is
+# ADA_SPEAKER_KEEP_AUDIO=0; this keeps recent clips for the LOO bench).
+AUDIO_TTL_DAYS = float(os.environ.get("ADA_SPEAKER_AUDIO_TTL_DAYS", "14"))
+
+
 def _centroid(prints: list[np.ndarray]) -> np.ndarray:
     """L2-normalized mean of per-sample prints — same geometry as the
     historical running-average merge."""
@@ -244,8 +250,26 @@ class SpeakerIdentifier:
                 self._metadata[name] = meta
         logger.info("loaded %d enrolled speaker profiles from %s", len(self._enrolled), self._profiles_path)
 
+    def _prune_stale_audio(self) -> None:
+        """Drop audio refs + unlink files older than AUDIO_TTL_DAYS."""
+        cutoff = time.time() - AUDIO_TTL_DAYS * 86400
+        for meta in self._metadata.values():
+            kept = []
+            for rel in meta.get("audio") or []:
+                p = self._samples_dir.parent / rel
+                try:
+                    if p.stat().st_mtime >= cutoff:
+                        kept.append(rel)
+                        continue
+                except OSError:
+                    continue  # file gone — drop the ref too
+                p.unlink(missing_ok=True)
+            if "audio" in meta and len(kept) != len(meta["audio"]):
+                meta["audio"] = kept
+
     def _save_enrolled(self) -> None:
         self._profiles_path.parent.mkdir(parents=True, exist_ok=True)
+        self._prune_stale_audio()
         data = {}
         for name, emb in self._enrolled.items():
             meta = self._metadata.get(name, {})
