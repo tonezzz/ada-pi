@@ -31,6 +31,17 @@ BENCH = os.path.join(REPO, "tests", "benchmark.yml")
 SCEN_DIR = os.path.join(REPO, "tests", "scenarios-live")
 COLLECTION = "ada-ha-scenario-reports"
 
+import re
+# Same taxonomy as scenario-report.py: an environment-level rejection is
+# not a model failure. ws handshake rejects (403/400 — auth windows during
+# ada restarts, device-key churn) were being scored as real fails with 0
+# turns (2026-09-30 casting run scored 0.045 during a parallel session).
+UNSCORED_RE = re.compile(
+    r"429|quota|rate.?limit|resource.?exhaust|too many requests"
+    r"|connect call failed|connection refused|no ready event"
+    r"|invalid handshake|connection rejected|HTTP 40[03]|InvalidStatus",
+    re.I)
+
 
 def _load() -> dict:
     return yaml.safe_load(open(BENCH).read()) or {}
@@ -104,6 +115,14 @@ def _run_one(path: str, url: str, api_key: str) -> tuple[str, int, dict | None, 
             return "infra", attempt, events, out
         if proc.returncode == 4:          # needs_tools absent
             return "unimplemented", attempt, events, out
+        # rc=1 but the output shows an environment failure (ws handshake
+        # rejected, upstream throttling) — classify by cause, not code:
+        # a 0s "fail" with no turns is harness noise, not a model result.
+        if UNSCORED_RE.search(out) and not (
+                events or {}).get("turns"):
+            return ("quota" if re.search(
+                r"429|quota|rate.?limit|resource.?exhaust", out, re.I)
+                else "infra"), attempt, events, out
     return "fail", 2, events, out
 
 
