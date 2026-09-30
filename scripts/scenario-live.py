@@ -536,7 +536,7 @@ def missing_declared_tools(spec: dict, http_base: str,
         return []
     missing = [t for t in want if t not in have]
     if want_any and not (have & set(want_any)):
-        missing.append(f"none-of:{want_any}")
+        missing.append("one of " + "/".join(str(t) for t in want_any))
     return missing
 
 
