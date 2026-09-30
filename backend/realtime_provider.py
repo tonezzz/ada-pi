@@ -2415,8 +2415,11 @@ class GeminiLiveProvider(RealtimeProvider):
                         "GEV pages). Optional 'screen' targets one vcast display and 'pane' narrows to one "
                         "split-screen pane (omit to hit every page showing GEV); the client replies are "
                         "collected and returned in 'responses' — get_current_view_state actually answers. "
-                        "Returns error if no GEV client is connected — that means nothing is showing the app, "
-                        "cast it first."
+                        "On error 'no GEV clients': nothing is showing the app — cast "
+                        "cast_to_screen(action='nav', url='.../apps/gev/', screen=N) first, wait ~10s for the "
+                        "page to register, then RETRY the gev_command. NEVER narrate that a flight/zoom "
+                        "happened after a failed or skipped gev_command — say it didn't work and recover "
+                        "instead (narrating a move that didn't run is a false claim)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
