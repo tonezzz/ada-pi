@@ -33,6 +33,27 @@ Reconnect step (tests/scenarios-live/reconnect_continuity.yaml):
 Isolation / negative assertions:
   response_not_contains: [s, ...]  each substring must NOT appear in speech
   result_not_contains: [s, ...]    each substring must NOT appear in results
+  no_unattempted_refusal: [tool, ...]
+      fail when the transcript claims inability ("can't", "ไม่สามารถ",
+      "unable") yet none of the listed tools were even attempted.
+  no_failed_result: [tool, ...]
+      fail when a listed tool's result contains a nested {"ok": false}
+      — e.g. gev_command delivering fly_to_location that the client
+      rejected (phantom flight while Ada narrates arrival).
+
+Geo/actuation ground truth:
+  gev_view_near: [lat, lon, km]  with gev_screen: N
+      out-of-band — asks the GEV bridge for live view state and requires
+      some answering client's camera within km of the target. Multiple
+      remote clients can answer; any matching camera passes, and failures
+      report every camera seen. Proves the map MOVED, not that it was told to.
+  result_geo_near: [lat, lon, km]
+      softer in-band variant — some tool_result must carry a lat/lon
+      within km of the target.
+  call_args_contain: {tool: [sub | [alt1, alt2], ...]}
+      the tool's call args must contain each required substring; a list
+      entry is any-of alternates (e.g. Thai OR English place name).
+      Proves narration named the place, not filler text.
 
 Event assertions (any ws event, e.g. speaker/speaker_unrecognized):
   events_contain: [{type: speaker, name: "guest-tester"}, ...]
@@ -79,7 +100,49 @@ Cleanup (runs even when expectations fail):
 Turn fields:
   sleep_s: N         wait N seconds before running this turn — lets a pending
                      server-side reconnect (e.g. a voice switch) settle.
+
+Failure taxonomy (decision: scenario-harness-false-negatives):
+  Top-level `preflight:` gates the run before connecting —
+    preflight:
+      - {check: http_ok, url: "http://…/health", label: mddb}
+      - {check: vcast_online, screens: [2]}        # listed screens connected
+      - {check: vcast_online, min_online: 2}       # or at least N online
+    A failed preflight exits INFRA (3) — environment down, not a model bug.
+  Top-level `needs_tools: [name, ...]` compares against the live
+  /api/tools declarations; absent tools exit UNIMPLEMENTED (4) — the
+  scenario documents a planned feature, not a regression.
+  `@family` names expand inside calls_any/calls/no_calls_except:
+    @verify  — any state-verification tool (cctv_wall, vcast_snapshot,
+               vcast_list, ada_ha_get_state)
+    @cast    — any screen-cast tool (cast_to_screen, cctv_wall)
+  `or_state:` — out-of-band outcome check; if the expected screen/relay
+  state is already true, the turn passes even without a fresh cast call:
+    or_state: {vcast_screen: 2, contains: "camwall"}
+  Empty-transcript turns are retried once automatically (live-API
+  interrupts mid-tool-call are a known race) before scoring.
 """
+
+# Tool families for @-expansion in calls_any / calls / no_calls_except.
+TOOL_FAMILIES: dict[str, list[str]] = {
+    "verify": ["cctv_wall", "vcast_snapshot", "vcast_list",
+               "ada_ha_get_state", "display_state"],
+    "cast": ["cast_to_screen", "cctv_wall", "vcast_screen_cast"],
+    "gesture": ["vcast_gesture", "vcast_pose", "cast_to_screen"],
+    "wall": ["cctv_wall"],
+}
+
+_VCAST_API = os.environ.get(
+    "VCAST_API", "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+
+
+def _expand_families(names: list | None) -> list[str]:
+    out: list[str] = []
+    for n in names or []:
+        if isinstance(n, str) and n.startswith("@"):
+            out.extend(TOOL_FAMILIES.get(n[1:], [n]))
+        else:
+            out.append(n)
+    return out
 
 from __future__ import annotations
 
@@ -156,14 +219,14 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
         for e in events
         if e.get("type") == "assistant_transcript_delta"
     )
-    calls_any = expect.get("calls_any") or []
+    calls_any = _expand_families(expect.get("calls_any"))
     if calls_any and not names & set(calls_any):
         failures.append(f"calls_any: none of {calls_any} in {sorted(names)}")
-    for want in expect.get("calls") or []:
+    for want in _expand_families(expect.get("calls")):
         if want not in names:
             failures.append(f"calls: {want!r} not in {sorted(names)}")
     if expect.get("no_calls"):
-        exempt = set(expect.get("no_calls_except") or [])
+        exempt = set(_expand_families(expect.get("no_calls_except")))
         unexpected = sorted(names - exempt)
         if unexpected:
             failures.append(f"no_calls: got {unexpected} (exempt: {sorted(exempt)})")
@@ -290,7 +353,115 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
                 failures.append(
                     f"call_args_contain: none of {alts} in "
                     f"{tool} args")
+    # or_state: out-of-band outcome check — when the expected relay/screen
+    # state already holds, waive tool-call assertions (the model may have
+    # correctly declined a redundant cast after checking state).
+    or_state = expect.get("or_state")
+    if or_state and or_state.get("vcast_screen") is not None:
+        scr = _vcast_screen(int(or_state["vcast_screen"]))
+        contains = str(or_state.get("contains") or "")
+        if scr is None:
+            failures.append(
+                f"or_state: screen {or_state['vcast_screen']} "
+                "not registered on the relay")
+        elif contains:
+            detail = str(scr.get("state_detail") or scr.get("state") or "")
+            if contains in detail:
+                failures = [f for f in failures
+                            if not f.startswith(
+                                ("calls_any:", "calls:", "max_calls:"))]
+            else:
+                failures.append(
+                    f"or_state: screen {or_state['vcast_screen']} state "
+                    f"{detail[:100]!r} does not contain {contains!r}")
     return failures
+
+
+def _vcast_screen(n: int) -> dict | None:
+    """Fetch the relay's display registry and return screen `n` (or None)."""
+    import urllib.request
+    try:
+        out = json.loads(urllib.request.urlopen(
+            f"{_VCAST_API}/displays", timeout=10).read())
+    except Exception:
+        return None
+    for s in out.get("screens") or []:
+        if int(s.get("screen") or -1) == n:
+            return s
+    return None
+
+
+def run_preflight(spec: dict) -> list[str]:
+    """Top-level scenario `preflight:` — environment checks that gate the
+    run. Each failed check means the result class is INFRA, not a model
+    regression."""
+    import urllib.request
+    fails: list[str] = []
+    for pf in spec.get("preflight") or []:
+        check = pf.get("check")
+        label = pf.get("label") or pf.get("url") or check
+        if check == "http_ok":
+            url = pf.get("url")
+            codes = set(pf.get("codes") or [200])
+            try:
+                req = urllib.request.Request(
+                    url, headers={"x-api-key": pf.get("api_key") or ""})
+                code = urllib.request.urlopen(req, timeout=10).status
+            except urllib.error.HTTPError as e:
+                code = e.code
+            except Exception as e:
+                fails.append(f"preflight {label}: {e}")
+                continue
+            if code not in codes:
+                fails.append(f"preflight {label}: HTTP {code}")
+        elif check == "vcast_online":
+            import urllib.request as _ur
+            try:
+                out = json.loads(_ur.urlopen(
+                    f"{_VCAST_API}/displays", timeout=10).read())
+            except Exception as e:
+                fails.append(f"preflight vcast_online: {e}")
+                continue
+            screens = {int(s.get("screen") or -1): s
+                       for s in out.get("screens") or []}
+            want = pf.get("screens")
+            if want:
+                off = [n for n in want
+                       if not (screens.get(int(n)) or {}).get("connected")]
+                if off:
+                    fails.append(
+                        f"preflight vcast_online: screens {off} offline")
+            else:
+                online = sum(1 for s in screens.values()
+                             if s.get("connected"))
+                if online < int(pf.get("min_online") or 1):
+                    fails.append(
+                        f"preflight vcast_online: {online} online, "
+                        f"need {pf.get('min_online') or 1}")
+        else:
+            fails.append(f"preflight {label}: unknown check {check!r}")
+    return fails
+
+
+def missing_declared_tools(spec: dict, http_base: str,
+                           api_key: str) -> list[str]:
+    """Compare `needs_tools:` against the server's live /api/tools
+    declarations — absent tools mean the scenario describes an
+    unimplemented feature, not a regression."""
+    import urllib.request
+    want = spec.get("needs_tools") or []
+    if not want:
+        return []
+    try:
+        req = urllib.request.Request(
+            f"{http_base}/api/tools",
+            headers={"x-api-key": api_key})
+        have = set(json.loads(
+            urllib.request.urlopen(req, timeout=10).read()).get("tools") or [])
+    except Exception as e:
+        print(f"needs_tools: /api/tools lookup failed ({e}) — skipping gate")
+        return []
+    return [t for t in want if t not in have]
 
 
 _GEV_CMD_URL = os.environ.get(
@@ -632,6 +803,19 @@ async def main() -> int:
 
     turns = spec.get("turns") or []
     print(f"scenario: {spec.get('name') or args.scenario.stem} -> {url.split('?')[0]}")
+
+    # Failure taxonomy gates — run before connecting so environment and
+    # unimplemented-feature cases never produce misleading FAILs.
+    missing = missing_declared_tools(spec, http_base, api_key)
+    if missing:
+        print(f"UNIMPLEMENTED: tools not in live declarations: {missing}")
+        return 4
+    pf_fails = run_preflight(spec)
+    if pf_fails:
+        for f in pf_fails:
+            print(f"  {f}")
+        print("INFRA: preflight failed — scenario not run")
+        return 3
 
     # voice_restore: snapshot the preference file before any turn can change it.
     voice_restore = (spec.get("cleanup") or {}).get("voice_restore")
