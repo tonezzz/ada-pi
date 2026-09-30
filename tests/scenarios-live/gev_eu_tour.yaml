@@ -11,6 +11,7 @@ turns:
     calls_any:
     - cctv_wall
     - cast_to_screen
+    - vcast_list
     timeout_s: 120
     settle_s: 10
 - user: Split screen 4 — God's Eye View on the left, a camera pane on the right.

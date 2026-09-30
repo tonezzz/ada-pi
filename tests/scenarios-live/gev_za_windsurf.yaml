@@ -11,6 +11,7 @@ turns:
     calls_any:
     - cctv_wall
     - cast_to_screen
+    - vcast_list
     timeout_s: 120
     settle_s: 10
 - user: Put God's Eye View on screen 1, full screen.
