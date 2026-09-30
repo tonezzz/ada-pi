@@ -10,5 +10,5 @@ turns:
       calls_any: [ada_camera_snapshot, cctv_snapshot, vcast_snapshot]
       max_calls: 4
       response_nonempty: true
-      timeout_s: 120
+      timeout_s: 160
       settle_s: 8

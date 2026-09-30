@@ -8,20 +8,21 @@
 #      consent — Ada must cast directly on T1, no confirm round-trip.
 #      (The companion scenario camera_cast_permission covers the
 #      unprompted-capture gate.)
-# tier: full — casts content to real displays. Targets screen 2 because
-# screen 1 (iPad) is typically offline outside demo sessions; an offline
-# screen can never return delivered>0.
+# tier: full — casts content to real displays. Targets {real_screen} —
+# the real-browser lab display (vcast-real@N on idc02, default 6;
+# override with VCAST_REAL_SCREEN). An offline screen can never return
+# delivered>0 and only a real browser produces frame-ok evidence.
 name: cam-to-screen
 tier: full
 
 # The still must actually reach the screen's room — headless display or
 # real device, offline is INFRA.
 preflight:
-  - {check: vcast_online, screens: [2]}
+  - {check: vcast_online, screens: ["{real_screen}"]}
 
 turns:
   # T1 — explicit ask: capture + cast directly, no confirm dance.
-  - user: "Ada, take a snapshot of the swimming pool camera and put it on screen 2."
+  - user: "Ada, take a snapshot of the swimming pool camera and put it on screen {real_screen}."
     expect:
       calls_any: [cctv_snapshot, ada_camera_snapshot, cast_to_screen, cctv_wall]
       result_contains: ["delivered"]
@@ -31,7 +32,7 @@ turns:
       settle_s: 8
 
   # T2 — the redundant "yes": if the image already landed, re-casting is
-  # unnecessary — or_state waives the call assertions when screen 2
+  # unnecessary — or_state waives the call assertions when screen {real_screen}
   # already shows the image.
   - user: "Yes, go ahead."
     expect:
@@ -39,11 +40,11 @@ turns:
       or_state: {vcast_screen: 2, state: image}
       response_nonempty: true
       max_calls: 10
-      timeout_s: 120
+      timeout_s: 160
       settle_s: 10
 
-  # T3 — visual verify on screen 2.
-  - user: "Look at screen 2 and tell me what it's actually showing."
+  # T3 — visual verify on screen {real_screen}.
+  - user: "Look at screen {real_screen} and tell me what it's actually showing."
     expect:
       calls_any: [vcast_snapshot, vcast_list]  # liveness check first is fine
       response_nonempty: true
@@ -53,11 +54,11 @@ turns:
                               "สระ", "น้ำ", "กล้อง", "เชื่อมต่อ", "ว่าง",
                               "ภาพ", "ไม่ได้", "ลิงก์", "แสดง"]
       max_calls: 8
-      timeout_s: 120
+      timeout_s: 160
       settle_s: 8
 
   # T4 — teardown.
-  - user: "Thanks — stop screen 2, back to idle."
+  - user: "Thanks — stop screen {real_screen}, back to idle."
     expect:
       calls_any: [cast_to_screen]
       response_nonempty: true
