@@ -3753,6 +3753,20 @@ class ToolRunner:
         if not out.get("delivered"):
             return {"ok": False, "error":
                     "no GEV clients connected — cast /apps/gev/ first"}
+        # get_current_view_state returns ~5k tokens of layer/detection/hud
+        # config per call — it lands in session history and inflates every
+        # subsequent turn. Slim to what Ada actually narrates.
+        for resp in out.get("responses") or []:
+            r = resp.get("response")
+            if not isinstance(r, dict) or "layers" not in r:
+                continue
+            r["layers"] = [
+                {k: l.get(k) for k in ("id", "name", "count", "error")}
+                for l in r.get("layers") or [] if l.get("enabled")
+            ]
+            for dead in ("controls", "detection", "scenePlayback",
+                         "celestalRing", "bloom", "sharpen"):
+                r.pop(dead, None)
         return out
 
     @staticmethod
