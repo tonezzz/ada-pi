@@ -46,6 +46,15 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)  # so 'backend.event_log' resolves from any cwd
 COLLECTION = "ada-ha-scenario-reports"
 REPORT_TTL_DAYS = 14
+# Real mddb TTL (seconds) — the reaper deletes docs at expiry. Per-status:
+# pass detail is only useful short-term (the benchmark aggregate records it),
+# fails are kept longest for pattern analysis, infra/quota is environment
+# noise never worth keeping. See benchmark.yml 'standard.retention'.
+STATUS_TTL_S = {
+    "pass": 3 * 86400, "flaky": 7 * 86400, "fail": 30 * 86400,
+    "infra": 3 * 86400, "quota": 3 * 86400, "skip-quota": 3 * 86400,
+    "skip": 3 * 86400, "unimplemented": 3 * 86400,
+}
 
 # Upstream throttling (Gemini/MDDB/search) marks a scenario "quota" instead of
 # "fail"; connect-level failures (backend restarting/down) mark it "infra".
@@ -160,6 +169,7 @@ def _report(mddb: str, scenario: str, status: str, tier: str,
     return _post(f"{mddb.rstrip('/')}/add", {
         "collection": COLLECTION, "key": key, "lang": "en",
         "contentMd": content, "meta": meta,
+        "ttl": STATUS_TTL_S.get(status, 3 * 86400),
     })
 
 

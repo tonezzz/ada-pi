@@ -101,6 +101,46 @@ policy:
     - vcast_gesture_recall
     - tool_selection_accuracy
 
+# The standard — what a benchmark result is allowed to mean. Three clauses:
+# evidence contract, failure integrity, retention. Enforced by
+# scenario-live.py (assertions), scenario-benchmark.py (scoring/validity),
+# and scenario-prune.py (retention/dedupe).
+standard:
+  # Clause 1 — evidence contract. A PASS must be backed by observable
+  # state, per domain. Tool-call presence is necessary, never sufficient:
+  # a tool returning is not the action having happened.
+  evidence:
+    gev:      remote_screens includes the target screen AND a
+              screen-targeted command (e.g. get_current_view_state)
+              returns real state — a vcast nav ACK alone proves nothing
+    vcast:    p*:frame-ok / img-* / video-* render evidence from a real
+              browser display (vcast-real@N); headless ACKs don't count
+    tv/cast:  the cast/nav tool returned success THIS turn — recalled
+              state from an earlier turn or session is not proof
+    cctv/cam: actual snapshot bytes published/returned, not a tool ACK
+    cms/docs: the page exists and is readable after the write
+    memory:   a follow-up recall returns the stored value
+  # Clause 2 — failure integrity. These statuses are never scored
+  # (they measure the environment, not Ada): infra, quota, skip-quota,
+  # unimplemented. A run where >50% of scenarios are unscored is stamped
+  # meta.valid=false and excluded from trend/baseline comparisons.
+  # Concurrent suite runs are refused outright (TCP lock :8199) — a
+  # contended run is invalid data, not a result.
+  failure_integrity:
+    unscored_statuses: [infra, quota, skip-quota, unimplemented]
+    invalid_run_threshold: 0.5
+    flaky: "pass-on-retry = 0.5; fail-on-retry = 0"
+  # Clause 3 — retention (enforced by real mddb TTL at write time and by
+  # scenario-prune.py for legacy docs + dedupe).
+  retention:
+    report_pass:       3d    # aggregate benchmark doc already records it
+    report_flaky:      7d
+    report_fail:       30d   # dedupe: consecutive identical fails keep
+                             # first + latest only
+    report_infra_quota: 3d   # environment noise
+    auto_report:       30d
+    benchmark:         keep  # trend data; invalid runs stamped, not deleted
+
 # Usage plan — cadence that keeps Gemini grounded-search quota healthy.
 # MEASURED: free-tier quota is 20 grounded requests/day/project/model
 # (429 RESOURCE_EXHAUSTED, GenerateRequestsPerDayPerModel) — shared with

@@ -230,6 +230,16 @@ def main() -> int:
               if s not in unscored]
     score = round(sum(scored) / len(scored), 3) if scored else 0.0
     now = datetime.datetime.now()
+
+    # Run validity — a run where the majority of scenarios came back
+    # infra/quota measured the environment, not Ada (e.g. Ada restarting
+    # mid-run, upstream quota exhausted). Stamped on the benchmark doc so
+    # trend queries and scenario-prune.py can exclude it from the baseline.
+    unscored_run = sum(1 for _, s, *_ in rows if s in unscored)
+    run_valid = not (rows and unscored_run / len(rows) > 0.5)
+    invalid_reason = (f"{unscored_run}/{len(rows)} scenarios infra/quota "
+                      "— environment outage, not a model result"
+                      if not run_valid else "")
     table = "\n".join(
         f"| {n} | {s} | {t} | {c} | {d:.0f}s |" for n, s, t, c, d in rows)
     md = (f"# Benchmark `{args.suite}` — {now:%Y-%m-%d %H:%M}\n\n"
@@ -240,6 +250,9 @@ def main() -> int:
           f"{sum(1 for _,s,*_ in rows if s=='unimplemented')} unimplemented)\n\n"
           f"| scenario | status | turns | tool calls | dur |\n"
           f"|---|---|---|---|---|\n{table}\n")
+    if not run_valid:
+        md += (f"\n> **Invalid run** — {invalid_reason}. Excluded from "
+               "trend/baseline comparisons.\n")
     if violations:
         md += ("\n## Policy violations\n\n"
                + "\n".join(f"- {v}" for v in violations) + "\n")
@@ -254,6 +267,9 @@ def main() -> int:
                      "score": [str(score)],
                      "status": ["fail" if any(s == "fail" for _, s, *_ in rows)
                                 else "pass"],
+                     "valid": [str(run_valid).lower()],
+                     "invalid_reason": ([invalid_reason]
+                                        if invalid_reason else []),
                      "violations": violations or ["none"],
                      "ts": [now.isoformat(timespec="seconds")],
                      "scenarios": [f"{n}:{s}" for n, s, *_ in rows]},
@@ -303,7 +319,7 @@ def main() -> int:
             _post(f"{args.mddb.rstrip('/')}/add", {
                 "collection": COLLECTION,
                 "key": f"auto-report/{args.suite}-{now:%Y%m%d-%H%M%S}",
-                "lang": "en", "contentMd": worthy_md,
+                "lang": "en", "contentMd": worthy_md, "ttl": 30 * 86400,
                 "meta": {"kind": ["auto-report"], "suite": [args.suite],
                          "score": [str(score)],
                          "ts": [now.isoformat(timespec="seconds")],
