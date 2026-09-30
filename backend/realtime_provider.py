@@ -1567,6 +1567,15 @@ class GeminiLiveProvider(RealtimeProvider):
                 else:
                     body = json.loads(r.read() or b"{}")
                     if body.get("error") and body.get("ok"):
+                        if body["error"] == "simulated":
+                            return ({"error": (
+                                f"screen {screen} is a headless/simulated display "
+                                f"— it has no real pixels to capture. It reports "
+                                f"state '{body.get('state') or 'unknown'}' "
+                                f"({body.get('detail') or 'no detail'}). Tell the "
+                                "user the screen is simulated and read back its "
+                                "state — do NOT describe an image or say the "
+                                "screen is offline/stuck.")}, None)
                         # uncapturable-iframe isn't final: a GEV iframe's own
                         # remote client may still post a canvas capture for
                         # this token — keep polling. image-load-failed is.
@@ -3816,7 +3825,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "slug": {
                                 "type": "string",
-                                "description": "Page slug to annotate (from cms_list_pages or reports-index).",
+                                "description": "Page slug to annotate — get the real slug from reports-index or cms_list_pages first; do not guess it.",
                             },
                             "note": {
                                 "type": "string",

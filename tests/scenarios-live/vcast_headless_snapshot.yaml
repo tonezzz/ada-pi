@@ -1,0 +1,40 @@
+name: vcast-headless-snapshot
+# From Tony's transcript 2026-09-30 (~13:54): he split screen 4, asked Ada
+# "look at screen 4", and vcast_snapshot timed out — "did not return a
+# frame in time, may be offline or stuck". The screen was a HEADLESS
+# display: online, healthy, but physically incapable of producing pixels.
+# The misleading error made Ada report the screen as broken. Now the sim
+# answers snap-request with error='simulated' + its state, and the tool
+# must surface that as the honest reason — Ada describes STATE, not an
+# image, and never calls a healthy sim "offline".
+#
+# tier: full — needs a live headless display (screen 2 = headless-2 on
+# idc01 relay, always online).
+tier: full
+
+turns:
+  - user: "Ada, put Google Maps on screen 2."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 8
+
+  - user: "Now look at screen 2 and tell me what it's actually showing."
+    expect:
+      calls_any: [vcast_snapshot]
+      result_contains_any: ["simulated", "no real pixels", "could not capture"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+    # The transcript should reflect honesty — she can't see pixels on a
+    # simulated display. Hard-asserting the phrase is brittle across
+    # EN/TH; the result_contains_any above proves the honest error reached
+    # her, and the transcript is reviewable in the report.
+
+  - user: "Thanks — stop screen 2, back to idle."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 5

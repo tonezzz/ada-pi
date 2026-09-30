@@ -1,0 +1,53 @@
+name: cast-recast-stale-lease
+# From Tony's transcript 2026-09-30 (~13:48): a wall was bound to a screen,
+# the user navigated the screen elsewhere, then the NEXT cast was refused
+# — "another capture is active" — because the stale camwall lease was
+# never reconciled with the screen's real state. The lease reconcile fix
+# (tool_runner._screen_busy + relay unbind) must hold: after a confirmed
+# interrupt, a fresh cast to the same screen proceeds WITHOUT asking for
+# confirmation a second time.
+#
+# tier: full — real cctv_wall + cast flow on headless screen 4.
+tier: full
+
+turns:
+  - user: "Ada, put the noble park camera wall on screen 4."
+    expect:
+      calls_any: [cctv_wall]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  # Interrupt the wall with a direct user cast — capture is active, so
+  # asking before replacing is CORRECT here.
+  - user: "Actually, switch screen 4 to Google Maps instead."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 8
+
+  - user: "Yes, go ahead."
+    expect:
+      calls_any: [cast_to_screen]
+      result_not_contains: ["needs_confirm"]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 8
+
+  # THE REGRESSION: screen 4 is now 'nav' — the old wall lease is stale
+  # and must NOT trigger a second confirmation gate.
+  - user: "Now put the noble park wall back on screen 4."
+    expect:
+      calls_any: [cctv_wall]
+      result_not_contains: ["needs_confirm"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  - user: "Stop the wall and leave screen 4 idle."
+    expect:
+      calls_any: [cctv_wall, cast_to_screen]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 5
