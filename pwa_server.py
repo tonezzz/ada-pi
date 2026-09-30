@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import collections
 import json
 import logging
 import os
@@ -40,6 +41,37 @@ from backend.memory_banks import get_registry
 from backend import auth
 from backend import chaba_memory
 from backend.speaker_id import SpeakerIdentifier, SpeakerSession
+
+# Voiceprint drift tracker — rolling per-speaker identification scores.
+# A sagging mean (illness, mic change, stale prints) trips one ops event
+# per speaker per day so re-enrollment is suggested before misses start.
+_DRIFT_WINDOW = 12        # scores per speaker
+_DRIFT_MIN_SAMPLES = 6    # need this many before judging
+_DRIFT_WARN = 0.58        # healthy matches run 0.7+; 0.45 is the bar
+_DRIFT_COOLDOWN_S = 86400
+_drift_scores: dict[str, collections.deque] = {}
+_drift_warned: dict[str, float] = {}
+
+
+def _drift_track(name: str, confidence: float, provider) -> None:
+    """Feed one identification score; emit voiceprint_drift when the
+    rolling mean sags below _DRIFT_WARN (once per speaker per day)."""
+    dq = _drift_scores.setdefault(name, collections.deque(maxlen=_DRIFT_WINDOW))
+    dq.append(confidence)
+    if len(dq) < _DRIFT_MIN_SAMPLES:
+        return
+    mean = sum(dq) / len(dq)
+    if mean >= _DRIFT_WARN:
+        return
+    last = _drift_warned.get(name, 0.0)
+    if time.time() - last < _DRIFT_COOLDOWN_S:
+        return
+    _drift_warned[name] = time.time()
+    provider._emit_ops_event(
+        "voiceprint_drift",
+        f"speaker '{name}' identify scores sagging: mean {mean:.2f} over "
+        f"{len(dq)} chunks (bar {_DRIFT_WARN}) — prints may be stale; "
+        "suggest re-enrollment.")
 
 # System note injected when a speaker's voice matches no enrolled profile.
 UNRECOGNIZED_SPEAKER_NOTE = (
@@ -687,6 +719,7 @@ async def voice_socket(ws: WebSocket) -> None:
                 if tr is not None:
                     tr.current_speaker_ha_person = ha_person
                 secondary = bool(tr is not None and tr._is_secondary_turn())
+                _drift_track(name, confidence, provider)
                 conversation.log_event(
                     "secondary_speaker" if secondary else "speaker_identified",
                     name=name, display=display_name, ha_person=ha_person,
