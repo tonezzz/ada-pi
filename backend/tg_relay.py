@@ -10,8 +10,10 @@ session so session-end memory extraction/session reports still run, and
 the next message starts a fresh session (like leaving and reopening the
 card).
 
-Identity: all relayed sessions authenticate with ADA_API_KEY, so the
-caller identity is whatever that key maps to (admin/Tony for now). Only
+Identity: each chat maps to an Ada caller key via
+TELEGRAM_CHAT_CALLERS ("<chat_id>:<key-name>,..." — e.g.
+"123456:user-kk"). Names resolve through ADA_KEYS_FILE (the issued-keys
+json); unmapped-but-allowed chats fall back to ADA_API_KEY (admin). Only
 chat ids in TELEGRAM_ALLOWED_CHAT_IDS reach Ada; an unknown chat gets a
 polite refusal with its numeric chat id so the owner can whitelist it.
 
@@ -62,6 +64,42 @@ TG_LISTEN = os.environ.get("TG_WEBHOOK_LISTEN", "127.0.0.1:8911")
 TG_WEBHOOK_PATH = os.environ.get("TG_WEBHOOK_PATH", "/webhook/tg")
 TG_SECRET_TOKEN = os.environ.get("TG_SECRET_TOKEN", "")
 
+# chat_id -> ada key name; resolved against the issued-keys file.
+ADA_KEYS_FILE = os.environ.get(
+    "ADA_KEYS_FILE",
+    str(Path.home() / ".config" / "secrets" / "ada-ha-tony-keys.json"))
+
+
+def _chat_callers() -> dict[int, str]:
+    """TELEGRAM_CHAT_CALLERS='123:user-kk,456:user-tony' -> {123:'user-kk'}"""
+    out: dict[int, str] = {}
+    for part in os.environ.get("TELEGRAM_CHAT_CALLERS", "").split(","):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        cid, name = part.split(":", 1)
+        if cid.strip().lstrip("-").isdigit() and name.strip():
+            out[int(cid)] = name.strip()
+    return out
+
+
+def _key_for_chat(chat_id: int) -> str:
+    """API key for this chat: mapped caller's issued key, else the default."""
+    name = _chat_callers().get(chat_id)
+    if not name:
+        return ADA_API_KEY
+    try:
+        keys = json.loads(Path(ADA_KEYS_FILE).read_text())
+        entry = keys.get(name) or {}
+        key = entry.get("key")
+        if key:
+            return key
+        logger.warning("chat %s caller %r has no issued key — using default",
+                       chat_id, name)
+    except Exception as exc:
+        logger.warning("keys file read failed (%s) — using default", exc)
+    return ADA_API_KEY
+
 
 def _allowed_chats() -> set[int]:
     raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
@@ -88,7 +126,7 @@ class ChatSession:
     async def ensure(self) -> None:
         if self.ws is not None:
             return
-        url = f"{ADA_WS_URL}?api_key={ADA_API_KEY}"
+        url = f"{ADA_WS_URL}?api_key={_key_for_chat(self.chat_id)}"
         self.ws = await websockets.connect(
             url, max_size=8 * 1024 * 1024, ping_interval=20)
         self._rx_task = asyncio.create_task(self._reader())
