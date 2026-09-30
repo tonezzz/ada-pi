@@ -13,3 +13,8 @@ tools:
     policy: read
     secondary_allowed: false
     timeout_s: 20
+  ada_devteam_review:
+    module: ada_devteam_review
+    policy: owner_only
+    secondary_allowed: false
+    timeout_s: 300
