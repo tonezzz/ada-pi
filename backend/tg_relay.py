@@ -52,6 +52,16 @@ STATE_FILE = Path(os.environ.get(
 POLL_TIMEOUT_S = 25
 REPLY_CHUNK = 3900  # TG hard limit is 4096
 
+# Receive mode: 'poll' (default — getUpdates long-poll, works behind NAT but
+# any other poller with the token steals updates) or 'webhook' (Telegram
+# pushes to a public URL — exclusive delivery, needs Caddy route). In
+# webhook mode every POST must carry X-Telegram-Bot-Api-Secret-Token equal
+# to TG_SECRET_TOKEN.
+TG_MODE = os.environ.get("TELEGRAM_MODE", "poll").strip().lower()
+TG_LISTEN = os.environ.get("TG_WEBHOOK_LISTEN", "127.0.0.1:8911")
+TG_WEBHOOK_PATH = os.environ.get("TG_WEBHOOK_PATH", "/webhook/tg")
+TG_SECRET_TOKEN = os.environ.get("TG_SECRET_TOKEN", "")
+
 
 def _allowed_chats() -> set[int]:
     raw = os.environ.get("TELEGRAM_ALLOWED_CHAT_IDS", "")
@@ -229,10 +239,7 @@ class TgRelay:
                     logger.info("chat %s idle close", cid)
                     await sess.close()
 
-    async def run(self) -> None:
-        self.http = httpx.AsyncClient(timeout=POLL_TIMEOUT_S + 15)
-        asyncio.create_task(self.sweeper())
-        logger.info("tg relay up — polling %s", TG_API)
+    async def _poll_loop(self) -> None:
         while True:
             try:
                 updates = await self.tg(
@@ -247,6 +254,59 @@ class TgRelay:
             except Exception as exc:
                 logger.warning("poll error: %s", exc)
                 await asyncio.sleep(5)
+
+    async def _webhook_server(self) -> None:
+        """Receive pushed updates on TG_LISTEN. Requires TG_SECRET_TOKEN —
+        Telegram sends it as X-Telegram-Bot-Api-Secret-Token on every POST."""
+        if not TG_SECRET_TOKEN:
+            raise SystemExit("webhook mode requires TG_SECRET_TOKEN")
+        import uvicorn
+        from starlette.applications import Starlette
+        from starlette.responses import JSONResponse
+        from starlette.routing import Route
+
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def webhook(request):
+            if request.headers.get("x-telegram-bot-api-secret-token") != TG_SECRET_TOKEN:
+                return JSONResponse({"ok": True}, status_code=200)
+            try:
+                upd = await request.json()
+            except Exception:
+                return JSONResponse({"ok": True}, status_code=200)
+            await queue.put(upd)
+            return JSONResponse({"ok": True}, status_code=200)
+
+        async def health(request):
+            return JSONResponse({"ok": True, "mode": "webhook"})
+
+        app = Starlette(routes=[
+            Route(TG_WEBHOOK_PATH, webhook, methods=["POST"]),
+            Route("/webhook/health", health, methods=["GET"]),
+        ])
+        host, _, port = TG_LISTEN.rpartition(":")
+        server = uvicorn.Server(uvicorn.Config(
+            app, host=host or "127.0.0.1", port=int(port or 8911),
+            log_level="warning"))
+
+        async def consume() -> None:
+            while True:
+                upd = await queue.get()
+                asyncio.create_task(self.handle(upd))
+
+        asyncio.create_task(consume())
+        logger.info("tg relay up — webhook %s on %s%s",
+                    "listening", host, TG_WEBHOOK_PATH)
+        await server.serve()
+
+    async def run(self) -> None:
+        self.http = httpx.AsyncClient(timeout=POLL_TIMEOUT_S + 15)
+        asyncio.create_task(self.sweeper())
+        if TG_MODE == "webhook":
+            await self._webhook_server()
+            return
+        logger.info("tg relay up — polling %s", TG_API)
+        await self._poll_loop()
 
 
 async def main() -> None:
