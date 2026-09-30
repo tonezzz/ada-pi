@@ -100,6 +100,10 @@ def _run_one(path: str, url: str, api_key: str) -> tuple[str, int, dict | None, 
             events = None
         if proc.returncode == 0:
             return ("flaky" if attempt == 2 else "pass"), attempt, events, out
+        if proc.returncode == 3:          # preflight gate
+            return "infra", attempt, events, out
+        if proc.returncode == 4:          # needs_tools absent
+            return "unimplemented", attempt, events, out
     return "fail", 2, events, out
 
 
@@ -219,15 +223,21 @@ def main() -> int:
                 violations.append(f"{name}: write tools outside policy {sorted(bad)}")
 
     score_map = {"pass": 1.0, "flaky": 0.5}
-    scores = [score_map.get(s, 0.0) for _, s, *_ in rows]
-    score = round(sum(scores) / len(scores), 3) if scores else 0.0
+    # environment/feature-absence results are excluded from the mean —
+    # an mddb outage or an unshipped tool must not drag the model score
+    unscored = {"infra", "unimplemented", "quota", "skip-quota"}
+    scored = [score_map.get(s, 0.0) for _, s, *_ in rows
+              if s not in unscored]
+    score = round(sum(scored) / len(scored), 3) if scored else 0.0
     now = datetime.datetime.now()
     table = "\n".join(
         f"| {n} | {s} | {t} | {c} | {d:.0f}s |" for n, s, t, c, d in rows)
     md = (f"# Benchmark `{args.suite}` — {now:%Y-%m-%d %H:%M}\n\n"
           f"**Score: {score}** ({sum(1 for _,s,*_ in rows if s=='pass')} pass, "
           f"{sum(1 for _,s,*_ in rows if s=='flaky')} flaky, "
-          f"{sum(1 for _,s,*_ in rows if s=='fail')} fail)\n\n"
+          f"{sum(1 for _,s,*_ in rows if s=='fail')} fail, "
+          f"{sum(1 for _,s,*_ in rows if s in ('infra','quota','skip-quota'))} infra/quota, "
+          f"{sum(1 for _,s,*_ in rows if s=='unimplemented')} unimplemented)\n\n"
           f"| scenario | status | turns | tool calls | dur |\n"
           f"|---|---|---|---|---|\n{table}\n")
     if violations:

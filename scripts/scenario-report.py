@@ -263,8 +263,16 @@ def main() -> int:
             if proc.returncode == 0:
                 status = "flaky" if attempt == 2 else "pass"
                 break
+            if proc.returncode == 3:      # preflight gate tripped
+                status = "infra"
+                break
+            if proc.returncode == 4:      # needs_tools/needs_any absent
+                status = "unimplemented"
+                break
 
-        if status == "fail" and _is_quota(out):
+        if status == "infra":
+            outage_streak += 1
+        elif status == "fail" and _is_quota(out):
             status, outage_streak = "quota", outage_streak + 1
         elif status == "fail" and _is_infra(out):
             status, outage_streak = "infra", outage_streak + 1
