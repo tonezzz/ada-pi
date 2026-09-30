@@ -22,6 +22,18 @@ turns:
     response_nonempty: true
     timeout_s: 180
     settle_s: 50
+- user: Check screen 4's state — tell me its layout.
+  expect:
+    calls_any:
+    - vcast_list
+    result_contains:
+    - panes
+    result_contains_any:
+    - p1:img-nw
+    - p1:frame-ok
+    - p1:video-vw
+    timeout_s: 90
+    settle_s: 8
 - user: 'Tour stop 1: fly the map to 13.8399, 100.5412 — the Pracha Niwet intersection
     in north Bangkok. Then swap the floating window to this camera: https://tony-dell.taila0626a.ts.net/apps/camwall/data/traffic/itic---pracha-niwet-intersection--bangkok.jpg
     — and narrate it properly on the screen: where we are, what this camera looks

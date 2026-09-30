@@ -29,6 +29,7 @@ turns:
     - vcast_list
     result_contains:
     - panes
+    - p1:frame-ok
     timeout_s: 90
     settle_s: 8
 - user: Fly into Johannesburg, South Africa — over the city — and narrate it on that

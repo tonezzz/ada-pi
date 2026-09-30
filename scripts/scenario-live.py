@@ -19,6 +19,7 @@ Turn expectations (all optional, all must pass):
   no_calls_except: [tool, ...] no_calls, but these tools don't count (e.g. set_facial_expression)
   max_calls: N                 fail if more than N tool_call events fired this turn
   result_contains: [s, ...]    each substring appears in some tool_result
+  result_contains_any: [s, ...]  at least one substring appears in a result
   response_contains: [s, ...]  each substring appears in the spoken transcript
   response_contains_any: [s, ...]  at least one substring appears (paraphrase-tolerant)
   response_nonempty: true      any spoken transcript at all
@@ -238,6 +239,12 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
     for sub in expect.get("result_contains") or []:
         if not any(sub in json.dumps(r.get("result") or {}, default=str) for r in results):
             failures.append(f"result_contains: {sub!r} not in any tool_result")
+    any_res = expect.get("result_contains_any") or []
+    if any_res and not any(
+            s in json.dumps(r.get("result") or {}, default=str)
+            for s in any_res for r in results):
+        failures.append(
+            f"result_contains_any: none of {any_res} in any tool_result")
     for sub in expect.get("result_not_contains") or []:
         if any(sub in json.dumps(r.get("result") or {}, default=str) for r in results):
             failures.append(f"result_not_contains: {sub!r} leaked into a tool_result")
