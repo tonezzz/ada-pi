@@ -115,13 +115,15 @@ class DevTeam:
                 )
                 return resp.text or ""
             except Exception as exc:
-                if "429" not in str(exc) or attempt == 2:
+                text = str(exc)
+                transient = "429" in text or "503" in text or "UNAVAILABLE" in text
+                if not transient or attempt == 2:
                     raise
                 match = re.search(
-                    r"retry in ([\d.]+)s|retryDelay.*?(\d+)s", str(exc))
+                    r"retry in ([\d.]+)s|retryDelay.*?(\d+)s", text)
                 delay = min(45.0, float(
                     next(g for g in match.groups() if g)) + 2) if match else 10.0
-                logger.info("devteam: 429 quota, retry in %.0fs", delay)
+                logger.info("devteam: transient error, retry in %.0fs", delay)
                 await asyncio.sleep(delay)
         raise RuntimeError("unreachable")
 
