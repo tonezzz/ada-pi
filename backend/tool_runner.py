@@ -3323,6 +3323,14 @@ class ToolRunner:
         if action == "settings":
             if not settings:
                 return {"error": "settings action requires a settings object"}
+            # the model sometimes double-wraps settings —
+            # {"settings": {...}} — flatten before relay (2026-09-30: a
+            # nested write silently failed to clear the yolo effect)
+            if isinstance(settings, dict) and isinstance(
+                    settings.get("settings"), dict):
+                inner = settings.pop("settings")
+                inner.update(settings)
+                settings = inner
             out = await asyncio.to_thread(
                 self._vcast_api, "/camwall",
                 {"zone": zone, "settings": settings})

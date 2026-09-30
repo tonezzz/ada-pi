@@ -403,8 +403,27 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
         want_zone, want_kv = next(iter(or_state["camwall_settings"].items()))
         zone_state = _camwall_zone(str(want_zone))
         cur = (zone_state or {}).get("settings") or {}
-        bad = {k: v for k, v in dict(want_kv).items()
-               if cur.get(k) != v}
+        # list values match by membership (any order/extras ok); scalars
+        # match exactly
+        bad = {}
+        for k, v in dict(want_kv).items():
+            got = cur.get(k)
+            if isinstance(v, list):
+                if not v:                      # [] asserts empty
+                    if isinstance(got, list) and got:
+                        bad[k] = v
+                else:
+                    # wanted item matches an element exactly OR as a
+                    # substring (effect strings carry suffixes like
+                    # "yolo:person,car@0.35")
+                    def _hit(x):
+                        return (isinstance(got, list) and
+                                any(x == g or str(x) in str(g)
+                                    for g in got))
+                    if any(not _hit(x) for x in v):
+                        bad[k] = v
+            elif got != v:
+                bad[k] = v
         if zone_state is None:
             failures.append(f"or_state: camwall zone {want_zone!r} "
                             "absent from relay")
@@ -834,6 +853,28 @@ async def main() -> int:
     if api_key:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}api_key={api_key}"
+
+    # One live scenario per host at a time — concurrent runs share the Ada
+    # session AND the vcast screens, silently corrupting each other
+    # (2026-09-30: casting suite scored 0.0 while the hourly smoke tier
+    # held the session; every scenario "failed" with 0 tool calls).
+    # Lock is a TCP bind, not a file lock — the smoke tier runs in a
+    # host-network container whose /tmp is private. Wait rather than fail
+    # so queued runs still execute.
+    import socket
+    _lock = socket.socket()
+    _locked = False
+    for _ in range(120):  # wait up to 10 min for a wedged holder
+        try:
+            _lock.bind(("127.0.0.1", 8199))
+            _locked = True
+            break
+        except OSError:
+            await asyncio.sleep(5)
+    if not _locked:
+        print("scenario-live: lock held >10 min — giving up")
+        return 3
+    _lock.listen(1)
     if not args.persist:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}no_persist=1"
@@ -971,9 +1012,17 @@ async def main() -> int:
                             ws, text, expect, args.verbose, audio=audio_bytes
                         )
                         # Live-API interrupts mid-tool-call can produce an
-                        # empty turn; retry once before scoring it.
-                        if (failures == ["response_nonempty: empty transcript"]
-                                and text is not None):
+                        # empty turn; retry once before scoring it. Any
+                        # expectation that demands speech counts.
+                        transcript_now = "".join(
+                            str(e.get("text") or "") for e in events
+                            if e.get("type") == "assistant_transcript_delta")
+                        expects_speech = any(
+                            expect.get(k) for k in
+                            ("response_nonempty", "response_contains",
+                             "response_contains_any"))
+                        if (not transcript_now.strip()
+                                and expects_speech and text is not None):
                             print("      empty turn — retrying once")
                             events, failures = await run_turn(
                                 ws, text, expect, args.verbose)

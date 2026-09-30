@@ -22,7 +22,11 @@ turns:
   - user: "Turn on person and car detection on the rama9 wall."
     expect:
       calls_any: [cctv_wall]
-      result_contains: ["yolo"]
+      # the relay's stored zone settings are ground truth — the tool
+      # result doesn't reliably echo the effect string
+      or_state:
+        camwall_settings:
+          rama9: {effects: ["yolo"]}
       response_nonempty: true
       timeout_s: 90
       settle_s: 6
@@ -37,6 +41,11 @@ turns:
   - user: "Turn detection back off."
     expect:
       calls_any: [cctv_wall]
+      # effects must actually clear — a claim without the write is a
+      # phantom action (observed 2026-09-30: nested settings arg)
+      or_state:
+        camwall_settings:
+          rama9: {effects: []}
       response_nonempty: true
       timeout_s: 90
       settle_s: 6

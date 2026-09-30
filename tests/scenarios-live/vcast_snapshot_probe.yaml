@@ -1,5 +1,11 @@
 name: vcast-snapshot-probe
 tier: smoke
+
+# needs a REAL display on screen 9 showing the marker page — a headless
+# protocol display can't render frames for vcast_snapshot
+preflight:
+  - {check: vcast_online, screens: [9]}
+
 turns:
   - user: "Look at vcast screen 9 — capture a snapshot and tell me exactly what text or picture is on it."
     expect:

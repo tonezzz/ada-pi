@@ -4491,10 +4491,16 @@ class GeminiLiveProvider(RealtimeProvider):
                 for fd in config["tools"][0]["function_declarations"]
             ]
             names = [re.escape(n) for n in names if n]
-            self._tool_leak_re = (
-                re.compile(r"\b(?:" + "|".join(names) + r")\s*\{")
-                if names else None
-            )
+            if names:
+                self._tool_leak_re = re.compile(
+                    r"\b(?:" + "|".join(names) + r")\s*\{"
+                    # echo of the tool-result wrapper — observed
+                    # 2026-09-30: '<code_output>Tool cctv_snapshot
+                    # returned: {...}' spoken aloud mid-turn
+                    r"|<code_output>|\bTool\s+\w+\s+returned\s*:",
+                )
+            else:
+                self._tool_leak_re = None
         except Exception:
             self._tool_leak_re = None
         self._session_context = self._client.aio.live.connect(
