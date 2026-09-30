@@ -3786,6 +3786,34 @@ class ToolRunner:
             caps = await asyncio.to_thread(self._vcast_api, "/capture")
             for k, cap in (caps.get("captures") or {}).items():
                 if str(k) == str(screen) and cap.get("active"):
+                    # A capture lease outlives its display: the wall page
+                    # clears it on nav, but a user cast or reconnect leaves
+                    # it active — false would_interrupt forces a manual
+                    # reset (2026-09-30 transcript). Trust the screen's own
+                    # reported state: if it's connected and NOT showing a
+                    # capture, the lease is stale — release it.
+                    try:
+                        disp = await asyncio.to_thread(
+                            self._vcast_api, "/displays")
+                        scr = next(
+                            (s for s in disp.get("screens", [])
+                             if str(s.get("screen") or "") == str(screen)),
+                            {})
+                    except Exception:
+                        scr = {}
+                    st = str(scr.get("state") or "")
+                    det = str(scr.get("state_detail") or "")
+                    if (scr.get("connected")
+                            and "camwall" not in st + det
+                            and "uplink" not in st + det
+                            and "capture" not in st + det):
+                        try:
+                            await asyncio.to_thread(
+                                self._vcast_api, "/capture",
+                                {"screen": int(k), "active": False})
+                        except Exception:
+                            pass
+                        break
                     return {"kind": "capture",
                             "desc": f"a camera capture/uplink "
                                     f"({cap.get('source') or 'cam'}) is "
