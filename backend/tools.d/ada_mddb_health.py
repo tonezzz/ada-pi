@@ -23,7 +23,6 @@ DECLARATION = {
                 "description": "Optional: limit the report to one collection name.",
             },
         },
-        "additionalProperties": False,
     },
 }
 
