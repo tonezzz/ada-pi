@@ -9,9 +9,12 @@ never see the ada_camera_snapshot tool.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import httpx
+
+log = logging.getLogger(__name__)
 
 
 def snap_url() -> str:
@@ -61,3 +64,54 @@ async def snapshot(channel: str, settle: float | None = None) -> tuple[bytes, st
             f"unknown camera '{channel}' — available: {', '.join(names)}.{hint}")
     r.raise_for_status()
     return r.content, r.headers.get("x-channel", channel)
+
+
+# --- last-good fallback ----------------------------------------------------
+# Camwall zones whose thumbs come from this same VMS shim — when a live
+# snap fails, the puller's last-good thumb is a guaranteed image to show
+# (marked stale by its mtime, never presented as live).
+VMS_CAMWALL_ZONES = ("zone-a", "noble-park", "vms-noble-club", "vms-noble-a")
+
+
+def _slug(s: str) -> str:
+    return "".join(c if c.isalnum() else "-" for c in s.lower()).strip("-")
+
+
+async def stale_snapshot(channel: str) -> tuple[bytes, str, int] | None:
+    """Fetch the last-known thumb for `channel` from the camwall cache.
+
+    Returns (jpeg_bytes, cam_label, age_s) or None. Fetches each VMS
+    zone's manifest (tiny JSON) to find the cam key — manifests carry the
+    freshest thumb ts even for cams that failed this cycle."""
+    base = os.environ.get(
+        "ADA_CAMWALL_BASE",
+        "https://tony-dell.taila0626a.ts.net/apps/camwall").rstrip("/")
+    want = _slug(channel)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as c:
+            for zone in VMS_CAMWALL_ZONES:
+                try:
+                    man = (await c.get(
+                        f"{base}/data/{zone}/manifest-{zone}.json")).json()
+                except Exception:
+                    continue
+                for cam in man.get("cams") or []:
+                    if _slug(cam.get("key") or "") != want and \
+                            _slug(cam.get("label") or "") != want:
+                        continue
+                    img = await c.get(
+                        f"{base}/data/{zone}/{cam['key']}.jpg")
+                    if img.status_code != 200 or len(img.content) < 5000:
+                        log.info("stale snap %r: %s -> %d %dB",
+                                 channel, cam["key"], img.status_code,
+                                 len(img.content))
+                        return None
+                    age = int(__import__("time").time()
+                              - (cam.get("ts") or 0))
+                    log.info("stale snap %r: %s/%s.jpg %dB age=%ds",
+                             channel, zone, cam["key"],
+                             len(img.content), age)
+                    return img.content, cam.get("label") or channel, age
+    except Exception:
+        return None
+    return None

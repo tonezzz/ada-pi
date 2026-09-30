@@ -1,0 +1,34 @@
+# camera-stale-fallback — the guaranteed-image contract (2026-09-30):
+# when a live VMS snap 503s/times out, Ada must still produce an image —
+# the camwall last-good thumb — and describe it as STALE with an age,
+# never as live. When the camera is healthy the same turn just answers
+# live; both outcomes are correct, empty-handed failure is not.
+name: camera-stale-fallback
+tier: full
+
+turns:
+  - user: "Take a look at the tennis court camera and tell me what you see — and if it's not live, say how old the image is."
+    expect:
+      calls: [ada_camera_snapshot]
+      response_nonempty: true
+      # live description, honest stale report, or honest outage — all ok;
+      # silence/no-image with no explanation is not
+      response_contains_any:
+        - "court"
+        - "stale"
+        - "old"
+        - "ago"
+        - "offline"
+        - "down"
+        - "last"
+        - "frame"
+        - "คอร์ท"
+        - "เทนนิส"
+        - "เก่า"
+        - "ล่าสุด"
+        - "ไม่ได้"
+        - "ภาพ"
+      no_unattempted_refusal: [ada_camera_snapshot, cctv_snapshot]
+      max_calls: 8
+      timeout_s: 420     # live path: 2 shim retries × ~170s worst + describe
+      settle_s: 8

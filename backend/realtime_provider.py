@@ -1365,18 +1365,37 @@ class GeminiLiveProvider(RealtimeProvider):
                               "'tennis court', 'front road'."}, None)
         try:
             png, resolved = await vms_camera.snapshot(channel)
+            stale_meta = None
         except LookupError as exc:
             return ({"error": str(exc)}, None)
         except Exception as exc:
             logger.warning("session=%s camera snapshot failed: %s",
                            self.session_id, exc)
-            return ({"error": f"camera snapshot failed: {exc}"}, None)
+            # Guaranteed-image contract: serve the last-known frame from the
+            # camwall cache — always marked stale, never presented as live.
+            try:
+                stale = await vms_camera.stale_snapshot(channel)
+            except Exception:
+                stale = None
+            if not stale:
+                return ({"error": f"camera snapshot failed: {exc}"}, None)
+            png, resolved, age = stale[0], stale[1], stale[2]
+            stale_meta = {"stale": True, "age_s": age,
+                          "live_error": str(exc)[:120]}
         result = {
             "output": (
                 f"Still frame captured from camera '{resolved}'. "
                 + self._frame_followup_note()),
             "channel": resolved,
         }
+        if stale_meta:
+            result.update(stale_meta)
+            result["output"] = (
+                f"Camera '{resolved}' is NOT returning a live frame right "
+                f"now ({stale_meta['live_error']}). You are getting the last "
+                f"known frame, {age // 60}m{age % 60}s old — describe it "
+                "honestly as a stale frame, not live video, and say the "
+                "camera appears to be down. " + self._frame_followup_note())
         # Publish the frame two ways and prefer the relay copy for casting:
         #  a) relay asset  {VCAST_API}/frame?screen=0&token=cam:<slug>-<ts>
         #     — same-origin for vcast pages -> canvas stays clean so
@@ -1434,7 +1453,12 @@ class GeminiLiveProvider(RealtimeProvider):
                 f"cast_to_screen(action='image', "
                 f"url='{result['cast_url']}') — copy that url value "
                 "character-for-character; never guess or invent a URL.")
-        return result, (resolved, png, "image/png")
+        mime = "image/png"
+        if stale_meta:
+            mime = "image/jpeg"
+            resolved = (f"{resolved} (STALE — last known frame, "
+                        f"{age // 60}m old; camera offline)")
+        return result, (resolved, png, mime)
 
     async def _traffic_camera(self, args: dict) -> tuple[dict, tuple[str, bytes, str] | None]:
         """traffic_camera — search the Longdo/iTIC feed, snap the best match,
@@ -5162,10 +5186,14 @@ class GeminiLiveProvider(RealtimeProvider):
                                     "user naturally — if the description seems "
                                     "thin, you may look again on request."))]
                             else:
+                                verb = ("is the STALE last-known frame — "
+                                        "describe it but say it is old" if
+                                        "STALE" in cam_name else
+                                        "just arrived — describe to the "
+                                        "user what it shows.")
                                 parts = [types.Part.from_text(text=(
                                     f"Camera frame from '{cam_name}' "
-                                    "just arrived — describe to the user "
-                                    "what it shows."
+                                    f"{verb}"
                                     + (f" (helper agrees: {desc})"
                                        if desc else "")))]
                                 parts.append(types.Part.from_bytes(
