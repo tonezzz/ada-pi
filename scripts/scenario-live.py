@@ -251,25 +251,29 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
     if view:
         want_lat, want_lon = float(view[0]), float(view[1])
         km = float(view[2]) if len(view) > 2 else 25.0
-        pos = _gev_view_position(expect.get("gev_screen"))
-        if pos is None:
+        positions = _gev_view_positions(expect.get("gev_screen"))
+        if not positions:
             failures.append(
                 "gev_view_near: no GEV view state — no client on "
                 f"screen {expect.get('gev_screen')}")
         else:
             import math
-            dlat = math.radians(pos[0] - want_lat)
-            dlon = math.radians(pos[1] - want_lon)
-            aa = (math.sin(dlat / 2) ** 2
-                  + math.cos(math.radians(want_lat))
-                  * math.cos(math.radians(pos[0]))
-                  * math.sin(dlon / 2) ** 2)
-            dist = 6371 * 2 * math.asin(math.sqrt(aa))
-            if dist > km:
+            def _dist(p):
+                dlat = math.radians(p[0] - want_lat)
+                dlon = math.radians(p[1] - want_lon)
+                aa = (math.sin(dlat / 2) ** 2
+                      + math.cos(math.radians(want_lat))
+                      * math.cos(math.radians(p[0]))
+                      * math.sin(dlon / 2) ** 2)
+                return 6371 * 2 * math.asin(math.sqrt(aa))
+            dists = [_dist(p) for p in positions]
+            if min(dists) > km:
+                report = ", ".join(
+                    f"({p[0]:.4f},{p[1]:.4f})={d:.0f}km"
+                    for p, d in zip(positions, dists))
                 failures.append(
-                    f"gev_view_near: camera at "
-                    f"({pos[0]:.4f},{pos[1]:.4f}) is {dist:.0f} km "
-                    f"from target — limit {km} km")
+                    f"gev_view_near: no client camera within {km} km of "
+                    f"target — cameras: {report}")
     # narration content: a listed tool's call args must contain each
     # substring — proves the say/prompt carried the place, not filler
     for tool, subs in (expect.get("call_args_contain") or {}).items():
@@ -294,10 +298,10 @@ _GEV_CMD_URL = os.environ.get(
     "https://tony-dell.taila0626a.ts.net/apps/gev-cmd/command")
 
 
-def _gev_view_position(screen: Any) -> tuple[float, float, float] | None:
-    """POST get_current_view_state to the GEV command relay; returns
-    (lat, lon, dist_km-placeholder 0) — caller computes distance. None if
-    no client answered."""
+def _gev_view_positions(screen: Any) -> list[tuple[float, float]]:
+    """POST get_current_view_state to the GEV command relay; returns every
+    answering client's camera (lat, lon). Multiple remote clients can be
+    registered for one screen (stale tabs) — each answer counts."""
     import urllib.request
     try:
         req = urllib.request.Request(
@@ -328,10 +332,7 @@ def _gev_view_position(screen: Any) -> tuple[float, float, float] | None:
             for v in x:
                 walk(v)
     walk(out)
-    if not cams:
-        return None
-    # last answer = freshest (stale tabs can respond first)
-    return (cams[-1][0], cams[-1][1], 0.0)
+    return cams
 
 
 def _result_geo_within(result: Any, want_lat: float, want_lon: float,
