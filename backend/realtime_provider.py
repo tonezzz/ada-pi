@@ -1364,7 +1364,13 @@ class GeminiLiveProvider(RealtimeProvider):
             return ({"error": "channel is required — e.g. 'swimming pool', "
                               "'tennis court', 'front road'."}, None)
         try:
-            png, resolved = await vms_camera.snapshot(channel)
+            # Voice-turn budget: the shim is serial and can legitimately
+            # take ~160s worst case, but a user mid-conversation can't
+            # wait that long — 45s cap, then the stale-frame fallback
+            # answers honestly instead of a silent 5-minute hang
+            # (2026-09-30: wedged shim ate two scenario turns).
+            png, resolved = await asyncio.wait_for(
+                vms_camera.snapshot(channel), timeout=45)
             stale_meta = None
         except LookupError as exc:
             return ({"error": str(exc)}, None)
