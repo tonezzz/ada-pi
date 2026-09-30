@@ -2,7 +2,7 @@
 """Ops health reporter — writes report/health-* docs + refreshes the
 ops-health CMS page so Ada answers 'what's broken?' from one read.
 
-Checks: mddb http+vector, ada-ha-tony ws, jev (8777) + jev-student (8778)
+Checks: mddb http+vector, ada-ha-tony ws, jev-student (8778), open-jev-4b on idc02
 systemone, embed proxy. Counts systemd restart churn (restarts in 24h —
 the crash-loop signal a single is-active check misses).
 """
@@ -53,15 +53,15 @@ checks = [
         "collection": "ada-cms-pages", "query": "health", "topK": 1})),
     probe("ada-ha-tony-http", lambda:
             urllib.request.urlopen("http://127.0.0.1:8002/", timeout=8).status),
-    probe("open-jev-1b", lambda: get("http://100.74.146.0:8777/v1/systemone", 30, {
+    probe("jev-student", lambda: get("http://100.74.146.0:8778/health")),
+    probe("open-jev-4b-idc02", lambda: get("http://100.123.163.11:8777/v1/systemone", 30, {
         "state": "probe", "questions": {"q": {"type": "noul",
         "instructions": "x", "criteria": {"true": "t", "false": "f"}}}})),
-    probe("jev-student", lambda: get("http://100.74.146.0:8778/health")),
 ]
 
 # long-running units vs timer-driven oneshots — inactive is only bad
 # for the first kind. gev-gemini lives on tony-dell, not here.
-SERVICES = ["mddb", "ada-ha-tony", "open-jev", "jev-student", "ada-pi-pwa"]
+SERVICES = ["mddb", "ada-ha-tony", "jev-student", "ada-pi-pwa"]
 TIMERS = ["news-flood", "ada-scenario-smoke", "jev-bench",
           "ada-memory-sync", "doc-mirror"]
 svc_rows = []
