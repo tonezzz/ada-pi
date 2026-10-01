@@ -3510,6 +3510,101 @@ class ToolRunner:
             out.update({"url": url, "camera": shot["camera"]})
         return out
 
+    # -- async chat push (LINE / Telegram) --
+
+    async def chat_send(self, channel: str = "line", text: str = "",
+                        image_url: str = "", camera: str = "",
+                        to: str = "") -> dict[str, Any]:
+        """Queue an outbound LINE/Telegram message in the background and
+        return immediately. camera names a VMS channel (snapped on the
+        shim); image_url is any fetchable image (camwall thumb, cast_url).
+        Completion arrives as a system note via /api/notify."""
+        import asyncio
+        import secrets
+        job_id = "chat-" + secrets.token_hex(4)
+        asyncio.create_task(self._chat_send_run(
+            job_id, channel=channel, text=text, image_url=image_url,
+            camera=camera, to=to))
+        return {"status": "queued", "job_id": job_id, "channel": channel,
+                "note": "Running in the background. Tell the user the "
+                        "message is being sent — a system note will report "
+                        "success or failure when it finishes."}
+
+    async def _chat_send_run(self, job_id: str, channel: str, text: str,
+                             image_url: str, camera: str,
+                             to: str) -> None:
+        """Background worker: resolve the image (VMS snap or direct URL),
+        POST to the relay /send endpoints, then surface the result to the
+        live session via /api/notify."""
+        import urllib.parse
+        import urllib.request
+        summary_bits: list[str] = []
+        ok_any = False
+        url = (image_url or "").strip()
+        cam = (camera or "").strip()
+        if cam and not url:
+            vms = os.environ.get("ADA_VMS_SNAP_URL", "").rstrip("/")
+            if vms:
+                url = f"{vms}/snap?ch=" + urllib.parse.quote(cam)
+        if cam and url and "snap?ch=" in url:
+            # Warm the serial shim once — the relay would otherwise fetch
+            # the raw endpoint and a 503 means a broken/blocked delivery.
+            try:
+                with urllib.request.urlopen(url, timeout=180) as r:
+                    if r.status != 200:
+                        summary_bits.append(
+                            f"camera '{cam}' snap failed ({r.status})")
+                        url = ""
+            except Exception as exc:
+                summary_bits.append(f"camera '{cam}' snap failed ({exc})")
+                url = ""
+        relays = [c for c in (channel or "line").lower().split(",")
+                  if c.strip()]
+        if "both" in relays or "all" in relays:
+            relays = ["line", "telegram"]
+        for svc in relays:
+            svc = svc.strip()
+            if svc == "line":
+                ep = os.environ.get("ADA_LINE_SEND_URL",
+                                    "http://127.0.0.1:8912/send")
+            elif svc in ("telegram", "tg"):
+                ep = os.environ.get("ADA_TG_SEND_URL",
+                                    "http://127.0.0.1:8911/send")
+            else:
+                summary_bits.append(f"unknown channel '{svc}'")
+                continue
+            payload = {"text": text, "image_url": url,
+                       "caption": text or cam, "to": to,
+                       "chat_id": to}
+            try:
+                req = urllib.request.Request(
+                    ep, data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=150) as r:
+                    res = json.load(r)
+                if res.get("ok"):
+                    ok_any = True
+                    summary_bits.append(f"{svc}: delivered")
+                else:
+                    summary_bits.append(
+                        f"{svc}: failed ({res.get('error', '?')})")
+            except Exception as exc:
+                summary_bits.append(f"{svc}: failed ({exc})")
+        note = (f"[job {job_id}] chat_send "
+                f"{'DONE' if ok_any else 'FAILED'} — "
+                + "; ".join(summary_bits))
+        try:
+            key = os.environ.get("ADA_API_KEY", "")
+            req = urllib.request.Request(
+                os.environ.get("ADA_NOTIFY_URL",
+                               "http://127.0.0.1:8002/api/notify"),
+                data=json.dumps({"text": note, "urgent": "0"}).encode(),
+                headers={"Content-Type": "application/json",
+                         "x-api-key": key})
+            urllib.request.urlopen(req, timeout=10).read()
+        except Exception as exc:
+            logger.warning("chat_send notify failed: %s", exc)
+
     async def yt_transcript(self, url: str, language: str = "th") -> dict[str, Any]:
         """Fetch a YouTube video's auto-captions as plain text. `url` is a
         YouTube URL or video ID. The extraction runs on the transcript host

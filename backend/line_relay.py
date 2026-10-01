@@ -214,7 +214,7 @@ class LineRelay:
     def __init__(self) -> None:
         self.sessions: dict[str, ChatSession] = {}
         self.http: httpx.AsyncClient | None = None
-        self._imgs: dict[str, tuple[bytes, float]] = {}
+        self._imgs: dict[str, tuple[bytes, float, str]] = {}
 
     def _verify(self, body: bytes, signature: str) -> bool:
         mac = hmac.new(CHANNEL_SECRET.encode(), body, hashlib.sha256)
@@ -238,14 +238,13 @@ class LineRelay:
         mime = r.headers.get("content-type") or "image/jpeg"
         return r.content, mime.split(";")[0]
 
-    async def _mark_read(self, reply_token: str | None) -> None:
-        """Show the read tick as soon as Ada starts on the message. Per
-        LINE docs markAsRead does NOT consume the replyToken — the later
-        replyMessage/pushMessage still works."""
-        if not reply_token:
-            return
+    async def _mark_read(self, user_id: str) -> None:
+        """Show the read tick as soon as Ada starts on the message.
+        markAsRead takes the chat identity (userId here), not a replyToken,
+        so it never interferes with the replyMessage call."""
         try:
-            r = await self.line("markAsRead", {"replyToken": reply_token})
+            r = await self.line("markAsRead",
+                                {"chat": {"userId": user_id}})
             if r.status_code != 200:
                 logger.info("markAsRead %s: %s", r.status_code, r.text[:120])
         except Exception as exc:
@@ -261,6 +260,8 @@ class LineRelay:
 
     async def _deliver(self, user_id: str, msgs: list[dict],
                        reply_token: str | None = None) -> None:
+        logger.info("deliver to %s: [%s]",
+                    user_id, ",".join(m.get("type", "?") for m in msgs[:5]))
         if reply_token:
             try:
                 r = await self.line("reply", {
@@ -291,7 +292,9 @@ class LineRelay:
             return png
 
     async def _image_msgs(self, url: str, caption: str) -> list[dict]:
-        """Fetch the frame, host it publicly, return LINE image messages."""
+        """Fetch the frame, host it publicly, return LINE image messages.
+        The served content-type must match the real bytes — LINE renders
+        a blank image when a JPEG thumb is labelled image/png."""
         assert self.http is not None
         try:
             r = await self.http.get(url, timeout=120)
@@ -299,9 +302,14 @@ class LineRelay:
                 raise RuntimeError(f"fetch {r.status_code} {len(r.content)}B")
             import secrets
             nonce = secrets.token_urlsafe(12)
-            self._imgs[nonce] = (r.content, time.time())
+            mime = (r.headers.get("content-type")
+                    or "image/jpeg").split(";")[0]
+            if not mime.startswith("image/"):
+                mime = "image/jpeg"
+            self._imgs[nonce] = (r.content, time.time(), mime)
             pnonce = nonce + "-p"
-            self._imgs[pnonce] = (self._preview_jpeg(r.content), time.time())
+            self._imgs[pnonce] = (self._preview_jpeg(r.content),
+                                  time.time(), "image/jpeg")
             msgs: list[dict] = [{"type": "image",
                                  "originalContentUrl":
                                      f"{LINE_PUBLIC_IMG_BASE}/{nonce}",
@@ -411,7 +419,8 @@ class LineRelay:
                         now - sess.last_active > IDLE_SESSION_S:
                     logger.info("user %s idle close", uid)
                     await sess.close()
-            for nonce, (_data, ts) in list(self._imgs.items()):
+            for nonce, hit in list(self._imgs.items()):
+                ts = hit[1]
                 if time.time() - ts > IMG_TTL_S:
                     self._imgs.pop(nonce, None)
 
@@ -442,19 +451,52 @@ class LineRelay:
         async def health(request):
             return JSONResponse({"ok": True, "mode": "webhook"})
 
+        async def send(request):
+            """Outbound push API for Ada's chat_send tool — loopback only
+            (127.0.0.1 listen). {to?, text?, image_url?, caption?} — the
+            image is fetched + publicly hosted via _image_msgs so LINE's
+            CDN can pull it."""
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"ok": False,
+                                     "error": "bad json"}, status_code=422)
+            uid = str(body.get("to") or "").strip() or \
+                next(iter(_allowed_users()), "")
+            if not uid:
+                return JSONResponse({"ok": False,
+                                     "error": "no target"}, status_code=400)
+            msgs: list[dict] = []
+            if body.get("text"):
+                msgs += [{"type": "text", "text": str(body["text"])[:4900]}]
+            if body.get("image_url"):
+                msgs += await self._image_msgs(
+                    str(body["image_url"]), str(body.get("caption") or ""))
+            if not msgs:
+                return JSONResponse({"ok": False,
+                                     "error": "nothing to send"},
+                                    status_code=400)
+            try:
+                await self._deliver(uid, msgs[:5], None)
+                return JSONResponse({"ok": True, "to": uid})
+            except Exception as exc:
+                return JSONResponse({"ok": False, "error": str(exc)},
+                                    status_code=502)
+
         async def img(request):
             from starlette.responses import Response
             nonce = request.path_params.get("nonce", "")
             hit = self._imgs.get(nonce)
             if not hit:
                 return JSONResponse({"ok": False}, status_code=404)
-            data, _ = hit
-            ct = "image/jpeg" if nonce.endswith("-p") else "image/png"
-            return Response(data, media_type=ct)
+            data, _ts, mime = (hit + ("image/jpeg",))[:3] \
+                if len(hit) == 2 else hit
+            return Response(data, media_type=mime)
 
         app = Starlette(routes=[
             Route(LINE_PATH, webhook, methods=["POST"]),
             Route("/webhook/line-health", health, methods=["GET"]),
+            Route("/send", send, methods=["POST"]),
             Route("/relay-img/{nonce}", img, methods=["GET"]),
         ])
         host, _, port = LINE_LISTEN.rpartition(":")

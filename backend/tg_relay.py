@@ -428,9 +428,41 @@ class TgRelay:
         async def health(request):
             return JSONResponse({"ok": True, "mode": "webhook"})
 
+        async def send(request):
+            """Outbound push API for Ada's chat_send tool — loopback only.
+            {chat_id?, text?, photo_url?, caption?}"""
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"ok": False,
+                                     "error": "bad json"}, status_code=422)
+            try:
+                cid = int(body.get("chat_id") or 0) or \
+                    next(iter(_allowed_chats()), 0)
+            except (TypeError, ValueError):
+                cid = next(iter(_allowed_chats()), 0)
+            if not cid:
+                return JSONResponse({"ok": False,
+                                     "error": "no target"}, status_code=400)
+            if not (body.get("text") or body.get("photo_url")):
+                return JSONResponse({"ok": False,
+                                     "error": "nothing to send"},
+                                    status_code=400)
+            try:
+                if body.get("text"):
+                    await self.send_text(cid, str(body["text"])[:4000])
+                if body.get("photo_url"):
+                    await self.send_photo(cid, str(body["photo_url"]),
+                                          str(body.get("caption") or ""))
+                return JSONResponse({"ok": True, "chat_id": cid})
+            except Exception as exc:
+                return JSONResponse({"ok": False, "error": str(exc)},
+                                    status_code=502)
+
         app = Starlette(routes=[
             Route(TG_WEBHOOK_PATH, webhook, methods=["POST"]),
             Route("/webhook/health", health, methods=["GET"]),
+            Route("/send", send, methods=["POST"]),
         ])
         host, _, port = TG_LISTEN.rpartition(":")
         server = uvicorn.Server(uvicorn.Config(

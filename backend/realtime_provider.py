@@ -2419,6 +2419,46 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "chat_send",
+                    "description": (
+                        "Send a message to the user's chat apps in the BACKGROUND — LINE, "
+                        "Telegram, or both ('line,telegram'). Returns 'queued' immediately; "
+                        "the actual send (including a slow camera snapshot) happens in a "
+                        "background job and its result arrives later as a system note — "
+                        "tell the user it's being sent, then relay the outcome when the note "
+                        "lands. Attach one image via 'camera' (VMS channel name — a fresh "
+                        "snapshot is taken) or 'image_url' (a camwall thumb or a cast_url you "
+                        "already produced — do NOT pass arbitrary web URLs). 'text' is the "
+                        "message/caption. Omit 'to' to send to the default owner chat."
+                    ),
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "channel": {
+                                "type": "string",
+                                "description": "'line', 'telegram', or 'line,telegram'/'both'. Default 'line'.",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "Message text / image caption.",
+                            },
+                            "camera": {
+                                "type": "string",
+                                "description": "VMS camera channel name — a fresh snapshot is taken and attached.",
+                            },
+                            "image_url": {
+                                "type": "string",
+                                "description": "URL of an existing image to send (camwall thumb or a cast_url you already produced).",
+                            },
+                            "to": {
+                                "type": "string",
+                                "description": "Optional explicit LINE userId or Telegram chat_id; default = owner.",
+                            },
+                        },
+                        "required": [],
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "vcast_gesture",
                     "description": (
                         "Enable/disable gesture control on a numbered vcast display — the screen's own "
