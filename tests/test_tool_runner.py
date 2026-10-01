@@ -708,5 +708,79 @@ class DevinJobReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("## Failed jobs", args[3])
 
 
+class CastToScreenRouteTests(unittest.IsolatedAsyncioTestCase):
+    """Regression coverage for the 2026-10-01 "camera never changes"
+    failure: Ada cast a JPEG snapshot with action='play' (renders a black
+    video-vw0 pane) and an invented URL that did not even resolve — the
+    screen stayed on the old camera while the tool claimed delivery."""
+
+    async def asyncSetUp(self):
+        self.runner = ToolRunner(AsyncMock(), instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.pubbed = []
+        self.display_state = "image"
+        self.display_detail = "p0:img-nw800 https://img.test/x.jpg"
+
+        def fake_vcast(path, payload=None):
+            if path == "/pub":
+                self.pubbed.append(payload)
+                return {"ok": True, "delivered": 1}
+            if path == "/displays":
+                return {"screens": [{
+                    "screen": 1, "connected": True,
+                    "state": self.display_state,
+                    "state_detail": self.display_detail}]}
+            return {"captures": {}}
+
+        patcher = patch.object(
+            ToolRunner, "_vcast_api", staticmethod(fake_vcast))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def test_play_with_image_url_reroutes_to_image(self):
+        # A still image sent to <video> never decodes — the tool must
+        # auto-route to the image pane instead of producing black.
+        with patch.object(ToolRunner, "_frame_check",
+                          staticmethod(lambda url:
+                                       {"content_type": "image/jpeg"})):
+            out = await self.runner.cast_to_screen(
+                1, "play", url="https://img.test/x.jpg")
+        self.assertTrue(out["ok"])
+        self.assertEqual(self.pubbed[-1]["msg"]["type"], "image")
+        self.assertIn("action_fixed", out)
+
+    async def test_dead_url_never_reaches_display(self):
+        # An invented/unresolvable URL must hard-fail before the pub —
+        # casting it produces a silent black pane.
+        with patch.object(ToolRunner, "_frame_check",
+                          staticmethod(lambda url:
+                                       {"dead": "gaierror: -2"})):
+            out = await self.runner.cast_to_screen(
+                1, "play", url="https://dead.invalid/x")
+        self.assertFalse(out["ok"])
+        self.assertIn("unreachable", out["error"])
+        self.assertEqual(self.pubbed, [])
+
+    async def test_image_interval_passes_through(self):
+        out = await self.runner.cast_to_screen(
+            1, "image", url="https://img.test/x.jpg", interval=15)
+        self.assertEqual(self.pubbed[-1]["msg"]["type"], "image")
+        self.assertEqual(self.pubbed[-1]["msg"]["interval"], 15)
+        self.assertNotIn("render_warn", out)
+
+    async def test_dead_render_warns_instead_of_claiming_success(self):
+        # video-vw0 = zero decoded frames — the pane is black. The result
+        # must flag it so Ada doesn't report success.
+        self.display_state = "playing"
+        self.display_detail = "p0:video-vw0"
+        with patch.object(ToolRunner, "_frame_check",
+                          staticmethod(lambda url: {})):
+            # screen reports 'playing' -> interrupt gate needs a confirm
+            out = await self.runner.cast_to_screen(
+                1, "play", url="https://vid.test/x.mp4", confirmed=True)
+        self.assertIn("render_warn", out)
+        self.assertNotIn("action_fixed", out)
+
+
 if __name__ == "__main__":
     unittest.main()

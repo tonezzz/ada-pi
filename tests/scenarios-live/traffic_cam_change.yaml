@@ -1,0 +1,88 @@
+# traffic-cam-change — extracted from Tony's 2026-09-30 ~17:17 session:
+# he got a Rama 4 traffic cam on screen 1, then every "change camera"
+# request visibly did nothing. Three real defects were in play:
+#
+#   1) cast_to_screen was DENIED twice — speaker-id matched Tony's voice
+#      to enrolled profile 'person.kk' (secondary-speaker gate, owner
+#      'admin'). The screen never received the casts while Ada believed
+#      she was blocked for permission.
+#   2) When the Longdo feed timed out, Ada INVENTED
+#      api.trafficsys.in/v1/public/snapshot/c66 — a DNS-dead domain that
+#      exists nowhere in code or memory — instead of retrying
+#      traffic_camera for its cast_url.
+#   3) She cast a still-image URL with action='play' — vcast puts it in a
+#      <video> element which can't decode a JPEG → black pane, vw0.
+#      Still frames must use action='image' (+interval for auto-refresh).
+#
+# This scenario asserts the mechanics that failed: no 'denied' tool
+# results, a real cast on BOTH the show and the change turn (delivered),
+# and a verification pass where the screen reports an image — not
+# video-vw0 / image-load-failed / idle-or-overlay.
+#
+# tier: full — actuates a real display. Screen 1 (iPad) is the target;
+# restore nothing — a leftover traffic still is harmless.
+
+name: traffic-cam-change
+tier: full
+
+turns:
+  # T1 — put a live traffic camera on screen 1. traffic_camera returns a
+  # cast_url (relay frame); cctv_wall on a traffic zone is also a correct
+  # path.
+  - user: "Show me a traffic camera — any Bangkok one that's actually live — on screen 1."
+    expect:
+      calls_any: [traffic_camera, cctv_wall, cast_to_screen]
+      result_not_contains: ["denied"]
+      response_nonempty: true
+      max_calls: 10
+      timeout_s: 120        # feed fetch + snap + confirm chatter
+      settle_s: 10
+
+  # T2 — confirm if she asked; the cast must land (delivered>0) and must
+  # not be denied by the speaker gate.
+  - user: "Yes, go ahead."
+    expect:
+      calls_any: [cast_to_screen, cctv_wall]
+      result_contains: ["'delivered': 1"]
+      result_not_contains: ["denied"]
+      response_nonempty: true
+      max_calls: 10
+      timeout_s: 120
+      settle_s: 10
+
+  # T3 — THE regression turn: change to a different camera. The change
+  # must produce a real cast (delivered) — a silent no-op is the bug.
+  - user: "Now change it — show me a different camera on screen 1."
+    expect:
+      calls_any: [traffic_camera, cast_to_screen, cctv_wall]
+      result_contains: ["'delivered': 1"]
+      result_not_contains: ["denied"]
+      response_nonempty: true
+      max_calls: 12
+      timeout_s: 120
+      settle_s: 10
+
+  # T4 — honest verification: the screen must report an image (or a real
+  # stream), not a dead video pane. Catches play-on-jpeg (vw0) and
+  # unresolvable URLs (image-load-failed) — the two failure shapes seen.
+  - user: "Is screen 1 actually showing the new camera now?"
+    expect:
+      calls_any: [vcast_snapshot, vcast_list]
+      result_not_contains:
+        - "image-load-failed"
+        - "video-vw0"
+        - "idle-or-overlay"
+        - "denied"
+      response_nonempty: true
+      max_calls: 8
+      timeout_s: 90
+      settle_s: 8
+
+  # T5 — teardown.
+  - user: "Thanks — stop screen 1."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      max_calls: 8
+      timeout_s: 90
+      settle_s: 8

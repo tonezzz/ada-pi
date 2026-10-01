@@ -4206,11 +4206,19 @@ class ToolRunner:
                              url: str = "", pane: int | None = None,
                              panes: int | None = None,
                              mode: str | None = None,
+                             interval: int | None = None,
                              confirmed: bool = False) -> dict[str, Any]:
         """Cast to a numbered vcast virtual display (NOT the TV).
         action: nav|play|image|audio|stop|layout|zoom|unzoom|uplink|
         uplink-stop. url required except for stop/layout/zoom/unzoom/
         uplink/uplink-stop.
+
+        action='image' is for still frames (JPEG/PNG) — optional
+        interval=N re-fetches the image every N seconds (good for
+        traffic-cam stills that refresh server-side). 'play' is ONLY for
+        real video streams (mp4/HLS) — a still image sent to play renders
+        a black video pane, so this tool auto-routes image content to
+        'image'.
 
         Split-screen: action='layout' + panes=2..5 splits the screen into
         that many sub-panes; subsequent casts take pane=0..N-1 (0 is
@@ -4239,6 +4247,8 @@ class ToolRunner:
                             "Tell the user what is running, ask whether to "
                             "replace it, then call again with "
                             "confirmed=true only after they say yes.")}
+        probe: dict[str, Any] = {}
+        auto_image = False
         if action == "layout":
             msg: dict[str, Any] = {"type": "layout",
                                    "panes": int(panes or 1)}
@@ -4256,25 +4266,49 @@ class ToolRunner:
                     f"unknown action {action!r} (nav|play|image|audio|stop|layout|zoom|unzoom|uplink|uplink-stop)")
             if not url:
                 raise ValueError("url is required for " + action)
+            # Pre-flight for nav/play: probe the target BEFORE pubbing —
+            # a dead URL or a still image sent to <video> both render as a
+            # black pane that looks identical to "it didn't work"
+            # (2026-10-01: Ada cast a JPEG snapshot with action='play' and
+            # an invented URL that didn't even resolve; screen 1 just
+            # stayed on the previous camera with no visible error).
+            if action in {"nav", "play"} and str(url).startswith(
+                    ("http://", "https://")):
+                try:
+                    probe = await asyncio.to_thread(
+                        self._frame_check, str(url))
+                except Exception:
+                    probe = {}
+            if probe.get("dead"):
+                return {
+                    "ok": False, "delivered": 0,
+                    "error": (f"URL is unreachable ({probe['dead']}) — not "
+                              "casting. Never invent a URL: re-fetch a "
+                              "current one from the source tool (e.g. "
+                              "traffic_camera returns cast_url) and retry "
+                              "with that exact value.")}
+            if (action == "play"
+                    and str(probe.get("content_type") or "").lower()
+                    .startswith("image/")):
+                # Still image in a <video> element never decodes —
+                # auto-route to the image pane so the cast works instead
+                # of producing a black video-vw0 pane.
+                action = "image"
+                auto_image = True
             msg = {"type": action, "url": url}
+            if interval is not None and action == "image":
+                msg["interval"] = int(interval)
         if pane is not None and action not in {"layout", "unzoom"}:
             msg["pane"] = int(pane)
-        # Frameability pre-flight for nav: lots of cam/stream sites send
-        # X-Frame-Options / CSP frame-ancestors, and an iframe renders
-        # them as a silent blank — "it never changes" (2026-09-29:
-        # surf-forecast.com XFO=SAMEORIGIN). Warn before the pub so Ada
-        # can pick another source instead of chasing a dead iframe.
-        if action in {"nav", "play"} and str(url).startswith(("http://", "https://")):
-            try:
-                warn = await asyncio.to_thread(self._frame_check, str(url))
-            except Exception:
-                warn = None
-        else:
-            warn = None
+        warn = probe.get("warn")
         out = await asyncio.to_thread(
             self._vcast_api, "/pub", {"screen": screen, "msg": msg})
         if warn:
             out["frame_warn"] = warn
+        if auto_image:
+            out["action_fixed"] = (
+                "url serves a still image — cast as 'image', not 'play' "
+                "(a video element cannot decode it and shows black)")
         # capture lease bookkeeping — the relay's /capture state is ground
         # truth for the ask-before-stopping contract; the display also POSTs
         # on uplink-start, but this covers display-offline cases
@@ -4320,51 +4354,93 @@ class ToolRunner:
                             f"'{detail[:80] or scr.get('state')}' — the new "
                             "page may not have loaded; do not claim it "
                             "changed.")
+                # Dead render detection: 'video-vw0' means the video
+                # element decoded nothing (a still image cast with
+                # action='play' lands here — black pane); the image pane
+                # reports 'image-load-failed' outright. Do not claim the
+                # cast worked when the pane is dead.
+                if (scr.get("state") == "image-load-failed"
+                        or "video-vw0" in detail):
+                    out["render_warn"] = (
+                        f"screen {screen} reports no decodable content "
+                        f"('{detail[:80] or scr.get('state')}') — it is "
+                        "likely showing black or the previous page. If the "
+                        "source is a still image, re-cast with "
+                        "action='image'; if the URL is dead, fetch a fresh "
+                        "one from the source tool. Do NOT tell the user it "
+                        "changed.")
         except Exception:
             pass
         return out
 
     @staticmethod
-    def _frame_check(url: str) -> str | None:
-        """HEAD the nav/play target; warn if it forbids iframe embedding
-        (XFO/CSP frame-ancestors) or — for YouTube — the video is dead
-        (oembed 404 caught a 'Video unavailable' cast 2026-09-29)."""
+    def _frame_check(url: str) -> dict[str, Any]:
+        """HEAD the nav/play target. Returns {warn, content_type, dead}:
+        'warn' for XFO/CSP frame-ancestors blocks (or a dead YouTube id —
+        oembed 404 caught a 'Video unavailable' cast 2026-09-29),
+        'content_type' lets the caller reroute still images off 'play',
+        'dead' marks a URL that cannot be fetched at all (DNS/connrefused
+        — an invented or stale URL renders as a silent black pane)."""
         import urllib.request
+        import urllib.error
         import urllib.parse
+        out: dict[str, Any] = {}
         if re.search(r"(youtube\.com|youtu\.be|youtube-nocookie\.com)", url):
             try:
                 oe = urllib.request.urlopen(
                     "https://www.youtube.com/oembed?format=json&url="
                     + urllib.parse.quote(url, safe=""), timeout=6)
                 if oe.status == 200:
-                    return None
+                    return out
             except urllib.error.HTTPError as exc:
                 if exc.code == 404:
-                    return (f"{url} is not a playable video (oembed 404 — "
-                            "dead/removed/unlisted). Do NOT cast it; find "
-                            "another video id first.")
+                    out["warn"] = (
+                        f"{url} is not a playable video (oembed 404 — "
+                        "dead/removed/unlisted). Do NOT cast it; find "
+                        "another video id first.")
+                    return out
             except Exception:
-                return None  # inconclusive — let the display try
+                return out  # inconclusive — let the display try
         req = urllib.request.Request(url, method="HEAD",
                                      headers={"User-Agent": "ada-vcast/1.0"})
         try:
             resp = urllib.request.urlopen(req, timeout=6)
         except urllib.error.HTTPError as exc:
             resp = exc  # still carries headers
+        except urllib.error.URLError as exc:
+            # DNS failure / connrefused mean the display will fetch the
+            # same dead URL — hard-fail instead of casting a black pane.
+            reason = getattr(exc, "reason", exc)
+            if isinstance(reason, (TimeoutError, ConnectionRefusedError)) \
+                    or "gaierror" in type(reason).__name__ \
+                    or "timed out" in str(reason).lower() \
+                    or "Name or service" in str(reason) \
+                    or "refused" in str(reason).lower():
+                out["dead"] = f"{type(reason).__name__}: {reason}"
+                return out
+            return out  # other transport errors: let the display try
+        except Exception:
+            return out
         hdrs = resp.headers
+        ctype = (hdrs.get("Content-Type") or "").split(";")[0].strip()
+        if ctype:
+            out["content_type"] = ctype
         xfo = (hdrs.get("X-Frame-Options") or "").upper()
         if xfo.startswith(("DENY", "SAMEORIGIN")):
-            return (f"{url} forbids iframe embedding "
-                    f"(X-Frame-Options: {xfo}) — the screen will show "
-                    "blank. Pick a different source or snapshot the feed "
-                    "instead of nav-ing the page.")
+            out["warn"] = (
+                f"{url} forbids iframe embedding "
+                f"(X-Frame-Options: {xfo}) — the screen will show "
+                "blank. Pick a different source or snapshot the feed "
+                "instead of nav-ing the page.")
+            return out
         csp = hdrs.get("Content-Security-Policy") or ""
         m = re.search(r"frame-ancestors\s+([^;]+)", csp, re.I)
         if m and "'*'" not in m.group(1) and "https:" not in m.group(1):
-            return (f"{url} restricts framing via CSP frame-ancestors "
-                    f"({m.group(1).strip()}) — the screen may show blank; "
-                    "prefer a different source.")
-        return None
+            out["warn"] = (
+                f"{url} restricts framing via CSP frame-ancestors "
+                f"({m.group(1).strip()}) — the screen may show blank; "
+                "prefer a different source.")
+        return out
 
     async def vcast_say(self, screen: int, text: str) -> dict[str, Any]:
         """Speak a short narration line on a vcast display (Web Speech

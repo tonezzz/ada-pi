@@ -1494,11 +1494,15 @@ class GeminiLiveProvider(RealtimeProvider):
         try:
             cams = await asyncio.to_thread(tc.find_cams, query, lat, lon, heading)
         except Exception as exc:
-            return ({"error": f"camera feed unavailable: {exc}"}, None)
+            return ({"error": f"camera feed unavailable: {exc}. "
+                              "Retry this tool in a few seconds — never "
+                              "invent or guess a camera URL; only cast a "
+                              "cast_url this tool returns."}, None)
         if not cams:
             return ({"error": f"no traffic camera matched {query or 'that position'}. "
                               "Try a road/area keyword (e.g. 'burapha', 'bangna') "
-                              "or pass lat/lon."}, None)
+                              "or pass lat/lon. Never invent a camera URL — "
+                              "only cast a cast_url this tool returns."}, None)
         if cams[0].get("suspended"):
             return ({"error": cams[0]["title"] +
                               " — the feed currently has live frames for "
@@ -1516,8 +1520,12 @@ class GeminiLiveProvider(RealtimeProvider):
                 timeout=30)
         except asyncio.TimeoutError:
             return ({"error": "traffic camera feed timed out — it is "
-                              "responding very slowly right now; try "
-                              "again in a minute."}, None)
+                              "responding very slowly right now. Retry "
+                              "this tool once in a few seconds; if the "
+                              "user just wants a camera on a screen, "
+                              "cctv_wall zone='traffic' works meanwhile. "
+                              "Never invent a camera URL — only cast a "
+                              "cast_url this tool returns."}, None)
         cam = jpeg = mime = None
         dead = []
         for cand, res in zip(cands, snaps):
@@ -1528,7 +1536,9 @@ class GeminiLiveProvider(RealtimeProvider):
         if cam is None:
             return ({"error": f"{len(dead)} matched camera(s) returned no usable "
                               f"frame ({', '.join(dead)}). The feed marks many "
-                              "cams offline — try another area."}, None)
+                              "cams offline — try another area. Never invent "
+                              "a camera URL — only cast a cast_url this tool "
+                              "returns."}, None)
         slug = re.sub(r"[^a-z0-9]+", "-", (cam.get("camid") or "cam").lower())
         cast_url = await asyncio.to_thread(tc.publish_relay, jpeg, slug)
         dist = f" (~{cam['dist_km']} km away)" if cam.get("dist_km") else ""
