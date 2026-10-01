@@ -211,6 +211,19 @@ class LineRelay:
             f"{LINE_API}/v2/bot/message/{path}", json=payload,
             headers={"Authorization": f"Bearer {CHANNEL_TOKEN}"})
 
+    async def _mark_read(self, reply_token: str | None) -> None:
+        """Show the read tick as soon as Ada starts on the message. Per
+        LINE docs markAsRead does NOT consume the replyToken — the later
+        replyMessage/pushMessage still works."""
+        if not reply_token:
+            return
+        try:
+            r = await self.line("markAsRead", {"replyToken": reply_token})
+            if r.status_code != 200:
+                logger.info("markAsRead %s: %s", r.status_code, r.text[:120])
+        except Exception as exc:
+            logger.info("markAsRead failed: %s", exc)
+
     async def send_text(self, user_id: str, text: str,
                         reply_token: str | None = None) -> None:
         if not text:
@@ -309,6 +322,7 @@ class LineRelay:
             return
         sess = self.sessions.setdefault(
             user_id, ChatSession(user_id, self))
+        await self._mark_read(reply_token)
         try:
             reply, images = await sess.send_turn(text)
         except Exception as exc:
