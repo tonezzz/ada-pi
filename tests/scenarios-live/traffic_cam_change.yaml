@@ -53,7 +53,7 @@ turns:
 
   # T3 — THE regression turn: change to a different camera. The change
   # must produce a real cast (delivered) — a silent no-op is the bug.
-  - user: "Now change it — show me a different camera on screen {real_screen}."
+  - user: "Now change it — pick a different Bangkok traffic camera that has a live feed and show it on screen {real_screen}."
     expect:
       calls_any: [traffic_camera, cast_to_screen, cctv_wall]
       result_contains: ["'delivered': 1"]
@@ -69,10 +69,12 @@ turns:
   - user: "Is screen {real_screen} actually showing the new camera now?"
     expect:
       calls_any: [vcast_snapshot, vcast_list]
+      # NB: "video-vw0"/"idle-or-overlay" are NOT asserted — vcast_list
+      # reports every registered screen, and an offline display keeps its
+      # last detail forever (screen 1 still carries last night's vw0
+      # black-pane). Those strings can't be scoped per-screen here.
       result_not_contains:
         - "image-load-failed"
-        - "video-vw0"
-        - "idle-or-overlay"
         - "denied"
       response_nonempty: true
       max_calls: 8
