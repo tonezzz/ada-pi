@@ -173,7 +173,10 @@ class MddbClient:
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
-            logger.error("mddb update_document failed: %s", exc)
+            # httpx TimeoutException stringifies to "" — log the type so the
+            # journal shows *what* failed, not an empty message.
+            logger.error("mddb update_document failed for %s/%s: %s: %s",
+                         collection, key, type(exc).__name__, exc)
             return None
 
     async def delete_document(

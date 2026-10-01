@@ -1372,6 +1372,7 @@ class GeminiLiveProvider(RealtimeProvider):
             png, resolved = await asyncio.wait_for(
                 vms_camera.snapshot(channel), timeout=45)
             stale_meta = None
+            status_card = None
         except LookupError as exc:
             return ({"error": str(exc)}, None)
         except Exception as exc:
@@ -1390,6 +1391,7 @@ class GeminiLiveProvider(RealtimeProvider):
             if not stale:
                 return ({"error": f"camera snapshot failed: {exc}"}, None)
             png, resolved, age = stale[0], stale[1], stale[2]
+            status_card = stale[3] if len(stale) > 3 else None
             stale_meta = {"stale": True, "age_s": age,
                           "live_error": str(exc)[:120]}
         result = {
@@ -1414,14 +1416,18 @@ class GeminiLiveProvider(RealtimeProvider):
         #     — durable public URL for inspection/other clients
         slug = re.sub(r"[^a-z0-9]+", "-", resolved.lower()).strip("-")
         token = f"cam:{slug}-{int(time.time())}"
+        # Stale cams cast the generated status card (banner baked in);
+        # the raw last-good thumb is what the describe turn receives.
+        asset = status_card or png
+        asset_mime = "image/jpeg" if stale_meta else "image/png"
         try:
             vbase = os.environ.get(
                 "VCAST_API",
                 "https://tony-dell.taila0626a.ts.net/api/input-bridge")
             payload = json.dumps({
                 "screen": 0, "token": token,
-                "data": "data:image/png;base64,"
-                        + base64.b64encode(png).decode(),
+                "data": f"data:{asset_mime};base64,"
+                        + base64.b64encode(asset).decode(),
                 "state": "asset",
             }).encode()
             req = urllib.request.Request(
@@ -1442,9 +1448,12 @@ class GeminiLiveProvider(RealtimeProvider):
             snap_dir = (Path(__file__).resolve().parent.parent
                         / "frontend" / "cam-snap")
             snap_dir.mkdir(parents=True, exist_ok=True)
-            name = f"{slug}-{int(time.time())}.png"
+            name = (f"{slug}-{int(time.time())}"
+                    + (".jpg" if stale_meta else ".png"))
             (snap_dir / name).write_bytes(png)
-            snaps = sorted(snap_dir.glob("*.png"),
+            snaps = sorted(
+                [p for pat in ("*.png", "*.jpg")
+                 for p in snap_dir.glob(pat)],
                            key=lambda p: p.stat().st_mtime)
             for old in snaps[:-20]:
                 old.unlink(missing_ok=True)
@@ -2205,7 +2214,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "entity_id": {
                                 "type": "string",
-                                "description": "The media_player.* entity_id, e.g. media_player.lg_webos_tv_nano81tsa.",
+                                "description": "The media_player.* entity_id, e.g. media_player.tony_tv. Only Tony's own TV entities (media_player.tony_tv, media_player.tony_tv_cast) are valid — other media_player entities discovered on the network belong to devices we do not own and must not be targeted.",
                             },
                             "action": {
                                 "type": "string",
@@ -2596,8 +2605,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "get_rk600_weather",
                     "description": (
                         "Returns the local RK600 weather station readings: wind speed, wind direction, temperature, humidity, pressure, rainfall, and device status. "
-                        "Use this when the user asks about the weather station, wind, or the RK600 card. "
-                        "Do NOT use this for forecast/Met.no weather; use search_sensors('weather') for that."
+                        "Use this ONLY when the user explicitly asks about current weather, wind, rain, or the weather station/RK600 card. "
+                        "Do NOT use it for anything else — not UPS/battery/power questions, not forecasts (use search_sensors('weather')), not travel or flood questions (use web_search)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {

@@ -62,6 +62,10 @@ ADA_DRAFT_MAX_AGE_DAYS = int(os.environ.get("ADA_DRAFT_MAX_AGE_DAYS", "7"))
 ADA_DEGRADED_KB_MIN_SCORE = float(
     os.environ.get("ADA_DEGRADED_KB_MIN_SCORE", "0.5"))
 
+# Max chars of a surfaced doc injected into a live turn. Raw session dumps
+# and KB pages are much bigger; Ada gets an excerpt + key, not the blob.
+ADA_HIT_MAX_CHARS = int(os.environ.get("ADA_HIT_MAX_CHARS", "2000"))
+
 # How each recorded outcome nudges a doc's confidence (clamped 0.05..1.0).
 # Good outcomes also bump last_verified — the verify stage of the knowledge
 # circle. "skipped" is neutral: the check ran but was never exercised.
@@ -264,6 +268,14 @@ def _doc_to_hit(
         # scores on meta but carries nothing Ada can use — and it crowds
         # out real hits in the top-k. Skip it.
         return None
+    # Reference banks hold large docs (devin session dumps can be ~50KB).
+    # Injecting one verbatim explodes the live-turn context and slows
+    # first-audio — surface an excerpt; the key is there to fetch the rest.
+    if len(content) > ADA_HIT_MAX_CHARS:
+        content = (
+            content[:ADA_HIT_MAX_CHARS].rstrip()
+            + f"\n… [truncated — {len(content)} chars; fetch key for full doc]"
+        )
     hit: dict[str, Any] = {
         "key": doc.get("key"),
         "status": status,
@@ -509,12 +521,17 @@ async def record_use(
     if not key:
         return
     meta = dict(doc.get("meta") or {})
+    today = datetime.now(timezone.utc).date().isoformat()
+    if _meta_first(meta, "last_used") == today:
+        # Already bumped today — a recall fan-out would otherwise rewrite
+        # this doc on every search, which stampedes MDDB's inline embed.
+        return
     try:
         count = int(_meta_first(meta, "use_count") or 0)
     except ValueError:
         count = 0
     meta["use_count"] = [str(count + 1)]
-    meta["last_used"] = [datetime.now(timezone.utc).date().isoformat()]
+    meta["last_used"] = [today]
     await mddb.update_document(collection, str(key), meta=meta)
 
 
