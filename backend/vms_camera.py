@@ -77,12 +77,14 @@ def _slug(s: str) -> str:
     return "".join(c if c.isalnum() else "-" for c in s.lower()).strip("-")
 
 
-async def stale_snapshot(channel: str) -> tuple[bytes, str, int] | None:
+async def stale_snapshot(channel: str) -> tuple[bytes, str, int, bytes | None] | None:
     """Fetch the last-known thumb for `channel` from the camwall cache.
 
-    Returns (jpeg_bytes, cam_label, age_s) or None. Fetches each VMS
-    zone's manifest (tiny JSON) to find the cam key — manifests carry the
-    freshest thumb ts even for cams that failed this cycle."""
+    Returns (thumb_jpeg, cam_label, age_s, status_card_jpeg|None) or None.
+    The status card (<key>-status.jpg, generated per failed pull cycle) is
+    the display artifact — dimmed thumb + OFFLINE/STALE banner — while the
+    raw thumb is what the vision helper describes. Fetches each VMS zone's
+    manifest (tiny JSON) to find the cam key."""
     base = os.environ.get(
         "ADA_CAMWALL_BASE",
         "https://tony-dell.taila0626a.ts.net/apps/camwall").rstrip("/")
@@ -108,10 +110,19 @@ async def stale_snapshot(channel: str) -> tuple[bytes, str, int] | None:
                         return None
                     age = int(__import__("time").time()
                               - (cam.get("ts") or 0))
-                    log.info("stale snap %r: %s/%s.jpg %dB age=%ds",
+                    card = None
+                    try:
+                        cr = await c.get(
+                            f"{base}/data/{zone}/{cam['key']}-status.jpg")
+                        if cr.status_code == 200 and len(cr.content) > 5000:
+                            card = cr.content
+                    except Exception:
+                        pass
+                    log.info("stale snap %r: %s/%s.jpg %dB age=%ds card=%s",
                              channel, zone, cam["key"],
-                             len(img.content), age)
-                    return img.content, cam.get("label") or channel, age
+                             len(img.content), age, bool(card))
+                    return (img.content, cam.get("label") or channel,
+                            age, card)
     except Exception:
         return None
     return None
