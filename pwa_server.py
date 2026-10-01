@@ -614,6 +614,13 @@ async def voice_socket(ws: WebSocket) -> None:
     # If the session key was issued bound to an HA person (invite ha_person),
     # sessions inherit that identity until a voiceprint overrides it.
     caller_person = auth.ha_person_for_key(caller_name) if caller_name else None
+    if caller_person is None and caller_name == "admin":
+        # The env-issued admin key has no keys-file entry to bind a
+        # ha_person to — map it via env so the owner's identified voice is
+        # the session OWNER on admin sessions, not a secondary speaker
+        # (2026-10-01: person.tony was denied ada_remember/cast_to_screen
+        # on admin-keyed iPad sessions because owner stayed 'admin').
+        caller_person = os.environ.get("ADA_ADMIN_PERSON") or None
     if caller_person is None and caller_name and caller_name != "admin":
         # Bare key names that resolve to an HA person ("tony" -> person.tony)
         # inherit it — keeps unbound legacy/env keys owner-consistent so a

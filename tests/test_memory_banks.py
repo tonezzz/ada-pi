@@ -930,6 +930,34 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self._pin_session("user-kk", "person.kk", speaker=None)
         self.assertFalse(self.runner._is_secondary_turn())
 
+    async def test_stale_speaker_label_not_secondary(self):
+        # 2026-10-01: one confident KK hit stayed pinned while Tony's
+        # far-field chunks failed the match threshold — every cast was
+        # denied under a label that had stopped re-confirming. A label
+        # older than SPEAKER_STALE_S is treated as unrecognized.
+        from backend import tool_runner as tr_mod
+        self._pin_session("admin", None, owner="admin",
+                          speaker="person.kk")
+        token = tr_mod._CALLER_SPEAKER_SESSION.set(
+            type("SS", (), {"speaker_age_s": lambda self: 999.0})())
+        try:
+            self.assertFalse(self.runner._is_secondary_turn())
+        finally:
+            tr_mod._CALLER_SPEAKER_SESSION.reset(token)
+
+    async def test_fresh_speaker_label_still_secondary(self):
+        # A label that keeps re-confirming stays enforced — the stale
+        # exemption only applies past SPEAKER_STALE_S.
+        from backend import tool_runner as tr_mod
+        self._pin_session("admin", None, owner="admin",
+                          speaker="person.kk")
+        token = tr_mod._CALLER_SPEAKER_SESSION.set(
+            type("SS", (), {"speaker_age_s": lambda self: 5.0})())
+        try:
+            self.assertTrue(self.runner._is_secondary_turn())
+        finally:
+            tr_mod._CALLER_SPEAKER_SESSION.reset(token)
+
     async def test_persona_cross_target_fails_closed_without_scoped_bank(self):
         # Admin targets a person with no scoped bank — refuse rather than
         # file their persona under the default 'personal' bank.

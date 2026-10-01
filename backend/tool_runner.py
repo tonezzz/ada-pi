@@ -134,6 +134,16 @@ SECONDARY_BLOCKED_TOOLS = (
     }
 )
 
+# An identified speaker label is only enforced while fresh voice chunks
+# keep re-confirming it. Far-field speech can sit just under the match
+# threshold for minutes — 2026-10-01: one 80% KK hit pinned the label,
+# then Tony's chunks scored 0.26-0.39 (never switching), so every
+# cast_to_screen was denied as "secondary speaker" while the actual
+# owner talked. Past this age the label is treated as unrecognized —
+# an unknown voice keeps owner rights anyway, so expiry cannot widen
+# what a real guest could already do while unidentified.
+SPEAKER_STALE_S = float(os.environ.get("ADA_SPEAKER_STALE_S", "90"))
+
 # Group tokens accepted in rendered `session_security.secondary_blocked`
 # config — SSOT declares groups, code owns the tool-name expansion.
 # "persona_write" is a pseudo-token gating ada_persona set/reset only.
@@ -705,6 +715,17 @@ class ToolRunner:
         owner = self._owner()
         if not speaker or not owner or speaker == owner:
             return False
+        # Stale label check: when the buffer has seen voiced chunks since
+        # the label last re-confirmed, an aged-out identification is just
+        # a stale guess — drop it (SPEAKER_STALE_S rationale above).
+        ss = _CALLER_SPEAKER_SESSION.get()
+        if ss is not None:
+            age = getattr(ss, "speaker_age_s", lambda: None)()
+            if age is not None and age > SPEAKER_STALE_S:
+                logger.info(
+                    "speaker label %r expired (%.0fs unconfirmed) — "
+                    "treating turn as unrecognized", speaker, age)
+                return False
         caller = self.session_caller_name
         aliases = {owner, caller, f"person.{_slug(caller)}" if caller else None}
         return speaker not in aliases

@@ -646,6 +646,11 @@ class SpeakerSession:
         # didn't speak" when enrollment reports insufficient audio.
         self._fed_bytes = 0
         self._voiced_bytes = 0
+        # Freshness of the current speaker label: monotonic time of the
+        # last completed hit for _last_name (pending-switch chunks don't
+        # count — they haven't won yet). Consumers use speaker_age_s() to
+        # expire a stale label instead of trusting it forever.
+        self._last_hit_at: float | None = None
 
     async def feed(self, pcm16: bytes) -> None:
         if self._closed:
@@ -698,6 +703,7 @@ class SpeakerSession:
                 self._switch_pending = None
                 self._switch_count = 0
                 self._last_name = name
+                self._last_hit_at = time.monotonic()
                 self._miss_count = 0
                 self._unrecognized_notified = False
                 # The accrued unknown-voice buffer is now attributed —
@@ -714,6 +720,8 @@ class SpeakerSession:
                 # count toward changing identity)
                 self._switch_pending = None
                 self._switch_count = 0
+                if name is not None:
+                    self._last_hit_at = time.monotonic()
                 if name is not None and confidence >= AUTO_LEARN_MIN_CONF:
                     # stable hit — profile still improves with use
                     self._identifier.auto_learn(name, chunk)
@@ -742,6 +750,15 @@ class SpeakerSession:
     @property
     def current_speaker(self) -> str | None:
         return self._last_name
+
+    def speaker_age_s(self) -> float | None:
+        """Seconds since the current speaker label last re-confirmed —
+        None when nobody has been identified. Voiced chunks that keep
+        missing the threshold stop refreshing it, so an old one-off
+        identification ages out instead of pinning the label forever."""
+        if self._last_name is None or self._last_hit_at is None:
+            return None
+        return time.monotonic() - self._last_hit_at
 
     def identify_buffer(self, seconds: float = 15.0) -> tuple[str | None, float]:
         """Identify the voice in the enroll buffer WITHOUT enrolling —
