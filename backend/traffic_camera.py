@@ -179,7 +179,11 @@ def _mjpeg_first_frame(url: str, timeout: float) -> bytes:
     with urllib.request.urlopen(req, timeout=timeout) as r:
         end_at = time.time() + timeout
         while time.time() < end_at and len(buf) < 4 * 1024 * 1024:
-            chunk = r.read(65536)
+            # read(), not read1(), waits to fill the whole 64KB buffer —
+            # a dribbling dead-cam stream (~800B/s) stalls for minutes
+            # without ever hitting the socket timeout. read1 returns
+            # after a single recv so the end_at budget is honoured.
+            chunk = r.read1(65536)
             if not chunk:
                 break
             buf += chunk
