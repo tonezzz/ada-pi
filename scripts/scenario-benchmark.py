@@ -95,6 +95,14 @@ def _run_one(path: str, url: str, api_key: str) -> tuple[str, int, dict | None, 
     for attempt in (1, 2):
         ev_path = os.path.join(os.environ.get("TMPDIR", "/tmp"),
                                f"bench-{os.path.basename(path)}-{attempt}.json")
+        # Remove any stale events file first — if the child dies before
+        # writing (e.g. 403 from a missing ADA_API_KEY), a leftover from a
+        # previous suite would be read and report yesterday's durations
+        # (2026-10-01: 02:00 run replayed the 17:08 results exactly).
+        try:
+            os.unlink(ev_path)
+        except OSError:
+            pass
         cmd = [sys.executable, driver, path, "--url", url,
                "--events-json", ev_path]
         if api_key:
