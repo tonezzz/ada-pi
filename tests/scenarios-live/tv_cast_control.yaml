@@ -29,7 +29,10 @@ turns:
   - user: "Scroll down on the TV."
     expect:
       calls: [tv_action]
-      result_contains: ["'ok': True"]
+      # scroll/press return {'cast': 'unchanged'|'cast:N'} — 'unchanged' is
+      # correct on google.com (nothing scrollable); the check is that a real
+      # cast result came back, not an error.
+      result_contains: ["'cast'"]
       response_nonempty: true
       timeout_s: 90
       settle_s: 5
@@ -37,7 +40,7 @@ turns:
   - user: "Press the escape key on the TV."
     expect:
       calls: [tv_action]
-      result_contains: ["'ok': True"]
+      result_contains: ["'cast'"]
       response_nonempty: true
       timeout_s: 90
       settle_s: 5
