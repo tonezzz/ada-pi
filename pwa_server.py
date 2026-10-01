@@ -902,6 +902,35 @@ async def voice_socket(ws: WebSocket) -> None:
                                 await ws.send_text(json.dumps({
                                     "type": "error", "message": f"register failed: {exc}",
                                 }))
+                        elif control.get("type") == "image":
+                            # Chat relays (LINE/TG) forward a user photo:
+                            # {"type":"image","data":<b64>,"mime",
+                            #  "text":<caption/from-line>}
+                            import base64 as _b64
+                            try:
+                                img = _b64.b64decode(
+                                    str(control.get("data") or ""))
+                                if not img or len(img) > 6 * 1024 * 1024:
+                                    raise ValueError("bad image size")
+                                mime = str(control.get("mime")
+                                           or "image/jpeg")[:40]
+                                cap = str(control.get("text") or "")[:1000]
+                                logger.info(
+                                    "session=%s chat image turn (%dB %s)",
+                                    session_id, len(img), mime)
+                                await provider_ref[0].send_image_turn(
+                                    img, mime, cap)
+                                conversation.add_user(
+                                    f"[image received {len(img)}B] "
+                                    + cap[:200])
+                            except Exception as exc:
+                                logger.warning(
+                                    "session=%s image turn failed: %s",
+                                    session_id, exc)
+                                with suppress(Exception):
+                                    await ws.send_text(json.dumps({
+                                        "type": "error",
+                                        "message": "image send failed"}))
                         elif control.get("type") == "text":
                             chat_text = str(control.get("text") or "").strip()
                             if chat_text:

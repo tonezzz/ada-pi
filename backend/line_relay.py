@@ -149,12 +149,28 @@ class ChatSession:
 
     async def send_turn(self, text: str) -> tuple[str, list[tuple[str, str]]]:
         """Send one user turn; returns (transcript, image urls+captions)."""
+        return await self._send_and_collect({"type": "text", "text": text})
+
+    async def send_image_turn(
+            self, img: bytes, mime: str, caption: str
+    ) -> tuple[str, list[tuple[str, str]]]:
+        """Forward a user photo into the session as a real image turn —
+        Ada sees the picture (her describe path), replies with text."""
+        return await self._send_and_collect({
+            "type": "image",
+            "data": base64.b64encode(img).decode(),
+            "mime": mime,
+            "text": caption,
+        })
+
+    async def _send_and_collect(
+            self, payload: dict) -> tuple[str, list[tuple[str, str]]]:
         async with self._lock:
             self.last_active = time.monotonic()
             await self.ensure()
             while not self._current.empty():
                 self._current.get_nowait()
-            await self.ws.send(json.dumps({"type": "text", "text": text}))
+            await self.ws.send(json.dumps(payload))
             parts: list[str] = []
             results: list[dict] = []
             deadline = time.monotonic() + 180
@@ -210,6 +226,17 @@ class LineRelay:
         return await self.http.post(
             f"{LINE_API}/v2/bot/message/{path}", json=payload,
             headers={"Authorization": f"Bearer {CHANNEL_TOKEN}"})
+
+    async def _fetch_content(self, message_id: str) -> tuple[bytes, str]:
+        """Pull an inbound LINE image's bytes (api-data.line.me content
+        endpoint — separate host from api.line.me)."""
+        assert self.http is not None
+        r = await self.http.get(
+            f"https://api-data.line.me/v2/bot/message/{message_id}/content",
+            headers={"Authorization": f"Bearer {CHANNEL_TOKEN}"})
+        r.raise_for_status()
+        mime = r.headers.get("content-type") or "image/jpeg"
+        return r.content, mime.split(";")[0]
 
     async def _mark_read(self, reply_token: str | None) -> None:
         """Show the read tick as soon as Ada starts on the message. Per
@@ -303,11 +330,43 @@ class LineRelay:
         if etype != "message":
             return
         msg = ev.get("message") or {}
-        text = (msg.get("text") or "").strip() \
-            if msg.get("type") == "text" else ""
-        if msg.get("type") != "text":
+        mtype = msg.get("type")
+        text = (msg.get("text") or "").strip() if mtype == "text" else ""
+        if mtype == "image":
+            if user_id not in _allowed_users():
+                await self.send_text(
+                    user_id,
+                    f"Not authorized. Your LINE userId is {user_id}.",
+                    reply_token=reply_token)
+                return
+            await self._mark_read(reply_token)
+            sess = self.sessions.setdefault(
+                user_id, ChatSession(user_id, self))
+            try:
+                img, mime = await self._fetch_content(
+                    str(msg.get("id") or ""))
+                reply, images = await sess.send_image_turn(
+                    img, mime,
+                    f"[via LINE from user {user_id}] The user sent this "
+                    "photo — describe it and respond naturally.")
+            except Exception as exc:
+                logger.warning("user %s image turn failed: %s",
+                               user_id, exc)
+                reply, images = (
+                    "Couldn't pass that photo to Ada — try again.", [])
+            msgs = [{"type": "text",
+                     "text": (reply or "(no reply)")[:REPLY_CHUNK]}]
+            for url, cap in images[:3]:
+                msgs.extend(await self._image_msgs(url, cap))
+            try:
+                await self._deliver(user_id, msgs[:5],
+                                    reply_token=reply_token)
+            except Exception as exc:
+                logger.warning("user %s img-reply failed: %s", user_id, exc)
+            return
+        if mtype != "text":
             await self.send_text(
-                user_id, f"(got {msg.get('type')}, text only for now)",
+                user_id, f"(got {mtype}, text or photos only)",
                 reply_token=reply_token)
             return
         if not text:

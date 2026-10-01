@@ -4733,6 +4733,26 @@ class GeminiLiveProvider(RealtimeProvider):
                 turn_complete=True,
             )
 
+    async def send_image_turn(self, image: bytes, mime: str,
+                              caption: str = "") -> None:
+        """A user-sent image turn (chat relays: LINE/Telegram photo in).
+        Same shape as the camera-frame injection — text + image part,
+        turn_complete so the model answers with a description."""
+        if self._session is None:
+            raise RuntimeError("provider is not connected")
+        self._last_user_at = time.monotonic()
+        self._turn_open = True
+        parts = [types.Part.from_text(
+            text=caption or "The user sent you this image — describe "
+                             "it and respond naturally.")]
+        parts.append(types.Part.from_bytes(
+            data=image, mime_type=mime or "image/jpeg"))
+        async with self._send_lock:
+            await self._session.send_client_content(
+                turns=types.Content(role="user", parts=parts),
+                turn_complete=True,
+            )
+
     async def notify_or_defer(self, text: str, urgent: bool = False) -> str:
         """Notification handling (Eisenhower split):
 

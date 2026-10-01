@@ -31,6 +31,7 @@ Env:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -164,13 +165,29 @@ class ChatSession:
 
     async def send_turn(self, text: str) -> tuple[str, list[tuple[str, str]]]:
         """Send one user turn; returns (transcript, image urls+captions)."""
+        return await self._send_and_collect({"type": "text", "text": text})
+
+    async def send_image_turn(
+            self, img: bytes, mime: str, caption: str
+    ) -> tuple[str, list[tuple[str, str]]]:
+        """Forward a user photo into the session as a real image turn —
+        Ada sees the picture (her describe path), replies with text."""
+        return await self._send_and_collect({
+            "type": "image",
+            "data": base64.b64encode(img).decode(),
+            "mime": mime,
+            "text": caption,
+        })
+
+    async def _send_and_collect(
+            self, payload: dict) -> tuple[str, list[tuple[str, str]]]:
         async with self._lock:
             self.last_active = time.monotonic()
             await self.ensure()
             # Drain stale events from a previous turn before sending.
             while not self._current.empty():
                 self._current.get_nowait()
-            await self.ws.send(json.dumps({"type": "text", "text": text}))
+            await self.ws.send(json.dumps(payload))
             parts: list[str] = []
             results: list[dict] = []
             deadline = time.monotonic() + 180
@@ -265,12 +282,64 @@ class TgRelay:
             logger.warning("chat %s photo %s failed: %s", chat_id, url, exc)
             await self.send_text(chat_id, f"(image failed: {caption or url})")
 
+    async def _fetch_photo(self, file_id: str) -> tuple[bytes, str]:
+        """TG photo messages carry file_ids — resolve via getFile, then
+        download from the file host."""
+        info = await self.tg("getFile", file_id=file_id)
+        path = info.get("file_path")
+        if not path:
+            raise RuntimeError("getFile returned no file_path")
+        r = await self.http.get(
+            f"{TG_API}/file/bot{BOT_TOKEN}/{path}", timeout=60)
+        r.raise_for_status()
+        mime = "image/jpeg" if path.lower().endswith((".jpg", ".jpeg")) \
+            else "image/png"
+        return r.content, mime
+
     async def handle(self, upd: dict[str, Any]) -> None:
         msg = upd.get("message") or upd.get("edited_message") or {}
         chat = msg.get("chat") or {}
         chat_id = chat.get("id")
         text = (msg.get("text") or "").strip()
-        if chat_id is None or not text:
+        photos = msg.get("photo") or []
+        if chat_id is None:
+            return
+        if photos:
+            allowed = _allowed_chats()
+            if chat_id not in allowed:
+                await self.send_text(
+                    chat_id,
+                    f"Not authorized. Your chat_id is {chat_id}.")
+                return
+            sess = self.sessions.setdefault(
+                chat_id, ChatSession(chat_id, self))
+            try:
+                await self.tg("sendChatAction", chat_id=chat_id,
+                              action="upload_photo")
+            except Exception:
+                pass
+            try:
+                img, mime = await self._fetch_photo(photos[-1]["file_id"])
+                cap = (msg.get("caption") or "").strip()
+                reply, images = await sess.send_image_turn(
+                    img, mime,
+                    f"[via Telegram chat {chat_id}] The user sent this "
+                    "photo — describe it and respond naturally."
+                    + (f" Their caption: {cap}" if cap else ""))
+            except Exception as exc:
+                logger.warning("chat %s photo turn failed: %s",
+                               chat_id, exc)
+                reply, images = (
+                    "Couldn't pass that photo to Ada — try again.", [])
+            try:
+                await self.send_text(chat_id, reply or "(no reply)")
+            except Exception as exc:
+                logger.warning("chat %s reply send failed: %s",
+                               chat_id, exc)
+            for url, cap2 in images[:3]:
+                await self.send_photo(chat_id, url, cap2)
+            return
+        if not text:
             return
         if text == "/start":
             await self.send_text(chat_id, f"Ada relay online. chat_id={chat_id}")
