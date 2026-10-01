@@ -270,22 +270,48 @@ class HomeAssistantClient:
         return {"entity_id": entity_id, "action": action, "source": source}
 
     async def tv_action(self, cmd: str, text: str = "", **extra: Any) -> dict[str, Any]:
-        """Call the Home Assistant rest_command.tv_action service.
+        """Call the cast-browser /cmd API.
 
-        Extra fields (selector/role/key/dx/dy/factor) forward to the
-        cast-browser /cmd API — the rest_command payload template passes
-        through whatever the service call carries."""
+        Posts directly to the cast-browser server (tony-omen:8799 over the
+        tailnet) so the REAL result comes back — {ok, cast, url} on success
+        or {err: "locator.click: Timeout…"} on failure. The old path went
+        through HA rest_command.tv_action, which is fire-and-forget: the
+        downstream body was discarded and this function echoed the args,
+        so a click that found nothing looked identical to success
+        (incident 2026-10-01 — 'Live Contacts' claimed clicked x4).
+
+        Set CAST_BROWSER_URL="" to fall back to the HA rest_command path.
+        """
         client = await self._http_client()
         payload = {"cmd": cmd, "text": text}
         payload.update({k: v for k, v in extra.items() if v is not None})
-        # nav/cast commands take 5-30s server-side (page load + screenshot +
-        # playlist wait + cast handshake) — far past the shared 5s default.
+        cast_url = os.environ.get(
+            "CAST_BROWSER_URL", "http://100.75.102.88:8799")
+        if cast_url:
+            # nav/cast commands take 5-30s server-side (page load +
+            # screenshot + playlist wait + cast handshake) — past the
+            # shared 5s default; a dead-element click also burns ~36s.
+            response = await client.post(
+                f"{cast_url}/cmd", json=payload, timeout=60.0)
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"tv_action failed ({response.status_code}): "
+                    f"{response.text[:300]}")
+            try:
+                body = response.json()
+            except Exception:
+                body = {}
+            if isinstance(body, dict):
+                if body.get("err"):
+                    raise RuntimeError(f"tv_action {cmd}: {body['err']}")
+                if body.get("ok") is False:
+                    raise RuntimeError(
+                        f"tv_action {cmd} failed: {body.get('error') or body}")
+                return body
+            return {"cmd": cmd, "text": text, **extra}
         response = await client.post(
             "/api/services/rest_command/tv_action", json=payload, timeout=45.0)
         if response.status_code >= 400:
-            # Surface the controller's denial/error text (e.g. screen
-            # ownership "denied: ... is tony's private screen") so the
-            # model can explain it instead of a bare HTTP error.
             raise RuntimeError(
                 f"tv_action failed ({response.status_code}): "
                 f"{response.text[:300]}")
