@@ -1,0 +1,108 @@
+name: gev_inspect
+# Live scenario — inspection sweep on a real browser screen:
+# clean interface → vessel → satellite → aircraft → cockpit → restore.
+#
+# Verifies the gev_command relay carries the specialist actions
+# (set_hud / frame_overhead / track_entity / select_nearest_aircraft /
+# control_cockpit) to a real GEV page on {real_screen}, and that a
+# screen snapshot confirms the result is actually rendered.
+#
+# tier: full — actuates a real display.
+tier: full
+turns:
+- user: Put God's Eye View on screen {real_screen}.
+  expect:
+    response_nonempty: true
+    timeout_s: 90
+    settle_s: 8
+- user: Yes — replace whatever is on screen {real_screen} with God's Eye View.
+  expect:
+    calls_any:
+    - cast_to_screen
+    result_not_contains:
+    - denied
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 20
+- user: Give me a clean interface — hide the HUD completely.
+  expect:
+    calls_any:
+    - gev_command
+    result_contains:
+    - delivered
+    result_not_contains:
+    - '"delivered": 0'
+    - gev command relay
+    - no GEV clients
+    response_nonempty: true
+    timeout_s: 90
+    settle_s: 10
+    no_failed_result:
+    - gev_command
+- user: Show me the vessels around Bangkok — put the ship layer on and frame what's overhead.
+  expect:
+    calls_any:
+    - gev_command
+    result_contains:
+    - delivered
+    result_not_contains:
+    - '"delivered": 0'
+    - no GEV clients
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 12
+    no_failed_result:
+    - gev_command
+- user: Now pull the camera to a satellite overhead — satellites layer.
+  expect:
+    calls_any:
+    - gev_command
+    result_contains:
+    - delivered
+    result_not_contains:
+    - '"delivered": 0'
+    - no GEV clients
+    response_nonempty: true
+    timeout_s: 90
+    settle_s: 12
+    no_failed_result:
+    - gev_command
+- user: Track the nearest aircraft over Tokyo.
+  expect:
+    calls_any:
+    - gev_command
+    result_contains:
+    - delivered
+    result_not_contains:
+    - '"delivered": 0'
+    - no GEV clients
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 12
+    no_failed_result:
+    - gev_command
+- user: Enter cockpit view.
+  expect:
+    calls_any:
+    - gev_command
+    result_contains:
+    - delivered
+    result_not_contains:
+    - '"delivered": 0'
+    - no GEV clients
+    response_nonempty: true
+    timeout_s: 90
+    settle_s: 10
+    no_failed_result:
+    - gev_command
+- user: Exit cockpit and bring the HUD back — what's actually on screen {real_screen}? Snapshot it.
+  expect:
+    calls_any:
+    - gev_command
+    - vcast_snapshot
+    result_not_contains:
+    - uncapturable
+    - no GEV clients
+    response_nonempty: true
+    timeout_s: 120
+    settle_s: 12
