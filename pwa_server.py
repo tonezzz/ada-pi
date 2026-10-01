@@ -906,6 +906,14 @@ async def voice_socket(ws: WebSocket) -> None:
                             chat_text = str(control.get("text") or "").strip()
                             if chat_text:
                                 logger.info("session=%s chat text turn (%d chars)", session_id, len(chat_text))
+                                # Doc-upload notes are context, not urgency —
+                                # wait out any in-flight speech so the note
+                                # doesn't abort a response or merge into the
+                                # session-open greeting.
+                                if chat_text.startswith("[document uploaded"):
+                                    wait_idle = getattr(provider_ref[0], "_wait_for_idle", None)
+                                    if wait_idle:
+                                        await wait_idle(timeout=8.0)
                                 try:
                                     await provider_ref[0].send_text_turn(chat_text[:4000])
                                     # Text turns produce no input transcription,

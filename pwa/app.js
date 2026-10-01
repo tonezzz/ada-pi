@@ -13,6 +13,7 @@ let playbackContext = null;
 let captureNode = null;
 let playbackNode = null;
 let playbackAnalyser = null;
+let playbackGain = null;
 let playbackMeterFrame = null;
 let assistantEntry = null;
 let assistantPlaybackActive = false;
@@ -23,6 +24,7 @@ let microphoneNoiseFloor = .004;
 let connectionInProgress = false;
 let micMuted = false;
 let audioFramesInResponse = 0;
+let speakerMuted = localStorage.getItem("ada_speaker_muted") === "1";
 const pendingDocNotes = [];
 const micToggleButton = document.querySelector("#mic-toggle");
 
@@ -124,7 +126,10 @@ async function createPlayback() {
   playbackAnalyser.fftSize = 256;
   playbackAnalyser.smoothingTimeConstant = .68;
   playbackNode.connect(playbackAnalyser);
-  playbackAnalyser.connect(playbackContext.destination);
+  playbackGain = playbackContext.createGain();
+  playbackGain.gain.value = speakerMuted ? 0 : 1;
+  playbackAnalyser.connect(playbackGain);
+  playbackGain.connect(playbackContext.destination);
   await playbackContext.resume();
   console.info("playback context", playbackContext.sampleRate, playbackContext.state);
   playbackContext.onstatechange = () => console.info("playback state", playbackContext.state);
@@ -253,8 +258,10 @@ function handleControl(event) {
       assistantPlaybackActive = false;
       if (assistantEntry) {
         logLine(`Ada: ${assistantEntry}`);
-        if (audioFramesInResponse === 0)
+        if (audioFramesInResponse === 0) {
           logLine("(text only — no audio frames arrived)", "system");
+          systemSay(assistantEntry);  // flat-voice fallback beats silence
+        }
       }
       assistantEntry = null;
       playbackNode?.port.postMessage({ type: "flush" });
@@ -283,6 +290,7 @@ function handleControl(event) {
 // with low pitch + brisk rate = crisp, non-emotional machine voice; the
 // click gesture unlocks it on iOS/Safari. Cancelled the moment Ada speaks.
 function systemSay(text) {
+  if (speakerMuted) return;
   try {
     if (!("speechSynthesis" in window)) return;
     const u = new SpeechSynthesisUtterance(text);
@@ -373,6 +381,36 @@ micToggleButton?.addEventListener("click", () => {
   if (track) track.enabled = !micMuted;
   setStatus(micMuted ? "Mic muted" : "Mic on");
 });
+
+// Sound toggle — mutes Ada's PCM playback AND the flat-voice/system
+// announcements; transcript still lands in the log. Persisted.
+const soundButton = document.querySelector("#sound-toggle");
+function setSoundButton() {
+  if (soundButton) soundButton.textContent = speakerMuted ? "Sound: Off" : "Sound: On";
+}
+setSoundButton();
+soundButton?.addEventListener("click", () => {
+  speakerMuted = !speakerMuted;
+  localStorage.setItem("ada_speaker_muted", speakerMuted ? "1" : "0");
+  setSoundButton();
+  if (playbackGain) playbackGain.gain.value = speakerMuted ? 0 : 1;
+  if (speakerMuted) systemHush();
+  setStatus(speakerMuted ? "Sound muted" : "Sound on");
+});
+
+// Font scale — zoom on the whole UI layer, persisted. Clamped so a
+// double-tap run can't shrink the buttons off-screen.
+const FONT_KEY = "ada_font_zoom";
+const uiLayer = document.querySelector("#pwa-ui");
+let fontZoom = parseFloat(localStorage.getItem(FONT_KEY) || "1") || 1;
+function applyFontZoom() {
+  fontZoom = Math.min(1.6, Math.max(0.8, fontZoom));
+  if (uiLayer) uiLayer.style.zoom = fontZoom;
+  localStorage.setItem(FONT_KEY, String(fontZoom));
+}
+applyFontZoom();
+document.querySelector("#font-minus")?.addEventListener("click", () => { fontZoom -= 0.1; applyFontZoom(); });
+document.querySelector("#font-plus")?.addEventListener("click", () => { fontZoom += 0.1; applyFontZoom(); });
 
 // --- Auth: API key storage, session cookie, lock UI ---
 
@@ -655,6 +693,16 @@ docFileInput?.addEventListener("change", () => {
   if (f) uploadDoc(f);
 });
 
+function logImage(blob, caption = "") {
+  if (!logElement) return;
+  const img = document.createElement("img");
+  img.src = URL.createObjectURL(blob);
+  img.alt = caption;
+  logElement.append(img);
+  if (caption) logLine(caption);
+  logElement.scrollTop = logElement.scrollHeight;
+}
+
 function flushDocNotes() {
   if (!socket || socket.readyState !== 1 || assistantPlaybackActive || !pendingDocNotes.length) return;
   const note = pendingDocNotes.shift();
@@ -693,12 +741,19 @@ async function uploadDoc(file) {
       body: JSON.stringify({ image_b64: b64, image_mime: blob.type || "image/jpeg",
                              filename: file.name, mode: "both" }),
     });
+    if (resp.status === 401) {
+      // Stored key expired/revoked — drop it and surface the unlock card
+      // (the PWA can't mint keys the way the HA card can).
+      localStorage.removeItem(AUTH_STORAGE_KEY);
+      setLocked(true, "Key expired — unlock, then try the upload again.");
+      throw new Error("key expired — unlock to retry");
+    }
     const out = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(out.detail || `HTTP ${resp.status}`);
     const w = (out.measured || {}).width || "?";
     const h = (out.measured || {}).height || "?";
     const warn = (out.warnings || []).length ? ` ⚠ ${out.warnings.join("; ")}` : "";
-    logLine(`📎 ${file.name} → ${out.doc_type} ${w}×${h}${warn}`);
+    logImage(blob, `📎 ${file.name} → ${out.doc_type} ${w}×${h}${warn}`);
     pendingDocNotes.push(
       `[document uploaded via PWA] file=${file.name} intake_key=${out.key} ` +
       `type=${out.doc_type} size=${w}x${h}` +

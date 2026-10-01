@@ -16,6 +16,7 @@
       #pwa-toolbar { justify-self: end; display: flex; gap: 12px; flex-wrap: wrap; }
       #pwa-status { justify-self: center; color: #75bdc5; font-size: 17px; }
       #pwa-log { max-height: 28vh; overflow-y: auto; padding: 10px; border-radius: 10px; background: rgba(0,12,19,.85); color: #c9fbff; font: 15.5px/1.5 system-ui, sans-serif; }
+      #pwa-log img { max-height: 110px; display: block; border-radius: 6px; margin: 4px 0; }
       .pwa-button { min-height: 48px; padding: 12px 20px; border: 1px solid #087ef2; border-radius: 9px; color: #aef8ff; background: rgba(5,35,48,.9); font: 600 18px system-ui, sans-serif; }
       .pwa-button:disabled { opacity: .4; }
       #lock-toggle { border-color: #2a6a55; }
@@ -80,9 +81,11 @@
         <div id="pwa-toolbar">
           <button id="lock-toggle" class="pwa-button" hidden>Locked</button>
           <button id="doc-attach" class="pwa-button" title="Send a photo/document to Ada">📎</button>
-          <button id="qr-open" class="pwa-button" title="Scan a pairing/redeem QR">QR</button>
-          <button id="repair" class="pwa-button">Re-pair</button>
+          <button id="qr-open" class="pwa-button" title="Pair this device — scan a QR or paste the redeem link">Pair/QR</button>
           <button id="mic-toggle" class="pwa-button" disabled>Mic: On</button>
+          <button id="sound-toggle" class="pwa-button" title="Mute Ada's voice (text still shows)">Sound: On</button>
+          <button id="font-minus" class="pwa-button" title="Smaller text">A−</button>
+          <button id="font-plus" class="pwa-button" title="Bigger text">A+</button>
           <input id="doc-file" type="file" accept="image/*" hidden>
           <button id="connect" class="pwa-button">Connect</button>
           <button id="disconnect" class="pwa-button" disabled>Disconnect</button>
@@ -114,6 +117,6 @@
     </div>
     <script src="static/idle-face.js"></script>
     <script src="static/jsQR.js"></script>
-    <script src="app.js?v=8"></script>
+    <script src="app.js?v=9"></script>
   </body>
 </html>
