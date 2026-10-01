@@ -9,11 +9,18 @@ turns:
   - upload: fixtures/doc-receipt.png
     expect:
       response_nonempty: true
+      # Bilingual household — Ada may answer in Thai. ใบเสร็จ=receipt,
+      # อาร์ไคฟ์/เก็บ=archive/save, พิมพ์=print.
       response_contains_any:
         - "archive"
         - "print"
         - "receipt"
         - "what would you like"
+        - "ใบเสร็จ"
+        - "อาร์ไคฟ์"
+        - "เก็บ"
+        - "พิมพ์"
+        - "บันทึก"
       timeout_s: 120
       settle_s: 8
   - user: "no thanks — nothing to save, just wanted to check it worked"
