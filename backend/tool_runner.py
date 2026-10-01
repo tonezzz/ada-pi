@@ -3617,11 +3617,28 @@ class ToolRunner:
                 "age_s": int(now - c["ts"]) if c.get("ts") else None,
                 "det": c.get("det"), "err": c.get("err"),
             } for c in man.get("cams", [])]
-            return {"ok": True, "zone": zone,
-                    "live": sum(1 for c in cams if c["ok"]),
-                    "total": len(cams), "cams": cams,
-                    "wall_url": man_url.rsplit("/data/", 1)[0]
-                                + f"/?zone={zone}"}
+            out = {"ok": True, "zone": zone,
+                   "live": sum(1 for c in cams if c["ok"]),
+                   "total": len(cams), "cams": cams,
+                   "wall_url": man_url.rsplit("/data/", 1)[0]
+                               + f"/?zone={zone}"}
+            # surface the relay's zone settings (interval, effects, …) so the
+            # model sees what's tunable and reports the current config instead
+            # of guessing — 2026-10-01: wall_ops turn failed with 'the tool
+            # doesn't support intervals' because settings were invisible
+            try:
+                st = await asyncio.to_thread(self._vcast_api, "/camwall")
+                zs = (st.get("zones") or {}).get(zone) or {}
+                if zs:
+                    out["enabled"] = zs.get("enabled")
+                    out["settings"] = zs.get("settings") or {}
+                    out["settings_hint"] = (
+                        "change with action='settings', settings={...} "
+                        "(interval s, jpeg_q 1-8, thumb_w px, cams_skip, "
+                        "cams_extra, effects)")
+            except Exception:
+                pass
+            return out
         if action == "stop":
             await asyncio.to_thread(
                 self._vcast_api, "/camwall", {"zone": zone, "enabled": False})

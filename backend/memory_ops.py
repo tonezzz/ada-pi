@@ -126,11 +126,17 @@ def reconnect_directive(away_seconds: float | None, last_tail: str = "") -> str 
     if tier is None:
         return None
     gap = _format_away(float(away_seconds))
+    # 2026-10-01: every tier must say the CURRENT message wins — without it
+    # a reconnect next to a pending topic made Ada ignore the user's actual
+    # first request and go back to pending work (cam_to_screen flake).
+    _current_first = (
+        " If the user's first message is a new request, answer that directly"
+        " — previous topics only if they ask.")
     if tier == AWAY_TIER_RESUME:
         note = (
             f"Session note: the user's connection dropped {gap} ago — this is "
             "the same conversation resuming, not a new one. Greet them very "
-            "briefly and pick up right where you left off."
+            "briefly and pick up right where you left off." + _current_first
         )
         if last_tail.strip():
             note += (
@@ -142,12 +148,13 @@ def reconnect_directive(away_seconds: float | None, last_tail: str = "") -> str 
         return (
             f"Session note: the user is back after {gap}. Welcome them back "
             "and offer to continue what you were discussing."
+            + _current_first
         )
     if tier == AWAY_TIER_RECAP:
         return (
             f"Session note: the user has been away for {gap}. Welcome them "
             "back and offer a one-line recap of what you were working on, "
-            "then ask if they want to continue."
+            "then ask if they want to continue." + _current_first
         )
     if tier == AWAY_TIER_DAYS:
         return (
