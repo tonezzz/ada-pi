@@ -102,6 +102,48 @@ class PrimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
 
+class HeadlineTests(unittest.IsolatedAsyncioTestCase):
+    """L0 hot-tier fetch: fresh CMS pages with a speakable summary,
+    announced once then cooled."""
+
+    def _cms_doc(self, key: str, text: str, updated: str, **meta):
+        m = {
+            "kind": ["page"], "status": ["active"],
+            "summary": [text], "updated": [updated], "title": [key],
+        }
+        m.update(meta)
+        return {"key": key, "contentMd": "body", "meta": m}
+
+    async def test_fresh_unannounced_returned(self):
+        fake = FakeMddb()
+        fake._coll("ada-cms-pages")["r1"] = self._cms_doc(
+            "r1", "casting suite finished, 3 fails",
+            "2030-01-01T00:00:00+00:00")
+        heads = await memory_ops.fetch_headlines(fake)
+        self.assertEqual([h["key"] for h in heads], ["r1"])
+
+    async def test_announced_and_old_and_digest_skipped(self):
+        fake = FakeMddb()
+        coll = fake._coll("ada-cms-pages")
+        coll["old"] = self._cms_doc(
+            "old", "old news", "2000-01-01T00:00:00+00:00")
+        coll["seen"] = self._cms_doc(
+            "seen", "already told", "2030-01-01T00:00:00+00:00",
+            announced_at=["2030-01-01T01:00:00+00:00"])
+        coll["flood-digest"] = self._cms_doc(
+            "flood-digest", "2 flood reports", "2030-01-01T00:00:00+00:00",
+            report_role=["digest"])
+        self.assertEqual(await memory_ops.fetch_headlines(fake), [])
+
+    async def test_announce_stamp_marks_docs(self):
+        fake = FakeMddb()
+        fake._coll("ada-cms-pages")["r1"] = self._cms_doc(
+            "r1", "news", "2030-01-01T00:00:00+00:00")
+        await memory_ops.fetch_headlines(fake)
+        doc = fake._coll("ada-cms-pages")["r1"]
+        self.assertIn("announced_at", doc["meta"])
+
+
 class NlmCacheTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.fake = FakeMddb()

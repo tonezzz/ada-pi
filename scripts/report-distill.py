@@ -107,6 +107,7 @@ def main() -> int:
                   f"· sources: {len(ds)} reports*"]
         src_slugs = [_meta(d, "slug") or d.get("key") for d in ds[:20]]
         meta = {"kind": ["page"], "attribute": ["report"],
+                "report_role": ["digest"],
                 "slug": [f"{dom}-digest"],
                 "title": [f"{dom.title()} digest"], "domain": [dom],
                 "format": ["markdown"], "lang": ["en"],

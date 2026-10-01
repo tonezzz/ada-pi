@@ -957,6 +957,76 @@ def persona_instruction(knobs: dict[str, Any], registry: MemoryBankRegistry) -> 
     )
 
 
+# --- L0 hot headlines -------------------------------------------------------
+# Recall-ladder tier 0: fresh report/digest one-liners injected at session
+# open so Ada can say "what's new" immediately — detail is fetched lazily
+# via cms_get_page only when the user asks. A headline is announced once
+# (announced_at stamped when injected) then cools to the warm tier.
+HEADLINE_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
+HEADLINE_MAX_AGE_S = float(os.environ.get("ADA_HEADLINE_MAX_AGE_H", "72")) * 3600
+HEADLINE_MAX = int(os.environ.get("ADA_HEADLINE_MAX", "5"))
+
+
+def _headline_meta_first(doc: dict, name: str) -> str:
+    v = (doc.get("meta") or {}).get(name)
+    if isinstance(v, list) and v:
+        return str(v[0])
+    return str(v) if isinstance(v, str) else ""
+
+
+async def fetch_headlines(mddb: MddbClient) -> list[dict[str, str]]:
+    """Return recent CMS pages (kind page/report) that carry a speakable
+    one-liner and have not been announced yet. Stamps announced_at on each
+    returned doc — announcement is a once-ever event, not a ticker."""
+    docs = await mddb.search_documents(
+        collection=HEADLINE_COLLECTION,
+        filter_meta={"kind": ["page", "report"], "status": ["active"]},
+        limit=60,
+    )
+    now = datetime.now(timezone.utc)
+    cutoff = now.timestamp() - HEADLINE_MAX_AGE_S
+    fresh: list[tuple[float, dict]] = []
+    for d in docs or []:
+        if _headline_meta_first(d, "announced_at"):
+            continue
+        text = (_headline_meta_first(d, "headline")
+                or _headline_meta_first(d, "summary")).strip()
+        if not text:
+            continue
+        # Indexes and digests are navigation/rollups — the individual
+        # reports beneath them are the news; aggregates stay warm-tier.
+        if (_headline_meta_first(d, "report_role") in ("index", "digest")
+                or str(d.get("key") or "").endswith("-digest")):
+            continue
+        raw_updated = _headline_meta_first(d, "updated")
+        try:
+            ts = datetime.fromisoformat(raw_updated.replace("Z", "+00:00")).timestamp()
+        except (ValueError, AttributeError):
+            continue
+        if ts < cutoff:
+            continue
+        fresh.append((ts, {
+            "key": str(d.get("key") or ""),
+            "title": _headline_meta_first(d, "title") or str(d.get("key") or ""),
+            "text": text[:160],
+        }))
+    fresh.sort(key=lambda t: t[0], reverse=True)
+    picks = [p for _, p in fresh[:HEADLINE_MAX]]
+    # Stamp announced_at — the doc cools to the warm tier after one
+    # injection regardless of whether Ada actually spoke it. Failures are
+    # non-fatal: worst case the headline is offered again next session.
+    stamp = now.isoformat(timespec="seconds")
+    for p in picks:
+        try:
+            await mddb.update_document(
+                HEADLINE_COLLECTION, p["key"],
+                meta={"announced_at": [stamp]},
+            )
+        except Exception as exc:
+            logger.debug("headline announce stamp failed for %s: %s", p["key"], exc)
+    return picks
+
+
 async def session_prime_text(
     mddb: MddbClient,
     registry: MemoryBankRegistry,
@@ -1004,6 +1074,20 @@ async def session_prime_text(
         )
     if summary and not (directive and (away_seconds or 0) < 3600):
         parts.append(f"Recent sessions: {summary.strip()}")
+    # L0 hot headlines — fresh report/digest one-liners. Skipped on short
+    # reconnects like facts; announced_at stamping means they surface once.
+    if not (directive and (away_seconds or 0) < 3600):
+        try:
+            heads = await asyncio.wait_for(fetch_headlines(mddb), timeout=8.0)
+        except Exception as exc:
+            logger.debug("headlines prefetch failed: %s", exc)
+            heads = []
+        if heads:
+            lines = ["New since the last session — mention briefly if "
+                     "the user asks what's new or it fits the moment; "
+                     "fetch the page for detail only if asked:"]
+            lines += [f"- {h['title']}: {h['text']}" for h in heads]
+            parts.append("\n".join(lines))
     # Speaker's saved style preferences — applies even on short reconnects
     # (it's a style contract, not stale content).
     if person_entity:
