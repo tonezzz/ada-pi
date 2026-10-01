@@ -1,5 +1,5 @@
 # traffic-cam-change — extracted from Tony's 2026-09-30 ~17:17 session:
-# he got a Rama 4 traffic cam on screen 1, then every "change camera"
+# he got a Rama 4 traffic cam on screen {real_screen}, then every "change camera"
 # request visibly did nothing. Three real defects were in play:
 #
 #   1) cast_to_screen was DENIED twice — speaker-id matched Tony's voice
@@ -19,17 +19,18 @@
 # and a verification pass where the screen reports an image — not
 # video-vw0 / image-load-failed / idle-or-overlay.
 #
-# tier: full — actuates a real display. Screen 1 (iPad) is the target;
+# tier: full — actuates a real display. Target is {real_screen}
+# (VCAST_REAL_SCREEN, default 6 = vcast-real lab display).
 # restore nothing — a leftover traffic still is harmless.
 
 name: traffic-cam-change
 tier: full
 
 turns:
-  # T1 — put a live traffic camera on screen 1. traffic_camera returns a
+  # T1 — put a live traffic camera on screen {real_screen}. traffic_camera returns a
   # cast_url (relay frame); cctv_wall on a traffic zone is also a correct
   # path.
-  - user: "Show me a traffic camera — any Bangkok one that's actually live — on screen 1."
+  - user: "Show me a traffic camera — any Bangkok one that's actually live — on screen {real_screen}."
     expect:
       calls_any: [traffic_camera, cctv_wall, cast_to_screen]
       result_not_contains: ["denied"]
@@ -52,7 +53,7 @@ turns:
 
   # T3 — THE regression turn: change to a different camera. The change
   # must produce a real cast (delivered) — a silent no-op is the bug.
-  - user: "Now change it — show me a different camera on screen 1."
+  - user: "Now change it — show me a different camera on screen {real_screen}."
     expect:
       calls_any: [traffic_camera, cast_to_screen, cctv_wall]
       result_contains: ["'delivered': 1"]
@@ -65,7 +66,7 @@ turns:
   # T4 — honest verification: the screen must report an image (or a real
   # stream), not a dead video pane. Catches play-on-jpeg (vw0) and
   # unresolvable URLs (image-load-failed) — the two failure shapes seen.
-  - user: "Is screen 1 actually showing the new camera now?"
+  - user: "Is screen {real_screen} actually showing the new camera now?"
     expect:
       calls_any: [vcast_snapshot, vcast_list]
       result_not_contains:
@@ -79,7 +80,7 @@ turns:
       settle_s: 8
 
   # T5 — teardown.
-  - user: "Thanks — stop screen 1."
+  - user: "Thanks — stop screen {real_screen}."
     expect:
       calls_any: [cast_to_screen]
       response_nonempty: true
