@@ -1,0 +1,36 @@
+name: speech-stall-voiceback
+tier: smoke
+# Dead-turn stall voice-back (2026-10-01): client VAD reported speech but
+# no input transcription ever arrived — Ada sat silent until the session
+# was closed (sessions aefa0c266d "cms benchmark" and 58c656e025 where 6
+# user turns transcribed but produced zero replies during a tool storm).
+#
+# The speech-stall nudge (pwa_server SPEECH_STALL_S, default 10s) should
+# make Ada voice a one-line "didn't catch that" instead of staying mute.
+#
+# Turn 1 sends ONLY local_speech_started/stopped frames — no audio — so
+# the model provably never receives a user turn; any reply must come from
+# the stall nudge path.
+#
+# Run on idc01:  python3 scripts/scenario-live.py \
+#   tests/scenarios-live/speech_stall_voiceback.yaml \
+#   --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+
+turns:
+  - speech: {burst_ms: 900}
+    expect:
+      timeout_s: 45
+      settle_s: 4
+      events_contain:
+        - type: speech_stall
+      response_nonempty: true
+      response_contains_any:
+        ["hear", "heard", "catch", "again", "ได้ยิน", "อีกที", "ฟัง", "ขอโทษ", "พูดอีก"]
+
+  # Recovery: the session still answers normally after the nudge.
+  - user: "What is two plus two? One word only."
+    expect:
+      timeout_s: 60
+      settle_s: 4
+      response_nonempty: true
+      response_contains_any: ["4", "four", "สี่"]

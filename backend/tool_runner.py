@@ -104,6 +104,11 @@ DOC_CONFIRMED_TOOLS = {"ada_doc_archive", "ada_doc_print"}
 DOC_TOOLS = DOC_CONFIRMED_TOOLS | {"ada_doc_search", "ada_doc_get"}
 DOC_BANK = "documents"
 
+# Upper bound for list_home_devices — an unbounded HA entity dump stays in
+# the live-voice context for the rest of the session (see the 2026-10-01
+# 1M-token tool storm). search_home_devices is the precise path.
+LIST_HOME_DEVICES_MAX = int(os.environ.get("ADA_LIST_HOME_DEVICES_MAX", "60"))
+
 # Google Drive / Photos tools — same access scope as DOC_TOOLS (the whole
 # Drive is owner-tier data). drive_update replaces file content in place,
 # so it needs confirmed=true; search/get/show/pick are read-side.
@@ -2005,7 +2010,18 @@ class ToolRunner:
         }
 
     async def list_home_devices(self) -> list[dict[str, Any]]:
-        return await self.context.ha_client.entities()
+        # Bound the dump — an unbounded entity list stays in the live
+        # context for the rest of the session and ballooned one past 1M
+        # input tokens on 2026-10-01. search_home_devices is the precise
+        # path; the marker tells the model so.
+        devices = await self.context.ha_client.entities()
+        if len(devices) > LIST_HOME_DEVICES_MAX:
+            return devices[:LIST_HOME_DEVICES_MAX] + [{
+                "_truncated": (
+                    f"{LIST_HOME_DEVICES_MAX} of {len(devices)} devices shown "
+                    "— call search_home_devices with a name/keyword for the rest"),
+            }]
+        return devices
 
     async def search_home_devices(self, query: str) -> list[dict[str, Any]]:
         return await self.context.ha_client.search_entities(str(query))

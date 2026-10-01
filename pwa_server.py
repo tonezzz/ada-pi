@@ -82,6 +82,20 @@ UNRECOGNIZED_SPEAKER_NOTE = (
     "unprompted mid-task."
 )
 
+# Speech heard but no audible reply — covers dead VAD turns (no input
+# transcription ever arrives), responses killed mid-flight, and silent
+# tool-call storms where the model works without ever speaking (seen
+# live 2026-10-01: 6 user turns transcribed, zero replies, 1M input
+# tokens). The nudge asks for ONE short line — not an apology essay.
+SPEECH_STALL_S = float(os.environ.get("ADA_SPEECH_STALL_S", "10"))
+SPEECH_STALL_NOTE = (
+    "(system) The user just spoke but you produced no audible reply — "
+    "the turn ended silently or was cut off. Say ONE short sentence "
+    "acknowledging it in the user's recent language — e.g. 'ขอโทษค่ะ "
+    "ฟังไม่ชัด ขออีกทีนะคะ' or 'Sorry, I didn't catch that — say it "
+    "again?'. Then stop."
+)
+
 # Speaker identification is opt-in via ADA_SPEAKER_ID=true.  When disabled
 # (or when speechbrain/torch are not installed), the voice path is unchanged.
 SPEAKER_ID_ENABLED = os.environ.get("ADA_SPEAKER_ID", "true").lower() == "true"
@@ -667,11 +681,19 @@ async def voice_socket(ws: WebSocket) -> None:
     # stay visible to /api/notify.
     _live_sessions[session_id]["provider"] = provider_ref
     closed = asyncio.Event()
+    # Speech-stall tracking: pending_at set when the user finished a real
+    # speech burst (client VAD) or an input transcription landed, cleared
+    # when any assistant output reaches the client. stall_watchdog nudges
+    # Ada with a one-line acknowledgement if speech never got a reply.
+    speech_state: dict[str, float | None] = {
+        "burst_at": None, "pending_at": None, "nudged_until": 0.0
+    }
 
     # Speaker identification: non-blocking, runs in parallel with the
     # audio forward path.  When a new speaker is identified, inject the
     # identity as a system text turn and notify the browser.
     speaker_session: SpeakerSession | None = None
+    speaker_identifier: SpeakerIdentifier | None = None
     # Test hook: ?no_speaker_id=1 disables voice identification for this
     # session — memory identity then falls back to the issued-key name, so
     # an admin can faithfully test a restricted-key (e.g. testo) experience.
@@ -679,6 +701,7 @@ async def voice_socket(ws: WebSocket) -> None:
     if SPEAKER_ID_ENABLED and not no_speaker_id:
         try:
             identifier = SpeakerIdentifier.get()
+            speaker_identifier = identifier
             async def _on_speaker(name: str, confidence: float) -> None:
                 # Media/device voice (TV, video, podcast) — do NOT switch
                 # the session identity; steer the model to ignore the
@@ -856,6 +879,14 @@ async def voice_socket(ws: WebSocket) -> None:
                         control = json.loads(text)
                         if control.get("type") in ("local_speech_started", "local_speech_stopped"):
                             logger.info("session=%s %s", session_id, control.get("type"))
+                            if control.get("type") == "local_speech_started":
+                                speech_state["burst_at"] = time.monotonic()
+                            else:
+                                burst = speech_state.pop("burst_at", None)
+                                # Sub-500ms bursts are coughs/clicks — only
+                                # real speech attempts arm the stall nudge.
+                                if burst and time.monotonic() - burst >= 0.5:
+                                    speech_state["pending_at"] = time.monotonic()
                         elif control.get("type") == "register" and CHABA_MODE:
                             # Guest name registration: binds name to this
                             # session for memory writes and queues a pending
@@ -909,6 +940,7 @@ async def voice_socket(ws: WebSocket) -> None:
             nonlocal live_turn_text, suppress_target, replayed, suppressing
             async for event in provider_ref[0].events():
                 if event.type == "audio":
+                    speech_state["pending_at"] = None  # audible reply arrived
                     if not suppressing:
                         await ws.send_bytes(event.data["pcm16"])
                 elif event.type == "barge_noise":
@@ -934,6 +966,14 @@ async def voice_socket(ws: WebSocket) -> None:
                     "tool_call",
                     "tool_result",
                 ):
+                    if event.type == "user_transcript":
+                        # Transcribed speech is a user turn even without
+                        # client VAD frames — arm the same stall nudge.
+                        speech_state["pending_at"] = time.monotonic()
+                    elif event.type in (
+                            "assistant_transcript_delta",
+                            "response_completed", "response_interrupted"):
+                        speech_state["pending_at"] = None
                     if event.type == "response_interrupted":
                         await ws.send_text(json.dumps({"type": "clear_audio"}))
                     if event.type == "response_started":
@@ -1016,11 +1056,12 @@ async def voice_socket(ws: WebSocket) -> None:
             closed.set()
 
     async def stall_watchdog() -> None:
-        """Close a silently-dead provider stream so the reconnect loop in
-        provider_to_browser fires. Symptom: user speaks, zero provider
-        events for >stall_timeout — seen live as 25-47s of silence."""
+        """Two tiers: (1) user speech heard but Ada produced no audible
+        reply within SPEECH_STALL_S — nudge her to voice a one-line
+        acknowledgement; (2) provider stream completely silent — close it
+        so the reconnect loop in provider_to_browser fires."""
         while not closed.is_set():
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
             p = provider_ref[0]
             if p is not None and p.is_stalled():
                 logger.warning(
@@ -1030,6 +1071,31 @@ async def voice_socket(ws: WebSocket) -> None:
                     await ws.send_text(json.dumps({"type": "live_stalled"}))
                 with suppress(Exception):
                     await p.close()
+                continue
+            pending_at = speech_state["pending_at"]
+            now = time.monotonic()
+            if (pending_at is None
+                    or now - pending_at < SPEECH_STALL_S
+                    or now < speech_state["nudged_until"]):
+                continue
+            # Media/device voice (TV, podcast) is ambient audio — nudging
+            # on it would make Ada interrupt the room every few seconds.
+            last_name = (speaker_session.current_speaker
+                         if speaker_session is not None else None)
+            if (last_name and speaker_identifier is not None
+                    and speaker_identifier.is_media(last_name)):
+                speech_state["pending_at"] = None
+                continue
+            speech_state["pending_at"] = None
+            speech_state["nudged_until"] = now + 25
+            conversation.log_event("speech_stall_nudge")
+            logger.info(
+                "session=%s speech heard, silent >%.0fs — voice-back nudge",
+                session_id, SPEECH_STALL_S)
+            with suppress(Exception):
+                await ws.send_text(json.dumps({"type": "speech_stall"}))
+            with suppress(Exception):
+                await provider_ref[0].send_text_turn(SPEECH_STALL_NOTE)
 
     tasks = {
         asyncio.create_task(browser_to_provider()),

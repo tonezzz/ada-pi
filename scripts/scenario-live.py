@@ -983,6 +983,19 @@ async def main() -> int:
                     print(f"turn {i + 1}: audio {audio_path.name} "
                           f"({len(audio_bytes) / 32000:.1f}s)")
                     text = str(turn.get("user") or "") or None
+                elif turn.get("speech"):
+                    # Client-VAD speech frames with no audio payload —
+                    # reproduces the dead-turn stall (user heard, no turn
+                    # ever reaches the model). The speech-stall nudge in
+                    # pwa_server should make Ada voice a one-liner.
+                    kind = "speech"
+                    burst_ms = int((turn.get("speech") or {}).get("burst_ms") or 800)
+                    prompt = f"speech burst {burst_ms}ms (no audio)"
+                    print(f"turn {i + 1}: {prompt}")
+                    await ws.send(json.dumps({"type": "local_speech_started"}))
+                    await asyncio.sleep(burst_ms / 1000.0)
+                    await ws.send(json.dumps({"type": "local_speech_stopped"}))
+                    text = None
                 elif turn.get("upload"):
                     kind = "upload"
                     img_path = (args.scenario.parent / ".." / str(turn["upload"])).resolve()

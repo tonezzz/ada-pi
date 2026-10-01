@@ -48,6 +48,8 @@ from backend.usage_tracker import usage_ledger
 
 logger = logging.getLogger("voice.provider")
 
+LIST_HOME_DEVICES_MAX = int(os.environ.get("ADA_LIST_HOME_DEVICES_MAX", "60"))
+
 EXPRESSION_NAMES = (
     "neutral",
     "sassy",
@@ -4928,6 +4930,18 @@ class GeminiLiveProvider(RealtimeProvider):
                         elif call.name == "list_home_devices" and self.home_assistant_client is not None:
                             try:
                                 devices = await self.home_assistant_client.entities()
+                                # Unbounded dumps stay in live context for
+                                # the whole session (2026-10-01: this single
+                                # call pushed a session past 1M input tokens
+                                # during a silent tool storm). Cap it; the
+                                # marker steers the model to search instead.
+                                if len(devices) > LIST_HOME_DEVICES_MAX:
+                                    devices = devices[:LIST_HOME_DEVICES_MAX] + [{
+                                        "_truncated": (
+                                            f"{LIST_HOME_DEVICES_MAX} of {len(devices)} "
+                                            "devices shown — call search_home_devices "
+                                            "with a name/keyword for the rest"),
+                                    }]
                                 result = {"output": devices}
                             except Exception as exc:
                                 result = {"error": f"list_home_devices failed: {exc}"}
