@@ -22,6 +22,8 @@ let speechBelowFrames = 0;
 let microphoneNoiseFloor = .004;
 let connectionInProgress = false;
 let micMuted = false;
+let audioFramesInResponse = 0;
+const pendingDocNotes = [];
 const micToggleButton = document.querySelector("#mic-toggle");
 
 function setMicButton(muted) {
@@ -242,15 +244,21 @@ function handleControl(event) {
     case "response_started":
       systemHush();           // Ada takes over — kill any pending boot voice
       assistantPlaybackActive = true;
+      audioFramesInResponse = 0;
       if (assistantEntry) logLine(`Ada: ${assistantEntry}`);
       assistantEntry = "";
       if (playbackContext?.state === "suspended") playbackContext.resume().catch(() => {});
       break;
     case "response_completed":
       assistantPlaybackActive = false;
-      if (assistantEntry) logLine(`Ada: ${assistantEntry}`);
+      if (assistantEntry) {
+        logLine(`Ada: ${assistantEntry}`);
+        if (audioFramesInResponse === 0)
+          logLine("(text only — no audio frames arrived)", "system");
+      }
       assistantEntry = null;
       playbackNode?.port.postMessage({ type: "flush" });
+      flushDocNotes();
       break;
     case "response_interrupted":
       assistantPlaybackActive = false;
@@ -310,7 +318,7 @@ async function connect() {
       systemSay("Channel open. Handing over to Ada."); };
     socket.onmessage = (message) => {
       if (typeof message.data === "string") handleControl(JSON.parse(message.data));
-      else playbackNode?.port.postMessage(message.data, [message.data]);
+      else { audioFramesInResponse++; playbackNode?.port.postMessage(message.data, [message.data]); }
     };
     socket.onerror = () => logLine("WebSocket error", "system");
     socket.onclose = (event) => {
@@ -632,5 +640,74 @@ repairButton?.addEventListener("click", openRepair);
 repairOpen2?.addEventListener("click", openRepair);
 repairCancel?.addEventListener("click", closeRepair);
 repairLink?.addEventListener("keydown", e => { if (e.key === "Enter") redeemScanned(repairLink.value); });
+
+// QR button — same scanner/paste flow as Re-pair, just a direct shortcut.
+document.querySelector("#qr-open")?.addEventListener("click", openRepair);
+
+// Attach — photo/document → /api/documents/intake (same contract as
+// ada-voice-card). Ada hears about it as an idle-gated session note so a
+// mid-response text turn can't abort the stream.
+const docFileInput = document.querySelector("#doc-file");
+document.querySelector("#doc-attach")?.addEventListener("click", () => docFileInput?.click());
+docFileInput?.addEventListener("change", () => {
+  const f = docFileInput.files?.[0];
+  docFileInput.value = "";
+  if (f) uploadDoc(f);
+});
+
+function flushDocNotes() {
+  if (!socket || socket.readyState !== 1 || assistantPlaybackActive || !pendingDocNotes.length) return;
+  const note = pendingDocNotes.shift();
+  try { socket.send(JSON.stringify({ type: "text", text: note })); }
+  catch (_) { pendingDocNotes.unshift(note); }
+}
+
+async function downscaleDoc(file, maxSide = 2400, quality = 0.87) {
+  // Phone shots are 10-15MB; intake needs at most ~2400px for 300dpi A4.
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    if (scale >= 1) return file;
+    const c = document.createElement("canvas");
+    c.width = Math.round(bmp.width * scale);
+    c.height = Math.round(bmp.height * scale);
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    return (await new Promise((res) => c.toBlob(res, "image/jpeg", quality))) || file;
+  } catch { return file; }
+}
+
+async function uploadDoc(file) {
+  logLine(`📎 uploading ${file.name}…`, "system");
+  try {
+    const blob = await downscaleDoc(file);
+    const b64 = await new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result).split(",", 2)[1]);
+      r.onerror = rej;
+      r.readAsDataURL(blob);
+    });
+    const resp = await fetch(`${appBasePath()}/api/documents/intake`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json",
+                 "X-Api-Key": getApiKey(), "X-Device-Id": getDeviceId() },
+      body: JSON.stringify({ image_b64: b64, image_mime: blob.type || "image/jpeg",
+                             filename: file.name, mode: "both" }),
+    });
+    const out = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(out.detail || `HTTP ${resp.status}`);
+    const w = (out.measured || {}).width || "?";
+    const h = (out.measured || {}).height || "?";
+    const warn = (out.warnings || []).length ? ` ⚠ ${out.warnings.join("; ")}` : "";
+    logLine(`📎 ${file.name} → ${out.doc_type} ${w}×${h}${warn}`);
+    pendingDocNotes.push(
+      `[document uploaded via PWA] file=${file.name} intake_key=${out.key} ` +
+      `type=${out.doc_type} size=${w}x${h}` +
+      (warn ? ` warnings=${out.warnings.join("; ")}` : "") +
+      " — ask what to do with it (archive/print); the intake key is held in RAM only.");
+    flushDocNotes();
+  } catch (e) {
+    logLine(`📎 upload failed: ${e.message || e}`, "system");
+  }
+}
 
 initAuth();
