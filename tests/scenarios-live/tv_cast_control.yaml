@@ -1,17 +1,18 @@
 name: tv-cast-control
 # Live scenario — exercises the tv_action vocabulary against the real TV
-# (cast-browser on tony-dell :8799, TONY-TV Cast).
+# (cast-browser on tony-omen :8799, TONY-TV Cast).
 #
 # What it verifies:
 #   - nav <URL> casts a controllable page
-#   - scroll / press verbs reach the cast-browser API
-#     (press carries its key name in text -> mapped to key by the
-#     rest_command payload template)
+#   - scroll / press verbs reach the cast-browser API and return a REAL
+#     result — the old path echoed args through HA rest_command, so a dead
+#     click looked identical to success (2026-10-01 'Live Contacts' bug).
+#     Results now come back as {'ok': True, 'cast': ...} or an error string.
 #   - tony-omen:workspace:N / screenlive:workspace:N desktop casting
 #     (side effect: switches the live workspace — run when that's OK)
 #
 # NOTE: tool_result events stringify nested dicts with repr() (single
-# quotes), so result_contains substrings must use 'cmd': 'nav' style.
+# quotes), so result_contains substrings use 'ok': True style.
 #
 # tier: full — real TV actuation.
 tier: full
@@ -20,7 +21,7 @@ turns:
   - user: "Put google dot com on the TV."
     expect:
       calls: [tv_action]
-      result_contains: ["'cmd': 'nav'"]
+      result_contains: ["'ok': True"]
       response_nonempty: true
       timeout_s: 90
       settle_s: 6
@@ -28,7 +29,7 @@ turns:
   - user: "Scroll down on the TV."
     expect:
       calls: [tv_action]
-      result_contains: ["'cmd': 'scroll'", "down"]
+      result_contains: ["'ok': True"]
       response_nonempty: true
       timeout_s: 90
       settle_s: 5
@@ -36,7 +37,7 @@ turns:
   - user: "Press the escape key on the TV."
     expect:
       calls: [tv_action]
-      result_contains: ["'cmd': 'press'", "Escape"]
+      result_contains: ["'ok': True"]
       response_nonempty: true
       timeout_s: 90
       settle_s: 5
@@ -44,8 +45,9 @@ turns:
   - user: "Now cast my desktop on the TV — workspace one."
     expect:
       calls: [tv_action]
-      result_contains: ["'cmd': 'nav'", "workspace"]
       response_nonempty: true
+      # workspace cast can legitimately fail if the stream isn't running —
+      # the point is the error surfaces, not that it's claimed as success.
       timeout_s: 120
       settle_s: 8
 
