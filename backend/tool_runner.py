@@ -3558,6 +3558,15 @@ class ToolRunner:
             except Exception as exc:
                 summary_bits.append(f"camera '{cam}' snap failed ({exc})")
                 url = ""
+        if not url and cam:
+            # Live snap dead → fall back to the camwall puller's last-good
+            # frame (data/<zone>/<cam>.jpg + manifest ts/ok per cam).
+            url, fnote = await asyncio.to_thread(self._camwall_fallback, cam)
+            if url:
+                summary_bits.append(
+                    f"camera '{cam}' live snap down — sending {fnote}")
+            elif fnote:
+                summary_bits.append(f"camera '{cam}': {fnote}")
         relays = [c for c in (channel or "line").lower().split(",")
                   if c.strip()]
         if "both" in relays or "all" in relays:
@@ -3604,6 +3613,59 @@ class ToolRunner:
             urllib.request.urlopen(req, timeout=10).read()
         except Exception as exc:
             logger.warning("chat_send notify failed: %s", exc)
+
+    def _camwall_fallback(self, cam: str) -> tuple[str, str]:
+        """Resolve `cam` to the camwall puller's cached frame URL.
+
+        Returns (url, note) — url empty when no manifest matches. The puller
+        writes data/<zone>/<key>.jpg + manifest-<zone>.json per zone on
+        tony-dell; the manifest marks each cam ok/err + ts so we prefer the
+        freshest working frame over a stale one."""
+        import difflib
+        import urllib.parse
+        import urllib.request
+        # puller edges serve camwall data on :8380; Ada runs on idc01 so
+        # loopback is the shortest path — env or VCAST host as fallback.
+        cbase = os.environ.get("ADA_CAMWALL_BASE", "").rstrip("/")
+        if not cbase:
+            pub = os.environ.get(
+                "VCAST_PUBLIC_API",
+                "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+            parts = urllib.parse.urlsplit(pub)
+            cbase = f"{parts.scheme}://{parts.netloc}/apps/camwall"
+        try:
+            wall = self._vcast_api("/camwall")
+            zones = list((wall.get("zones") or {}).keys())
+        except Exception:
+            zones = []
+        if not zones:
+            from vms_camera import VMS_CAMWALL_ZONES
+            zones = list(VMS_CAMWALL_ZONES)
+        want = cam.strip().lower()
+        best: tuple[float, str] | None = None  # (ts, url)
+        for zone in zones:
+            try:
+                with urllib.request.urlopen(
+                        f"{cbase}/data/{zone}/manifest-{zone}.json",
+                        timeout=8) as r:
+                    man = json.load(r)
+            except Exception:
+                continue
+            for c in man.get("cams") or []:
+                label = str(c.get("label") or c.get("key") or "").lower()
+                key = str(c.get("key") or "")
+                if want in label or label in want or \
+                        difflib.SequenceMatcher(None, want, label).ratio() > 0.6:
+                    url = f"{cbase}/data/{zone}/{key}.jpg"
+                    ts = float(c.get("ts") or 0)
+                    # a cam currently erroring still has its last frame —
+                    # prefer ok cams, else newest ts wins
+                    score = ts + (1e12 if c.get("ok") else 0)
+                    if best is None or score > best[0]:
+                        best = (score, url)
+        if best:
+            return best[1], "last cached frame"
+        return "", "no camwall cached frame either"
 
     async def yt_transcript(self, url: str, language: str = "th") -> dict[str, Any]:
         """Fetch a YouTube video's auto-captions as plain text. `url` is a
@@ -3763,10 +3825,10 @@ class ToolRunner:
                     "active": True, "by": "ada"})
             except Exception:
                 pass
-        url = (os.environ.get(
-                   "ADA_CAMWALL_BASE",
-                   "https://tony-dell.taila0626a.ts.net/apps/camwall/")
-               + f"?zone={zone}")
+        # root-relative: displays may load vcast from LAN (no tailnet) —
+        # a hardcoded tailnet URL iframes to nothing there (black screen).
+        # Every tony-dell origin serves /apps/camwall (Caddy -> pull edges).
+        url = f"/apps/camwall/?zone={zone}"
         nav_msg: dict[str, Any] = {"type": "nav", "url": url}
         if pane is not None:
             nav_msg["pane"] = int(pane)
