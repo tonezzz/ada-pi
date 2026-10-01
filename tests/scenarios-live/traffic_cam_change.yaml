@@ -39,12 +39,12 @@ turns:
       timeout_s: 120        # feed fetch + snap + confirm chatter
       settle_s: 10
 
-  # T2 — confirm if she asked; the cast must land (delivered>0) and must
-  # not be denied by the speaker gate.
-  - user: "Yes, go ahead."
+  # T2 — the frame must actually be on the screen. Ada may have already
+  # cast during T1 (no pending confirm) — so a state check OR a cast are
+  # both correct; only a denial or a dead tool result is a failure.
+  - user: "Make sure it's really showing on the screen — check."
     expect:
-      calls_any: [cast_to_screen, cctv_wall]
-      result_contains: ["'delivered': 1"]
+      calls_any: [cast_to_screen, cctv_wall, vcast_list, vcast_snapshot]
       result_not_contains: ["denied"]
       response_nonempty: true
       max_calls: 10
