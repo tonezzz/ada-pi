@@ -8,15 +8,23 @@ tier: smoke
 # The speech-stall nudge (pwa_server SPEECH_STALL_S, default 10s) should
 # make Ada voice a one-line "didn't catch that" instead of staying mute.
 #
-# Turn 1 sends ONLY local_speech_started/stopped frames — no audio — so
-# the model provably never receives a user turn; any reply must come from
-# the stall nudge path.
+# Turn 1 consumes the connect greeting + recall prime so no unrelated
+# output can clear the stall marker. Turn 2 sends ONLY
+# local_speech_started/stopped frames — no audio — so the model provably
+# never receives a user turn; any reply must come from the nudge path.
 #
 # Run on idc01:  python3 scripts/scenario-live.py \
 #   tests/scenarios-live/speech_stall_voiceback.yaml \
-#   --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+#   --url "ws://127.0.0.1:8002/ws?device_id=<bound-device>" \
+#   --api-key "$ADA_API_KEY"
 
 turns:
+  - user: "Hi Ada"
+    expect:
+      timeout_s: 60
+      settle_s: 5
+      response_nonempty: true
+
   - speech: {burst_ms: 900}
     expect:
       timeout_s: 45
