@@ -26,6 +26,11 @@ let micMuted = false;
 let audioFramesInResponse = 0;
 let speakerMuted = localStorage.getItem("ada_speaker_muted") === "1";
 const pendingDocNotes = [];
+let wantConnected = false;          // user intent — survives abnormal ws closes
+let reconnectAttempts = 0;
+let reconnectTimer = null;
+let reconnectStableTimer = null;
+const RECONNECT_DELAYS = [1000, 2000, 5000, 10000];  // backoff, capped at 10s
 const micToggleButton = document.querySelector("#mic-toggle");
 
 function setMicButton(muted) {
@@ -303,9 +308,19 @@ function systemSay(text) {
 }
 function systemHush() { try { speechSynthesis?.cancel(); } catch (_) {} }
 
+function scheduleReconnect() {
+  if (reconnectTimer || !wantConnected || authRequired) return;
+  const delay = RECONNECT_DELAYS[Math.min(reconnectAttempts, RECONNECT_DELAYS.length - 1)];
+  reconnectAttempts++;
+  setStatus(`Connection lost — retrying in ${delay / 1000}s`);
+  logLine(`connection dropped — reconnecting in ${delay / 1000}s`, "system");
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+}
+
 async function connect() {
   if (connectionInProgress || socket) return;
   connectionInProgress = true;
+  wantConnected = true;
   window.idleFace?.setConnecting(true);
   setStatus("Requesting microphone…");
   systemSay("Initializing voice link.");
@@ -323,7 +338,10 @@ async function connect() {
     socket = new WebSocket(wsUrl);
     socket.binaryType = "arraybuffer";
     socket.onopen = () => { setStatus("Connecting to AI…");
-      systemSay("Channel open. Handing over to Ada."); };
+      systemSay("Channel open. Handing over to Ada.");
+      // Only a connection that survives 15s counts as stable — flap
+      // cycles must keep climbing the backoff ladder.
+      reconnectStableTimer = setTimeout(() => reconnectAttempts = 0, 15000); };
     socket.onmessage = (message) => {
       if (typeof message.data === "string") handleControl(JSON.parse(message.data));
       else { audioFramesInResponse++; playbackNode?.port.postMessage(message.data, [message.data]); }
@@ -331,12 +349,14 @@ async function connect() {
     socket.onerror = () => logLine("WebSocket error", "system");
     socket.onclose = (event) => {
       systemHush();
-      if (event.code === 4401) {
+      const lostAuth = event.code === 4401;
+      if (lostAuth) {
         authRequired = true;
         localStorage.removeItem(AUTH_STORAGE_KEY);
         setLocked(true, "This device isn't authorized — enter the API key.");
       }
       disconnect(false);
+      if (!lostAuth) scheduleReconnect();
     };
   } catch (error) {
     window.idleFace?.setConnecting(false, true);
@@ -351,6 +371,9 @@ async function connect() {
 
 async function disconnect(closeSocket = true) {
   window.idleFace?.setConnecting(false, true);
+  if (closeSocket) wantConnected = false;   // user tapped Disconnect
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+  if (reconnectStableTimer) { clearTimeout(reconnectStableTimer); reconnectStableTimer = null; }
   if (closeSocket && socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "user disconnect");
   socket = null;
   if (captureNode) captureNode.disconnect();
