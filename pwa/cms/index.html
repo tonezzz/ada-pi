@@ -299,7 +299,6 @@ document.getElementById("page-tabs").addEventListener("click", (e) => {
   paintTabs();
   renderPageList(document.getElementById("page-filter").value.trim().toLowerCase());
 });
-paintTabs();
 document.addEventListener("click", (e) => {
   const a = e.target.closest("#page-list a");
   if (a && isMobile()) pageList.classList.add("hidden");
@@ -542,7 +541,8 @@ function renderMarkdown(el, md, pageTitle) {
         div.className = "mermaid";
         div.textContent = code.textContent;
         pre.replaceWith(div);
-        mermaid.run({ nodes: [div] }).catch(() => {});
+        try { mermaid.run({ nodes: [div] }).catch(() => {}); }
+        catch (e) { /* mermaid optional — leave the source text */ }
       } else if (cls === "media") {
         const spec = jsyaml.load(code.textContent) || {};
         const fig = document.createElement("figure");
@@ -682,8 +682,12 @@ function renderYamlItem(item) {
   return div;
 }
 
-mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
+// loadPages first — vendor libs (mermaid, CDN) must never gate the UI;
+// a failed vendor fetch used to abort init and leave the list empty.
+paintTabs();
 loadPages();
+try { mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" }); }
+catch (e) { /* mermaid optional */ }
 </script>
 </body>
 </html>
