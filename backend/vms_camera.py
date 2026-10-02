@@ -70,7 +70,7 @@ async def snapshot(channel: str, settle: float | None = None) -> tuple[bytes, st
 # Camwall zones whose thumbs come from this same VMS shim — when a live
 # snap fails, the puller's last-good thumb is a guaranteed image to show
 # (marked stale by its mtime, never presented as live).
-VMS_CAMWALL_ZONES = ("zone-a", "noble-park", "vms-noble-club", "vms-noble-a")
+VMS_CAMWALL_ZONES = ("vms-noble-club", "vms-noble-a")  # retired zone-a + noble-park 2026-10-02
 
 
 def _slug(s: str) -> str:
