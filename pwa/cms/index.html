@@ -36,6 +36,18 @@
     .prose-ada table { border-collapse: collapse; margin: .6rem 0; }
     .prose-ada th, .prose-ada td { border: 1px solid #334155; padding: .35rem .7rem; font-size: .9rem; }
     .prose-ada blockquote { border-left: 3px solid #0a84ff; padding-left: .8rem; color: #94a3b8; margin: .6rem 0; }
+    /* md+ : viewport-locked two-pane — the page list scrolls in place,
+       the content panel stays put and scrolls internally.
+       NOTE: vendored tailwind.min.css is a subset — md:block/md:hidden
+       are NOT generated, so use id-scoped rules instead of utilities. */
+    @media (min-width: 768px) {
+      .cms-shell { height: calc(100vh - 96px); overflow: hidden; }
+      .cms-aside { display: flex; flex-direction: column; min-height: 0; }
+      .cms-aside #page-list { display: block; flex: 1; overflow-y: auto;
+                              min-height: 0; padding-right: 4px; }
+      .cms-main { overflow-y: auto; min-height: 0; }
+      #btn-toggle-list { display: none; }
+    }
   </style>
 </head>
 <body class="bg-bg text-slate-100 min-h-screen">
@@ -76,8 +88,8 @@
     </div>
   </div>
 
-  <div class="max-w-6xl mx-auto p-4 md:flex md:gap-6">
-    <aside class="md:w-64 shrink-0 mb-6 md:mb-0">
+  <div class="max-w-6xl mx-auto p-4 md:flex md:gap-6 cms-shell">
+    <aside class="md:w-64 shrink-0 mb-6 md:mb-0 cms-aside">
       <div class="flex items-center gap-2 mb-2">
         <h2 class="text-xs uppercase tracking-wide text-slate-500">Chaba CMS</h2>
         <button id="btn-toggle-list" class="md:hidden ml-auto text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Pages ▾</button>
@@ -90,7 +102,7 @@
       </div>
       <div id="page-list" class="space-y-1 text-sm hidden md:block"></div>
     </aside>
-    <main class="flex-1 min-w-0">
+    <main class="flex-1 min-w-0 cms-main">
       <div id="content" class="text-slate-400">Loading…</div>
     </main>
   </div>
