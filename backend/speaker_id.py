@@ -70,6 +70,13 @@ MIN_MARGIN = 0.05
 RESERVED_NAMES = {"guest", "unknown", "someone", "anon", "anonymous",
                   "test", "tester", "newspeaker", "new speaker",
                   "new_speaker", "unnamed", "user"}
+# UI/template placeholder *patterns* — "(user input required)" slipped
+# through RESERVED_NAMES verbatim on 2026-10-01 because it was a form
+# default, not a listed word. Any parenthesized or template-worded name
+# is a UI artifact, never a person.
+_PLACEHOLDER_PATTERN = re.compile(
+    r"^\s*\(|\b(input|required|placeholder|enter\s+name|your\s+name)\b",
+    re.IGNORECASE)
 # Consecutive identical chunks required to CHANGE an established speaker —
 # a single borderline frame flipping กุ้ง↔NewSpeaker at 46-64% was observed
 # 2026-09-27 (same voice enrolled twice under two names). First-time
@@ -365,7 +372,8 @@ class SpeakerIdentifier:
         force=True (owner-confirmed only) skips BOTH guards and REPLACES
         the profile — the recovery path when a real speaker is locked out
         by a stale/poisoned print."""
-        if name.strip().lower() in RESERVED_NAMES:
+        if (name.strip().lower() in RESERVED_NAMES
+                or _PLACEHOLDER_PATTERN.search(name)):
             raise ValueError(
                 f"'{name}' is a placeholder, not a real name — ask the "
                 "speaker for their name first, then enroll under that."
