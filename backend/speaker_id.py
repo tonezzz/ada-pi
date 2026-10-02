@@ -81,6 +81,14 @@ SWITCH_AFTER = 2
 FIRST_ID_MIN_CONF = float(os.environ.get("ADA_SPEAKER_FIRST_ID_CONF", "0.70"))
 FIRST_AFTER = int(os.environ.get("ADA_SPEAKER_FIRST_AFTER", "2"))
 
+# Soft-owner hint: when a chunk's best person match IS the enrolled owner of
+# this session's key but below the identify threshold (far-field mics sit at
+# 0.2-0.5), surface a "likely the owner" hint after OWNER_HINT_AFTER
+# consecutive sub-threshold hits. Personalizes the conversation without
+# widening authorization — the session owner is already pinned by the key.
+OWNER_HINT_MIN = float(os.environ.get("ADA_SPEAKER_OWNER_HINT_MIN", "0.30"))
+OWNER_HINT_AFTER = int(os.environ.get("ADA_SPEAKER_OWNER_HINT_AFTER", "2"))
+
 # Enrollment capture window — seconds of trailing audio kept for
 # enroll_from_buffer. 6s (the old MAX_BUFFER_BYTES cap) only ever held the
 # speaker's last reply; 30s spans several utterances so an enroll call has
@@ -553,11 +561,30 @@ class SpeakerIdentifier:
             return 0.5 * max(sims) + 0.5 * (sum(sims) / len(sims))
         return _cosine_similarity(emb, centroid)
 
+    def speaker_for_person(self, ha_person: str | None) -> str | None:
+        """Enrolled speaker name bound to an HA person entity, or None."""
+        if not ha_person:
+            return None
+        for name, meta in self._metadata.items():
+            if meta.get("ha_person") == ha_person and not meta.get("media"):
+                return name
+        return None
+
     def identify(self, pcm16: bytes, sample_rate: int = SAMPLE_RATE,
                  threshold: float = DEFAULT_THRESHOLD) -> tuple[str | None, float]:
         """Return (name, confidence) or (None, best_score)."""
+        name, score, _, _ = self.identify_scored(pcm16, sample_rate, threshold)
+        return name, score
+
+    def identify_scored(
+        self, pcm16: bytes, sample_rate: int = SAMPLE_RATE,
+        threshold: float = DEFAULT_THRESHOLD,
+    ) -> tuple[str | None, float, str | None, float]:
+        """identify() plus the raw best person candidate — the soft-owner
+        hint needs to know WHO nearly matched even when the result is
+        unrecognized. Returns (name, conf, best_person_name, best_person_score)."""
         if not self._enrolled:
-            return None, 0.0
+            return None, 0.0, None, 0.0
         emb = self._compute_embedding(pcm16, sample_rate)
         # Score persons and media sinks in separate pools — a media-flagged
         # profile is a noise sink (TV/ambient), not a person in the room.
@@ -587,21 +614,21 @@ class SpeakerIdentifier:
         if best_score >= threshold and best_score >= media_score - MIN_MARGIN:
             pass  # fall through to the person margin check below
         elif media_score >= threshold and media_score - best_score >= MIN_MARGIN:
-            return media_name, media_score
+            return media_name, media_score, best_name, best_score
         else:
             logger.info(
                 "identify ambiguous: person %s=%.2f vs media %s=%.2f — unrecognized",
                 best_name, best_score, media_name, media_score)
-            return None, max(best_score, media_score)
+            return None, max(best_score, media_score), best_name, best_score
         if best_score < threshold:
-            return None, best_score
+            return None, best_score, best_name, best_score
         if best_score - second_score < MIN_MARGIN:
             logger.info(
                 "identify ambiguous: %s=%.2f vs runner-up %.2f (margin %.2f < %.2f) — unrecognized",
                 best_name, best_score, second_score,
                 best_score - second_score, MIN_MARGIN)
-            return None, best_score
-        return best_name, best_score
+            return None, best_score, best_name, best_score
+        return best_name, best_score, best_name, best_score
 
 
 class SpeakerSession:
@@ -619,10 +646,18 @@ class SpeakerSession:
         on_identified: Callable[[str, float], Awaitable[None]],
         threshold: float = DEFAULT_THRESHOLD,
         on_unrecognized: Callable[[float], Awaitable[None]] | None = None,
+        owner_speaker: str | None = None,
+        on_likely_owner: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._identifier = identifier
         self._on_identified = on_identified
         self._on_unrecognized = on_unrecognized
+        self._on_likely_owner = on_likely_owner
+        # Enrolled NAME of the session owner's voiceprint (person.tony →
+        # "Tony") — lets a sub-threshold best-match still personalize.
+        self._owner_speaker = owner_speaker
+        self._owner_hint_streak = 0
+        self._owner_hint_fired = False
         self._threshold = threshold
         self._buffer = bytearray()
         self._identifying = False
@@ -684,9 +719,31 @@ class SpeakerSession:
     async def _identify(self, chunk: bytes) -> None:
         try:
             loop = asyncio.get_running_loop()
-            name, confidence = await loop.run_in_executor(
-                None, self._identifier.identify, chunk, SAMPLE_RATE, self._threshold
+            name, confidence, best_name, best_score = await loop.run_in_executor(
+                None, self._identifier.identify_scored, chunk, SAMPLE_RATE,
+                self._threshold,
             )
+            # Soft-owner hint: best match is the session owner's enrolled
+            # voice but under threshold — flag "likely the owner" so the
+            # greeting/personalization isn't name-blind. Auth never widens:
+            # the owner is already pinned by the key binding.
+            if (
+                name is None
+                and self._owner_speaker is not None
+                and best_name == self._owner_speaker
+                and best_score >= OWNER_HINT_MIN
+                and not self._owner_hint_fired
+            ):
+                self._owner_hint_streak += 1
+                if self._owner_hint_streak >= OWNER_HINT_AFTER:
+                    self._owner_hint_fired = True
+                    logger.info(
+                        "speaker likely owner '%s' (%.0f%% best, sub-threshold)",
+                        self._owner_speaker, best_score * 100)
+                    if self._on_likely_owner is not None:
+                        await self._on_likely_owner(self._owner_speaker)
+            elif best_name != self._owner_speaker:
+                self._owner_hint_streak = 0
             if name is not None and name != self._last_name:
                 # Hysteresis: first-time identification AND switching both
                 # need SWITCH_AFTER consecutive wins for that name — a

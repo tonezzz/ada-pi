@@ -1054,13 +1054,15 @@ async def session_prime_text(
     # Authoritative session identity — without it the model reconstructs
     # "who am I talking to" from memory/archive content and can mistake
     # the speaker for whoever the last summary mentioned (the KK bug).
+    ident_note: str | None = None
     if person_entity:
         who = registry.identity_label(person_entity) or person_entity
-        parts.append(
-            f"(system) Session identity: device registered to {who} "
-            f"({person_entity}). If a speaker-identification event names a "
-            "different person, the identified speaker takes precedence — "
-            "names in memory and session archives may refer to other people."
+        ident_note = (
+            f"(system) You are talking to {who} — this device is registered "
+            f"to {person_entity}. Greet and address them as {who}. Any other "
+            "names in this context are other people or past topics, never "
+            "the speaker. Only a speaker-identification event naming a "
+            "different person overrides this."
         )
     else:
         # Anonymous device — only worth noting when other injected content
@@ -1168,6 +1170,11 @@ async def session_prime_text(
             "Standing guidance — apply these directly when the user mentions "
             "the topic; do not look the entities up again:\n"
             + "\n".join(f"- {r}" for r in rules))
+    # Identity goes LAST — the freshest directive when the greeting is
+    # generated; the rolling summary often names other people (the
+    # "Hi KK" bug: a KK-heavy summary outcompeted the device binding).
+    if ident_note:
+        parts.append(ident_note)
     if anon_note and parts:
         parts.insert(1 if directive else 0, anon_note)
     if not parts:

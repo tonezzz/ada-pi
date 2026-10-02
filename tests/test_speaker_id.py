@@ -290,7 +290,8 @@ class SpeakerSwitchHysteresisTest(unittest.IsolatedAsyncioTestCase):
             calls.append(name)
         sess = speaker_id.SpeakerSession(ident, on_ident)
         for name, conf in sequence:
-            with patch.object(ident, "identify", return_value=(name, conf)):
+            with patch.object(ident, "identify_scored",
+                              return_value=(name, conf, name, conf)):
                 await sess._identify(b"\x00" * 1000)
         return calls, sess.current_speaker
 

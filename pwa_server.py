@@ -809,8 +809,29 @@ async def voice_socket(ws: WebSocket) -> None:
                     }))
                 with suppress(Exception):
                     await provider_ref[0].send_text_turn(UNRECOGNIZED_SPEAKER_NOTE)
+            # Soft-owner hint: this device's key is bound to a person — when
+            # the speaker's best match is that person's print but under the
+            # identify threshold, inject a soft note so Ada isn't name-blind
+            # on far-field audio. Auth is untouched (owner pinned by the key).
+            owner_spk = identifier.speaker_for_person(
+                tool_runner.session_owner_identity)
+            async def _on_likely_owner(name: str) -> None:
+                display = identifier.get_display_name(name)
+                conversation.log_event(
+                    "speaker_likely_owner", name=name)
+                with suppress(Exception):
+                    await ws.send_text(json.dumps({
+                        "type": "speaker_likely", "name": name,
+                        "display_name": display}))
+                with suppress(Exception):
+                    await provider_ref[0].send_text_turn(
+                        f"(system) The speaker's voice partially matches "
+                        f"{display} — this device's registered owner. Address "
+                        f"them as {display}; if they correct you, they're "
+                        "likely a different person.")
             speaker_session = SpeakerSession(
-                identifier, _on_speaker, on_unrecognized=_on_unrecognized
+                identifier, _on_speaker, on_unrecognized=_on_unrecognized,
+                owner_speaker=owner_spk, on_likely_owner=_on_likely_owner,
             )
             # Link to tool_runner so ada_enroll_speaker can capture
             # enrollment audio from the session buffer.
