@@ -487,10 +487,14 @@ class LineRelay:
             from starlette.responses import Response
             nonce = request.path_params.get("nonce", "")
             hit = self._imgs.get(nonce)
+            ua = request.headers.get("user-agent", "")[:60]
             if not hit:
+                logger.warning("relay-img MISS %s (ua=%s)", nonce, ua)
                 return JSONResponse({"ok": False}, status_code=404)
             data, _ts, mime = (hit + ("image/jpeg",))[:3] \
                 if len(hit) == 2 else hit
+            logger.info("relay-img serve %s %dB %s (ua=%s)",
+                        nonce, len(data), mime, ua)
             return Response(data, media_type=mime)
 
         app = Starlette(routes=[
