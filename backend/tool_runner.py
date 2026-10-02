@@ -2725,10 +2725,13 @@ class ToolRunner:
         for d in docs:
             page = self._cms_page_summary(d)
             slug = page["slug"]
+            dlang = d.get("lang") or "en"
             if slug in by_slug:
-                by_slug[slug]["langs"].add(d.get("lang") or "en")
+                by_slug[slug]["langs"].add(dlang)
+                by_slug[slug].setdefault("titles", {})[dlang] = page["title"]
                 continue
-            page["langs"] = {d.get("lang") or "en"}
+            page["langs"] = {dlang}
+            page["titles"] = {dlang: page["title"]}
             by_slug[slug] = page
         for p in by_slug.values():
             p["langs"] = sorted(p["langs"])

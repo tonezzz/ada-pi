@@ -318,18 +318,25 @@ document.addEventListener("click", (e) => {
 
 let pages = [];
 
+// Per-language title — the list API returns `titles` keyed by lang so the
+// sidebar subject follows the EN/ไทย toggle instead of whichever variant
+// happened to be indexed first.
+const titleOf = (p) => (p.titles && p.titles[curLang]) || p.title || "";
+
 // Group pages by slug/title conventions — no backend needed:
-//   cctv-walls / dvr-wall / wall-*        -> "CCTV Walls"
-//   cam-* or "CCTV: <Area> — <label>"     -> "Cameras", sub-grouped by area
+//   cctv-walls / dvr-wall / camwall-* (legacy wall-*) -> "CCTV Walls"
+//   cam-* or "CCTV/กล้อง: <Area> — <label>"           -> "Cameras", by area
 //   *-report* / benchmark-* / assessments -> "Reports"
 //   everything else                       -> "Pages"
 function pageGroup(p) {
-  const t = p.title || "", s = p.slug || "";
+  const t = titleOf(p), s = p.slug || "";
   if (s === "cctv-walls" || s === "dvr-wall" ||
-      s.startsWith("wall-") || t.startsWith("CCTV Wall"))
+      s.startsWith("camwall-") || s.startsWith("wall-") ||
+      t.startsWith("CCTV Wall") || t.startsWith("กำแพงกล้อง"))
     return { g: "CCTV Walls", sub: "" };
-  if (s.startsWith("cam-") || t.startsWith("CCTV:")) {
-    const m = t.match(/^CCTV:\s*(.+?)\s*[—-]/) || s.match(/^cam-([a-z0-9]+)-/);
+  if (s.startsWith("cam-") || t.startsWith("CCTV:") || t.startsWith("กล้อง:")) {
+    const m = t.match(/^(?:CCTV|กล้อง):\s*(.+?)\s*[—-]/) ||
+              s.match(/^cam-([a-z0-9]+)-/);
     return { g: "Cameras", sub: m ? m[1].trim() : "Other" };
   }
   if (/report|benchmark|audit|assessment/i.test(s))
@@ -341,9 +348,11 @@ const groupOpen = new Map();  // survives list re-renders; all open initially
 let curTab = "pages";         // "pages" | "cctv" — sidebar split
 
 const isCctv = (p) => {
-  const t = p.title || "", s = p.slug || "";
-  return s === "cctv-walls" || s === "dvr-wall" || s.startsWith("wall-") ||
-         s.startsWith("cam-") || t.startsWith("CCTV");
+  const t = titleOf(p), s = p.slug || "";
+  return s === "cctv-walls" || s === "dvr-wall" || s.startsWith("camwall-") ||
+         s.startsWith("wall-") || s.startsWith("cam-") ||
+         t.startsWith("CCTV") || t.startsWith("กล้อง") ||
+         t.startsWith("กำแพง");
 };
 
 function paintTabs() {
@@ -361,7 +370,7 @@ function renderPageList(filter = "") {
   const shown = pages.filter((p) =>
     (curTab === "cctv") === isCctv(p) &&
     (!filter ||
-      (p.title || "").toLowerCase().includes(filter) ||
+      titleOf(p).toLowerCase().includes(filter) ||
       (p.slug || "").toLowerCase().includes(filter)));
   if (!shown.length) {
     list.innerHTML = filter
@@ -378,7 +387,7 @@ function renderPageList(filter = "") {
     const langBadge = langs.includes(curLang)
       ? ""
       : ` <span class="text-xs text-amber-500">no ${curLang}</span>`;
-    a.innerHTML = `<span class="text-slate-200">${escapeHtml(p.title)}</span>
+    a.innerHTML = `<span class="text-slate-200">${escapeHtml(titleOf(p))}</span>
       <span class="hidden sm:inline text-xs text-slate-500 ml-1">${escapeHtml(p.format || "markdown")}</span>${langBadge}`;
     return a;
   };
