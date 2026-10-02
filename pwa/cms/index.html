@@ -328,7 +328,7 @@ function renderPageList(filter = "") {
 async function loadPages() {
   const list = document.getElementById("page-list");
   try {
-    const res = await apiFetch("/api/cms/pages?limit=100");
+    const res = await apiFetch("/api/cms/pages?limit=500");
     if (res.status === 401) { showUnlock("API key required (or invalid for this device)."); return; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     pages = (await res.json()).pages || [];

@@ -1964,7 +1964,7 @@ async def chat_transcript(request: Request, max_turns: int = 200) -> dict:
 
 
 @app.get("/api/cms/pages")
-async def cms_list_pages(request: Request, limit: int = 50) -> dict:
+async def cms_list_pages(request: Request, limit: int = 500) -> dict:
     """List miniapp pages (slug/title/format/updated). Read-only, key-gated."""
     _require_api_key(request)
     return {"pages": await tool_runner.cms_list_pages(limit=limit)}
