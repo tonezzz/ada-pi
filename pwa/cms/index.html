@@ -347,12 +347,6 @@ function renderPageList(filter = "") {
   const list = document.getElementById("page-list");
   list.innerHTML = "";
   const slug = decodeURIComponent((location.hash.match(/^#\/(.+)$/) || [])[1] || "");
-  // opening a CCTV page flips the tab so the page is visible in the list
-  if (!filter && slug) {
-    const cur = pages.find((p) => p.slug === slug);
-    if (cur) curTab = isCctv(cur) ? "cctv" : "pages";
-    paintTabs();
-  }
   const shown = pages.filter((p) =>
     (curTab === "cctv") === isCctv(p) &&
     (!filter ||
@@ -436,6 +430,13 @@ async function loadPages() {
 
 async function renderRoute() {
   const slug = decodeURIComponent((location.hash.match(/^#\/(.+)$/) || [])[1] || "");
+  // deep link / navigation: flip the sidebar tab to the page's world —
+  // only here, never inside renderPageList, or a manual tab click
+  // instantly flips back to the open page's tab (2026-10-02 bug).
+  if (slug) {
+    const cur = pages.find((p) => p.slug === slug);
+    if (cur) { curTab = isCctv(cur) ? "cctv" : "pages"; paintTabs(); }
+  }
   renderPageList(document.getElementById("page-filter").value.trim().toLowerCase());
   const el = document.getElementById("content");
   if (!slug) {
