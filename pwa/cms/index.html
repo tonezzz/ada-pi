@@ -295,9 +295,30 @@ document.addEventListener("click", (e) => {
 
 let pages = [];
 
+// Group pages by slug/title conventions — no backend needed:
+//   cctv-walls / dvr-wall / wall-*        -> "CCTV Walls"
+//   cam-* or "CCTV: <Area> — <label>"     -> "Cameras", sub-grouped by area
+//   *-report* / benchmark-* / assessments -> "Reports"
+//   everything else                       -> "Pages"
+function pageGroup(p) {
+  const t = p.title || "", s = p.slug || "";
+  if (s === "cctv-walls" || s === "dvr-wall" ||
+      s.startsWith("wall-") || t.startsWith("CCTV Wall"))
+    return { g: "CCTV Walls", sub: "" };
+  if (s.startsWith("cam-") || t.startsWith("CCTV:")) {
+    const m = t.match(/^CCTV:\s*(.+?)\s*[—-]/) || s.match(/^cam-([a-z0-9]+)-/);
+    return { g: "Cameras", sub: m ? m[1].trim() : "Other" };
+  }
+  if (/report|benchmark|audit|assessment/i.test(s))
+    return { g: "Reports", sub: "" };
+  return { g: "Pages", sub: "" };
+}
+const GROUP_ORDER = ["CCTV Walls", "Cameras", "Reports", "Pages"];
+
 function renderPageList(filter = "") {
   const list = document.getElementById("page-list");
   list.innerHTML = "";
+  const slug = decodeURIComponent((location.hash.match(/^#\/(.+)$/) || [])[1] || "");
   const shown = filter
     ? pages.filter((p) =>
         (p.title || "").toLowerCase().includes(filter) ||
@@ -309,8 +330,7 @@ function renderPageList(filter = "") {
       : '<div class="text-slate-500 italic">No pages yet — ask Ada to create one.</div>';
     return;
   }
-  const slug = decodeURIComponent((location.hash.match(/^#\/(.+)$/) || [])[1] || "");
-  for (const p of shown) {
+  const mkLink = (p) => {
     const a = document.createElement("a");
     a.href = `#/${encodeURIComponent(p.slug)}`;
     a.className = "block px-2 py-1.5 rounded hover:bg-slate-800 truncate" +
@@ -321,7 +341,44 @@ function renderPageList(filter = "") {
       : ` <span class="text-xs text-amber-500">no ${curLang}</span>`;
     a.innerHTML = `<span class="text-slate-200">${escapeHtml(p.title)}</span>
       <span class="hidden sm:inline text-xs text-slate-500 ml-1">${escapeHtml(p.format || "markdown")}</span>${langBadge}`;
-    list.appendChild(a);
+    return a;
+  };
+  if (filter) {           // flat list while filtering
+    for (const p of shown) list.appendChild(mkLink(p));
+    return;
+  }
+  const groups = {};
+  for (const p of shown) {
+    const { g, sub } = pageGroup(p);
+    ((groups[g] ||= {})[sub] ||= []).push(p);
+  }
+  const order = [
+    ...GROUP_ORDER.filter((g) => groups[g]),
+    ...Object.keys(groups).filter((g) => !GROUP_ORDER.includes(g)).sort(),
+  ];
+  for (const g of order) {
+    const subs = groups[g];
+    const n = Object.values(subs).reduce((a, v) => a + v.length, 0);
+    const hasCurrent = Object.values(subs).flat().some((p) => p.slug === slug);
+    const det = document.createElement("details");
+    det.open = hasCurrent || order.length <= 2;
+    det.className = "mb-1";
+    const sum = document.createElement("summary");
+    sum.className = "px-2 py-1 rounded cursor-pointer select-none " +
+      "text-xs font-semibold uppercase tracking-wide text-slate-400 " +
+      "hover:bg-slate-800";
+    sum.textContent = `${g} · ${n}`;
+    det.appendChild(sum);
+    for (const sub of Object.keys(subs).sort()) {
+      if (sub) {
+        const h = document.createElement("div");
+        h.className = "px-3 pt-1 text-[11px] text-slate-500";
+        h.textContent = sub;
+        det.appendChild(h);
+      }
+      for (const p of subs[sub]) det.appendChild(mkLink(p));
+    }
+    list.appendChild(det);
   }
 }
 
