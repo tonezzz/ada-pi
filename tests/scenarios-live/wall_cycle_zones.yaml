@@ -1,0 +1,16 @@
+# Ada puts a camera wall on a screen, then cycles cam-by-cam through it
+# and moves to the next wall — probes whether a wall/zone rotation
+# exists or she improvises with repeated casts.
+name: wall-cycle-zones
+tier: full
+turns:
+  - user: "Put the zone A camera wall on screen 3"
+    expect:
+      calls_any: [cctv_wall]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 2
+  - user: "Now show me each camera in that zone fullscreen one at a time, cycling, then move on to the noble-park wall and do the same"
+    expect:
+      response_nonempty: true
+      timeout_s: 120

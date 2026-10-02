@@ -1,0 +1,19 @@
+# Ada sends one camera (with description) to a screen, then cycles the
+# group — exercises whatever mechanism she chooses: repeated
+# cctv_snapshot, a wall cycle mode, or an honest "I can't rotate".
+name: camera-cycle-screen
+tier: full
+turns:
+  - user: "Show me a camera from zone A on screen 3 and tell me what you see"
+    expect:
+      calls_any: [cctv_snapshot, cctv_wall, ada_camera_snapshot]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 2
+  - user: "Now cycle through the other cameras in that zone on screen 3, one at a time, keep rotating"
+    expect:
+      # no assertion on HOW — we want to see what she reaches for:
+      # repeated cctv_snapshot calls, a cycle/rotate tool if it exists,
+      # or a truthful 'that needs manual switching' answer
+      response_nonempty: true
+      timeout_s: 120

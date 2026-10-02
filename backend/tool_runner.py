@@ -4005,6 +4005,14 @@ class ToolRunner:
         # a hardcoded tailnet URL iframes to nothing there (black screen).
         # Every tony-dell origin serves /apps/camwall (Caddy -> pull edges).
         url = f"/apps/camwall/?zone={zone}"
+        # cycle/zones ride as URL params on the page — page-side display
+        # behavior, not relay state, so they don't touch /camwall.
+        cyc = (settings or {}).get("cycle_s")
+        if cyc:
+            url += f"&cycle={int(cyc)}"
+        zlist = (settings or {}).get("zones")
+        if zlist:
+            url += f"&zones={','.join(zlist)}&zone_s={int((settings or {}).get('zone_s') or 45)}"
         nav_msg: dict[str, Any] = {"type": "nav", "url": url}
         if pane is not None:
             nav_msg["pane"] = int(pane)
