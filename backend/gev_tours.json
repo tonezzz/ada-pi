@@ -1,75 +1,208 @@
 {
-  "comment": "Named God's Eye View tours — served by the gev_tour tool so 'play the X tour' is resolvable. Each stop: fly_to_location (or fly_route for drawn routes) → annotate_map → vcast_say narration → optional PiP frame via cast_to_screen(action='image', pane=1). Mirrors tests/scenarios-live/gev_*_tour*.yaml.",
-  "tours": {
-    "za": {
-      "title": "Johannesburg city tour",
-      "aliases": ["south africa", "johannesburg", "แอฟริกาใต้", "โจฮันเนสเบิร์ก"],
-      "setup": "Full-screen GEV on the target screen, then fly_to_location 'Johannesburg' before stop 1.",
-      "stops": [
-        {"label": "FNB Stadium", "lat": -26.2348, "lon": 27.9824,
-         "say": "FNB Stadium — the calabash-shaped 2010 World Cup final stadium, ~94k seats."},
-        {"label": "Nelson Mandela Square, Sandton", "lat": -26.1076, "lon": 28.0567,
-         "say": "Nelson Mandela Square in Sandton — the shopping square with the six-metre Mandela statue."},
-        {"label": "Constitution Hill", "lat": -26.1889, "lon": 28.0431,
-         "say": "Constitution Hill — the old fort prison turned Constitutional Court precinct.",
-         "outro": "pull back (adjust_camera_zoom out) so the whole city is in frame"}
-      ]
+ "comment": "Named God's Eye View tours — served by the gev_tour tool so 'play the X tour' is resolvable. Each stop: fly_to_location (or fly_route for drawn routes) → annotate_map → vcast_say narration → optional PiP frame via cast_to_screen(action='image', pane=1). Mirrors tests/scenarios-live/gev_*_tour*.yaml.",
+ "tours": {
+  "za": {
+   "title": "Johannesburg city tour",
+   "aliases": [
+    "south africa",
+    "johannesburg",
+    "แอฟริกาใต้",
+    "โจฮันเนสเบิร์ก"
+   ],
+   "setup": "Full-screen GEV on the target screen, then fly_to_location 'Johannesburg' before stop 1.",
+   "stops": [
+    {
+     "label": "FNB Stadium",
+     "lat": -26.2348,
+     "lon": 27.9824,
+     "say": "FNB Stadium — the calabash-shaped 2010 World Cup final stadium, ~94k seats."
     },
-    "capetown": {
-      "title": "Cape Town windsurf strip",
-      "aliases": ["cape town", "windsurf", "blouberg", "kep town", "เคปทาวน์"],
-      "setup": "Full-screen GEV. Long leg: fly_to_location 'Cape Town' first, then frame Bloubergstrand.",
-      "stops": [
-        {"label": "Bloubergstrand", "lat": -33.7940, "lon": 18.4620,
-         "say": "Bloubergstrand — the classic Table Mountain postcard launch; the downwind strip starts here."},
-        {"label": "Big Bay", "lat": -33.7880, "lon": 18.4550,
-         "say": "Big Bay — the next launch south; slightly sheltered, smaller shore-break."},
-        {"label": "Sunset Beach", "lat": -33.8410, "lon": 18.4800,
-         "say": "Sunset Beach — where the downwind runs finish; kiter central in a south-easter."}
-      ]
+    {
+     "label": "Nelson Mandela Square, Sandton",
+     "lat": -26.1076,
+     "lon": 28.0567,
+     "say": "Nelson Mandela Square in Sandton — the shopping square with the six-metre Mandela statue."
     },
-    "london": {
-      "title": "London traffic-cam tour (JamCam PiP)",
-      "aliases": ["europe", "eu", "london", "ลอนดอน"],
-      "setup": "Split the screen — GEV left, a camera pane right; each stop puts the JamCam still on the right pane.",
-      "stops": [
-        {"label": "Parliament Square", "lat": 51.5011, "lon": -0.1263,
-         "frame_url": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06501.jpg",
-         "say": "Parliament Square — Westminster on the JamCam feed."},
-        {"label": "York Road / London Eye", "lat": 51.5024, "lon": -0.1163,
-         "frame_url": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04226.jpg",
-         "say": "York Road, right next to the London Eye."},
-        {"label": "Piccadilly Circus", "lat": 51.5096, "lon": -0.1348,
-         "frame_url": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.07450.jpg",
-         "say": "Piccadilly Circus — the billboard junction."}
-      ]
-    },
-    "bkk": {
-      "title": "Bangkok traffic-cam tour (camwall PiP)",
-      "aliases": ["bangkok", "thailand", "bkk", "กรุงเทพ", "ทัวร์กรุงเทพ"],
-      "setup": "Split the screen — GEV left, camera pane right. Frames come from the live camwall thumbs (they refresh on the puller cadence).",
-      "stops": [
-        {"label": "Pracha Niwet intersection", "lat": 13.8399, "lon": 100.5412,
-         "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/traffic/itic---pracha-niwet-intersection--bangkok.jpg",
-         "say": "Pracha Niwet intersection, north Bangkok — live iTIC frame."},
-        {"label": "Rama 4 expressway interchange", "lat": 13.7226, "lon": 100.5533,
-         "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/traffic/itic---expressway--rama-4-interchange.jpg",
-         "say": "Rama 4 interchange — the downtown expressway junction."},
-        {"label": "Burapha Withi at Bang Na", "lat": 13.6689, "lon": 100.6292,
-         "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/burapha/%E0%B8%97%E0%B8%B2%E0%B8%87%E0%B8%9E-%E0%B9%80%E0%B8%A8%E0%B8%A9%E0%B8%9A-%E0%B8%A3%E0%B8%9E%E0%B8%B2%E0%B8%A7-%E0%B8%96----bangna-trat-km-0--east.jpg",
-         "say": "Burapha Withi expressway at Bang Na km 0 — eastbound out of the city."}
-      ]
-    },
-    "bkk-route": {
-      "title": "Bangkok fly_route demo (drawn path)",
-      "aliases": ["route", "fly route", "เส้นทางบิน"],
-      "setup": "GEV fullscreen with a floating cam pane (rama9 zone). This one draws a route then flies it — different motion than per-stop hops.",
-      "route_points": [
-        {"label": "Pracha Niwet", "lat": 13.8399, "lon": 100.5412},
-        {"label": "Rama 4 interchange", "lat": 13.7226, "lon": 100.5533},
-        {"label": "Burapha Withi / Bang Na", "lat": 13.6689, "lon": 100.6292}
-      ],
-      "stops": []
+    {
+     "label": "Constitution Hill",
+     "lat": -26.1889,
+     "lon": 28.0431,
+     "say": "Constitution Hill — the old fort prison turned Constitutional Court precinct.",
+     "outro": "pull back (adjust_camera_zoom out) so the whole city is in frame"
     }
+   ]
+  },
+  "capetown": {
+   "title": "Cape Town windsurf strip",
+   "aliases": [
+    "cape town",
+    "windsurf",
+    "blouberg",
+    "kep town",
+    "เคปทาวน์"
+   ],
+   "setup": "Full-screen GEV. Long leg: fly_to_location 'Cape Town' first, then frame Bloubergstrand.",
+   "stops": [
+    {
+     "label": "Bloubergstrand",
+     "lat": -33.794,
+     "lon": 18.462,
+     "say": "Bloubergstrand — the classic Table Mountain postcard launch; the downwind strip starts here."
+    },
+    {
+     "label": "Big Bay",
+     "lat": -33.788,
+     "lon": 18.455,
+     "say": "Big Bay — the next launch south; slightly sheltered, smaller shore-break."
+    },
+    {
+     "label": "Sunset Beach",
+     "lat": -33.841,
+     "lon": 18.48,
+     "say": "Sunset Beach — where the downwind runs finish; kiter central in a south-easter."
+    }
+   ]
+  },
+  "london": {
+   "title": "London traffic-cam tour (JamCam PiP)",
+   "aliases": [
+    "europe",
+    "eu",
+    "london",
+    "ลอนดอน"
+   ],
+   "setup": "Split the screen — GEV left, a camera pane right; each stop puts the JamCam still on the right pane.",
+   "stops": [
+    {
+     "label": "Parliament Square",
+     "lat": 51.5011,
+     "lon": -0.1263,
+     "frame_url": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06501.jpg",
+     "say": "Parliament Square — Westminster on the JamCam feed."
+    },
+    {
+     "label": "York Road / London Eye",
+     "lat": 51.5024,
+     "lon": -0.1163,
+     "frame_url": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04226.jpg",
+     "say": "York Road, right next to the London Eye."
+    },
+    {
+     "label": "Piccadilly Circus",
+     "lat": 51.5096,
+     "lon": -0.1348,
+     "frame_url": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.07450.jpg",
+     "say": "Piccadilly Circus — the billboard junction."
+    }
+   ]
+  },
+  "bkk": {
+   "title": "Bangkok traffic-cam tour (camwall PiP)",
+   "aliases": [
+    "bangkok",
+    "thailand",
+    "bkk",
+    "กรุงเทพ",
+    "ทัวร์กรุงเทพ"
+   ],
+   "setup": "Split the screen — GEV left, camera pane right. Frames come from the live camwall thumbs (they refresh on the puller cadence).",
+   "stops": [
+    {
+     "label": "Pracha Niwet intersection",
+     "lat": 13.8399,
+     "lon": 100.5412,
+     "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/traffic/itic---pracha-niwet-intersection--bangkok.jpg",
+     "say": "Pracha Niwet intersection, north Bangkok — live iTIC frame."
+    },
+    {
+     "label": "Rama 4 expressway interchange",
+     "lat": 13.7226,
+     "lon": 100.5533,
+     "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/traffic/itic---expressway--rama-4-interchange.jpg",
+     "say": "Rama 4 interchange — the downtown expressway junction."
+    },
+    {
+     "label": "Burapha Withi at Bang Na",
+     "lat": 13.6689,
+     "lon": 100.6292,
+     "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/burapha/%E0%B8%97%E0%B8%B2%E0%B8%87%E0%B8%9E-%E0%B9%80%E0%B8%A8%E0%B8%A9%E0%B8%9A-%E0%B8%A3%E0%B8%9E%E0%B8%B2%E0%B8%A7-%E0%B8%96----bangna-trat-km-0--east.jpg",
+     "say": "Burapha Withi expressway at Bang Na km 0 — eastbound out of the city."
+    }
+   ]
+  },
+  "bkk-route": {
+   "title": "Bangkok fly_route demo (drawn path)",
+   "aliases": [
+    "route",
+    "fly route",
+    "เส้นทางบิน"
+   ],
+   "setup": "GEV fullscreen with a floating cam pane (rama9 zone). This one draws a route then flies it — different motion than per-stop hops.",
+   "route_points": [
+    {
+     "label": "Pracha Niwet",
+     "lat": 13.8399,
+     "lon": 100.5412
+    },
+    {
+     "label": "Rama 4 interchange",
+     "lat": 13.7226,
+     "lon": 100.5533
+    },
+    {
+     "label": "Burapha Withi / Bang Na",
+     "lat": 13.6689,
+     "lon": 100.6292
+    }
+   ],
+   "stops": []
+  },
+  "pattaya": {
+   "title": "Pattaya flythrough (Chonburi coast)",
+   "aliases": [
+    "pattaya",
+    "pattaya city",
+    "bang lamung",
+    "chonburi",
+    "พัทยา",
+    "บางละมุง",
+    "ชลบุรี"
+   ],
+   "setup": "Full-screen GEV, then fly_to_location 'Pattaya, Thailand' (resolves Pattaya City, Bang Lamung District) before stop 1. PiP frame is the Hwy 331 Nong Phai Kaeo camwall thumb (chonburi zone) — the AH19 approach corridor toward Pattaya; last-good thumb persists whether the cam is live or stale.",
+   "stops": [
+    {
+     "label": "Pattaya Beach",
+     "lat": 12.9235,
+     "lon": 100.8717,
+     "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/chonburi/%E0%B8%8A%E0%B8%A5%E0%B8%9A-%E0%B8%A3----hwy-331--nong-phai-kaeo--ah19.jpg",
+     "say": "Pattaya Beach — the four-kilometre crescent along Beach Road, on the Gulf of Thailand."
+    },
+    {
+     "label": "Walking Street",
+     "lat": 12.9255,
+     "lon": 100.8715,
+     "say": "Walking Street — the nightlife strip at the south end of the bay."
+    },
+    {
+     "label": "Bali Hai Pier",
+     "lat": 12.9189,
+     "lon": 100.8688,
+     "say": "Bali Hai Pier — the ferry point for Koh Larn."
+    },
+    {
+     "label": "Khao Phra Tamnak viewpoint",
+     "lat": 12.9164,
+     "lon": 100.8619,
+     "say": "Phra Tamnak hill — the best panorama over the whole bay."
+    },
+    {
+     "label": "Sanctuary of Truth",
+     "lat": 12.9728,
+     "lon": 100.8887,
+     "say": "Sanctuary of Truth — the all-wood temple on the northern shore.",
+     "outro": "pull back (adjust_camera_zoom out) so the whole bay is in frame"
+    }
+   ]
   }
+ }
 }
