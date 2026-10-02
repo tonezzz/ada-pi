@@ -314,6 +314,7 @@ function pageGroup(p) {
   return { g: "Pages", sub: "" };
 }
 const GROUP_ORDER = ["CCTV Walls", "Cameras", "Reports", "Pages"];
+const groupOpen = new Map();  // survives list re-renders; all open initially
 
 function renderPageList(filter = "") {
   const list = document.getElementById("page-list");
@@ -356,13 +357,16 @@ function renderPageList(filter = "") {
     ...GROUP_ORDER.filter((g) => groups[g]),
     ...Object.keys(groups).filter((g) => !GROUP_ORDER.includes(g)).sort(),
   ];
+  // Groups start OPEN and stay as the user left them — re-rendering the
+  // list on every page click must not collapse sections, otherwise pages
+  // feel like they keep disappearing (2026-10-02).
   for (const g of order) {
     const subs = groups[g];
     const n = Object.values(subs).reduce((a, v) => a + v.length, 0);
-    const hasCurrent = Object.values(subs).flat().some((p) => p.slug === slug);
     const det = document.createElement("details");
-    det.open = hasCurrent || order.length <= 2;
+    det.open = groupOpen.has(g) ? groupOpen.get(g) : true;
     det.className = "mb-1";
+    det.addEventListener("toggle", () => groupOpen.set(g, det.open));
     const sum = document.createElement("summary");
     sum.className = "px-2 py-1 rounded cursor-pointer select-none " +
       "text-xs font-semibold uppercase tracking-wide text-slate-400 " +
