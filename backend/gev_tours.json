@@ -1,5 +1,5 @@
 {
- "comment": "Named God's Eye View tours — served by the gev_tour tool so 'play the X tour' is resolvable. Each stop: fly_to_location (or fly_route for drawn routes) → annotate_map → vcast_say narration → optional PiP frame via cast_to_screen(action='image', pane=1). Mirrors tests/scenarios-live/gev_*_tour*.yaml.",
+ "comment": "Named God's Eye View tours — served by the gev_tour tool so 'play the X tour' is resolvable. Each stop: fly_to_location (or fly_route for drawn routes) → annotate_map BY COORDINATES ({latitude,longitude,label} — name-based 'target' resolution is unreliable, never use it) → vcast_say narration → optional PiP frame via cast_to_screen(action='image', pane=1). frame_url should point at the NEAREST camera to the stop — a camwall thumb URL (<zone>/<key>.jpg, durable last-good) or its <key>-status.jpg card while the cam is down. Mirrors tests/scenarios-live/gev_*_tour*.yaml.",
  "tours": {
   "za": {
    "title": "Johannesburg city tour",
@@ -168,39 +168,43 @@
     "บางละมุง",
     "ชลบุรี"
    ],
-   "setup": "Full-screen GEV, then fly_to_location 'Pattaya, Thailand' (resolves Pattaya City, Bang Lamung District) before stop 1. PiP frame is the Hwy 331 Nong Phai Kaeo camwall thumb (chonburi zone) — the AH19 approach corridor toward Pattaya; last-good thumb persists whether the cam is live or stale.",
+   "setup": "Full-screen GEV, then fly_to_location 'Pattaya, Thailand' (resolves Pattaya City, Bang Lamung District) before stop 1. PiP pane shows Hwy 36 Ban Pong - Makham Khu — the nearest registered CCTV cam (~16 km; there is no in-town Pattaya cam). Currently upstream-down so frame_url uses its status card; swap to the plain <key>.jpg thumb once the cam recovers.",
    "stops": [
     {
      "label": "Pattaya Beach",
      "lat": 12.9235,
      "lon": 100.8717,
-     "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/chonburi/%E0%B8%8A%E0%B8%A5%E0%B8%9A-%E0%B8%A3----hwy-331--nong-phai-kaeo--ah19.jpg",
+     "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/chonburi/%E0%B8%8A%E0%B8%A5%E0%B8%9A-%E0%B8%A3----hwy-36--ban-pong---makham-khu-status.jpg",
      "say": "Pattaya Beach — the four-kilometre crescent along Beach Road, on the Gulf of Thailand."
     },
     {
      "label": "Walking Street",
      "lat": 12.9255,
      "lon": 100.8715,
-     "say": "Walking Street — the nightlife strip at the south end of the bay."
+     "say": "Walking Street — the nightlife strip at the south end of the bay.",
+     "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/chonburi/%E0%B8%8A%E0%B8%A5%E0%B8%9A-%E0%B8%A3----hwy-36--ban-pong---makham-khu-status.jpg"
     },
     {
      "label": "Bali Hai Pier",
      "lat": 12.9189,
      "lon": 100.8688,
-     "say": "Bali Hai Pier — the ferry point for Koh Larn."
+     "say": "Bali Hai Pier — the ferry point for Koh Larn.",
+     "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/chonburi/%E0%B8%8A%E0%B8%A5%E0%B8%9A-%E0%B8%A3----hwy-36--ban-pong---makham-khu-status.jpg"
     },
     {
      "label": "Khao Phra Tamnak viewpoint",
      "lat": 12.9164,
      "lon": 100.8619,
-     "say": "Phra Tamnak hill — the best panorama over the whole bay."
+     "say": "Phra Tamnak hill — the best panorama over the whole bay.",
+     "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/chonburi/%E0%B8%8A%E0%B8%A5%E0%B8%9A-%E0%B8%A3----hwy-36--ban-pong---makham-khu-status.jpg"
     },
     {
      "label": "Sanctuary of Truth",
      "lat": 12.9728,
      "lon": 100.8887,
      "say": "Sanctuary of Truth — the all-wood temple on the northern shore.",
-     "outro": "pull back (adjust_camera_zoom out) so the whole bay is in frame"
+     "outro": "pull back (adjust_camera_zoom out) so the whole bay is in frame",
+     "frame_url": "https://tony-dell.taila0626a.ts.net/apps/camwall/data/chonburi/%E0%B8%8A%E0%B8%A5%E0%B8%9A-%E0%B8%A3----hwy-36--ban-pong---makham-khu-status.jpg"
     }
    ]
   }

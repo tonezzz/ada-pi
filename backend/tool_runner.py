@@ -4238,11 +4238,14 @@ class ToolRunner:
         t["id"] = hit
         t["per_stop"] = (
             "For each stop: gev_command fly_to_location "
-            "{latitude:<lat>, longitude:<lon>} → annotate_map to drop a "
-            "marker → vcast_say narration from 'say'. If the stop has a "
+            "{latitude:<lat>, longitude:<lon>} → annotate_map with "
+            "COORDINATES {annotations:[{type:'pin', latitude:<lat>, "
+            "longitude:<lon>, label:<label>}]} — place-name resolution "
+            "is unreliable, never annotate by 'target' name → "
+            "vcast_say narration from 'say'. If the stop has a "
             "frame_url, also cast_to_screen(action='image', url=frame_url, "
-            "pane=1) to pin the live camera next to the map. If the tour "
-            "has route_points instead of stops: annotate_map "
+            "pane=1) to pin the nearest CCTV camera next to the map. "
+            "If the tour has route_points instead of stops: annotate_map "
             "{type:'route', points:[...]}, then fly_route {speed:'fast'}.")
         return {"output": t}
 
