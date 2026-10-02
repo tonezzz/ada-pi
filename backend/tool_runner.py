@@ -4152,6 +4152,14 @@ class ToolRunner:
         like get_current_view_state can answer."""
         import asyncio
         import urllib.request
+        # The model intermittently wraps the call envelope inside args:
+        #   args={'args': {'query': '...'}, 'name': 'fly_to_location'}
+        # — GEV then sees no query/coords and errors cryptically
+        # ("needs a locationId, query, or latitude/longitude"). Unwrap once
+        # when args looks like a nested call envelope.
+        if (isinstance(args, dict) and "name" in args
+                and isinstance(args.get("args"), dict)):
+            args = args["args"]
         base = os.environ.get(
             "GEV_CMD_URL",
             "https://tony-dell.taila0626a.ts.net/apps/gev-cmd/command")
@@ -4188,6 +4196,16 @@ class ToolRunner:
             for dead in ("controls", "detection", "scenePlayback",
                          "celestalRing", "bloom", "sharpen"):
                 r.pop(dead, None)
+        # A delivered command whose every client response is ok:false is a
+        # real failure — surface it at top level instead of leaving the
+        # error buried inside responses[] where the model may miss it.
+        resps = out.get("responses") or []
+        errs = [r.get("response") for r in resps
+                if isinstance(r.get("response"), dict)
+                and r["response"].get("ok") is False]
+        if resps and errs and len(errs) == len(resps):
+            out["ok"] = False
+            out["error"] = errs[0].get("error") or "all GEV clients failed"
         return out
 
     _TOURS_PATH = Path(__file__).resolve().parent / "gev_tours.json"
