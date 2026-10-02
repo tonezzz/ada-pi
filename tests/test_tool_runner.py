@@ -782,5 +782,31 @@ class CastToScreenRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("action_fixed", out)
 
 
+class GevTourTests(unittest.IsolatedAsyncioTestCase):
+    """gev_tour — named flyover tours must be discoverable and return an
+    executable card. The tours lived only inside scenario yaml files until
+    2026-10-02, so 'play the South Africa tour' came up empty."""
+
+    def setUp(self):
+        self.runner = ToolRunner.__new__(ToolRunner)
+
+    async def test_list_all_tours(self):
+        out = await self.runner.gev_tour()
+        self.assertIn("za", out["tours"])
+        self.assertIn("bkk", out["tours"])
+
+    async def test_alias_resolution_thai_and_english(self):
+        za = await self.runner.gev_tour("แอฟริกาใต้")
+        self.assertEqual(za["output"]["id"], "za")
+        self.assertTrue(za["output"]["stops"])
+        ct = await self.runner.gev_tour("cape town")
+        self.assertEqual(ct["output"]["id"], "capetown")
+
+    async def test_unknown_tour_lists_choices(self):
+        out = await self.runner.gev_tour("atlantis")
+        self.assertIn("error", out)
+        self.assertIn("za", out["tours"])
+
+
 if __name__ == "__main__":
     unittest.main()

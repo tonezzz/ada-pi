@@ -2598,6 +2598,28 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
+                    "name": "gev_tour",
+                    "description": (
+                        "Named God's Eye View flyover tours — when the user asks for 'the X tour', "
+                        "'the South Africa tour', 'ทัวร์...', or to list available tours. Call with no "
+                        "tour to list; with a name/alias (Thai or English) to get the executable card: "
+                        "ordered stops with lat/lon, narration lines, and optional PiP camera frame URLs. "
+                        "The card is a script, not self-running — execute it: per stop call "
+                        "gev_command fly_to_location {latitude, longitude}, annotate_map to mark it, "
+                        "vcast_say the 'say' line, and cast_to_screen(action='image', url=frame_url, pane=1) "
+                        "when the stop carries one. Tours with route_points use annotate_map type='route' "
+                        "then fly_route. Make sure GEV is on the screen first "
+                        "(cast_to_screen nav .../apps/gev/)."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "tour": {"type": "string", "description": "Tour id, alias, or place name — 'za', 'bangkok', 'แอฟริกาใต้'. Omit to list."},
+                        },
+                        "additionalProperties": False,
+                    },
+                }, {
                     "name": "get_battery_status",
                     "description": (
                         "Returns current battery details: total and per-battery SOC, voltage, current, power, temperature, and state of health. "

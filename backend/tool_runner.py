@@ -15,6 +15,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from backend import memory_ops
@@ -4180,6 +4181,44 @@ class ToolRunner:
                          "celestalRing", "bloom", "sharpen"):
                 r.pop(dead, None)
         return out
+
+    _TOURS_PATH = Path(__file__).resolve().parent / "gev_tours.json"
+
+    async def gev_tour(self, tour: str | None = None) -> dict[str, Any]:
+        """Named GEV flyover tours — list them (tour=None) or return the
+        executable card for one. A tour card is NOT self-running: drive
+        each stop with gev_command/vcast_say/cast_to_screen per the card's
+        per_stop recipe."""
+        try:
+            data = json.loads(self._TOURS_PATH.read_text())
+        except Exception as exc:
+            return {"error": f"tour registry unreadable: {exc}"}
+        tours = data.get("tours") or {}
+        if not tour:
+            return {"tours": {k: {"title": v.get("title"),
+                                  "stops": len(v.get("stops") or []),
+                                  "aliases": v.get("aliases")}
+                              for k, v in tours.items()},
+                    "hint": "gev_tour(tour='<id or alias>') returns the "
+                            "stop list to execute"}
+        q = tour.strip().lower()
+        hit = next((k for k, v in tours.items()
+                    if q == k or q in (v.get("aliases") or [])
+                    or q in str(v.get("title") or "").lower()), None)
+        if not hit:
+            return {"error": f"no tour matches '{tour}'",
+                    "tours": sorted(tours)}
+        t = dict(tours[hit])
+        t["id"] = hit
+        t["per_stop"] = (
+            "For each stop: gev_command fly_to_location "
+            "{latitude:<lat>, longitude:<lon>} → annotate_map to drop a "
+            "marker → vcast_say narration from 'say'. If the stop has a "
+            "frame_url, also cast_to_screen(action='image', url=frame_url, "
+            "pane=1) to pin the live camera next to the map. If the tour "
+            "has route_points instead of stops: annotate_map "
+            "{type:'route', points:[...]}, then fly_route {speed:'fast'}.")
+        return {"output": t}
 
     @staticmethod
     def _cast_screens_cfg() -> dict[str, Any]:
