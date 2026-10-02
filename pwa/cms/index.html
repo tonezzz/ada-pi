@@ -47,8 +47,34 @@
       <button id="lang-en" class="text-xs px-2 py-1 rounded">EN</button>
       <button id="lang-th" class="text-xs px-2 py-1 rounded">ไทย</button>
     </div>
+    <button id="btn-edit" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600" hidden>Edit</button>
     <button id="btn-refresh" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Refresh</button>
   </nav>
+
+  <div id="edit-drawer" class="fixed inset-x-0 bottom-0 bg-card border-t border-slate-700 p-4 hidden" style="max-height:70vh;overflow:auto">
+    <div class="max-w-4xl mx-auto">
+      <div class="flex items-center gap-2 mb-2">
+        <h2 class="text-sm font-semibold">Edit <span id="edit-slug" class="text-slate-400"></span></h2>
+        <select id="edit-section" class="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs ml-auto">
+          <option value="">whole page</option>
+        </select>
+        <button id="edit-close" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Close</button>
+      </div>
+      <input id="edit-target" placeholder="target slug (split/merge only)" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs mb-2 hidden">
+      <input id="edit-instr" placeholder="instruction for improve/expand/consolidate (optional)" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs mb-2">
+      <textarea id="edit-text" rows="8" class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm font-mono" placeholder="markdown — required for add/update"></textarea>
+      <div class="flex flex-wrap gap-2 mt-2">
+        <button data-op="add" class="edit-op px-3 py-1 rounded bg-sky-700 hover:bg-sky-600 text-xs">Add</button>
+        <button data-op="update" class="edit-op px-3 py-1 rounded bg-sky-700 hover:bg-sky-600 text-xs">Update</button>
+        <button data-op="improve" class="edit-op px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-xs">Improve</button>
+        <button data-op="expand" class="edit-op px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-xs">Expand</button>
+        <button data-op="consolidate" class="edit-op px-3 py-1 rounded bg-emerald-700 hover:bg-emerald-600 text-xs">Consolidate</button>
+        <button data-op="split" class="edit-op px-3 py-1 rounded bg-amber-700 hover:bg-amber-600 text-xs">Split →</button>
+        <button data-op="merge" class="edit-op px-3 py-1 rounded bg-amber-700 hover:bg-amber-600 text-xs">Merge ←</button>
+        <span id="edit-status" class="text-xs text-slate-400 self-center ml-2"></span>
+      </div>
+    </div>
+  </div>
 
   <div class="max-w-6xl mx-auto p-4 md:flex md:gap-6">
     <aside class="md:w-64 shrink-0 mb-6 md:mb-0">
@@ -152,6 +178,83 @@ document.getElementById("unlock-key").addEventListener("keydown", (e) => {
 });
 document.getElementById("btn-refresh").addEventListener("click", loadPages);
 window.addEventListener("hashchange", renderRoute);
+
+// --- Edit drawer -----------------------------------------------------------
+// Section list comes from the page's own '## ' headings — same addressing
+// the backend uses, so what you pick is what it edits.
+let curPage = null;
+
+function sectionsOf(md) {
+  return (md.match(/^## .+$/gm) || []).map(h => h.slice(3).trim());
+}
+
+function openEdit() {
+  if (!curPage) return;
+  const sel = document.getElementById("edit-section");
+  sel.innerHTML = '<option value="">whole page</option>' +
+    sectionsOf(curPage.content || "")
+      .map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+  document.getElementById("edit-slug").textContent = curPage.slug;
+  document.getElementById("edit-text").value = curPage.content || "";
+  document.getElementById("edit-status").textContent = "";
+  document.getElementById("edit-drawer").hidden = false;
+}
+
+document.getElementById("btn-edit").addEventListener("click", openEdit);
+// Picking a section scopes the textarea to just that block.
+document.getElementById("edit-section").addEventListener("change", (e) => {
+  const name = e.target.value;
+  const ta = document.getElementById("edit-text");
+  if (!name || !curPage) { ta.value = curPage ? (curPage.content || "") : ""; return; }
+  const re = new RegExp(`^## ${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n([\\s\\S]*?)(?=^## |\\s*$)`, "m");
+  const m = (curPage.content || "").match(re);
+  ta.value = m ? `## ${name}\n${m[1].trim()}` : curPage.content;
+});
+document.getElementById("edit-close").addEventListener("click", () => {
+  document.getElementById("edit-drawer").hidden = true;
+});
+
+document.querySelectorAll(".edit-op").forEach(btn => {
+  btn.addEventListener("click", async () => {
+    const op = btn.dataset.op;
+    const needsText = op === "add" || op === "update";
+    const needsTarget = op === "split" || op === "merge";
+    document.getElementById("edit-target").classList.toggle("hidden", !needsTarget);
+    const text = document.getElementById("edit-text").value;
+    const target = document.getElementById("edit-target").value.trim();
+    if (needsText && !text.trim()) {
+      document.getElementById("edit-status").textContent = `${op} needs markdown in the box`;
+      return;
+    }
+    if (needsTarget && !target) {
+      document.getElementById("edit-status").textContent = `${op} needs a target slug`;
+      return;
+    }
+    const st = document.getElementById("edit-status");
+    st.textContent = `${op}…`;
+    document.querySelectorAll(".edit-op").forEach(b => b.disabled = true);
+    try {
+      const res = await apiFetch(`/api/cms/pages/${encodeURIComponent(curPage.slug)}/edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          op, text, target_slug: target,
+          section: document.getElementById("edit-section").value,
+          instruction: document.getElementById("edit-instr").value,
+          lang: curLang,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { st.textContent = `failed: ${data.detail || res.status}`; return; }
+      st.textContent = `${data.status || "done"}${data.created ? " → " + data.created : ""}`;
+      renderRoute();
+    } catch (e) {
+      st.textContent = `failed: ${e.message || e}`;
+    } finally {
+      document.querySelectorAll(".edit-op").forEach(b => b.disabled = false);
+    }
+  });
+});
 
 // Language toggle — en/th page variants coexist under one slug; the
 // backend falls back to en when the requested variant is missing.
@@ -260,6 +363,8 @@ async function renderRoute() {
 }
 
 function renderPage(el, page) {
+  curPage = page;
+  document.getElementById("btn-edit").hidden = false;
   el.innerHTML = "";
   const head = document.createElement("div");
   head.className = "mb-5";

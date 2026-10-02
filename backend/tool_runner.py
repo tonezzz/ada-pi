@@ -2952,6 +2952,160 @@ class ToolRunner:
                 "timeline_entries": len(meta["timeline"]),
                 "updated": now, "diff": diff}
 
+    # -- cms_edit: page/section ops -----------------------------------------
+    # Ops: add (append/insert text), update (replace section or whole page),
+    # improve/expand/consolidate (LLM transforms), split (section -> new
+    # page), merge (other page's content folded in). Sections are addressed
+    # by their '## heading' text — stable across edits, unlike line numbers.
+    CMS_EDIT_OPS = ("add", "update", "improve", "expand", "consolidate",
+                    "split", "merge")
+    _CMS_LLM_OPS = ("improve", "expand", "consolidate")
+
+    @staticmethod
+    def _cms_sections(content: str) -> list[tuple[str, int, int]]:
+        """[(heading, start, end)] — sections = '## ' blocks; 'preamble' is
+        text before the first heading."""
+        lines = content.split("\n")
+        marks = [i for i, ln in enumerate(lines) if ln.startswith("## ")]
+        out = []
+        if not marks:
+            return [("preamble", 0, len(lines))]
+        if marks[0] > 0:
+            out.append(("preamble", 0, marks[0]))
+        for j, m in enumerate(marks):
+            end = marks[j + 1] if j + 1 < len(marks) else len(lines)
+            out.append((lines[m][3:].strip(), m, end))
+        return out
+
+    async def _cms_llm(self, prompt: str) -> str:
+        from google import genai
+        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+        resp = await client.aio.models.generate_content(
+            model=os.environ.get("ADA_CMS_EDIT_MODEL",
+                                 "gemini-3.5-flash-lite"),
+            contents=prompt)
+        return (resp.text or "").strip()
+
+    async def cms_edit(
+        self, slug: str, op: str, text: str = "", section: str = "",
+        instruction: str = "", lang: str = "en", target_slug: str = "",
+        title: str = "",
+    ) -> dict[str, Any]:
+        """Structured page edit. section='' means the whole page. LLM ops
+        take 'instruction' (what to change); mechanical ops take 'text'
+        (new content) or 'target_slug' (split/merge)."""
+        slug = self._cms_slug(slug)
+        op = (op or "").strip().lower()
+        if op not in self.CMS_EDIT_OPS:
+            raise ValueError(
+                f"invalid op {op!r}: expected one of {self.CMS_EDIT_OPS}")
+        doc = await self.mddb.get_document(CMS_COLLECTION, slug, lang)
+        if not isinstance(doc, dict):
+            return {"status": "not_found", "slug": slug}
+        content = doc.get("contentMd") or ""
+        sections = self._cms_sections(content)
+        lines = content.split("\n")
+
+        target = None
+        if section.strip():
+            want = section.strip().lower()
+            for name, s, e in sections:
+                if name.lower() == want:
+                    target = (name, s, e)
+                    break
+            if target is None:
+                return {"status": "error", "slug": slug,
+                        "error": f"no section {section!r} — "
+                                 f"sections: {[n for n, _, _ in sections]}"}
+
+        new_content, created = None, None
+        if op == "add":
+            block = text.strip()
+            if not block:
+                raise ValueError("add requires text")
+            if target:
+                # insert before the next section starts (end of target's block)
+                lines.insert(target[2], "\n" + block if block.startswith("#")
+                             else block)
+                new_content = "\n".join(lines)
+            else:
+                new_content = content.rstrip() + "\n\n" + block + "\n"
+        elif op == "update":
+            block = text.strip()
+            if not block:
+                raise ValueError("update requires text")
+            if target:
+                name, s, e = target
+                new = lines[:s + 1] + block.split("\n") + lines[e:]
+                new_content = "\n".join(new)
+            else:
+                new_content = block
+        elif op in self._CMS_LLM_OPS:
+            scope = ("\n\n".join(lines[target[1]:target[2]])
+                     if target else content)
+            if not scope.strip():
+                return {"status": "error", "error": "nothing to transform"}
+            instr = instruction.strip() or (
+                {"improve": "tighten the writing, keep every fact",
+                 "expand": "add depth and detail, keep every fact",
+                 "consolidate": "merge overlapping/duplicate sections"}[op])
+            out = await self._cms_llm(
+                f"Rewrite this {'section' if target else 'page'} — {instr}.\n"
+                "Return ONLY the new markdown, no commentary.\n\n" + scope)
+            if not out:
+                return {"status": "error", "error": "llm returned empty"}
+            if target:
+                name, s, e = target
+                out_lines = out.split("\n")
+                if out_lines and not out_lines[0].startswith("## "):
+                    out_lines.insert(0, f"## {name}")
+                new_content = "\n".join(lines[:s] + out_lines + lines[e:])
+            else:
+                new_content = out
+        elif op == "split":
+            if not target:
+                raise ValueError("split requires a section")
+            tslug = self._cms_slug(target_slug or "")
+            name, s, e = target
+            moved = "\n".join(lines[s:e])
+            pub = await self.cms_publish_page(
+                tslug, title.strip() or name, moved, lang=lang,
+                links=slug)
+            if pub.get("status") != "published":
+                return {"status": "error", "error": "split publish failed",
+                        "detail": pub}
+            created = tslug
+            new_content = "\n".join(
+                lines[:s]
+                + [f"## {name}", f"*Moved to [{name}](/#{tslug}).*"]
+                + lines[e:])
+        elif op == "merge":
+            tslug = self._cms_slug(target_slug or "")
+            other = await self.mddb.get_document(CMS_COLLECTION, tslug, lang)
+            if not isinstance(other, dict):
+                return {"status": "error", "error": f"no page {tslug!r}"}
+            body = (other.get("contentMd") or "").strip()
+            new_content = content.rstrip() + "\n\n" + body + "\n"
+            # mark the absorbed page superseded
+            ometa = {k: (v if isinstance(v, list) else [v])
+                     for k, v in (other.get("meta") or {}).items()}
+            ometa["status"] = ["superseded"]
+            ometa["superseded_by"] = [slug]
+            await self.mddb.add_document(
+                CMS_COLLECTION, tslug, lang, body,
+                meta=ometa)
+        # persist via publish so meta/timeline/index all stay honest
+        meta_title = title.strip() or next(
+            iter((doc.get("meta") or {}).get("title") or []), slug)
+        res = await self.cms_publish_page(
+            slug, str(meta_title), new_content, lang=lang)
+        res["op"] = op
+        if target:
+            res["section"] = target[0]
+        if created:
+            res["created"] = created
+        return res
+
     async def _cms_reports_index(self) -> None:
         """Regenerate the reports-index page — one row per report/tagged
         page with slug, domain, one-line summary, updated, and a stale flag

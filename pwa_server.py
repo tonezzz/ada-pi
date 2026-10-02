@@ -1991,6 +1991,34 @@ async def cms_regenerate_page(request: Request, slug: str) -> dict:
     return result
 
 
+@app.post("/api/cms/pages/{slug}/edit")
+async def cms_edit_page(request: Request, slug: str) -> dict:
+    """Structured page/section edit from the CMS edit drawer — the API key
+    + explicit button click is the user's action, so this calls the runner
+    directly like /regenerate does (no voice confirm gate)."""
+    _require_api_key(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid json body")
+    try:
+        result = await tool_runner.cms_edit(
+            slug,
+            op=str(body.get("op") or ""),
+            text=str(body.get("text") or ""),
+            section=str(body.get("section") or ""),
+            instruction=str(body.get("instruction") or ""),
+            lang=str(body.get("lang") or "en"),
+            target_slug=str(body.get("target_slug") or ""),
+            title=str(body.get("title") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="page not found")
+    return result
+
+
 static_dir = ROOT / "frontend"
 pwa_dir = ROOT / "pwa"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
