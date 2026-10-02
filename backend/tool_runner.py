@@ -4013,6 +4013,8 @@ class ToolRunner:
         zlist = (settings or {}).get("zones")
         if zlist:
             url += f"&zones={','.join(zlist)}&zone_s={int((settings or {}).get('zone_s') or 45)}"
+        if (settings or {}).get("random"):
+            url += "&random=1"
         nav_msg: dict[str, Any] = {"type": "nav", "url": url}
         if pane is not None:
             nav_msg["pane"] = int(pane)
