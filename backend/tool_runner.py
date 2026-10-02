@@ -4470,7 +4470,10 @@ class ToolRunner:
                             f"screen {screen} is busy: {busy['desc']} "
                             "Tell the user what is running, ask whether to "
                             "replace it, then call again with "
-                            "confirmed=true only after they say yes.")}
+                            "confirmed=true only after they say yes. "
+                            "If the user instead says to reset/clear/stop "
+                            "the screen, use cast_to_screen(action='stop') "
+                            "first — that releases it without confirm.")}
         probe: dict[str, Any] = {}
         auto_image = False
         if action == "layout":
@@ -4524,6 +4527,28 @@ class ToolRunner:
                 msg["interval"] = int(interval)
         if pane is not None and action not in {"layout", "unzoom"}:
             msg["pane"] = int(pane)
+        # Snapshot what the screen is showing BEFORE a full-frame nav/play/
+        # image replaces it — a camwall nav'd over a GEV page silently kills
+        # the map session (2026-10-02 ZA tour: cctv_wall to screen 5 evicted
+        # the tour with no warning; Ada should have used a PiP pane).
+        displaced: str | None = None
+        if action in {"nav", "play", "image", "audio"} and pane is None:
+            try:
+                disp = await asyncio.to_thread(self._vcast_api, "/displays")
+                scr = next(
+                    (s for s in disp.get("screens", [])
+                     if str(s.get("screen") or "") == str(screen)), None)
+                if scr and scr.get("connected"):
+                    pd = str(scr.get("state_detail") or "")
+                    if scr.get("state") == "nav" and pd and "gev" in pd:
+                        displaced = ("GEV session — the map/annotations on "
+                                     "this screen are gone; for a camera "
+                                     "alongside the map use a split layout "
+                                     "and cast_to_screen(image, pane=N)")
+                    elif scr.get("state") == "nav" and pd:
+                        displaced = f"the '{pd[:60]}' page"
+            except Exception:
+                pass
         warn = probe.get("warn")
         out = await asyncio.to_thread(
             self._vcast_api, "/pub", {"screen": screen, "msg": msg})
@@ -4556,6 +4581,8 @@ class ToolRunner:
             out["note"] = ("this cast interrupted something that was "
                            "running — acknowledge it to the user "
                            f"({busy['desc']}).")
+        if displaced:
+            out["displaced"] = displaced
         # Post-cast ground truth: pub only means the relay accepted the
         # frame — the display may still be showing the old page (iframe
         # refused, browser didn't navigate, stale client).  Re-read the
@@ -4667,9 +4694,10 @@ class ToolRunner:
         return out
 
     async def vcast_say(self, screen: int, text: str) -> dict[str, Any]:
-        """Speak a short narration line on a vcast display (Web Speech
-        synthesis — no backend TTS). Used to announce what Ada is doing on
-        the screen: 'loading the camera wall', 'flying the map to Bangkok'.
+        """Speak a short narration line on a vcast display. Web Speech
+        synthesis is tried first; when the text is non-Latin (Thai) and the
+        display lacks a matching voice it falls back to a backend-synthesized
+        Gemini-TTS WAV fetched from the relay — same voice as Ada herself.
         If the display hasn't been tapped for audio yet, it shows a toast
         and reports speak-blocked instead of speaking."""
         import asyncio
@@ -4678,6 +4706,71 @@ class ToolRunner:
         if not text:
             raise ValueError("text required")
         await self._check_screen_owner(screen, self._memory_identity())
+        msg: dict[str, Any] = {"type": "speak", "text": text}
+        # Backend TTS only for text the average lab browser can't voice —
+        # Thai (or any non-Latin) reliably falls back to an English voice
+        # otherwise (2026-10-02: every vcast_say on screen 5 came out
+        # English despite th-TH lang tag — no Thai voice installed).
+        if re.search(r"[\u0E00-\u0E7F\u0100-\u024F\u0370-\u03FF"
+                     r"\u4E00-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]", text):
+            audio_url = await self._vcast_tts(text)
+            if audio_url:
+                msg["audio"] = audio_url
         return await asyncio.to_thread(
-            self._vcast_api, "/pub",
-            {"screen": screen, "msg": {"type": "speak", "text": text}})
+            self._vcast_api, "/pub", {"screen": screen, "msg": msg})
+
+    async def _vcast_tts(self, text: str) -> str | None:
+        """Synthesize `text` with Gemini TTS (same key + voice as the live
+        session) and publish the WAV to the relay's /frame store — returns
+        the public same-origin URL a vcast display can <audio>-fetch, or
+        None on any failure (caller falls back to client-side TTS)."""
+        import base64, io, wave
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get(
+            "GOOGLE_API_KEY")
+        if not api_key:
+            return None
+        try:
+            def _synth() -> bytes | None:
+                from google import genai
+                from google.genai import types as gtypes
+                from backend import voice_config
+                resp = genai.Client(api_key=api_key).models.generate_content(
+                    model=os.environ.get(
+                        "VCAST_TTS_MODEL", "gemini-2.5-flash-preview-tts"),
+                    contents=text,
+                    config=gtypes.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=gtypes.SpeechConfig(
+                            voice_config=gtypes.VoiceConfig(
+                                prebuilt_voice_config=(
+                                    gtypes.PrebuiltVoiceConfig(
+                                        voice_name=(
+                                            voice_config.current_voice())))))))
+                for part in (resp.candidates[0].content.parts or []):
+                    data = getattr(getattr(part, "inline_data", None),
+                                   "data", None)
+                    if data:
+                        return data  # raw 24kHz s16le PCM
+                return None
+            pcm = await asyncio.to_thread(_synth)
+            if not pcm:
+                return None
+            buf = io.BytesIO()
+            with wave.open(buf, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(24000)
+                w.writeframes(pcm)
+            token = f"say:{secrets.token_hex(4)}"
+            self._vcast_api("/frame", {
+                "screen": 0, "token": token,
+                "data": "data:audio/wav;base64,"
+                        + base64.b64encode(buf.getvalue()).decode(),
+                "state": "asset"})
+            pub = os.environ.get(
+                "VCAST_PUBLIC_API",
+                "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+            return f"{pub}/frame?screen=0&token={token}"
+        except Exception:
+            logger.exception("vcast tts failed")
+            return None

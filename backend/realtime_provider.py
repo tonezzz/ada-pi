@@ -2560,7 +2560,9 @@ class GeminiLiveProvider(RealtimeProvider):
                         "Control God's Eye View (the Cesium map app on /apps/gev/) on whatever screen is showing "
                         "it — the call reaches every connected GEV client including a casted one. "
                         "To 'watch the show': cast_to_screen(action='nav', url='https://tony-dell.taila0626a.ts.net/apps/gev/') "
-                        "then drive it with gev_command. IMPORTANT — args must match the GEV schema exactly "
+                        "then drive it with gev_command. args is ONLY the tool's arg object — never put "
+                        "'name' inside args and never wrap name+args together; name is the sibling field. "
+                        "IMPORTANT — args must match the GEV schema exactly "
                         "(additionalProperties are rejected, the call fails silently if names are wrong). "
                         "Useful names + real arg names: fly_to_location {locationId} — one of the "
                         "preset cities (austin, sf, nyc, tokyo, london, paris, dubai, dc). For ANY other place "
@@ -2615,7 +2617,11 @@ class GeminiLiveProvider(RealtimeProvider):
                         "vcast_say the 'say' line, and cast_to_screen(action='image', url=frame_url, pane=1) "
                         "when the stop carries one. Tours with route_points use annotate_map type='route' "
                         "then fly_route. Make sure GEV is on the screen first "
-                        "(cast_to_screen nav .../apps/gev/)."
+                        "(cast_to_screen nav .../apps/gev/). Cameras during a tour: "
+                        "NEVER cctv_wall/cast_to_screen a whole screen already running "
+                        "GEV — that kills the map session. Split first: "
+                        "cast_to_screen(action='layout', panes=2), then "
+                        "cast_to_screen(action='image'|'play', url=cam, pane=1)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
