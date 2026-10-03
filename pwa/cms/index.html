@@ -98,7 +98,8 @@
              class="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-sm mb-2">
       <div id="page-tabs" class="flex gap-1 mb-2 text-xs">
         <button data-tab="pages" class="tab-btn flex-1 px-2 py-1 rounded">Pages</button>
-        <button data-tab="cctv" class="tab-btn flex-1 px-2 py-1 rounded">CCTV</button>
+        <button data-tab="security" class="tab-btn flex-1 px-2 py-1 rounded">Security</button>
+        <button data-tab="traffic" class="tab-btn flex-1 px-2 py-1 rounded">Traffic</button>
       </div>
       <div id="page-list" class="space-y-1 text-sm hidden md:block"></div>
     </aside>
@@ -345,7 +346,7 @@ function pageGroup(p) {
 }
 const GROUP_ORDER = ["CCTV Walls", "Cameras", "Reports", "Pages"];
 const groupOpen = new Map();  // survives list re-renders; all open initially
-let curTab = "pages";         // "pages" | "cctv" — sidebar split
+let curTab = "pages";         // "pages" | "security" | "traffic" — sidebar split
 
 const isCctv = (p) => {
   const t = titleOf(p), s = p.slug || "";
@@ -354,6 +355,29 @@ const isCctv = (p) => {
          t.startsWith("CCTV") || t.startsWith("กล้อง") ||
          t.startsWith("กำแพง");
 };
+
+// CCTV tab split (2026-10-03): Security = property cams (Noble-A,
+// Noble-Club, Tony House); Traffic = public road cams (rama9, DOH
+// Bangkok, Burapha, Chonburi). Zone names carry hyphens so match
+// whole-prefix forms, not naive splits. Index pages live in both tabs.
+const SEC_ZONES = ["noble-a", "noble-club", "noble-park", "tony-house"];
+const TRAF_ZONES = ["rama9", "traffic", "dohweb", "burapha", "chonburi"];
+const CCTV_SLUG_PRE = ["camwall-vms-", "camwall-", "wall-vms-", "wall-", "cam-"];
+function cctvKind(p) {           // "security" | "traffic" | "any" | null
+  const t = titleOf(p), s = p.slug || "";
+  if (!isCctv(p)) return null;
+  if (s === "cctv-walls" || s === "dvr-wall") return "any";
+  for (const z of SEC_ZONES)
+    for (const pre of CCTV_SLUG_PRE)
+      if (s === pre + z || s.startsWith(pre + z + "-")) return "security";
+  for (const z of TRAF_ZONES)
+    for (const pre of CCTV_SLUG_PRE)
+      if (s === pre + z || s.startsWith(pre + z + "-")) return "traffic";
+  if (/noble|โนเบิล|tony.?house/i.test(t)) return "security";
+  if (/traffic|จราจร|rama ?9|doh|burapha|chonburi|บางนา|ชลบุรี/i.test(t))
+    return "traffic";
+  return "security";             // unknown CCTV — property by default
+}
 
 function paintTabs() {
   for (const b of document.querySelectorAll("#page-tabs .tab-btn")) {
@@ -367,11 +391,14 @@ function renderPageList(filter = "") {
   const list = document.getElementById("page-list");
   list.innerHTML = "";
   const slug = decodeURIComponent((location.hash.match(/^#\/(.+)$/) || [])[1] || "");
-  const shown = pages.filter((p) =>
-    (curTab === "cctv") === isCctv(p) &&
-    (!filter ||
+  const shown = pages.filter((p) => {
+    const kind = cctvKind(p);
+    const tabOk = curTab === "pages" ? kind === null
+                : kind === curTab || kind === "any";
+    return tabOk && (!filter ||
       titleOf(p).toLowerCase().includes(filter) ||
-      (p.slug || "").toLowerCase().includes(filter)));
+      (p.slug || "").toLowerCase().includes(filter));
+  });
   if (!shown.length) {
     list.innerHTML = filter
       ? '<div class="text-slate-500 italic">No matches.</div>'
@@ -455,7 +482,11 @@ async function renderRoute() {
   // instantly flips back to the open page's tab (2026-10-02 bug).
   if (slug) {
     const cur = pages.find((p) => p.slug === slug);
-    if (cur) { curTab = isCctv(cur) ? "cctv" : "pages"; paintTabs(); }
+    if (cur) {
+      const k = cctvKind(cur);
+      curTab = k === null ? "pages" : k === "traffic" ? "traffic" : "security";
+      paintTabs();
+    }
   }
   renderPageList(document.getElementById("page-filter").value.trim().toLowerCase());
   const el = document.getElementById("content");
