@@ -95,6 +95,15 @@ FIRST_AFTER = int(os.environ.get("ADA_SPEAKER_FIRST_AFTER", "2"))
 # widening authorization — the session owner is already pinned by the key.
 OWNER_HINT_MIN = float(os.environ.get("ADA_SPEAKER_OWNER_HINT_MIN", "0.30"))
 OWNER_HINT_AFTER = int(os.environ.get("ADA_SPEAKER_OWNER_HINT_AFTER", "2"))
+# Owner reclaim: a stale non-owner label (one ambient hit pins it ~90s)
+# must be displaceable by the session owner's own voice even when it
+# scores under the hard threshold — far-field owner audio on the bound
+# device sits at 0.25-0.5 (2026-10-03: Tony on the iPad card maxed at
+# 0.49; one KK chunk at t=0 branded the whole session 'person.kk').
+# RECLAIM_MIN is lower than OWNER_HINT_MIN on purpose: the streak of
+# consecutive owner-best chunks is the real evidence, not one score.
+OWNER_RECLAIM_MIN = float(os.environ.get("ADA_SPEAKER_OWNER_RECLAIM_MIN", "0.25"))
+OWNER_RECLAIM_AFTER = int(os.environ.get("ADA_SPEAKER_OWNER_RECLAIM_AFTER", "3"))
 
 # Enrollment capture window — seconds of trailing audio kept for
 # enroll_from_buffer. 6s (the old MAX_BUFFER_BYTES cap) only ever held the
@@ -739,17 +748,42 @@ class SpeakerSession:
                 name is None
                 and self._owner_speaker is not None
                 and best_name == self._owner_speaker
-                and best_score >= OWNER_HINT_MIN
-                and not self._owner_hint_fired
+                and best_score >= OWNER_RECLAIM_MIN
             ):
                 self._owner_hint_streak += 1
-                if self._owner_hint_streak >= OWNER_HINT_AFTER:
+                if (
+                    best_score >= OWNER_HINT_MIN
+                    and not self._owner_hint_fired
+                    and self._owner_hint_streak >= OWNER_HINT_AFTER
+                ):
                     self._owner_hint_fired = True
                     logger.info(
                         "speaker likely owner '%s' (%.0f%% best, sub-threshold)",
                         self._owner_speaker, best_score * 100)
                     if self._on_likely_owner is not None:
                         await self._on_likely_owner(self._owner_speaker)
+                if (
+                    self._last_name is not None
+                    and self._last_name != self._owner_speaker
+                    and self._owner_hint_streak >= OWNER_RECLAIM_AFTER
+                ):
+                    # The owner keeps winning best-match under threshold
+                    # while a stale non-owner label sits pinned — promote
+                    # the streak to a real identification so the label
+                    # returns to the session owner.
+                    prev = self._last_name
+                    self._last_name = self._owner_speaker
+                    self._last_hit_at = time.monotonic()
+                    self._miss_count = 0
+                    self._unrecognized_notified = False
+                    self._switch_pending = None
+                    self._switch_count = 0
+                    logger.info(
+                        "speaker reclaimed as owner '%s' (%.0f%% best x%d "
+                        "sub-threshold — displaced '%s')",
+                        self._owner_speaker, best_score * 100,
+                        self._owner_hint_streak, prev)
+                    await self._on_identified(self._owner_speaker, best_score)
             elif best_name != self._owner_speaker:
                 self._owner_hint_streak = 0
             if name is not None and name != self._last_name:
