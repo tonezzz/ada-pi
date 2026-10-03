@@ -1997,14 +1997,74 @@ async def cms_verify_page(request: Request, slug: str) -> dict:
     return report
 
 
+# Command-kind generators — allowlisted name -> argv executed by the
+# regenerate endpoint when a page's ada-cms-automation registry doc
+# declares {"generator": {"kind": "command", "name": ...}}. Names map to
+# fixed argv only — the registry can never inject arbitrary shell (see
+# ssot.apps.cms-reports regenerate_contract).
+CMS_COMMAND_GENERATORS = {
+    "host-services-cms": [
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+        "tony-dell",
+        "python3",
+        "/home/tony/CascadeProjects/chaba/scripts/ada/host-services-cms.py",
+        "--all",
+    ],
+}
+
+
+async def _cms_run_command_generator(cfg: dict) -> dict | None:
+    """Run a registry-declared command generator synchronously.
+
+    Returns None when the doc doesn't declare a command generator —
+    callers then fall back to the queued run_now path."""
+    gen = cfg.get("generator")
+    if not isinstance(gen, dict) or gen.get("kind") != "command":
+        return None
+    name = str(gen.get("name") or "")
+    argv = CMS_COMMAND_GENERATORS.get(name)
+    if not argv:
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown command generator {name!r} — not in allowlist")
+    timeout = int((gen.get("cost") or {}).get("timeout_s", 300))
+    started = time.monotonic()
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return {"status": "timeout", "generator": name,
+                "timeout_s": timeout}
+    tail = (out or b"").decode(errors="replace")[-2000:]
+    return {"status": "done" if proc.returncode == 0 else "error",
+            "generator": name, "exit_code": proc.returncode,
+            "duration_s": round(time.monotonic() - started, 1),
+            "output": tail}
+
+
 @app.post("/api/cms/pages/{slug}/regenerate")
 async def cms_regenerate_page(request: Request, slug: str) -> dict:
-    """Queue a regeneration for a generated page — sets run_now in its
-    ada-cms-automation registry doc; the worker re-runs the recorded
-    generator on its next pass and clears the flag. The button click plus
-    the API key is the user's explicit action, so this calls the runner
-    method directly rather than going through the voice confirm gate."""
+    """Regenerate a generated page.
+
+    Pages whose registry doc declares a command generator run it
+    synchronously — the button waits, then reloads fresh content. All
+    other pages queue run_now; the scheduled worker picks them up on its
+    next pass. The button click plus the API key is the user's explicit
+    action, so this calls the runner method directly rather than going
+    through the voice confirm gate."""
     _require_api_key(request)
+    try:
+        state = await tool_runner.cms_automation("get", slug=slug)
+    except Exception:
+        state = {}
+    cfg = state.get("config") if isinstance(state, dict) else None
+    result = await _cms_run_command_generator(cfg or {})
+    if result is not None:
+        return result
     try:
         result = await tool_runner.cms_automation("run", slug=slug)
     except ValueError as exc:

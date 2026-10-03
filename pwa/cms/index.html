@@ -499,13 +499,21 @@ function renderPage(el, page) {
     st.className = "text-slate-500";
     btn.addEventListener("click", async () => {
       btn.disabled = true;
-      btn.textContent = "Queuing…";
+      btn.textContent = "Regenerating…";
+      st.textContent = "";
       try {
         const res = await apiFetch(`/api/cms/pages/${encodeURIComponent(page.slug)}/regenerate`, { method: "POST" });
         const data = await res.json().catch(() => ({}));
-        st.textContent = res.ok
-          ? "queued — the worker regenerates on its next pass"
-          : `failed: ${data.detail || res.status}`;
+        if (!res.ok) {
+          st.textContent = `failed: ${data.detail || res.status}`;
+        } else if (data.status === "done") {
+          st.textContent = `regenerated in ${data.duration_s ?? "?"}s — reloading…`;
+          setTimeout(() => renderRoute(), 800);
+        } else if (data.status === "queued" || data.queued) {
+          st.textContent = "queued — the worker regenerates on its next pass";
+        } else {
+          st.textContent = `${data.status || "failed"}${data.output ? ": " + data.output.slice(-160) : ""}`;
+        }
       } catch (e) {
         st.textContent = `failed: ${e.message || e}`;
       }
