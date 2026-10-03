@@ -784,7 +784,14 @@ class SpeakerSession:
                         self._owner_speaker, best_score * 100,
                         self._owner_hint_streak, prev)
                     await self._on_identified(self._owner_speaker, best_score)
-            elif best_name != self._owner_speaker:
+            elif (
+                best_name != self._owner_speaker
+                and best_score >= OWNER_RECLAIM_MIN
+            ):
+                # A different voice that is itself a plausible match
+                # breaks the streak — weak/quiet chunks where a foreign
+                # print merely edges ahead (Ratree=0.18 while Tony=0.14)
+                # carry no signal and must not reset owner recovery.
                 self._owner_hint_streak = 0
             if name is not None and name != self._last_name:
                 # Hysteresis: first-time identification AND switching both
