@@ -350,10 +350,12 @@ let curTab = "pages";         // "pages" | "security" | "traffic" — sidebar sp
 
 const isCctv = (p) => {
   const t = titleOf(p), s = p.slug || "";
+  // "CCTV:" with colon = camera/wall dossier; "CCTV — <doc>" titles are
+  // docs/tools and belong in Pages (e.g. cctv-random-cycle).
   return s === "cctv-walls" || s === "dvr-wall" || s.startsWith("camwall-") ||
          s.startsWith("wall-") || s.startsWith("cam-") ||
-         t.startsWith("CCTV") || t.startsWith("กล้อง") ||
-         t.startsWith("กำแพง");
+         t.startsWith("CCTV:") || t.startsWith("CCTV Wall") ||
+         t.startsWith("กล้อง:") || t.startsWith("กำแพง");
 };
 
 // CCTV tab split (2026-10-03): Security = property cams (Noble-A,
@@ -366,7 +368,8 @@ const CCTV_SLUG_PRE = ["camwall-vms-", "camwall-", "wall-vms-", "wall-", "cam-"]
 function cctvKind(p) {           // "security" | "traffic" | "any" | null
   const t = titleOf(p), s = p.slug || "";
   if (!isCctv(p)) return null;
-  if (s === "cctv-walls" || s === "dvr-wall") return "any";
+  if (s === "cctv-walls") return "any";   // cross-zone index: both tabs
+  if (s === "dvr-wall") return "security"; // VMS/DVR index = security only
   for (const z of SEC_ZONES)
     for (const pre of CCTV_SLUG_PRE)
       if (s === pre + z || s.startsWith(pre + z + "-")) return "security";
