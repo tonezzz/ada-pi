@@ -1,0 +1,30 @@
+# noble-a-cctv-wall — stored-first CCTV flow (2026-10-03):
+# ask Ada for noble-a cameras, then the wall. She should answer with
+# the STORED frame first (mode='cached' — instant, age-marked), announce
+# the refresh, then return the live frame or an honest failure.
+name: noble-a-cctv-wall
+tier: full
+
+turns:
+  - user: "Ada, show me the noble-a guard view camera."
+    expect:
+      calls_any: [ada_camera_snapshot]
+      call_args_contain: {ada_camera_snapshot: ["cached"]}
+      response_nonempty: true
+      timeout_s: 180
+      settle_s: 6
+
+  - user: "Now the road-in camera."
+    expect:
+      calls_any: [ada_camera_snapshot]
+      call_args_contain: {ada_camera_snapshot: ["cached"]}
+      response_nonempty: true
+      timeout_s: 180
+      settle_s: 6
+
+  - user: "Show me the noble-a camera wall."
+    expect:
+      calls_any: [cctv_wall, cms_get_page]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
