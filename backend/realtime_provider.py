@@ -341,6 +341,15 @@ VMS_INSTRUCTIONS = (
     "say what you see now and do not claim continuous monitoring. If the tool "
     "fails or the frame is dark or frozen, say the camera seems offline "
     "rather than guessing. "
+    "STORED-FIRST: when the user asks to see a property camera, call "
+    "ada_camera_snapshot with mode='cached' FIRST — it answers instantly "
+    "with the wall's stored frame and its age. Show and describe it "
+    "honestly as the stored picture ('as of <age> ago'), announce that you "
+    "are refreshing it live, then call ada_camera_snapshot again with "
+    "mode='live' (the default) and report the fresh frame — or honestly "
+    "say the refresh failed and the stored frame is still the newest. "
+    "Skip the cached step only when the user explicitly wants a live "
+    "look right now. "
     "DESCRIBE-FIRST: when the user asks what cameras show ('เห็นอะไรบ้าง', "
     "'what do you see', 'check zone X'), pull frames yourself with "
     "ada_camera_snapshot and describe them — do NOT offer to cast or uplink "
@@ -409,7 +418,10 @@ VMS_DECLARATION = {
         "(XMEye VMS). Use when the user asks to see, check, or look at a "
         "camera view — 'is it flooding at the pool', 'show me the front "
         "road'. The image is attached to the tool result for you to "
-        "describe. One still frame per call — not a live stream."
+        "describe. One still frame per call — not a live stream. "
+        "mode='cached' skips the live pull and returns the wall's stored "
+        "frame instantly (with its age) — use it as the fast first answer, "
+        "then call again live for the refreshed frame."
     ),
     "parameters_json_schema": {
         "type": "object",
@@ -420,6 +432,15 @@ VMS_DECLARATION = {
                     "Camera/view name, e.g. 'swimming pool', 'tennis court', "
                     "'front road left', 'walkway', 'guard view'. Fuzzy — "
                     "the service returns the available list on a miss."),
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["live", "cached"],
+                "description": (
+                    "'live' (default) pulls a fresh frame (~20-40s); "
+                    "'cached' returns the last wall-stored frame instantly "
+                    "with its age — the stored-first answer before a live "
+                    "refresh."),
             },
         },
         "required": ["channel"],
@@ -1365,37 +1386,52 @@ class GeminiLiveProvider(RealtimeProvider):
         if not channel:
             return ({"error": "channel is required — e.g. 'swimming pool', "
                               "'tennis court', 'front road'."}, None)
-        try:
-            # Voice-turn budget: the shim is serial and can legitimately
-            # take ~160s worst case, but a user mid-conversation can't
-            # wait that long — 45s cap, then the stale-frame fallback
-            # answers honestly instead of a silent 5-minute hang
-            # (2026-09-30: wedged shim ate two scenario turns).
-            png, resolved = await asyncio.wait_for(
-                vms_camera.snapshot(channel), timeout=45)
-            stale_meta = None
-            status_card = None
-        except LookupError as exc:
-            return ({"error": str(exc)}, None)
-        except Exception as exc:
-            # wait_for cancels the shim call; TimeoutError() is empty —
-            # name it so logs and the stale-frame fallback carry a cause.
-            if isinstance(exc, asyncio.TimeoutError):
-                exc = TimeoutError("vms-snap did not return within 45s")
-            logger.warning("session=%s camera snapshot failed: %s",
-                           self.session_id, exc)
-            # Guaranteed-image contract: serve the last-known frame from the
-            # camwall cache — always marked stale, never presented as live.
+        mode = str(args.get("mode") or "live").strip().lower()
+        if mode == "cached":
+            # Stored-first: the wall's last-good thumb, marked with age —
+            # the instant answer before a live refresh (no shim call).
             try:
                 stale = await vms_camera.stale_snapshot(channel)
             except Exception:
                 stale = None
             if not stale:
-                return ({"error": f"camera snapshot failed: {exc}"}, None)
+                return ({"error": f"no stored frame for '{channel}' — "
+                                  "try mode='live'"}, None)
             png, resolved, age = stale[0], stale[1], stale[2]
             status_card = stale[3] if len(stale) > 3 else None
-            stale_meta = {"stale": True, "age_s": age,
-                          "live_error": str(exc)[:120]}
+            stale_meta = {"stored": True, "stale": True, "age_s": age}
+        else:
+            status_card = None
+            stale_meta = None
+            try:
+                # Voice-turn budget: the shim is serial and can legitimately
+                # take ~160s worst case, but a user mid-conversation can't
+                # wait that long — 45s cap, then the stale-frame fallback
+                # answers honestly instead of a silent 5-minute hang
+                # (2026-09-30: wedged shim ate two scenario turns).
+                png, resolved = await asyncio.wait_for(
+                    vms_camera.snapshot(channel), timeout=45)
+            except LookupError as exc:
+                return ({"error": str(exc)}, None)
+            except Exception as exc:
+                # wait_for cancels the shim call; TimeoutError() is empty —
+                # name it so logs and the stale-frame fallback carry a cause.
+                if isinstance(exc, asyncio.TimeoutError):
+                    exc = TimeoutError("vms-snap did not return within 45s")
+                logger.warning("session=%s camera snapshot failed: %s",
+                               self.session_id, exc)
+                # Guaranteed-image contract: serve the last-known frame from
+                # the camwall cache — always marked stale, never as live.
+                try:
+                    stale = await vms_camera.stale_snapshot(channel)
+                except Exception:
+                    stale = None
+                if not stale:
+                    return ({"error": f"camera snapshot failed: {exc}"}, None)
+                png, resolved, age = stale[0], stale[1], stale[2]
+                status_card = stale[3] if len(stale) > 3 else None
+                stale_meta = {"stale": True, "age_s": age,
+                              "live_error": str(exc)[:120]}
         result = {
             "output": (
                 f"Still frame captured from camera '{resolved}'. "
@@ -1404,12 +1440,21 @@ class GeminiLiveProvider(RealtimeProvider):
         }
         if stale_meta:
             result.update(stale_meta)
-            result["output"] = (
-                f"Camera '{resolved}' is NOT returning a live frame right "
-                f"now ({stale_meta['live_error']}). You are getting the last "
-                f"known frame, {age // 60}m{age % 60}s old — describe it "
-                "honestly as a stale frame, not live video, and say the "
-                "camera appears to be down. " + self._frame_followup_note())
+            if stale_meta.get("stored"):
+                result["output"] = (
+                    f"Stored frame from camera '{resolved}' — "
+                    f"{age // 60}m{age % 60}s old (the newest image the "
+                    "camera wall has). Describe it as the stored picture "
+                    "with its age — a live refresh can follow with "
+                    "mode='live'. " + self._frame_followup_note())
+            else:
+                result["output"] = (
+                    f"Camera '{resolved}' is NOT returning a live frame "
+                    f"right now ({stale_meta['live_error']}). You are "
+                    f"getting the last known frame, {age // 60}m{age % 60}s "
+                    "old — describe it honestly as a stale frame, not live "
+                    "video, and say the camera appears to be down. "
+                    + self._frame_followup_note())
         # Publish the frame two ways and prefer the relay copy for casting:
         #  a) relay asset  {VCAST_API}/frame?screen=0&token=cam:<slug>-<ts>
         #     — same-origin for vcast pages -> canvas stays clean so

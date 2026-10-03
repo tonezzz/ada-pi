@@ -29,7 +29,9 @@ async def snapshot(channel: str, settle: float | None = None) -> tuple[bytes, st
     base = snap_url()
     if not base:
         raise RuntimeError("camera snapshot service is not configured on this instance")
-    params = {"ch": channel}
+    # native=1 — the shim's own VMS snapshot path returns the channel at
+    # native decode res (2560x1440) instead of the screen crop, for ~+2s.
+    params = {"ch": channel, "native": "1"}
     if settle is not None:
         params["settle"] = str(settle)
     import asyncio
