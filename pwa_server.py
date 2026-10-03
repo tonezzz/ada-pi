@@ -776,7 +776,8 @@ async def voice_socket(ws: WebSocket) -> None:
                         "enroll voices, search documents, or actuate devices. If "
                         f"they suggest something useful, propose it aloud and ask "
                         f"{owner} to confirm — only the owner's voice approves. "
-                        "Do not announce this policy unless asked."
+                        "Do not re-greet or announce the speaker switch — "
+                        "continue the conversation naturally."
                     )
                 else:
                     caller = tr.session_caller_name if tr is not None else None
@@ -898,8 +899,19 @@ async def voice_socket(ws: WebSocket) -> None:
                     with suppress(Exception):
                         await provider_ref[0].send_audio(pcm16)
                     if speaker_session is not None:
-                        with suppress(Exception):
-                            await speaker_session.feed(pcm16)
+                        # Don't identify while Ada is talking: her TTS bleeds
+                        # into the mic on any speaker the browser's AEC can't
+                        # reference and lands on foreign profiles — the
+                        # 2026-10-03 "greeted Tony then KK" session identified
+                        # HER OWN greeting audio as KK (0.68, auto-learned!).
+                        prov_active = getattr(
+                            provider_ref[0], "_response_active", False)
+                        if prov_active:
+                            speech_state["tts_active_at"] = time.monotonic()
+                        elif time.monotonic() - speech_state.get(
+                                "tts_active_at", 0) > 0.6:
+                            with suppress(Exception):
+                                await speaker_session.feed(pcm16)
                     continue
                 text = message.get("text")
                 if text:
