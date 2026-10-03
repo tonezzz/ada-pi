@@ -4727,33 +4727,37 @@ class ToolRunner:
         session) and publish the WAV to the relay's /frame store — returns
         the public same-origin URL a vcast display can <audio>-fetch, or
         None on any failure (caller falls back to client-side TTS)."""
-        import base64, io, wave
+        import base64, io, wave, urllib.request
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get(
             "GOOGLE_API_KEY")
         if not api_key:
             return None
         try:
+            from backend import voice_config
+            model = os.environ.get(
+                "VCAST_TTS_MODEL", "gemini-2.5-flash-preview-tts")
             def _synth() -> bytes | None:
-                from google import genai
-                from google.genai import types as gtypes
-                from backend import voice_config
-                resp = genai.Client(api_key=api_key).models.generate_content(
-                    model=os.environ.get(
-                        "VCAST_TTS_MODEL", "gemini-2.5-flash-preview-tts"),
-                    contents=text,
-                    config=gtypes.GenerateContentConfig(
-                        response_modalities=["AUDIO"],
-                        speech_config=gtypes.SpeechConfig(
-                            voice_config=gtypes.VoiceConfig(
-                                prebuilt_voice_config=(
-                                    gtypes.PrebuiltVoiceConfig(
-                                        voice_name=(
-                                            voice_config.current_voice())))))))
-                for part in (resp.candidates[0].content.parts or []):
-                    data = getattr(getattr(part, "inline_data", None),
-                                   "data", None)
+                # plain REST — the google-genai sync client dies inside
+                # to_thread with 'client has been closed'
+                payload = json.dumps({
+                    "contents": [{"parts": [{"text": text}]}],
+                    "generationConfig": {
+                        "responseModalities": ["AUDIO"],
+                        "speechConfig": {"voiceConfig": {
+                            "prebuiltVoiceConfig": {
+                                "voiceName": voice_config.current_voice()}}},
+                    }}).encode()
+                req = urllib.request.Request(
+                    f"https://generativelanguage.googleapis.com/v1beta/"
+                    f"models/{model}:generateContent?key={api_key}",
+                    data=payload,
+                    headers={"Content-Type": "application/json"})
+                resp = json.load(urllib.request.urlopen(req, timeout=30))
+                for part in (resp.get("candidates", [{}])[0]
+                             .get("content", {}).get("parts") or []):
+                    data = (part.get("inlineData") or {}).get("data")
                     if data:
-                        return data  # raw 24kHz s16le PCM
+                        return base64.b64decode(data)  # 24kHz s16le PCM
                 return None
             pcm = await asyncio.to_thread(_synth)
             if not pcm:
