@@ -280,8 +280,10 @@ class MultiPrintTest(unittest.TestCase):
 class SpeakerSwitchHysteresisTest(unittest.IsolatedAsyncioTestCase):
     """SpeakerSession must not flip identity on a single borderline chunk —
     the 2026-09-27 log showed กุ้ง↔NewSpeaker alternating every ~15 s at
-    46-64 % confidence. SWITCH_AFTER consecutive wins are required to
-    change an established speaker."""
+    46-64 % confidence. Consecutive wins are required to change an
+    established speaker AND to set the first label (no confident single-
+    chunk bypass — 2026-10-03 e564b39502 stamped a Tony session as guest
+    on one 84% junk hit)."""
 
     async def _run(self, sequence):
         ident = speaker_id.SpeakerIdentifier()
@@ -297,16 +299,16 @@ class SpeakerSwitchHysteresisTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_single_outlier_does_not_switch(self):
         calls, cur = await self._run([
-            ("Tony", 0.9),          # establishes Tony
-            ("Kung", 0.6),          # one borderline flip attempt
-            ("Tony", 0.8),          # back to Tony
+            ("Tony", 0.9), ("Tony", 0.9),   # establishes Tony
+            ("Kung", 0.6),                  # one borderline flip attempt
+            ("Tony", 0.8),                  # back to Tony
         ])
         self.assertEqual(calls, ["Tony"])
         self.assertEqual(cur, "Tony")
 
     async def test_two_consecutive_switch(self):
         calls, cur = await self._run([
-            ("Tony", 0.9),
+            ("Tony", 0.9), ("Tony", 0.9),
             ("Kung", 0.6), ("Kung", 0.65),  # sustained second speaker
         ])
         self.assertEqual(calls, ["Tony", "Kung"])
@@ -314,21 +316,34 @@ class SpeakerSwitchHysteresisTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_alternating_flips_never_commit(self):
         calls, cur = await self._run([
-            ("Tony", 0.9),
+            ("Tony", 0.9), ("Tony", 0.9),
             ("Kung", 0.6), ("Tony", 0.7),
             ("Kung", 0.62), ("Tony", 0.75),
         ])
         self.assertEqual(calls, ["Tony"])
         self.assertEqual(cur, "Tony")
 
-    async def test_first_identification_immediate(self):
-        calls, cur = await self._run([("KK", 0.7)])
+    async def test_first_identification_needs_streak(self):
+        # No confidence bypass on the FIRST label either — 2026-10-03
+        # session e564b39502: one junk chunk hit "KK" at 84% on a Tony
+        # session and the guest gate demanded confirmations all call.
+        calls, cur = await self._run([("KK", 0.7), ("KK", 0.75)])
         self.assertEqual(calls, ["KK"])
         self.assertEqual(cur, "KK")
 
+    async def test_confident_single_first_hit_does_not_label(self):
+        calls, cur = await self._run([("KK", 0.84)])
+        self.assertEqual(calls, [])
+        self.assertIsNone(cur)
+
+    async def test_confident_first_hit_then_miss_never_labels(self):
+        calls, cur = await self._run([("KK", 0.84), (None, 0.3), ("Tony", 0.9)])
+        self.assertEqual(calls, [])
+        self.assertIsNone(cur)
+
     async def test_miss_resets_pending_switch(self):
         calls, cur = await self._run([
-            ("Tony", 0.9),
+            ("Tony", 0.9), ("Tony", 0.9),
             ("Kung", 0.6),            # pending Kung=1
             (None, 0.4),              # miss resets
             ("Kung", 0.6),            # back to 1 — still not enough

@@ -82,10 +82,11 @@ _PLACEHOLDER_PATTERN = re.compile(
 # 2026-09-27 (same voice enrolled twice under two names). First-time
 # identification still accepts a single confident chunk.
 SWITCH_AFTER = 2
-# First-time identification accepts immediately only above this confidence;
-# below it the same name must win FIRST_AFTER consecutive chunks — a single
-# ambient-noise hit once greeted a session as the wrong speaker.
-FIRST_ID_MIN_CONF = float(os.environ.get("ADA_SPEAKER_FIRST_ID_CONF", "0.70"))
+# First-time identification needs FIRST_AFTER consecutive chunks naming the
+# same speaker — a single ambient-noise hit once greeted a session as the
+# wrong speaker.  (ADA_SPEAKER_FIRST_ID_CONF is retired: confidence is not
+# evidence of multiplicity — 2026-10-03 a confident 84% first-chunk hit was
+# junk audio on a polluted profile.)
 FIRST_AFTER = int(os.environ.get("ADA_SPEAKER_FIRST_AFTER", "2"))
 
 # Soft-owner hint: when a chunk's best person match IS the enrolled owner of
@@ -794,18 +795,23 @@ class SpeakerSession:
                 # carry no signal and must not reset owner recovery.
                 self._owner_hint_streak = 0
             if name is not None and name != self._last_name:
-                # Hysteresis: first-time identification AND switching both
-                # need SWITCH_AFTER consecutive wins for that name — a
-                # single junk-frame hit once greeted ambient noise as KK
-                # (2026-09-29 transcript 855a65dab8).
-                if self._last_name is not None or confidence < FIRST_ID_MIN_CONF:
-                    if name == self._switch_pending:
-                        self._switch_count += 1
-                    else:
-                        self._switch_pending = name
-                        self._switch_count = 1
-                    if self._switch_count < SWITCH_AFTER:
-                        return
+                # Hysteresis: a NEW label — first-time identification AND
+                # switching alike — needs consecutive wins for that name.
+                # No confidence bypass: one 2 s chunk CAN score high on a
+                # polluted profile (2026-10-03 session e564b39502: a junk
+                # session-start chunk hit "KK" at 84%, stamped Tony's own
+                # session as a guest, auto-learned the bad audio into KK's
+                # profile, and the capture gate then demanded owner
+                # confirmation on every camera call).  Earlier incident:
+                # 2026-09-29 transcript 855a65dab8.
+                after = SWITCH_AFTER if self._last_name is not None else FIRST_AFTER
+                if name == self._switch_pending:
+                    self._switch_count += 1
+                else:
+                    self._switch_pending = name
+                    self._switch_count = 1
+                if self._switch_count < after:
+                    return
                 self._switch_pending = None
                 self._switch_count = 0
                 self._last_name = name
