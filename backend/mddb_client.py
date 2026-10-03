@@ -13,6 +13,26 @@ import httpx
 logger = logging.getLogger("tools")
 
 MDDB_BASE_URL = os.environ.get("MDDB_BASE_URL", "http://127.0.0.1:11023/v1")
+# Ops store: high-volume append-only telemetry lives on a separate
+# no-embedding instance so the leader's vector index stays small.
+# Unset -> everything routes to the leader (single-store behaviour).
+MDDB_OPS_URL = (os.environ.get("MDDB_OPS_URL") or "").rstrip("/")
+
+# Prefix match — per-instance names (ada-ha-events-tony) route with
+# their family. Keep in sync with docs/kb/mddb-ops-split.md.
+OPS_COLLECTION_PREFIXES = (
+    "host-logs",
+    "ada-ha-events-",
+    "ada-ha-actions-",
+    "ada-ha-snapshots-",
+    "ada-ha-recall-summary-",
+    "ada-ha-scenario-reports",
+    "yomi-digest",
+)
+
+
+def is_ops_collection(name: str) -> bool:
+    return any(name.startswith(p) for p in OPS_COLLECTION_PREFIXES)
 
 
 class MddbClient:
@@ -21,6 +41,27 @@ class MddbClient:
     def __init__(self, base_url: str | None = None) -> None:
         self.base_url = (base_url or MDDB_BASE_URL).rstrip("/")
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(20.0))
+
+
+class MddbClient:
+    """Thin async client for the MDDB v1 HTTP API.
+
+    Ops routing: when constructed WITHOUT an explicit base_url and
+    MDDB_OPS_URL is set, collections matching OPS_COLLECTION_PREFIXES
+    automatically go to the ops store — per-call, so one client
+    handles banks and telemetry transparently. An explicit base_url
+    pins the client to that store (lab tests, followers)."""
+
+    def __init__(self, base_url: str | None = None) -> None:
+        self.base_url = (base_url or MDDB_BASE_URL).rstrip("/")
+        # ops routing only on the default leader client
+        self._ops_url = (MDDB_OPS_URL if base_url is None else "")
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(20.0))
+
+    def _url(self, collection: str) -> str:
+        if self._ops_url and is_ops_collection(collection):
+            return self._ops_url
+        return self.base_url
 
     async def add_document(
         self,
@@ -43,7 +84,7 @@ class MddbClient:
             # /add embeds inline — slow embedding providers need >20s.
             kwargs = {"timeout": timeout} if timeout else {}
             resp = await self._client.post(
-                f"{self.base_url}/add", json=payload, **kwargs
+                self._url(collection) + "/add", json=payload, **kwargs
             )
             resp.raise_for_status()
             return resp.json()
@@ -68,7 +109,7 @@ class MddbClient:
         if filter_meta:
             payload["filterMeta"] = filter_meta
         try:
-            resp = await self._client.post(f"{self.base_url}/search", json=payload)
+            resp = await self._client.post(self._url(collection) + "/search", json=payload)
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
@@ -102,7 +143,7 @@ class MddbClient:
         for attempt in range(len(delays) + 1):
             try:
                 resp = await self._client.post(
-                    f"{self.base_url}/vector-search", json=payload
+                    self._url(collection) + "/vector-search", json=payload
                 )
                 if resp.status_code >= 500 and attempt < len(delays):
                     await asyncio.sleep(delays[attempt])
@@ -129,7 +170,7 @@ class MddbClient:
     ) -> dict[str, Any] | None:
         try:
             resp = await self._client.post(
-                f"{self.base_url}/get",
+                self._url(collection) + "/get",
                 json={"collection": collection, "key": key, "lang": lang},
             )
             if resp.status_code == 404 or (
@@ -169,7 +210,7 @@ class MddbClient:
         payload["contentMd"] = (content_md if content_md is not None
                                 else (existing or {}).get("contentMd") or "")
         try:
-            resp = await self._client.post(f"{self.base_url}/add", json=payload)
+            resp = await self._client.post(self._url(collection) + "/add", json=payload)
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
@@ -184,7 +225,7 @@ class MddbClient:
     ) -> dict[str, Any] | None:
         try:
             resp = await self._client.post(
-                f"{self.base_url}/delete",
+                self._url(collection) + "/delete",
                 json={"collection": collection, "key": key, "lang": lang},
             )
             if resp.status_code == 404 or (
