@@ -46,6 +46,8 @@ policy:
     - ideas_burst_capture
     # memory/speaker writes (incl. gate scenarios with denied attempts)
     - doc_upload
+    - shared_memory_audit      # turn 2 invites "clean up if safe" (ada_forget/ada_remember)
+    - news_intake_probe        # turn 4 asks "keep an eye on this" (ada_remember)
     - memory_confirmed_write
     - memory_confirm_gate
     - recall_gate_override

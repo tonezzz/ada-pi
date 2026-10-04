@@ -13,6 +13,9 @@ turns:
   - user: >-
       Anything you should add or clean up in there? Do it if it's safe.
     expect:
-      calls_any: [ada_remember, devin_jobs, ada_memory_search]
+      # "clean up" legitimately means ada_forget too — 2026-10-04 she
+      # proposed deleting two stale devin-handoff docs, which IS the
+      # requested cleanup, not a wrong-tool failure.
+      calls_any: [ada_remember, ada_forget, devin_jobs, ada_memory_search]
       timeout_s: 120
       settle_s: 12

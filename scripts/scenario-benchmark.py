@@ -89,9 +89,55 @@ def _slug_file(name: str) -> str:
     return p
 
 
-def _run_one(path: str, url: str, api_key: str) -> tuple[str, int, dict | None, str]:
-    """One scenario, retry-once → flaky. Returns (status, runs, events, out)."""
+def _keys(path: str) -> dict:
+    try:
+        return json.loads(open(path).read())
+    except (OSError, ValueError):
+        return {}
+
+
+def _key_entry(keys: dict, name: str) -> tuple[str, str | None]:
+    """(raw_key, device_id) — file format: {name: '<key>' | {key, device}}."""
+    entry = keys.get(name)
+    if isinstance(entry, dict):
+        return str(entry.get("key") or ""), entry.get("device")
+    return str(entry or ""), None
+
+
+def _env_value(path: str, name: str) -> str:
+    """Read NAME=value from a dotenv file (tolerates 'export ' prefix)."""
+    try:
+        for line in open(path):
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            if line.startswith(name + "="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
+
+
+def _run_one(path: str, url: str, api_key: str, keys: dict) -> tuple[str, int, dict | None, str]:
+    """One scenario, retry-once → flaky. Returns (status, runs, events, out).
+
+    Honors per-scenario `env_file:` and `key_name:` like scenario-report.py —
+    without this, key-scoped scenarios (doc_policy_gate etc.) silently run
+    under the admin key and fail for the wrong reason."""
     driver = os.path.join(HERE, "scenario-live.py")
+    try:
+        spec = yaml.safe_load(open(path).read()) or {}
+    except Exception:
+        spec = {}
+    if spec.get("env_file"):
+        api_key = _env_value(str(spec["env_file"]), "ADA_API_KEY") or api_key
+    if spec.get("key_name"):
+        api_key, device = _key_entry(keys, spec["key_name"])
+        if not api_key:
+            return "skip", 0, None, f"key {spec['key_name']} not in keys file"
+        if device:
+            sep = "&" if "?" in url else "?"
+            url = f"{url}{sep}device_id={device}"
     for attempt in (1, 2):
         ev_path = os.path.join(os.environ.get("TMPDIR", "/tmp"),
                                f"bench-{os.path.basename(path)}-{attempt}.json")
@@ -199,6 +245,8 @@ def main() -> int:
     ap.add_argument("--api-key", default=os.environ.get("ADA_API_KEY") or "")
     ap.add_argument("--mddb", default=os.environ.get("MDDB_BASE_URL")
                     or "http://127.0.0.1:11023/v1")
+    ap.add_argument("--keys-file", default=os.environ.get("ADA_KEYS_FILE")
+                    or "")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--report-cms", action="store_true",
                     help="also publish a markdown page to ada-cms-pages")
@@ -222,6 +270,7 @@ def main() -> int:
     _lock.listen(1)
 
     bench = _load()
+    keys = _keys(args.keys_file) if args.keys_file else {}
     policy = bench.get("policy") or {}
     required = set(policy.get("required_first_try") or [])
     write_tools = set(policy.get("write_tools") or [])
@@ -234,7 +283,8 @@ def main() -> int:
             print(f"== {name}: SKIP (no yaml)")
             rows.append((name, "skip", 0, 0, 0.0))
             continue
-        status, runs, events, out = _run_one(path, args.url, args.api_key)
+        status, runs, events, out = _run_one(path, args.url, args.api_key,
+                                           keys)
         turns = (events or {}).get("turns") or []
         n_tools = sum(len(t.get("tools") or []) for t in turns)
         dur = float((events or {}).get("duration_s") or 0)
