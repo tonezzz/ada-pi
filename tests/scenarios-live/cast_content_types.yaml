@@ -29,11 +29,12 @@ preflight:
   - {check: vcast_online, screens: ["{real_screen}"]}
 
 turns:
-  # website -> nav
+  # website -> nav (or an honest "already showing" no-op — or_state
+  # checks the screen actually has /apps/ up before waiving the call)
   - user: "Show the apps index page on screen {real_screen} — that's slash apps slash on tony-dell."
     expect:
-      calls: [cast_to_screen]
-      result_contains: ["'delivered': 1"]
+      calls_any: [cast_to_screen]
+      or_state: {vcast_screen: "{real_screen}", contains: "/apps/"}
       response_nonempty: true
       timeout_s: 90
       settle_s: 6
