@@ -1,0 +1,39 @@
+# Wall zone switch with ground-truth verification — live failure
+# 2026-10-04: Ada said "เปลี่ยนเป็นผัง Noble Club เรียบร้อย" while the
+# TV still showed Noble A; a 'back' command also did nothing. Asserts
+# the post-switch state check happens.
+name: wall-zone-switch-verify
+tier: full
+preflight:
+  - {check: vcast_online, screens: ["{real_screen}"]}
+turns:
+  - user: "Show the Noble-A wall on screen {real_screen}."
+    expect:
+      calls_any: [cctv_wall, cast_to_screen]
+      response_nonempty: true
+      timeout_s: 180
+      settle_s: 8
+  - user: "Now switch it to the Noble Club wall instead."
+    expect:
+      calls_any: [cctv_wall, cast_to_screen]
+      response_nonempty: true
+      timeout_s: 180
+      settle_s: 8
+  - user: "What is screen {real_screen} actually displaying right now?"
+    expect:
+      calls_any: [vcast_snapshot, vcast_list]
+      response_nonempty: true
+      # grounded: names a club camera/wall — or honestly reports it
+      # didn't switch
+      response_contains_any: ["club", "คลับ", "noble", "grid", "wall",
+                              "still", "same", "noble-a", "didn't", "not",
+                              "ผัง", "ยัง", "เหมือนเดิม", "ไม่เปลี่ยน"]
+      max_calls: 8
+      timeout_s: 120
+      settle_s: 6
+  - user: "Stop screen {real_screen}."
+    expect:
+      calls_any: [cast_to_screen, tv_action, cctv_wall]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 4

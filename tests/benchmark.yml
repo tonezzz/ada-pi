@@ -75,6 +75,9 @@ policy:
     - gev_bkk_tour
     - gev_th_tour
     - gev_za_tour
+    # verify-after-act cast scenarios (2026-10-04)
+    - cast_claim_verify
+    - wall_zone_switch_verify
     - gev_za_windsurf
     - gev_tour_report
     - gev_eu_tour
@@ -100,6 +103,10 @@ policy:
     - vcast_gesture_ops
     - vcast_gesture_recall
     - tool_selection_accuracy
+    - cast_claim_verify
+    - wall_zone_switch_verify
+    - traffic_cam_substitution
+    - weather_grounded
 
 # The standard — what a benchmark result is allowed to mean. Three clauses:
 # evidence contract, failure integrity, retention. Enforced by

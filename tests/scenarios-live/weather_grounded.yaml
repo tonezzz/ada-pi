@@ -1,0 +1,14 @@
+# Weather grounding — live failure 2026-10-04: Ada gave 34°C no-rain
+# then 33°C scattered-rain 20s apart, apparently ungrounded. Asserts a
+# weather question reaches the rk600 station tool rather than a guess.
+name: weather-grounded
+tier: smoke
+turns:
+  - user: "What's the current temperature outside right now?"
+    expect:
+      calls_any: [get_rk600_weather]
+      response_nonempty: true
+      response_contains_any: ["degree", "celsius", "°", "องศา"]
+      max_calls: 6
+      timeout_s: 90
+      settle_s: 4
