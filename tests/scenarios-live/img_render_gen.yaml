@@ -1,0 +1,22 @@
+# Basic render gen, live: text prompt -> ada_render_image -> photo pushed
+# to the active chat (tg/line relays already turn image urls into photo
+# messages). Asserts the tool is called and the returned URL is served.
+name: img-render-gen
+tier: manual  # flip to smoke when ada_render_image lands
+turns:
+  - user: "draw me a small watercolor of a Thai longtail boat at sunset"
+    expect:
+      response_nonempty: true
+      events_contain:
+        - {type: tool_call, name: ada_render_image}
+      response_contains_any:
+        - "boat"
+        - "image"
+        - "เรือ"
+        - "ภาพ"
+      timeout_s: 120
+      settle_s: 5
+
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-general, contains: "longtail boat"}

@@ -1,0 +1,30 @@
+# Image render with reference photo, live: Ada should take a description +
+# a provided reference, assemble a concise render prompt (interviewing at
+# most one follow-up), call ada_render_image with the ref, and return the
+# URL — no manual parameter talk to the user.
+name: img-render-ref-edit
+tier: manual  # flip to smoke when ada_render_image lands
+turns:
+  - upload: fixtures/doc-receipt.png
+    user: "make a fun cartoon version of that photo, landscape"
+    expect:
+      response_nonempty: true
+      # Ada must call the render tool — check the wire, not just words.
+      events_contain:
+        - {type: tool_call, name: ada_render_image}
+      # and the tool call must carry a ref_url (the uploaded intake URL)
+      # plus an assembled prompt string — assert via journal grep or
+      # a light arg check once the tool exists.
+      timeout_s: 120
+      settle_s: 5
+  - user: "now square format, watercolor style"
+    expect:
+      response_nonempty: true
+      events_contain:
+        - {type: tool_call, name: ada_render_image}
+      timeout_s: 120
+      settle_s: 5
+
+# Serves as the prompt-builder probe too: correct behavior = Ada asks AT
+# MOST one clarifying question, never exposes aspect/style param names,
+# and confirms the assembled prompt in plain words before rendering.
