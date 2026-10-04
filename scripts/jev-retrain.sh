@@ -17,21 +17,24 @@ WORK=/tmp/jev-retrain-$STAMP
 mkdir -p "$WORK"
 
 echo "[1/5] harvest corpus from $IDC01"
-ssh "$IDC01" 'cat ~/.local/share/ada/jev-corpus.jsonl ~/.local/share/ada/jev-corpus-mined.jsonl 2>/dev/null' > "$WORK/raw.jsonl"
-python3 - "$WORK/raw.jsonl" "$WORK/corpus.json" <<'PY'
+ssh "$IDC01" 'cat ~/.local/share/ada/jev-corpus.jsonl' > "$WORK/jev-corpus.jsonl" 2>/dev/null || true
+ssh "$IDC01" 'cat ~/.local/share/ada/jev-corpus-mined.jsonl' > "$WORK/jev-corpus-mined.jsonl" 2>/dev/null || true
+ssh "$IDC01" 'cat ~/.local/share/ada/jev-corpus-reviewed.jsonl' > "$WORK/jev-corpus-reviewed.jsonl" 2>/dev/null || true
+[ -s "$WORK/jev-corpus-mined.jsonl" ] || echo "" > "$WORK/jev-corpus-mined.jsonl"
+[ -s "$WORK/jev-corpus-reviewed.jsonl" ] || echo "" > "$WORK/jev-corpus-reviewed.jsonl"
+JEVDIR="$(cd "$(dirname "$0")" && pwd)/jev"
+# merge w/ label policy (reviewed->eval, diverged/ambiguous dropped,
+# negation relabels) + targeted failure-class augmentation
+python3 "$JEVDIR/merge-corpus.py" "$WORK"
+python3 "$JEVDIR/augment-corpus.py" "$WORK/augment.jsonl"
+python3 - "$WORK" <<'PY'
 import json, sys
-rows = []
-for line in open(sys.argv[1]):
-    try: r = json.loads(line)
-    except: continue
-    rows.append({"text": r["text"], "label": bool(r.get("regex", r.get("label", False)))})
-seen, ded = set(), []
-for d in rows:
-    k = d["text"].strip().lower()
-    if k in seen or not k: continue
-    seen.add(k); ded.append(d)
-json.dump(ded, open(sys.argv[2], "w"), ensure_ascii=False)
-print(f"corpus: {len(ded)} deduped ({sum(1 for d in ded if d['label'])} pos)")
+d = sys.argv[1]
+rows = [json.loads(l) for l in open(d + "/corpus-merged.jsonl")]
+rows += [json.loads(l) for l in open(d + "/augment.jsonl")]
+out = [{"text": r["text"], "label": bool(r["label"])} for r in rows]
+json.dump(out, open(d + "/corpus.json", "w"), ensure_ascii=False)
+print(f"train corpus: {len(out)} rows ({sum(1 for r in out if r['label'])} pos)")
 PY
 
 echo "[2/5] sync to $IDC02 + train"
