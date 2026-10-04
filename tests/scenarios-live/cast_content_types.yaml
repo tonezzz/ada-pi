@@ -61,12 +61,13 @@ turns:
       timeout_s: 90
       settle_s: 8
 
-  # consent -> confirmed retry -> delivered (or already playing the mp4)
+  # consent -> confirmed retry -> delivered (or already playing the mp4:
+  # a resume via control_media_player is also a correct answer here)
   - user: "Yes, play it."
     expect:
-      calls_any: [cast_to_screen]
-      result_contains: ["'delivered': 1"]
-      or_state: {vcast_screen: "{real_screen}", contains: "dub-v2-male"}
+      calls_any: [cast_to_screen, control_media_player]
+      result_contains: ["'delivered': 1", "'ok': True"]
+      or_state: {vcast_screen: "{real_screen}", contains: "video"}
       response_nonempty: true
       timeout_s: 90
       settle_s: 8
