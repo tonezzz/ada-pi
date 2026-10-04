@@ -9,7 +9,14 @@ name: cast-content-types
 #     fire here: it casts to the TV, the wrong surface entirely.
 #   - direct mp4   -> cast_to_screen action='play'
 #   - still image  -> cast_to_screen action='image'
+#   - busy screen  -> needs_confirm gate, then confirmed=true retry on
+#     a spoken yes (replacing playing media requires consent)
 #   - stop         -> cast_to_screen action='stop'
+#
+# Observed live 2026-10-04 (first run): the mp4/image turns correctly
+# tripped the interrupt gate — screen was busy playing YouTube, Ada
+# asked "replace it?" — so the ask->confirm turns below deliberately
+# exercise that gate per content type.
 #
 # Live CCTV still->screen is covered by cam_to_screen +
 # cctv_snapshot_to_screen; this scenario guards routing only.
@@ -31,7 +38,8 @@ turns:
       timeout_s: 90
       settle_s: 6
 
-  # YouTube URL -> play on the screen, NOT yt_cast (that would hit the TV)
+  # YouTube URL -> play on the screen, NOT yt_cast (that would hit the TV).
+  # nav pages aren't "busy", so this lands without a confirm dance.
   - user: "Play this YouTube video on screen {real_screen}: https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     expect:
       calls: [cast_to_screen]
@@ -41,20 +49,43 @@ turns:
       timeout_s: 90
       settle_s: 8
 
-  # direct mp4 -> play
+  # direct mp4 -> play; screen is busy playing YouTube -> the gate must
+  # fire (needs_confirm) OR she may stop-then-play. Either way the only
+  # cast tool is cast_to_screen.
   - user: "Play the dub test mp4 on screen {real_screen} — slash apps slash yt-live slash dub-v2-male dot mp4 on tony-dell."
     expect:
       calls: [cast_to_screen]
-      result_contains: ["'delivered': 1"]
+      no_calls_except: [cast_to_screen, vcast_list, vcast_snapshot]
+      result_contains_any: ["'delivered': 1", "needs_confirm", "would_interrupt"]
       response_nonempty: true
       timeout_s: 90
       settle_s: 8
 
-  # still image -> image
+  # consent -> confirmed retry -> delivered (or already playing the mp4)
+  - user: "Yes, play it."
+    expect:
+      calls_any: [cast_to_screen]
+      result_contains: ["'delivered': 1"]
+      or_state: {vcast_screen: "{real_screen}", contains: "dub-v2-male"}
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  # still image -> image; busy playing mp4 -> gate again
   - user: "Put the vcast app icon on screen {real_screen} — slash apps slash vcast slash icon-192 dot png on tony-dell."
     expect:
       calls: [cast_to_screen]
+      no_calls_except: [cast_to_screen, vcast_list, vcast_snapshot]
+      result_contains_any: ["'delivered': 1", "needs_confirm", "would_interrupt"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  - user: "Yes, show the icon instead."
+    expect:
+      calls_any: [cast_to_screen]
       result_contains: ["'delivered': 1"]
+      or_state: {vcast_screen: "{real_screen}", contains: "icon-192"}
       response_nonempty: true
       timeout_s: 90
       settle_s: 8
