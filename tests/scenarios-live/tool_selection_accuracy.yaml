@@ -18,7 +18,10 @@ turns:
       # honest answer = "offline, needs re-login" — no web_search guessing
   - user: What's the temperature inside right now?
     expect:
-      calls_any: [ada_ha_snapshot, ada_ha_get_sensor, get_home_state, ada_ha_list_sensors, search_sensors]
+      # ada_ha_search_sensors is a legitimate path (find sensor → read value),
+      # observed 2026-10-04 returning the correct 25.2°C via Nobito.
+      calls_any: [ada_ha_snapshot, ada_ha_get_sensor, get_home_state,
+                  ada_ha_list_sensors, ada_ha_search_sensors, search_sensors]
       timeout_s: 60
       settle_s: 10
   - user: Cast a YouTube video about elephants onto screen one.
