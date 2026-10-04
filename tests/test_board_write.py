@@ -187,9 +187,13 @@ class ReadTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([c["id"] for c in out["cards"]], ["b", "a", "c"])
         a = next(c for c in out["cards"] if c["id"] == "a")
         self.assertEqual(a["open_requests"], 1)
+        self.assertEqual(a["requests"], [{"id": "r1", "ask": ""}])
         self.assertEqual(a["last_comm"], "devin: working on it")
-        self.assertNotIn("open_requests",
-                         next(c for c in out["cards"] if c["id"] == "b"))
+        b = next(c for c in out["cards"] if c["id"] == "b")
+        self.assertNotIn("open_requests", b)
+        self.assertNotIn("requests", b)
+        c_ = next(c for c in out["cards"] if c["id"] == "c")
+        self.assertNotIn("requests", c_)  # answered requests hidden
 
     async def test_read_column_filter_and_limit(self):
         payload = dict(self.PAYLOAD)

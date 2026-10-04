@@ -156,9 +156,12 @@ async def _respond(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
                     "board-api limitation, not something you did wrong"}
 
 
+_ASK_MAX = 100
+
+
 def _compact_card(c: dict[str, Any]) -> dict[str, Any]:
-    reqs = c.get("requests") or []
-    n_open = sum(1 for r in reqs if r.get("status") != "answered")
+    open_reqs = [r for r in (c.get("requests") or [])
+                 if r.get("status") != "answered"]
     row: dict[str, Any] = {
         "id": c.get("id"),
         "title": str(c.get("title") or "")[:_TITLE_MAX],
@@ -166,8 +169,13 @@ def _compact_card(c: dict[str, Any]) -> dict[str, Any]:
     }
     if c.get("updated"):
         row["updated"] = c["updated"]
-    if n_open:
-        row["open_requests"] = n_open
+    if open_reqs:
+        row["open_requests"] = len(open_reqs)
+        row["requests"] = [
+            {"id": r.get("id"),
+             "ask": str(r.get("ask") or "")[:_ASK_MAX]}
+            for r in open_reqs
+        ]
     comms = c.get("comms") or []
     if comms:
         last = comms[-1]
