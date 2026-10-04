@@ -55,6 +55,17 @@ REGISTRY = {
             "allowed_tools": [],
             "status": "active",
         },
+        "ops-scenarios": {
+            "title": "Scenario reports (ops store)",
+            "scope": "shared",
+            "instances": ["tony", "michael"],
+            "mddb_collection": "ada-ha-scenario-reports",
+            "kinds": ["report"],
+            "writable": False,
+            "write_policy": "confirmed",
+            "allowed_tools": [],
+            "status": "active",
+        },
         "broken": {
             "scope": "shared",
             "instances": ["tony"],
@@ -295,6 +306,9 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _registry(instance="tony")
         self.runner.mddb = AsyncMock()
+        # non-async helper on the real client; AsyncMock would auto-mock
+        # it truthy and skip vector_search as if ops-routed
+        self.runner.mddb.is_ops_routed = lambda c: False
         self.runner.mddb.search_documents.return_value = []
         self.runner.mddb.get_document.return_value = None
         self.runner.mddb.add_document.return_value = {}
@@ -528,6 +542,27 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
                 identity="person.kk",
             )
         self.runner.mddb.update_document.assert_not_called()
+
+    async def test_ops_routed_bank_skips_vector_and_windows_listing(self):
+        # The ops store has no embeddings: vector_search is a guaranteed
+        # 400 and listings are oldest-first, so the degraded path must
+        # bound candidates to recent last_verified days (2026-10-04:
+        # scenario_report_recall could not see fresh reports).
+        self.runner.mddb.is_ops_routed = lambda c: True
+        self.runner.mddb.search_documents.return_value = [
+            {"key": "report/doc-recall-live-20261004-1200",
+             "contentMd": "# doc-recall-live — pass", "meta": {
+                 "last_verified": ["2026-10-04"]}},
+        ]
+        out = await self.runner.execute(
+            "ada_memory_search",
+            {"bank": "ops-scenarios", "query": "doc-recall pass"},
+        )
+        self.runner.mddb.vector_search.assert_not_called()
+        fm = self.runner.mddb.search_documents.call_args.kwargs.get(
+            "filter_meta") or {}
+        self.assertIn("last_verified", fm)
+        self.assertTrue(any("doc-recall" in h["key"] for h in out["hits"]))
 
     async def test_search_filters_expired(self):
         self.runner.mddb.vector_search.return_value = [

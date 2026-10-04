@@ -58,6 +58,11 @@ class MddbClient:
         self._ops_url = (MDDB_OPS_URL if base_url is None else "")
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(20.0))
 
+    def is_ops_routed(self, collection: str) -> bool:
+        """True when this client routes the collection to the ops store
+        (no embedding provider there — vector_search will always fail)."""
+        return bool(self._ops_url) and is_ops_collection(collection)
+
     def _url(self, collection: str) -> str:
         if self._ops_url and is_ops_collection(collection):
             return self._ops_url

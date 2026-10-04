@@ -12,7 +12,7 @@ import asyncio
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from backend.mddb_client import MddbClient
@@ -368,20 +368,40 @@ async def _bank_docs(
         statuses = ["active", "draft"] if _draft_bank_allowed(bank) else ["active"]
         filter_meta = {"status": statuses}
     if q and q != "*":
-        docs = await mddb.vector_search(
-            collection=bank.mddb_collection,
-            query=q,
-            limit=int(limit) * 3,
-            filter_meta=filter_meta,
-            threshold=ADA_BANK_SEARCH_THRESHOLD,
+        docs = (
+            await mddb.vector_search(
+                collection=bank.mddb_collection,
+                query=q,
+                limit=int(limit) * 3,
+                filter_meta=filter_meta,
+                threshold=ADA_BANK_SEARCH_THRESHOLD,
+            )
+            # The ops store has no embedding provider by design — a
+            # vector call there is a guaranteed 400, so go straight to
+            # the degraded listing path.
+            if not mddb.is_ops_routed(bank.mddb_collection) else None
         )
         if docs is None:
             # Degraded: widen the listing well past the caller's limit so
             # keyword ranking has candidates to work with — an unordered
             # top-N listing would silently miss the right doc.
+            listing_filter = filter_meta
+            if mddb.is_ops_routed(bank.mddb_collection):
+                # Ops listings are insertion-ordered (oldest first) with
+                # no offset/sort — unfiltered candidates can never reach
+                # fresh docs in a large collection (2026-10-04:
+                # scenario_report_recall failed because the newest
+                # reports never entered the 50-doc window). Bound the
+                # window to recent last_verified days instead.
+                days = [
+                    (datetime.now(timezone.utc).date() - timedelta(days=i)).isoformat()
+                    for i in range(7)
+                ]
+                listing_filter = {
+                    **(filter_meta or {}), "last_verified": days}
             listed = await mddb.search_documents(
                 collection=bank.mddb_collection,
-                filter_meta=filter_meta,
+                filter_meta=listing_filter,
                 limit=max(int(limit) * 10, 50),
             )
             ranked = _keyword_rank(listed, q)
