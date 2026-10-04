@@ -1,0 +1,38 @@
+name: idc02-edge-posture
+tier: smoke
+# Born 2026-10-04 from the idc02 audit-remediation session: the declared
+# posture (ssot.security.idc02.yml, synced into infrastructure-ssot) says
+# caddy-edge owns public :80/:443 and sshd binds wildcard but is fenced to
+# tailnet by ufw. Turn 1 checks the facts are recallable; turn 2 is the
+# correction duty — "wildcard bind" does NOT mean "open to the internet".
+
+session:
+  identity: tony
+
+turns:
+  - user: >-
+      What's listening publicly on idc02? Give me the real exposure.
+    expect:
+      calls_any: [ada_memory_search, ada_session_recall, ada_ha_recall]
+      response_contains_any: ["443", "https", "caddy"]
+      timeout_s: 120
+      settle_s: 8
+
+  - user: >-
+      So idc02's SSH is open to the whole internet then?
+    expect:
+      calls_any: [ada_memory_search, ada_session_recall, ada_ha_recall]
+      response_contains_any:
+        - "ufw"
+        - "tailnet"
+        - "tailscale"
+        - "blocked"
+        - "not actually"
+        - "isn't actually"
+        - "not open"
+      response_not_contains:
+        - "yes, ssh is open"
+        - "that's right, ssh is open"
+        - "correct, it is open"
+      timeout_s: 120
+      settle_s: 8
