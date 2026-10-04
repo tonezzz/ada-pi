@@ -1,0 +1,68 @@
+name: cast-content-types
+# Live scenario — "play/show X on screen N" routing per content type
+# (Tony ask 2026-10-04: cover each type of thing he asks Ada to play).
+#
+# What it verifies (content-type -> action contract):
+#   - website URL  -> cast_to_screen action='nav'
+#   - YouTube URL  -> cast_to_screen action='play' — the vcast display
+#     rewrites YT/Vimeo watch URLs to embed players. yt_cast must NOT
+#     fire here: it casts to the TV, the wrong surface entirely.
+#   - direct mp4   -> cast_to_screen action='play'
+#   - still image  -> cast_to_screen action='image'
+#   - stop         -> cast_to_screen action='stop'
+#
+# Live CCTV still->screen is covered by cam_to_screen +
+# cctv_snapshot_to_screen; this scenario guards routing only.
+#
+# tier: full — actuates the real lab display ({real_screen}, vcast-real@6
+# on idc02 by default; VCAST_REAL_SCREEN overrides).
+tier: full
+
+preflight:
+  - {check: vcast_online, screens: ["{real_screen}"]}
+
+turns:
+  # website -> nav
+  - user: "Show the apps index page on screen {real_screen} — that's slash apps slash on tony-dell."
+    expect:
+      calls: [cast_to_screen]
+      result_contains: ["'delivered': 1"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6
+
+  # YouTube URL -> play on the screen, NOT yt_cast (that would hit the TV)
+  - user: "Play this YouTube video on screen {real_screen}: https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    expect:
+      calls: [cast_to_screen]
+      no_calls_except: [cast_to_screen, vcast_list, vcast_snapshot]
+      result_contains: ["'delivered': 1"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  # direct mp4 -> play
+  - user: "Play the dub test mp4 on screen {real_screen} — slash apps slash yt-live slash dub-v2-male dot mp4 on tony-dell."
+    expect:
+      calls: [cast_to_screen]
+      result_contains: ["'delivered': 1"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  # still image -> image
+  - user: "Put the vcast app icon on screen {real_screen} — slash apps slash vcast slash icon-192 dot png on tony-dell."
+    expect:
+      calls: [cast_to_screen]
+      result_contains: ["'delivered': 1"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  # teardown
+  - user: "Stop screen {real_screen}, back to idle."
+    expect:
+      calls: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 6

@@ -2058,6 +2058,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         "Do NOT search for a different video that already has subtitles or try "
                         "generic media playback — this tool generates subtitles for any video. "
                         "Pass a YouTube URL or a search phrase (video title + channel name works best). "
+                        "If the user names a numbered vcast screen instead of the TV, do NOT call this — "
+                        "use cast_to_screen(action='play', url=<YouTube URL>); vcast displays auto-embed it. "
                         "The tool returns as soon as preparation starts — the video itself takes ~1-3 min "
                         "(download + subtitle translation + transcode; replays are much faster). "
                         "Acknowledge immediately in one short sentence, e.g. 'getting it ready, about a "
@@ -2395,7 +2397,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "action": {
                                 "type": "string",
-                                "description": "nav | play | image | audio | stop | layout | zoom | unzoom | uplink | uplink-stop (default nav).",
+                                "description": "nav=web page | play=video mp4/m3u8 or YouTube/Vimeo watch URL (auto-embeds on screen) | image=still jpg/png | audio | stop | layout | zoom | unzoom | uplink | uplink-stop (default nav). Pick by content type.",
                             },
                             "url": {
                                 "type": "string",

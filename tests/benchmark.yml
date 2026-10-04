@@ -243,6 +243,7 @@ suites:
     - cctv_snapshot_to_screen
     - cam_to_screen
     - camera_cast_permission
+    - cast_content_types
     - vcast_list
     - vcast_snapshot_probe
     - vcast_screen_cast

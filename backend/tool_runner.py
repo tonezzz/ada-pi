@@ -3522,7 +3522,9 @@ class ToolRunner:
     async def yt_cast(self, query: str, language: str = "th") -> dict[str, Any]:
         """Cast a YouTube video to the living-room TV with translated
         subtitles. `query` is a YouTube URL or a search phrase — prefer the
-        video title plus channel name for accuracy."""
+        video title plus channel name for accuracy. TV ONLY — if the user
+        names a numbered screen, use cast_to_screen(action='play') instead;
+        vcast displays auto-embed YouTube URLs."""
         import asyncio
         return await asyncio.to_thread(
             self._yt_api, "/cast", {"q": query, "lang": language})
@@ -4478,6 +4480,12 @@ class ToolRunner:
         real video streams (mp4/HLS) — a still image sent to play renders
         a black video pane, so this tool auto-routes image content to
         'image'.
+
+        Content routing: web pages -> 'nav'; video files/streams (mp4,
+        m3u8) and YouTube/Vimeo watch URLs -> 'play' (the display
+        auto-rewrites them to embed players — pass the URL as-is, do NOT
+        use yt_cast, which is the TV only); still images -> 'image';
+        audio-only -> 'audio'.
 
         Split-screen: action='layout' + panes=2..5 splits the screen into
         that many sub-panes; subsequent casts take pane=0..N-1 (0 is
