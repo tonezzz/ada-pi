@@ -1,0 +1,108 @@
+name: stock-query-probe
+# Stock/market question robustness probe — how does Ada route market asks
+# across many phrasings? Purpose: training data + benchmark baseline for
+# the (currently nonexistent) market-data tool path.
+#
+# There is NO dedicated stock/trade tool today — correct behavior is
+# web_search (grounded or DDG fallback) or hitting a relevant CMS page
+# (gold-report-th exists; flood/trade reports may too). Assertions are
+# deliberately BROAD: this is a probe, we measure which path she picks.
+# Any write tool firing = policy violation, flagged by the benchmark.
+#
+# Quota note: grounded web_search is ~20/day shared. 11 turns can eat
+# most of one day's budget — run on ada-dev or when voice use is low.
+tier: full
+
+turns:
+  # --- direct single-ticker, Thai ---
+  - user: "PTT ราคาวันนี้เท่าไหร่"
+    expect:
+      calls_any: [web_search, ada_deep_research, ada_memory_search,
+                  cms_get_page, cms_list_pages, ada_session_recall]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  # --- index level, English ---
+  - user: "How's the SET index doing today?"
+    expect:
+      calls_any: [web_search, ada_deep_research, ada_memory_search,
+                  cms_get_page, cms_list_pages]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  # --- gold, Thai — the known gap: a gold-report CMS page exists,
+  #     cms_get_page/cms_list_pages would be the *correct* route ---
+  - user: "ทองวันนี้ขึ้นไหม ราคาเท่าไหร่"
+    expect:
+      calls_any: [web_search, cms_get_page, cms_list_pages,
+                  ada_memory_search, ada_deep_research]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  # --- FX, English ---
+  - user: "What's the dollar to baht rate right now?"
+    expect:
+      calls_any: [web_search, cms_get_page, ada_memory_search]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  # --- buy-opinion (should hedge honestly, still fine to look up) ---
+  - user: "Is AOT worth buying right now?"
+    expect:
+      calls_any: [web_search, ada_deep_research, ada_memory_search,
+                  cms_get_page]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  # --- top movers, Thai ---
+  - user: "หุ้นตัวไหนขึ้นแรงสุดใน SET วันนี้"
+    expect:
+      calls_any: [web_search, ada_deep_research, cms_get_page]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  # --- comparative, English ---
+  - user: "Compare PTT and PTTEP — which one performed better this month?"
+    expect:
+      calls_any: [web_search, ada_deep_research, cms_get_page]
+      response_nonempty: true
+      timeout_s: 150
+      settle_s: 6
+
+  # --- US market overnight, English ---
+  - user: "What did NVIDIA close at last night?"
+    expect:
+      calls_any: [web_search, ada_memory_search, cms_get_page]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  # --- sell advice, Thai (should not give unqualified advice) ---
+  - user: "ควรขายหุ้น KBANK ตอนนี้ไหม"
+    expect:
+      calls_any: [web_search, ada_deep_research, ada_memory_search, cms_get_page]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  # --- commodity edge: Thai diesel price ---
+  - user: "ราคาน้ำมันดีเซลวันนี้เท่าไหร่"
+    expect:
+      calls_any: [web_search, cms_get_page, ada_memory_search]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  # --- weekly wrap, English (heavier — deep_research acceptable) ---
+  - user: "Summarize this week's Thai stock market for me in a few sentences."
+    expect:
+      calls_any: [web_search, ada_deep_research, cms_get_page, cms_list_pages]
+      response_nonempty: true
+      timeout_s: 240
+      settle_s: 8
