@@ -18,3 +18,8 @@ tools:
     policy: owner_only
     secondary_allowed: false
     timeout_s: 300
+  ada_board_write:
+    module: ada_board_write
+    policy: read
+    secondary_allowed: false
+    timeout_s: 20

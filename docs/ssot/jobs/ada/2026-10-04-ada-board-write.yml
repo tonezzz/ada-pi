@@ -1,0 +1,81 @@
+# SSOT Job: ada_board_write tool — Ada joins the kanban comms loop
+# Card: ada-board-write (chaba kanban). Dispatch 20261004-141817.
+
+title: Ada board_write tool — kanban comms loop participation
+subtitle: Drop-in tools.d tool for comment-as-ada, request answers, and compact board reads
+
+planning:
+  goal: |
+    Ada can post to the kanban board herself: comms entries under her own
+    actor ('ada' whitelisted server-side), answers to open card requests,
+    and compact board reads so she can find card/request ids. Backed by
+    board-api on tony-dell (chaba-tony-dell scripts/board/board-api.py,
+    served at https://tony-dell.taila0626a.ts.net/apps/board-api behind
+    Caddy; binds 127.0.0.1:8787 locally).
+  scope: |
+    In scope:
+      - backend/tools.d/ada_board_write.py — action=comment|respond|read
+      - manifest entry (policy read, secondary_allowed false)
+      - tests/test_board_write.py (12 tests, httpx faked)
+      - tests/scenarios-live/ada_board_write.yaml
+      - .env.example ADA_BOARD_API_URL
+    Out of scope:
+      - board-api server changes (chaba-tony-dell repo; see risks)
+      - Ada raising NEW requests entries — the API has no /request
+        endpoint; she posts a comment instead
+      - Deploy to idc01 (needs rerun approval per card spec)
+  success_criteria:
+    - '"post a note on the <card>" triggers action=comment; comms shows from: ada'
+    - 'read returns columns counts + open_requests + recent cards'
+    - 'unreachable/error paths return honest ok:false, never phantom success'
+    - 'respond refused for non-full-policy identities'
+  risks:
+    - 'board-api /respond hardcodes the comms actor to tony server-side:
+       the answer text is stored on the request but the comms line reads
+       "answered <rid>: ..." under from=tony. The tool passes from=ada
+       (ignored today, forward-compat) and returns a note flagging the
+       attribution. Proper fix is a 3-line change in chaba-tony-dell
+       board-api.py (pass body.from through ACTORS validation) +
+       board-api.service restart — separate card.'
+    - 'Ada cannot verify respond attribution herself — she should say the
+      answer landed under the request, not that her name is on it.'
+  resources:
+    - board-api: chaba-tony-dell scripts/board/board-api.py — POST
+      /comment {id,from,text}, POST /respond {id,request_id,answer},
+      POST /action {id,do:queue|close|hold|retry|claim|move},
+      GET /cards (rendered cards.json), GET /health
+    - tools.d contract: docs/ada-tool-dev.md; loader backend/tools_loader.py
+    - owner check pattern: tool_runner._check_dynamic_allowed owner_only +
+      ada_persona _persona_admin (internal per-action gate precedent)
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-10-04"
+  steps:
+    - id: 1
+      label: "Tool module + manifest"
+      status: done
+      notes: "ada_board_write.py — comment (from=ada), respond (owner-gated), read (compact, updated-desc, column filter, limit 12/40)"
+    - id: 2
+      label: "Tests"
+      status: done
+      notes: "tests/test_board_write.py — 12 tests; manifest wiring test loads the real registry"
+    - id: 3
+      label: "Verify"
+      status: done
+      notes: "live smoke: read OK (77 cards), comment landed on kanban-selftest as from=ada; full suite 442 tests — only pre-existing failures (3 ai_edge_litert env errors, 3 CMS publish failures, same on base)"
+
+invoke:
+  voice:
+    - '"what''s on the board" -> ada_board_write action=read'
+    - '"comment on card X that ..." -> action=comment {id, text}'
+    - '"answer the <rid> request on card X" -> action=respond (owner only)'
+  env:
+    ADA_BOARD_API_URL: "board-api base (default https://tony-dell.taila0626a.ts.net/apps/board-api — works tailnet-wide incl. idc01)"
+
+verification:
+  - ".venv/bin/python -m unittest tests.test_board_write -v  # 12 tests"
+  - "curl -s https://tony-dell.taila0626a.ts.net/apps/board-api/cards | jq '.cards[] | select(.id==\"kanban-selftest\") | .comms[-1]'  # shows from: ada"
+  - "scenario-live: tests/scenarios-live/ada_board_write.yaml"
