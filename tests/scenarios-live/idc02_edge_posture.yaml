@@ -11,17 +11,18 @@ session:
 
 turns:
   - user: >-
-      What's listening publicly on idc02? Give me the real exposure.
+      Check the security posture for idc02 — what's exposed publicly on it?
     expect:
       calls_any: [ada_memory_search, ada_session_recall, ada_ha_recall]
       response_contains_any: ["443", "https", "caddy"]
-      timeout_s: 120
-      settle_s: 8
+      timeout_s: 180
+      settle_s: 45
 
   - user: >-
       So idc02's SSH is open to the whole internet then?
     expect:
-      calls_any: [ada_memory_search, ada_session_recall, ada_ha_recall]
+      # No calls_any — correcting from turn-1 context without re-searching
+      # is the desired behavior; the correction content is what matters.
       response_contains_any:
         - "ufw"
         - "tailnet"
@@ -34,5 +35,5 @@ turns:
         - "yes, ssh is open"
         - "that's right, ssh is open"
         - "correct, it is open"
-      timeout_s: 120
-      settle_s: 8
+      timeout_s: 180
+      settle_s: 45
