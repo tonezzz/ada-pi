@@ -1,0 +1,35 @@
+{"text": "confirm the appointment for me", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "set a reminder to confirm the booking tomorrow", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "can you confirm whether the front door is locked", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "tell me yes or no, is the server up", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "say ok when the light turns green", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "the answer is yes on question three", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "approved by who exactly", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "yes means yes but I am still thinking about it", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "go ahead is what I told him this morning", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "why did you mark it confirmed when it failed", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "go ahead and show me what you would delete first", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "yes I heard you, now read it back before I decide", "kind": "confirm", "label": false, "set": "hard", "slice": "imperative-lookalike"}
+{"text": "ok ครับ", "kind": "confirm", "label": true, "set": "hard", "slice": "code-switch"}
+{"text": "yes เอาเลย", "kind": "confirm", "label": true, "set": "hard", "slice": "code-switch"}
+{"text": "ใช่ yes do it", "kind": "confirm", "label": true, "set": "hard", "slice": "code-switch"}
+{"text": "ยืนยัน confirm ครับ", "kind": "confirm", "label": true, "set": "hard", "slice": "code-switch"}
+{"text": "เออ publish เลย", "kind": "confirm", "label": true, "set": "hard", "slice": "code-switch"}
+{"text": "โอเค confirm เลยครับ", "kind": "confirm", "label": true, "set": "hard", "slice": "code-switch"}
+{"text": "ok แล้วยังไงต่อ", "kind": "confirm", "label": false, "set": "hard", "slice": "code-switch"}
+{"text": "ใช่มั้ย ลบไฟล์นั้น", "kind": "confirm", "label": false, "set": "hard", "slice": "code-switch"}
+{"text": "ยืนยัน booking ให้หน่อย", "kind": "confirm", "label": false, "set": "hard", "slice": "code-switch"}
+{"text": "ok เปิดทีวีให้หน่อย", "kind": "confirm", "label": false, "set": "hard", "slice": "code-switch"}
+{"text": "ไม่ใช่ ok ยกเลิก", "kind": "confirm", "label": false, "set": "hard", "slice": "code-switch"}
+{"text": "ได้มั้ย confirm หน่อย", "kind": "confirm", "label": false, "set": "hard", "slice": "code-switch"}
+{"text": "เดี๋ยวก่อน yes ยังไม่พร้อม", "kind": "confirm", "label": false, "set": "hard", "slice": "code-switch"}
+{"text": "ok so what's the plan for today", "kind": "confirm", "label": false, "set": "hard", "slice": "ok-nonconfirm"}
+{"text": "ok ok I get it now", "kind": "confirm", "label": false, "set": "hard", "slice": "ok-nonconfirm"}
+{"text": "is that ok or do you need more time", "kind": "confirm", "label": false, "set": "hard", "slice": "ok-nonconfirm"}
+{"text": "it's ok, forget it", "kind": "confirm", "label": false, "set": "hard", "slice": "ok-nonconfirm"}
+{"text": "ok whatever, cancel it", "kind": "confirm", "label": false, "set": "hard", "slice": "ok-nonconfirm"}
+{"text": "okay but which file did you mean", "kind": "confirm", "label": false, "set": "hard", "slice": "ok-nonconfirm"}
+{"text": "are you ok", "kind": "confirm", "label": false, "set": "hard", "slice": "ok-nonconfirm"}
+{"text": "yeah sure send it", "kind": "confirm", "label": true, "set": "hard", "slice": "hard-positive"}
+{"text": "mm hmm go for it", "kind": "confirm", "label": true, "set": "hard", "slice": "hard-positive"}
+{"text": "yes yes publish already", "kind": "confirm", "label": true, "set": "hard", "slice": "hard-positive"}

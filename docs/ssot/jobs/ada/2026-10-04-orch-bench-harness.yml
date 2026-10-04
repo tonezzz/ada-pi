@@ -1,0 +1,92 @@
+# SSOT Job: orchestration benchmark harness (CMS 'multi-model-orchestration')
+# Handoff: devin-dispatch 2026-10-04 — "implement the orchestration
+# benchmarks harness based on the plan in CMS page
+# 'multi-model-orchestration'; update related documentation".
+
+title: Orchestration benchmark harness — compound-AI structures vs student baseline
+subtitle: Same case set through student / cascade / parallel / router / verifier, one curve per structure
+icon: scale-balance
+
+planning:
+  goal: |
+    Finish tests/bench/orch-bench.py per the CMS plan: run the shared
+    case set (golden confirm + tool-routing + new hard set) through all
+    five compound structures and report accuracy, p50/p95 latency,
+    cpu-seconds cost proxy, and 10-bin ECE — so we can pick which
+    structure (if any) beats the student-only baseline before wiring a
+    fallback into tool_runner / the confirm gate.
+  scope: |
+    In scope:
+      - tests/bench/orch-bench.py — full harness: --structure,
+        --sets, --cases, --limit, --thr, --corpus-out, --json-out,
+        --mddb/--report-cms
+      - tests/bench/orch-hard-cases.jsonl — ~35 hand-labeled hard cases
+        (imperative-lookalikes, code-switched TH/EN, 'ok'
+        non-confirmations, hard positives)
+      - CMS page 'multi-model-orchestration' — harness section +
+        checklist updated
+      - this job file
+    Out of scope:
+      - Running the bench live (dispatch sandbox had no tailnet access
+        to idc01/idc02 endpoints; run from idc01 per the CMS page)
+      - Wiring a winning structure into tool_runner or the confirm
+        gate — gated on real bench results
+      - A trained router head — needs a router corpus; the harness uses
+        a documented feature-router stand-in
+  success_criteria:
+    - 'one command runs all five structures over the same 53 cases and
+      prints per-set accuracy + latency + cost + ECE'
+    - 'confirm-kind misses can flow back into jev-corpus via
+      --corpus-out for the weekly retrain loop'
+    - 'golden cases stay single-sourced (AST-loaded from jev-bench.py)
+      so the two benches cannot drift'
+  risks:
+    - 'Feature router is optimistic by construction (hand-coded
+      boundaries on the same features that define "hard"); treat its
+      numbers as an upper bound until a trained router exists'
+    - 'Tool-set results are structural: the student has no choice head,
+      so student/cascade scores there measure the stub, not skill'
+  resources:
+    - student: jev-student-distilmulti on idc01 :8778 (/v1/systemone)
+    - heavy: gemma-3-4b on idc02 :8777 (/v1/systemone)
+    - golden cases: tests/bench/jev-bench.py CONFIRM_CASES/TOOL_CASES
+    - retrain loop: scripts/jev-retrain.sh + scripts/jev/merge-corpus.py
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-10-04"
+  steps:
+    - id: 1
+      label: "Fetch CMS plan"
+      status: done
+      notes: "ada-cms-pages 'multi-model-orchestration' via mddb — structures, metrics, harness plan, follow-up loop"
+    - id: 2
+      label: "Hard-case set"
+      status: done
+      notes: "tests/bench/orch-hard-cases.jsonl — 35 rows, slices: imperative-lookalike(12) code-switch(13) ok-nonconfirm(7) hard-positive(3)"
+    - id: 3
+      label: "Harness rewrite"
+      status: done
+      notes: "5 structures + per-set accuracy, p50/p95, cpu/call proxy, heavy fraction, ECE; --corpus-out feeds retrain loop; mddb report kept"
+    - id: 4
+      label: "Verify + docs"
+      status: done
+      notes: "py_compile + full run against local stub /v1/systemone (student+heavy doubles); CMS page updated; live run pending tailnet access"
+
+invoke:
+  shell:
+    - ".venv/bin/python tests/bench/orch-bench.py --student http://100.74.146.0:8778 --heavy http://100.123.163.11:8777"
+    - "add --mddb http://100.74.146.0:11023/v1 --report-cms to publish"
+    - "add --corpus-out ~/.local/share/ada/jev-corpus.jsonl to feed retrain"
+  flags:
+    --structure: "comma list or 'all' (student,cascade,parallel,router,verifier)"
+    --sets: "golden,tool,hard — golden/tool AST-loaded from jev-bench.py"
+    --thr: "affirm decision threshold, default 0.75 (matches production gate)"
+    --gray-lo/--gray-hi: "escalation band for cascade/parallel (0.35–0.75)"
+
+verification:
+  - "python3 -m py_compile tests/bench/orch-bench.py"
+  - "stub /v1/systemone on localhost:18778/18777 → all 5 structures run, metrics table + corpus rows emitted"
+  - "live: run the invoke command on idc01; expect student ~90% golden, composite gain on hard set"
