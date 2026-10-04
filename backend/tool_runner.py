@@ -230,6 +230,31 @@ CONTROL_MAX_GLOBAL = int(os.environ.get("ADA_CONTROL_MAX_GLOBAL", "30"))
 # not already pass the canonical name.
 _ARG_ALIASES = {"question": "query"}
 
+# Tool-NAME aliases for the consolidation program
+# (docs/assessments/tool-consolidation-spec-2026-10-04.md): when a merge
+# card retires a tool name into a canonical action= tool, the old name
+# stays callable here as a soft alias so prompts/scenarios/habits keep
+# working. A key must never be a declared tool name, every value must be
+# one, and every absorbed name in docs/ssot/ssot.tool-surface.yml must
+# land a row once it leaves the surface — scripts/tool-lint.py fails on
+# drift. Populated by the tools-merge-* cards.
+_ALIASES: dict[str, str] = {}
+
+# Args an aliased call carries implicitly — the absorbed name implies the
+# canonical tool's action= (e.g. cctv_snapshot -> ada_camera implies
+# action="snapshot"). Merged under the caller's args, never overriding
+# them. scripts/tool-lint.py checks every key here has an _ALIASES row.
+_ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {}
+
+
+def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
+    """Map a retired tool name to (canonical tool, implied arg defaults)."""
+    canonical = _ALIASES.get(name)
+    if canonical:
+        logger.info("tool alias %s -> %s", name, canonical)
+        return canonical, dict(_ALIAS_ARG_DEFAULTS.get(name) or {})
+    return name, {}
+
 
 def _first(value: list[str] | None) -> str | None:
     if not value:
@@ -781,6 +806,13 @@ class ToolRunner:
                       speaker: Any = _IDENTITY_UNSET,
                       speaker_session: Any = _IDENTITY_UNSET,
                       owner: Any = _IDENTITY_UNSET) -> Any:
+        # Retired names from the tool consolidation resolve to their
+        # canonical action= tool first — the alias table is the contract,
+        # phonetic normalization below is just typo repair. The alias's
+        # implied args (its action=) go under the caller's, not over.
+        _implied: dict[str, Any] = {}
+        if isinstance(name, str):
+            name, _implied = _resolve_alias(name)
         # Gemini sometimes spells underscore-heavy tool names phonetically
         # (c_c_t_v_wall) — normalize back so the call lands.
         method = getattr(self, name, None)
@@ -799,7 +831,7 @@ class ToolRunner:
             if dyn_spec is None:
                 raise KeyError(f"Unknown tool: {name}")
             method = self._bind_dynamic(dyn_spec)
-        call_args = dict(args or {})
+        call_args = {**_implied, **dict(args or {})}
         # Per-call identity override: the provider passes the SESSION's
         # resolved identity — the runner is shared across sessions, so its
         # mutable identity fields can race when sessions overlap.

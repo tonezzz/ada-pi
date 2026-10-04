@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily refresh of the Ada tool-usage census page
+
+[Timer]
+OnCalendar=*-*-* 06:20
+Persistent=true
+
+[Install]
+WantedBy=timers.target

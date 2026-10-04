@@ -1,81 +1,68 @@
-status: done
+# Dispatch outcome — tools-ci-audit (20261004-180803)
 
-# ada_board_write — Ada joins the kanban comms loop
+Made the tool-consolidation program self-auditing. Branch
+`dispatch/20261004-180803-make-the-tool-consolidation-wo`, ada-pi.
 
-## Deliverable
+## What changed
 
-New drop-in tool `ada_board_write` (`backend/tools.d/ada_board_write.py` +
-manifest entry), backed by the board-api on tony-dell
-(`https://tony-dell.taila0626a.ts.net/apps/board-api`, also reachable at
-`http://127.0.0.1:8787` on tony-dell; `ADA_BOARD_API_URL` overrides).
+- `docs/ssot/ssot.tool-surface.yml` — **new**: the machine-readable
+  contract. `count_cap: 106` (= today's census, ratchet — growth needs a
+  deliberate bump), `target_count: 38`, six merge families bound to
+  `tools-merge-*` cards + their regression scenarios + absorbed-name
+  lists, and `coverage_debt` (43 census-day tools with no scenario
+  reference — grandfathered; new uncovered tools fail).
+- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — **new**:
+  the spec the design card referenced but never committed; reconstructed
+  from card notes (merge groups, `action=` pattern, alias plan, gates
+  preserved, audit machinery).
+- `backend/tool_runner.py` — `_ALIASES` + `_ALIAS_ARG_DEFAULTS` tables
+  and `execute()` resolution: retired names route to the canonical tool
+  with implied `action=` args; alias hits logged for the census.
+- `scripts/tool-lint.py` — **new**: static audit (AST+yaml, no backend
+  import). Fails on: surface > cap, dup declarations, alias violations
+  (key still declared / target undeclared / chain / stray), absorbed
+  name retired without an alias row, gate-set or benchmark `write_tools`
+  member resolving to nothing, declared tool with no scenario reference
+  and no debt entry, started-merge family without its scenario file.
+- `scripts/tool-usage-report.py` — **new**: journal scan of
+  `tool X args=` / `tool alias` / `denied` / phonetic-normalize lines →
+  markdown census → CMS page `report/tool-usage` (ada-cms-pages); falls
+  back to static census when `/api/tools` is unreachable.
+- `scripts/ada-tool-usage.{service,timer}` — **new**: systemd user units
+  (daily 06:20, idc01 `~/CascadeProjects/ada-pi` layout).
+- `scripts/tools-merge-gate.py` — **new**: a `tools-merge-*` card in
+  done/closed without a pass|flaky latest report for its family scenario
+  is a violation; `--card-id` is the close-time check; MDDB-unreachable
+  is distinguished from absent evidence (gate can't be satisfied by a
+  dead report store).
+- `tests/test_tool_audit.py` — **new**: 19 tests — real-repo lint is the
+  in-suite audit stage; fixture repos pin every violation class; gate
+  logic covered for done/review/backlog/single-card paths.
+- `tests/benchmark.yml` — removed phantom `ada_remove_speaker` from
+  `write_tools` (the lint's first real catch: a policy entry guarding a
+  tool that doesn't exist).
+- `docs/ada-tool-dev.md` — checklist rule 8: surface budget + lint.
 
-Actions:
+## Result
 
-- `comment` (default) — `{id, text}` → POST `/comment` as `from: 'ada'`.
-  Verified live: a comment posted via the tool landed on `kanban-selftest`
-  attributed to `ada`.
-- `respond` — `{id, request_id, answer}` → POST `/respond`. **Owner-gated
-  in the tool** (`runner.policy_identity()` must have `{full: true}`
-  person policy) because answering flips the request to `answered`.
-  Caveat: board-api hardcodes the respond comms actor to `tony`
-  server-side — the answer text is stored on the request, but the comms
-  line reads under Tony's name. The tool sends `from: 'ada'` anyway
-  (forward-compat) and returns a `note` flagging the limitation.
-- `read` — GET `/cards` compacted to column counts, total open requests,
-  and up to `limit` cards (default 12, max 40) sorted by `updated` desc,
-  each with title, column, open-request count, and last comms line.
-  Optional `column` filter.
+`tool-lint` baseline is clean (106 declared = cap, 63 scenario-covered,
+43 acknowledged debt, 11 drift warnings). The gate correctly blocks all
+six merge cards today — none has a family scenario yet. The usage report
+renders and publishes; the timer needs install on idc01.
 
-Manifest policy: `read`, `secondary_allowed: false` — any identified
-primary session can comment/read (same exposure as `chat_send`); the one
-dangerous action (`respond`) is gated internally to full-policy
-identities, mirroring the `ada_persona` precedent (per-action gating
-can't be declared in the manifest; `confirmed` never reaches `run()`).
+## Follow-ups (out of repo scope — declared in the SSOT job)
 
-## Changes
-
-- `backend/tools.d/ada_board_write.py` — the tool
-- `backend/tools.d/manifest.yml` — entry (policy read, timeout 20s)
-- `tests/test_board_write.py` — 12 tests (comment/respond/read happy +
-  error + honesty paths, owner gate, env override, manifest wiring)
-- `tests/scenarios-live/ada_board_write.yaml` — live scenario
-- `.env.example` — `ADA_BOARD_API_URL`
-- `docs/ssot/jobs/ada/2026-10-04-ada-board-write.yml` — job SSOT incl.
-  the respond-attribution risk + suggested board-api fix
-
-Commit `5ccc3a3` on branch
-`dispatch/20261004-141817-add-a-board-write-tool-to-ada-`, **pushed to
-origin** (card spec authorized commit+push on tony-dell). NOT merged to
-main; **idc01 deploy intentionally not run** — needs approval per the
-card spec (`~/.local/bin/deploy-ada.sh`).
+- chaba `ssot-validate-all.mjs` / board-api `/action close`: call
+  `tools-merge-gate.py --card-id <id>` for tools-merge-* cards
+  (enforcement point lives in the chaba repo — unreachable from this
+  worktree).
+- idc01: `systemctl --user enable --now ada-tool-usage.timer` after
+  copying units to `~/.config/systemd/user/`.
 
 ## Verify
 
-- `/tmp/ada-venv/bin/python -m unittest tests.test_board_write -v` — 12 OK
-- Full suite: 442 tests, only pre-existing failures (3 ×
-  `ai_edge_litert` ModuleNotFoundError env errors, 3 CMS-publish
-  failures — all reproduce on the clean base tree)
-- Live smoke: `read` returned the 77-card board; `comment` on
-  `kanban-selftest` shows `from: ada` on the live board.
-- After merge+deploy: ask Ada "what's on the board" / "comment on
-  <card> that …".
-
-## Incident (self-inflicted, repaired)
-
-While probing `/respond` semantics I posted three empty answers to the
-`mha-log-noise` request `tuya-dup-entry`, marking it answered under
-'tony'. The API has no reopen verb, so I repaired the card YAML directly
-(`~/CascadeProjects/chaba-tony-dell/docs/ssot/kanban/cards/mha-log-noise.yml`:
-status back to `open`, answer removed, junk comms replaced by an honest
-devin note) and re-ran `render-board.py`. Live board confirms the
-request is open again. Lesson folded into the tool: `respond` is
-owner-gated and its result carries the attribution caveat.
-
-## Follow-ups (not in scope)
-
-- board-api `/respond` should accept `from` through the ACTORS
-  whitelist so Ada's answers are attributed correctly — 3-line change in
-  chaba-tony-dell `scripts/board/board-api.py` + service restart.
-- No `/request` endpoint exists, so Ada cannot *raise* requests; she can
-  only comment. Worth a card if the comms loop should carry
-  machine-raised requests too.
+    python3 scripts/tool-lint.py                        # exit 0
+    python3 -m unittest tests.test_tool_audit -v        # 19 tests
+    python3 scripts/tools-merge-gate.py                 # 0 violations (all backlog)
+    python3 scripts/tools-merge-gate.py --card-id tools-merge-camera  # exit 1
+    python3 scripts/tool-usage-report.py --dry-run --journal-file <f>

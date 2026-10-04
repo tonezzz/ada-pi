@@ -1,0 +1,117 @@
+# SSOT Job: tool-surface self-audit — lint, usage census, merge gate
+# Card: tools-ci-audit (chaba kanban). Dispatch 20261004-180803.
+
+title: Tool-surface CI audit — lint, usage report, regression gate
+subtitle: The consolidation program enforces itself — SSOT contract + linter + live census + card gate
+
+planning:
+  goal: |
+    Make the tool-consolidation work (103 -> ~38 tools) self-auditing:
+    no silent surface growth, no absorbed name without a soft alias,
+    no gate dilution, no merge card closing without a passing family
+    regression scenario, and a live usage census replacing the
+    point-in-time audit.
+  context: |
+    Neither docs/assessments/tool-consolidation-spec-2026-10-04.md nor
+    the census doc it cites (tool-surface-2026-10-04.md) were committed
+    by the design/census cards — both were closed without artifacts.
+    This job reconstructed the spec from the card notes and implemented
+    the audit contract it describes. Family membership lists (absorbed
+    names) in ssot.tool-surface.yml are the binding plan; merge cards
+    refine them as they land.
+  scope: |
+    In scope:
+      - docs/ssot/ssot.tool-surface.yml — count_cap, target, families,
+        coverage_debt ratchet
+      - docs/assessments/tool-consolidation-spec-2026-10-04.md — spec
+      - backend/tool_runner.py — _ALIASES + _ALIAS_ARG_DEFAULTS +
+        execute() resolution (name + implied action= args)
+      - scripts/tool-lint.py — static audit (AST+yaml, no backend import)
+      - scripts/tool-usage-report.py + ada-tool-usage.{service,timer}
+      - scripts/tools-merge-gate.py — card close gate
+      - tests/test_tool_audit.py — lint-in-suite + fixtures + gate logic
+      - tests/benchmark.yml — drop phantom ada_remove_speaker (lint catch)
+    Out of scope (declared for follow-up, owners in spec):
+      - chaba repo: ssot-validate-all.mjs audit stage + board-api
+        /action close hook calling tools-merge-gate.py --card-id
+      - idc01: install ada-tool-usage.timer (user unit, daily 06:20)
+      - the merges themselves (tools-merge-*) and their scenarios
+        (tools-regression-scenarios)
+  success_criteria:
+    - 'tool-lint exit 0 on baseline; fails on cap breach, missing alias,
+       diluted gate, uncovered new tool, missing family scenario'
+    - 'merge gate: tools-merge-* in done without pass|flaky family
+       report -> violation; --card-id answers close-time check'
+    - 'usage report publishes ada-cms-pages report/tool-usage from
+       journal lines; falls back to static census when /api/tools down'
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-04"
+  steps:
+    - id: 1
+      label: "SSOT contract + spec"
+      status: done
+      notes: "ssot.tool-surface.yml: cap 106 (=census), target 38, 6
+        families w/ merge_card+scenario+absorbed, 43-name coverage_debt.
+        Spec reconstructed (original never committed)."
+    - id: 2
+      label: "tool_runner._ALIASES"
+      status: done
+      notes: "execute() resolves aliases before phonetic normalization;
+        _ALIAS_ARG_DEFAULTS injects implied action=; alias hits logged
+        for the usage census."
+    - id: 3
+      label: "tool-lint.py"
+      status: done
+      notes: "7 check classes; baseline clean. Immediately caught stale
+        benchmark.yml ada_remove_speaker + 11 scenario/surface drift
+        warnings."
+    - id: 4
+      label: "usage report + timer"
+      status: done
+      notes: "journal scan (tool X args=, tool alias, denied, phonetic
+        normalize) -> CMS page report/tool-usage; daily user timer units
+        shipped for idc01 install."
+    - id: 5
+      label: "merge gate"
+      status: done
+      notes: "evaluate() over board cards; done-column merge cards need
+        existing scenario + latest pass|flaky report; --card-id close
+        check; MDDB-unreachable distinguished from absent evidence."
+    - id: 6
+      label: "Tests + verify"
+      status: done
+      notes: "19 tests pass: real-repo lint, 8 fixture violations, 7
+        gate paths, alias contract. tool-lint runs in the suite = ada-pi
+        audit stage."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py [--json] [--verbose]"
+    - "python3 scripts/tools-merge-gate.py [--card-id tools-merge-x] [--cards-json f]"
+    - "python3 scripts/tool-usage-report.py [--dry-run] [--journal-file f]"
+  env:
+    ADA_BOARD_API_URL: "board-api base for gate --cards-url (default http://127.0.0.1:8787)"
+    MDDB_BASE_URL: "report store (default http://127.0.0.1:11023/v1)"
+    ADA_TOOL_USAGE_UNITS: "journal units for census (default ada-ha-tony ada-ha-michael ada-dev)"
+    ADA_TOOL_SURFACE: "SSOT path override"
+
+follow_ups:
+  - repo: chaba
+    task: "board-api /action close: run tools-merge-gate.py --card-id <id>
+           for tools-merge-* cards; refuse on non-zero"
+  - repo: chaba
+    task: "ssot-validate-all.mjs audit stage: invoke python3
+           scripts/tool-lint.py --json on the ada-pi checkout"
+  - repo: ada-pi (idc01)
+    task: "install scripts/ada-tool-usage.{service,timer} as user units;
+           systemctl --user enable --now ada-tool-usage.timer"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0, 'tool-lint: clean'"
+  - "python3 -m unittest tests.test_tool_audit -v  # 19 tests"
+  - "python3 scripts/tools-merge-gate.py  # bulk board scan, 0 violations while cards sit in backlog"
+  - "python3 scripts/tools-merge-gate.py --card-id tools-merge-camera  # exit 1: cannot close, scenario missing"
+  - "python3 scripts/tool-usage-report.py --journal-file <f> --dry-run  # markdown census table"

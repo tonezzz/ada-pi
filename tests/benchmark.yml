@@ -23,7 +23,7 @@ policy:
   # allowed set too (the gate's refusal is what makes it safe).
   write_tools: [cms_publish_page, cms_delete_page, ada_remember, ada_forget,
                 ada_doc_archive, ada_doc_print, devin_dispatch,
-                ada_enroll_speaker, ada_remove_speaker,
+                ada_enroll_speaker,
                 control_entity, tv_action, gev_command,
                 # casting/camera actuation — gated by the capture contract
                 cast_to_screen, cctv_snapshot, cctv_wall,

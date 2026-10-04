@@ -1,0 +1,172 @@
+# SSOT: Ada tool surface — the machine-readable contract that
+# scripts/tool-lint.py enforces and the tool-consolidation program
+# (docs/assessments/tool-consolidation-spec-2026-10-04.md) executes
+# against.
+#
+# "Surface" = every tool name offered to the model:
+#   builtin  — function_declarations in backend/realtime_provider.py
+#              (+ CHABA_DECLARATIONS, VMS/TRAFFIC declarations)
+#   drop-in  — enabled entries in backend/tools.d/manifest.yml
+#
+# Card: tools-ci-audit. Census: tool-surface-census (103 builtin, 2026-10-04).
+# The three numbers below form a ratchet:
+#   count_cap     — hard fail when declared surface exceeds this.
+#                   Bump ONLY by editing this file in the same commit that
+#                   adds the tool — growth is deliberate, never silent.
+#   target_count  — consolidation goal (~38 canonical tools). Informational;
+#                   merges lower the real count toward it.
+#   coverage_debt — tools with no scenario reference today. New tools may
+#                   NOT join this list (lint fails) — write a scenario for
+#                   the tool or move an existing entry out when it gains one.
+
+count_cap: 106          # 103 builtin + 3 tools.d at census 2026-10-04
+target_count: 38        # spec: docs/assessments/tool-consolidation-spec-2026-10-04.md
+spec: docs/assessments/tool-consolidation-spec-2026-10-04.md
+alias_table: backend/tool_runner.py::_ALIASES
+scenario_dir: tests/scenarios-live
+
+# Merge families — one per tools-merge-* kanban card. `absorbed` lists the
+# tool names the spec retires into `canonical` via an action= param.
+# While an absorbed name is still declared the merge is pending; once it
+# leaves the surface it MUST exist in tool_runner._ALIASES mapping to the
+# family's canonical tool (lint enforces). `scenario` is the family's
+# regression scenario — tools-merge-gate.py refuses to let the card sit
+# in done until that scenario file exists AND its latest
+# ada-ha-scenario-reports entry is pass|flaky.
+families:
+  camera:
+    merge_card: tools-merge-camera
+    canonical: ada_camera          # cctv_snapshot/cctv_wall/traffic_camera/ada_camera_snapshot -> action=
+    scenario: tool_merge_camera
+    absorbed:
+      - cctv_snapshot
+      - cctv_wall
+      - traffic_camera
+      - ada_camera_snapshot
+  cms:
+    merge_card: tools-merge-cms
+    canonical: cms_page            # cms_* publish/verify/note/delete/list/get/automation -> action=
+    scenario: tool_merge_cms
+    absorbed:
+      - cms_list_pages
+      - cms_get_page
+      - cms_verify_page
+      - cms_publish_page
+      - cms_note_update
+      - cms_delete_page
+      - cms_automation
+  devin:
+    merge_card: tools-merge-devin-mcp
+    canonical: devin               # devin_* dispatch/status/followup/report/pending/jobs/answer -> action=
+    scenario: tool_merge_devin
+    absorbed:
+      - devin_dispatch
+      - devin_status
+      - devin_followup
+      - devin_job_report
+      - devin_pending
+      - devin_jobs
+      - devin_answer
+  display:
+    merge_card: tools-merge-display
+    canonical: ada_display         # cast_to_screen + vcast_* + yt_cast* -> action=
+    scenario: tool_merge_display
+    absorbed:
+      - cast_to_screen
+      - vcast_list
+      - vcast_say
+      - vcast_snapshot
+      - vcast_gesture
+      - yt_cast
+      - yt_cast_status
+      - yt_cast_stop
+  ha:
+    merge_card: tools-merge-ha
+    canonical: ada_ha              # ha control + sensor + logbook/event reads -> action=
+    scenario: tool_merge_ha
+    absorbed:
+      - control_entity
+      - control_cover
+      - press_button
+      - control_media_player
+      - list_home_devices
+      - search_home_devices
+      - get_home_state
+      - list_sensors
+      - search_sensors
+      - get_logbook
+      - get_recent_events
+      - get_entity_events
+      - ada_ha_get_state
+      - ada_ha_search_devices
+      - ada_ha_search_sensors
+      - ada_ha_search_events
+      - ada_ha_history
+      - ada_ha_recall
+      - ada_ha_get_device_confidence
+      - ada_ha_set_device_confidence
+  memory:
+    merge_card: tools-merge-memory
+    canonical: ada_memory          # memory search/remember/forget/recall/persona -> action=
+    scenario: tool_merge_memory
+    absorbed:
+      - ada_memory_search
+      - ada_remember
+      - ada_forget
+      - ada_session_recall
+      - ada_outcome
+      - ada_persona
+
+# Tools with no reference in any tests/scenarios-live/*.yaml tool field
+# (calls/calls_any/no_calls*/needs_tools/needs_any, @family-expanded) at
+# census time. Acknowledged debt — entries should leave this list as the
+# tools-regression-scenarios card lands coverage. A declared tool absent
+# from BOTH scenarios and this list fails lint (no silent uncovered adds).
+coverage_debt:
+  - ada_daily_summary
+  - ada_decision_check
+  - ada_doc_archive
+  - ada_doc_print
+  - ada_ha_get_device_confidence
+  - ada_ha_history
+  - ada_ha_search_events
+  - ada_ha_set_device_confidence
+  - ada_mddb_health
+  - ada_outcome
+  - ada_resolve_action
+  - ada_usage_summary
+  - ada_weekly_comparison
+  - calendar_create_event
+  - calendar_delete_event
+  - calendar_freebusy
+  - calendar_list_calendars
+  - chat_send
+  - control_cover
+  - devin_followup
+  - devin_job_report
+  - drive_update
+  - get_battery_detail
+  - get_battery_status
+  - get_dashboard_tab
+  - get_entity_events
+  - get_habit_status
+  - get_inverter_status
+  - get_pool_status
+  - get_power_summary
+  - get_sensor_history
+  - gev_tour
+  - guest_recall
+  - guest_register
+  - guest_remember
+  - guest_remember_private
+  - photos_pick
+  - photos_picked
+  - press_button
+  - report_habit_observation
+  - tasks_move
+  - vocab_note
+  - yt_cast_status
+
+# Tools that legitimately never get a live scenario (pure meta/report
+# surfaces). Empty at census — prefer coverage_debt over listing here.
+coverage_exempt: []

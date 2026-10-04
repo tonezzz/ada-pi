@@ -69,6 +69,14 @@ async def run(runner, **args):           # MUST be async
 7. **Tests.** Add a unittest in `tests/` mirroring `test_tools_loader.py`
    patterns: happy path, error path, policy gate. Live behavior goes in
    `tests/scenarios-live/<name>.yaml`.
+8. **Surface budget.** Every new tool grows the model's schema. The
+   census is enforced: `python3 scripts/tool-lint.py` fails when the
+   declared surface exceeds `count_cap` in `docs/ssot/ssot.tool-surface.yml`
+   (raise it deliberately in the same commit) or when a tool ships with
+   no scenario reference and no `coverage_debt` entry. During the
+   consolidation program prefer an `action=` on an existing canonical
+   tool over a new name — see
+   `docs/assessments/tool-consolidation-spec-2026-10-04.md`.
 
 ## Anti-patterns (seen in production)
 
