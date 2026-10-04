@@ -100,6 +100,7 @@
         <button data-tab="pages" class="tab-btn flex-1 px-2 py-1 rounded">Pages</button>
         <button data-tab="security" class="tab-btn flex-1 px-2 py-1 rounded">Security</button>
         <button data-tab="traffic" class="tab-btn flex-1 px-2 py-1 rounded">Traffic</button>
+        <button data-tab="flood" class="tab-btn flex-1 px-2 py-1 rounded">Flood</button>
       </div>
       <div id="page-list" class="space-y-1 text-sm hidden md:block"></div>
     </aside>
@@ -346,7 +347,7 @@ function pageGroup(p) {
 }
 const GROUP_ORDER = ["CCTV Walls", "Cameras", "Reports", "Pages"];
 const groupOpen = new Map();  // survives list re-renders; all open initially
-let curTab = "pages";         // "pages" | "security" | "traffic" — sidebar split
+let curTab = "pages";         // "pages" | "security" | "traffic" | "flood" — sidebar split
 
 const isCctv = (p) => {
   const t = titleOf(p), s = p.slug || "";
@@ -382,6 +383,24 @@ function cctvKind(p) {           // "security" | "traffic" | "any" | null
   return "security";             // unknown CCTV — property by default
 }
 
+// Flood tab (2026-10-03): flood-* slugs + flood-titled pages (น้ำท่วม)
+// get their own world, separate from Pages. news-flood lands here via
+// title match. CCTV kinds are disjoint — isFlood only matters for
+// kind===null pages.
+const isFlood = (p) => {
+  const t = titleOf(p), s = p.slug || "";
+  return s.startsWith("flood-") || s.startsWith("flood_") ||
+         /flood|น้ำท่วม|อุทกภัย/i.test(t);
+};
+const FLOOD_GROUP_ORDER = ["Index", "Situation", "Data", "Reference"];
+function floodGroup(p) {
+  const s = p.slug || "";
+  if (s === "flood-overview" || s === "flood-digest") return { g: "Index", sub: "" };
+  if (s.startsWith("flood-report")) return { g: "Situation", sub: "" };
+  if (s.startsWith("flood-coordinates") || s === "news-flood") return { g: "Data", sub: "" };
+  return { g: "Reference", sub: "" };   // flood-hub-assessment + future refs
+}
+
 function paintTabs() {
   for (const b of document.querySelectorAll("#page-tabs .tab-btn")) {
     const on = b.dataset.tab === curTab;
@@ -396,7 +415,9 @@ function renderPageList(filter = "") {
   const slug = decodeURIComponent((location.hash.match(/^#\/(.+)$/) || [])[1] || "");
   const shown = pages.filter((p) => {
     const kind = cctvKind(p);
-    const tabOk = curTab === "pages" ? kind === null
+    const flood = isFlood(p);
+    const tabOk = curTab === "flood" ? flood
+                : curTab === "pages" ? kind === null && !flood
                 : kind === curTab || kind === "any";
     return tabOk && (!filter ||
       titleOf(p).toLowerCase().includes(filter) ||
@@ -427,12 +448,13 @@ function renderPageList(filter = "") {
   }
   const groups = {};
   for (const p of shown) {
-    const { g, sub } = pageGroup(p);
+    const { g, sub } = curTab === "flood" ? floodGroup(p) : pageGroup(p);
     ((groups[g] ||= {})[sub] ||= []).push(p);
   }
+  const groupOrder = curTab === "flood" ? FLOOD_GROUP_ORDER : GROUP_ORDER;
   const order = [
-    ...GROUP_ORDER.filter((g) => groups[g]),
-    ...Object.keys(groups).filter((g) => !GROUP_ORDER.includes(g)).sort(),
+    ...groupOrder.filter((g) => groups[g]),
+    ...Object.keys(groups).filter((g) => !groupOrder.includes(g)).sort(),
   ];
   // Groups start OPEN and stay as the user left them — re-rendering the
   // list on every page click must not collapse sections, otherwise pages
@@ -487,7 +509,9 @@ async function renderRoute() {
     const cur = pages.find((p) => p.slug === slug);
     if (cur) {
       const k = cctvKind(cur);
-      curTab = k === null ? "pages" : k === "traffic" ? "traffic" : "security";
+      curTab = isFlood(cur) ? "flood"
+             : k === null ? "pages"
+             : k === "traffic" ? "traffic" : "security";
       paintTabs();
     }
   }
