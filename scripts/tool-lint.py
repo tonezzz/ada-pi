@@ -24,6 +24,12 @@ Checks (each FAIL exits 1):
             _ALIASES row to the family canonical
   gates     every *_TOOLS gate member + benchmark.yml write_tools
             entry must resolve to a declared tool or a live alias
+  impl      every builtin declaration must land on a public async
+            ToolRunner method (ssot provider_dispatched exempts the
+            names realtime_provider handles itself); every public
+            async ToolRunner method must resolve to the declared
+            surface or the alias table (ssot runner_internal exempts
+            dispatch plumbing like execute)
   coverage  declared tool referenced by no scenario yaml and absent
             from coverage_debt/coverage_exempt
   family    a family whose merge has started (canonical declared or
@@ -202,6 +208,31 @@ def runner_tables(runner_path: Path) -> dict:
             "gate_sets": {k: env.get(k, frozenset()) for k in _GATE_SETS}}
 
 
+def runner_methods(runner_path: Path) -> dict[str, dict]:
+    """Public methods on class ToolRunner -> {"line": int, "async": bool}.
+
+    execute() dispatches a tool name via getattr(self, name) and awaits
+    the call, so a tool's implementation seat is a same-named public
+    method — and only an async one actually works (the await rejects a
+    sync return). Methods defined on other classes in tool_runner.py
+    (AdaMemoryStore, ToolContext) are not dispatch seats.
+    """
+    out: dict[str, dict] = {}
+    tree = ast.parse(runner_path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.ClassDef)
+                and node.name == "ToolRunner"):
+            continue
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and not item.name.startswith("_"):
+                out[item.name] = {
+                    "line": item.lineno,
+                    "async": isinstance(item, ast.AsyncFunctionDef),
+                }
+    return out
+
+
 def scenario_families(live_driver: Path) -> dict[str, list[str]]:
     """TOOL_FAMILIES from scenario-live.py (@name expansion table)."""
     try:
@@ -271,6 +302,7 @@ def collect_surface(repo: Path) -> dict:
         "aliases": tables["aliases"],
         "arg_defaults": tables["arg_defaults"],
         "gate_sets": tables["gate_sets"],
+        "runner_methods": runner_methods(repo / "backend/tool_runner.py"),
         "scenario_families": families,
     }
 
@@ -404,6 +436,70 @@ def lint(repo: Path) -> dict:
                         f"scenario {scen_path.name} is missing "
                         "(tools-merge-gate also requires a passing run)")
 
+    # -- declaration <-> implementation --
+    # execute() lands a call via getattr(self, name) + await, so a
+    # builtin declaration needs a same-named public ASYNC ToolRunner
+    # method — unless realtime_provider dispatches it itself
+    # (ssot.provider_dispatched, e.g. set_facial_expression). Going the
+    # other way, every public async ToolRunner method is a dispatch seat:
+    # it must be declared, be an alias key (absorbed names keep their
+    # impls — canonical tools delegate to them internally), or be listed
+    # in ssot.runner_internal (dispatch plumbing, not a tool).
+    methods = surf["runner_methods"]
+    prov_disp = {str(n) for n in ssot.get("provider_dispatched") or []}
+    runner_internal = {str(n) for n in ssot.get("runner_internal") or []}
+    for name in sorted(surf["builtin"]):
+        impl = methods.get(name)
+        if impl and impl["async"]:
+            if name in prov_disp:
+                warns.append(
+                    f"impl: {name} has a ToolRunner method — remove it "
+                    "from ssot provider_dispatched")
+            continue
+        if name in prov_disp:
+            continue
+        if impl:
+            errors.append(
+                f"impl: {name} is declared but ToolRunner.{name} "
+                f"(line {impl['line']}) is not async — execute() awaits "
+                "every tool method")
+        else:
+            errors.append(
+                f"impl: {name} declared in realtime_provider (line "
+                f"{surf['builtin'][name]}) has no ToolRunner method — "
+                "add one or list the name in ssot provider_dispatched")
+    absorbed_impls = 0
+    for name, meta in sorted(methods.items()):
+        if not meta["async"]:
+            continue
+        if name in declared:
+            continue
+        if name in aliases:
+            absorbed_impls += 1
+            continue
+        if name in runner_internal:
+            continue
+        errors.append(
+            f"impl: ToolRunner.{name} (line {meta['line']}) is a public "
+            "async method with no declaration or alias — declare it, "
+            "rename it _private, or list it in ssot runner_internal")
+    if absorbed_impls:
+        infos.append(
+            f"impl: {absorbed_impls} alias-key ToolRunner methods kept "
+            "as absorbed impls (canonical tools delegate internally)")
+    for n in sorted(prov_disp - set(surf["builtin"])):
+        warns.append(
+            f"impl: {n} in provider_dispatched but not a builtin "
+            "declaration — stale entry")
+    for n in sorted(runner_internal - {k for k, m in methods.items()
+                                       if m["async"]}):
+        warns.append(
+            f"impl: {n} in runner_internal but not a public async "
+            "ToolRunner method — stale entry")
+    for n in sorted(runner_internal & declared):
+        warns.append(
+            f"impl: {n} is declared — remove it from runner_internal")
+
     # -- gate sets + benchmark policy must keep resolving --
     for set_name, members in sorted(surf["gate_sets"].items()):
         for m in sorted(members):
@@ -473,6 +569,9 @@ def lint(repo: Path) -> dict:
             "tools_d": len(surf["dynamic"]),
             "cap": cap, "target": target,
             "aliases": len(aliases),
+            "runner_methods": sum(1 for m in methods.values()
+                                  if m["async"]),
+            "provider_dispatched": len(prov_disp),
             "covered": len(set(covered) & declared),
             "coverage_debt": len(debt),
         },

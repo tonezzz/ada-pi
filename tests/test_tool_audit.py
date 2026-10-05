@@ -36,8 +36,16 @@ gate_mod = _load("tools_merge_gate", GATE)
 
 def _mini_repo(root: Path, *, tools: list[str], aliases=None,
                absorbed=None, covered=None, debt=None, cap=None,
-               desc=None, canonical="ada_camera", scenario=None):
-    """Build a minimal fake repo for lint()."""
+               desc=None, canonical="ada_camera", scenario=None,
+               runner_tools=None, runner_sync=(),
+               provider_dispatched=None, runner_internal=None):
+    """Build a minimal fake repo for lint().
+
+    runner_tools defaults to `tools` — every declaration gets a
+    same-named public async ToolRunner method. Pass a narrower list to
+    orphan a decl, or extra names to orphan an impl. runner_sync emits
+    public SYNC methods (execute() awaits, so they don't count as impls).
+    """
     prov = "\n".join(
         '{"name": "%s", "description": %r, "parameters": {}},'
         % (t, desc if desc is not None else "d")
@@ -46,10 +54,16 @@ def _mini_repo(root: Path, *, tools: list[str], aliases=None,
     (root / "backend/realtime_provider.py").write_text(
         "FUNCTION_DECLARATIONS = [" + prov + "]\n")
     alias_rows = ", ".join(f'{k!r}: {v!r}' for k, v in (aliases or {}).items())
+    rtools = list(tools) if runner_tools is None else list(runner_tools)
+    impls = "".join(
+        f"    async def {t}(self):\n        return None\n" for t in rtools)
+    impls += "".join(
+        f"    def {t}(self):\n        return None\n" for t in runner_sync)
     (root / "backend/tool_runner.py").write_text(
         f"_ALIASES = {{{alias_rows}}}\n"
         "_ALIAS_ARG_DEFAULTS = {}\n"
-        f"CONTROL_TOOLS = {{{', '.join(repr(t) for t in tools)}}}\n")
+        f"CONTROL_TOOLS = {{{', '.join(repr(t) for t in tools)}}}\n"
+        "class ToolRunner:\n" + (impls or "    pass\n"))
     (root / "backend/tools.d").mkdir(exist_ok=True)
     (root / "backend/tools.d/manifest.yml").write_text("tools: {}\n")
     (root / "scripts").mkdir(exist_ok=True)
@@ -62,6 +76,8 @@ def _mini_repo(root: Path, *, tools: list[str], aliases=None,
         "scenario_dir": "scenarios-live",
         "coverage_debt": list(debt or []),
         "coverage_exempt": [],
+        "provider_dispatched": list(provider_dispatched or []),
+        "runner_internal": list(runner_internal or []),
         "families": {},
     }
     if absorbed is not None:
@@ -169,6 +185,48 @@ class LintFixtureTests(unittest.TestCase):
         self.assertFalse(rep["ok"])
         self.assertTrue(any("scenario tool_merge_camera" in e
                             for e in rep["errors"]))
+
+    def test_decl_without_impl_fails(self):
+        rep = self._run(tools=["ada_camera", "ghost_tool"],
+                        runner_tools=["ada_camera"],
+                        debt=["ada_camera", "ghost_tool"])
+        self.assertFalse(rep["ok"])
+        self.assertTrue(any("ghost_tool" in e and "no ToolRunner method"
+                            in e for e in rep["errors"]))
+
+    def test_impl_without_decl_fails(self):
+        rep = self._run(tools=["ada_camera"],
+                        runner_tools=["ada_camera", "rogue_method"],
+                        debt=["ada_camera"])
+        self.assertFalse(rep["ok"])
+        self.assertTrue(any("rogue_method" in e and "no declaration"
+                            in e for e in rep["errors"]))
+
+    def test_sync_method_does_not_count_as_impl(self):
+        rep = self._run(tools=["ada_camera"], runner_tools=[],
+                        runner_sync=["ada_camera"], debt=["ada_camera"])
+        self.assertFalse(rep["ok"])
+        self.assertTrue(any("not async" in e for e in rep["errors"]))
+
+    def test_provider_dispatched_exempts_missing_impl(self):
+        rep = self._run(tools=["set_facial_expression"], runner_tools=[],
+                        provider_dispatched=["set_facial_expression"],
+                        debt=["set_facial_expression"])
+        self.assertTrue(rep["ok"], rep["errors"])
+
+    def test_runner_internal_exempts_plumbing(self):
+        rep = self._run(tools=["ada_camera"],
+                        runner_tools=["ada_camera", "execute"],
+                        runner_internal=["execute"], debt=["ada_camera"])
+        self.assertTrue(rep["ok"], rep["errors"])
+
+    def test_alias_key_impl_is_absorbed_not_orphaned(self):
+        rep = self._run(tools=["ada_camera"],
+                        runner_tools=["ada_camera", "cctv_snapshot"],
+                        absorbed=["cctv_snapshot"],
+                        aliases={"cctv_snapshot": "ada_camera"},
+                        covered=["ada_camera"])
+        self.assertTrue(rep["ok"], rep["errors"])
 
 
 class MergeGateTests(unittest.TestCase):

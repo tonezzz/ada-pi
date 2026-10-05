@@ -1,0 +1,84 @@
+# SSOT Job: tool decl<->impl consistency lint
+# Card: tool-decl-impl-lint (kanban). Dispatch 20261005-220046.
+
+title: Tool decl-impl lint — declaration/method drift gate
+subtitle: closes the last tools-ci-audit gap — a decl with no method or a method with no decl now fails CI
+
+planning:
+  goal: |
+    Extend scripts/tool-lint.py so the tool surface can't drift from its
+    implementation: every realtime_provider function_declaration must
+    land on a public async ToolRunner method, and every public async
+    ToolRunner method must resolve to the declared surface or the alias
+    table. Flag decl-without-impl and impl-without-decl.
+  context: |
+    tools-ci-audit (done 2026-10-04) lints the alias table, count cap,
+    gates and scenario coverage but never checked decl<->impl. Dispatch
+    mechanics: ToolRunner.execute() resolves _ALIASES first, then
+    getattr(self, name) + `await method(**call_args)` — so a tool's
+    impl seat is a same-named public ASYNC method (a sync def fails the
+    await). realtime_provider also intercepts a few names inline in its
+    function-call chain before/instead of the runner.
+    Baseline census (2026-10-05): 112 public async seats = 36 declared
+    methods + 75 alias-key absorbed impls (canonical tools delegate to
+    them internally — kept deliberately by the merge cards) + execute.
+    The only decl without a method is set_facial_expression, which the
+    provider emits inline as a ProviderEvent.
+  scope: |
+    In scope:
+      - scripts/tool-lint.py — runner_methods() AST pass + impl check
+      - docs/ssot/ssot.tool-surface.yml — provider_dispatched +
+        runner_internal exemption lists
+      - tests/test_tool_audit.py — _mini_repo emits a ToolRunner class;
+        6 new impl-check fixtures
+    Out of scope:
+      - param-schema vs method-signature sanity (card note aspiration;
+        too many false-positive edges: injected confirmed/confirm_token,
+        _normalize_args surrogate params)
+      - tools.d manifest <-> module DECLARATION drift (module contract
+        lives in tools_loader, not ToolRunner)
+  success_criteria:
+    - 'lint exit 1 on a declared name with no ToolRunner method'
+    - 'lint exit 1 on a public async method with no declaration/alias'
+    - 'lint exit 0 on the clean tree (exemptions cover set_facial_expression
+      and execute only)'
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "runner_methods() + impl check"
+      status: done
+      notes: "AST walk of class ToolRunner only (AdaMemoryStore seats
+        excluded). decl->impl: builtin decl needs a public async method
+        or a provider_dispatched listing; sync method flagged
+        separately. impl->decl: public async method must be declared,
+        be an alias key, or sit in runner_internal."
+    - id: 2
+      label: "SSOT exemption lists"
+      status: done
+      notes: "provider_dispatched: [set_facial_expression];
+        runner_internal: [execute]. Stale/wrong-side listings warn like
+        coverage_debt entries."
+    - id: 3
+      label: "Tests + live verify"
+      status: done
+      notes: "25 tests pass (6 new fixtures). Live probes on the real
+        tree: appended zz_orphan_probe decl -> impl FAIL exit 1;
+        inserted zz_rogue_impl method -> impl FAIL exit 1; clean tree
+        exit 0."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py [--json] [--verbose]"
+    - "python3 -m unittest tests.test_tool_audit -v"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0, 'tool-lint: clean'"
+  - "python3 -m unittest tests.test_tool_audit  # 25 tests"
+  - "# orphan a decl: append a {name,description,parameters} dict to
+     backend/realtime_provider.py -> 'impl: ... has no ToolRunner method'"
+  - "# orphan an impl: add a public async method to ToolRunner ->
+     'impl: ToolRunner.<x> ... no declaration or alias'"
