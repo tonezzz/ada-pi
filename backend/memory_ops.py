@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from backend.mddb_client import MddbClient
+from backend import write_outbox
 from backend.memory_banks import (
     MemoryBank,
     MemoryBankRegistry,
@@ -227,6 +228,17 @@ def _must(res: Any, what: str) -> None:
     # reporting a successful write.
     if res is None:
         raise RuntimeError(f"mddb write failed: {what}")
+
+
+def _queued_note(out: dict[str, Any], res: Any) -> dict[str, Any]:
+    """Annotate a result when its write landed in the retry outbox instead
+    of mddb — honest 'not yet saved' without raising (unlike _must)."""
+    if write_outbox.is_queued(res):
+        out["queued_for_retry"] = True
+        out["note"] = ("mddb unreachable — parked in the local write "
+                       "outbox; it will land automatically within the "
+                       "retry window. Do NOT describe it as saved yet.")
+    return out
 
 
 def _draft_bank_allowed(bank: MemoryBank) -> bool:
@@ -647,15 +659,17 @@ async def record_outcome(
     if session_id and session_id != "unknown":
         meta["outcome_session"] = [session_id]
     _warn_unknown_meta(registry, meta)
-    _must(await mddb.update_document(b.mddb_collection, str(key), meta=meta),
-          f"update {b.mddb_collection}/{key}")
-    return {
+    res = await mddb.update_document(
+        b.mddb_collection, str(key), meta=meta,
+        durable=True, tool="ada_ops.outcome", session_id=session_id)
+    _must(res, f"update {b.mddb_collection}/{key}")
+    return _queued_note({
         "verb": "outcome",
         "bank": b.name,
         "key": str(key),
         "outcome": outcome,
         "confidence": meta["confidence"][0],
-    }
+    }, res)
 
 
 async def remember(
@@ -723,21 +737,23 @@ async def remember(
         meta = memory_meta(b, scope, today, kind, subject, attribute, valid_until, applies, session_id, prime=prime)
         _warn_unknown_meta(registry, meta)
         meta["supersedes"] = [str(supersedes)]
-        _must(await mddb.add_document(
-            b.mddb_collection, new_key, "en", str(text), meta),
-            f"add {b.mddb_collection}/{new_key}")
+        res = await mddb.add_document(
+            b.mddb_collection, new_key, "en", str(text), meta,
+            durable=True, tool="ada_remember", session_id=session_id)
+        _must(res, f"add {b.mddb_collection}/{new_key}")
         old_meta = dict(old.get("meta") or {})
         old_meta["status"] = ["superseded"]
         old_meta["superseded_by"] = [new_key]
-        _must(await mddb.update_document(
-            b.mddb_collection, str(supersedes), meta=old_meta),
-            f"supersede-mark {b.mddb_collection}/{supersedes}")
-        return {
+        res2 = await mddb.update_document(
+            b.mddb_collection, str(supersedes), meta=old_meta,
+            durable=True, tool="ada_remember", session_id=session_id)
+        _must(res2, f"supersede-mark {b.mddb_collection}/{supersedes}")
+        return _queued_note({
             "verb": "supersede",
             "bank": b.name,
             "key": new_key,
             "superseded": str(supersedes),
-        }
+        }, res if write_outbox.is_queued(res) else res2)
 
     # Find-then-update: an existing active doc about the same
     # subject/attribute (or at the requested key) is corrected in place.
@@ -789,15 +805,18 @@ async def remember(
             meta["prime"] = old_meta["prime"]
         if kind is None and "kind" in old_meta:
             meta["kind"] = old_meta["kind"]
-        _must(await mddb.update_document(
-            b.mddb_collection, target_key, content_md=str(text), meta=meta
-        ), f"correct {b.mddb_collection}/{target_key}")
+        res = await mddb.update_document(
+            b.mddb_collection, target_key, content_md=str(text), meta=meta,
+            durable=True, tool="ada_remember", session_id=session_id)
+        _must(res, f"correct {b.mddb_collection}/{target_key}")
         out = {"verb": "correct", "bank": b.name, "key": target_key}
     else:
-        _must(await mddb.add_document(
-            b.mddb_collection, target_key, "en", str(text), meta),
-            f"add {b.mddb_collection}/{target_key}")
+        res = await mddb.add_document(
+            b.mddb_collection, target_key, "en", str(text), meta,
+            durable=True, tool="ada_remember", session_id=session_id)
+        _must(res, f"add {b.mddb_collection}/{target_key}")
         out = {"verb": "create", "bank": b.name, "key": target_key}
+    out = _queued_note(out, res)
     if rerouted_from:
         out["rerouted_from"] = rerouted_from
         out["note"] = (f"sensitive content kept in {b.name} "
@@ -833,9 +852,12 @@ async def forget(
         meta["retracted_reason"] = [str(reason)]
     if session_id and session_id != "unknown":
         meta["retracted_by_session"] = [session_id]
-    _must(await mddb.update_document(b.mddb_collection, str(key), meta=meta),
-          f"retract {b.mddb_collection}/{key}")
-    return {"verb": "retract", "bank": b.name, "key": str(key)}
+    res = await mddb.update_document(
+        b.mddb_collection, str(key), meta=meta,
+        durable=True, tool="ada_forget", session_id=session_id)
+    _must(res, f"retract {b.mddb_collection}/{key}")
+    return _queued_note(
+        {"verb": "retract", "bank": b.name, "key": str(key)}, res)
 
 
 # ---------- conversational persona ----------
@@ -941,17 +963,20 @@ async def set_persona(
     }
     content = "\n".join(lines) or "# defaults"
     if await mddb.get_document(bank.mddb_collection, PERSONA_DOC_KEY) is None:
-        _must(await mddb.add_document(
-            bank.mddb_collection, PERSONA_DOC_KEY, "en", content, meta),
-            f"add {bank.mddb_collection}/{PERSONA_DOC_KEY}")
+        res = await mddb.add_document(
+            bank.mddb_collection, PERSONA_DOC_KEY, "en", content, meta,
+            durable=True, tool="ada_persona")
+        _must(res, f"add {bank.mddb_collection}/{PERSONA_DOC_KEY}")
         verb = "create"
     else:
-        _must(await mddb.update_document(
-            bank.mddb_collection, PERSONA_DOC_KEY, content_md=content, meta=meta),
-            f"update {bank.mddb_collection}/{PERSONA_DOC_KEY}")
+        res = await mddb.update_document(
+            bank.mddb_collection, PERSONA_DOC_KEY, content_md=content,
+            meta=meta, durable=True, tool="ada_persona")
+        _must(res, f"update {bank.mddb_collection}/{PERSONA_DOC_KEY}")
         verb = "correct"
-    return {"verb": verb, "bank": bank.name, "key": PERSONA_DOC_KEY,
-            "knob": knob, "value": value, "knobs": cur["knobs"]}
+    return _queued_note({"verb": verb, "bank": bank.name, "key": PERSONA_DOC_KEY,
+                         "knob": knob, "value": value, "knobs": cur["knobs"]},
+                        res)
 
 
 async def reset_persona(
@@ -968,12 +993,14 @@ async def reset_persona(
         "status": ["active"], "scope": ["instance"],
         "last_verified": [datetime.now(timezone.utc).date().isoformat()],
     }
+    res: Any = None
     if await mddb.get_document(bank.mddb_collection, PERSONA_DOC_KEY) is not None:
-        _must(await mddb.update_document(
-            bank.mddb_collection, PERSONA_DOC_KEY, content_md="# defaults", meta=meta),
-            f"reset {bank.mddb_collection}/{PERSONA_DOC_KEY}")
-    return {"verb": "reset", "bank": bank.name,
-            "knobs": _persona_defaults(registry)}
+        res = await mddb.update_document(
+            bank.mddb_collection, PERSONA_DOC_KEY, content_md="# defaults",
+            meta=meta, durable=True, tool="ada_persona")
+        _must(res, f"reset {bank.mddb_collection}/{PERSONA_DOC_KEY}")
+    return _queued_note({"verb": "reset", "bank": bank.name,
+                         "knobs": _persona_defaults(registry)}, res)
 
 
 def persona_instruction(knobs: dict[str, Any], registry: MemoryBankRegistry) -> str | None:

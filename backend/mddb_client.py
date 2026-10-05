@@ -68,6 +68,21 @@ class MddbClient:
             return self._ops_url
         return self.base_url
 
+    def _to_outbox(
+        self, op: str, collection: str, key: str, lang: str,
+        content_md: str | None, meta: dict[str, list[str]] | None,
+        tool: str, session_id: str | None,
+    ) -> dict[str, Any] | None:
+        """Durable-write fallback: park the failed write in the local retry
+        outbox (backend/write_outbox.py) so a transient mddb outage doesn't
+        lose it. Returns the queued sentinel (is_queued) or None when the
+        outbox itself refused."""
+        from backend import write_outbox
+        return write_outbox.enqueue(
+            mddb=self, op=op, collection=collection, key=key, lang=lang,
+            content_md=content_md, meta=meta, tool=tool,
+            session_id=session_id)
+
     async def add_document(
         self,
         collection: str,
@@ -76,6 +91,9 @@ class MddbClient:
         content_md: str,
         meta: dict[str, list[str]] | None = None,
         timeout: float | None = None,
+        durable: bool = False,
+        tool: str = "",
+        session_id: str | None = None,
     ) -> dict[str, Any] | None:
         payload: dict[str, Any] = {
             "collection": collection,
@@ -95,6 +113,9 @@ class MddbClient:
             return resp.json()
         except Exception as exc:
             logger.error("mddb add_document failed: %s", exc)
+            if durable:
+                return self._to_outbox("add", collection, key, lang,
+                                       content_md, meta, tool, session_id)
             return None
 
     async def search_documents(
@@ -195,6 +216,9 @@ class MddbClient:
         lang: str = "en",
         content_md: str | None = None,
         meta: dict[str, list[str]] | None = None,
+        durable: bool = False,
+        tool: str = "",
+        session_id: str | None = None,
     ) -> dict[str, Any] | None:
         # mddb has no /update — /add upserts on (collection,key,lang), and a
         # meta-only /add wipes contentMd. Merge onto the existing doc.
@@ -202,10 +226,14 @@ class MddbClient:
         if existing is None and content_md is None:
             # Read failed or doc absent — a meta-only write here would store
             # an empty body (or wipe the real one if the read merely
-            # timed out). Refuse instead.
+            # timed out). Refuse instead. When durable, park the update so
+            # the outbox re-runs this read-merge-write once mddb is back.
             logger.error("mddb update_document: no existing doc and no "
                          "content_md — refusing meta-only write for %s/%s",
                          collection, key)
+            if durable:
+                return self._to_outbox("update", collection, key, lang,
+                                       content_md, meta, tool, session_id)
             return None
         merged_meta = dict((existing or {}).get("meta") or {})
         if meta:
@@ -223,10 +251,19 @@ class MddbClient:
             # journal shows *what* failed, not an empty message.
             logger.error("mddb update_document failed for %s/%s: %s: %s",
                          collection, key, type(exc).__name__, exc)
+            if durable:
+                # Queue the ORIGINAL update args — the outbox replays
+                # update_document so the retry re-merges onto the freshest
+                # doc instead of pinning this attempt's snapshot.
+                return self._to_outbox("update", collection, key, lang,
+                                       content_md, meta, tool, session_id)
             return None
 
     async def delete_document(
-        self, collection: str, key: str, lang: str = "en"
+        self, collection: str, key: str, lang: str = "en",
+        durable: bool = False,
+        tool: str = "",
+        session_id: str | None = None,
     ) -> dict[str, Any] | None:
         try:
             resp = await self._client.post(
@@ -241,4 +278,7 @@ class MddbClient:
             return resp.json()
         except Exception as exc:
             logger.error("mddb delete_document failed: %s", exc)
+            if durable:
+                return self._to_outbox("delete", collection, key, lang,
+                                       None, None, tool, session_id)
             return None

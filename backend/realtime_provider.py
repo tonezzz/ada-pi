@@ -23,6 +23,7 @@ from google import genai
 from google.genai import types
 
 from backend import chaba_memory, tools_loader, voice_config, vms_camera, vision_describe
+from backend import write_outbox
 from backend.instance import ada_instance_id
 from backend.conversation_memory import ConversationMemory
 from backend.speech_sanitize import sanitize_speech, split_artifact_tail
@@ -1022,6 +1023,19 @@ class GeminiLiveProvider(RealtimeProvider):
         self._tools_in_flight = 0
         self._stall_timeout = float(os.environ.get("ADA_STALL_TIMEOUT_S", "25"))
         self._ops_events_sent = 0
+        # function_call journal mirror: journald rate-limits drop exactly
+        # these lines during error storms (2026-10-05 mddb outage lost a
+        # whole session's call trace) — a session-scoped JSONL file can't
+        # be suppressed. ADA_CALL_LOG=0 disables.
+        self._call_log_enabled = os.environ.get(
+            "ADA_CALL_LOG", "1").lower() not in ("0", "false", "no")
+        self._call_log_dir = Path(os.environ.get(
+            "ADA_CALL_LOG_DIR",
+            str(Path(os.environ.get(
+                "ADA_TRANSCRIPT_DIR",
+                os.path.expanduser("~/.local/share/ada/transcripts"))
+            ).parent / "call-logs")))
+        self._call_log_warned = False
         self._tool_leak_re = None
         self._tool_leaks_stripped = 0
         self._leak_active = False
@@ -1099,6 +1113,32 @@ class GeminiLiveProvider(RealtimeProvider):
             asyncio.get_running_loop().create_task(_post())
         except RuntimeError:
             return  # no loop (unit tests, shutdown) — nothing to schedule
+
+    def _write_call_log(self, event: dict[str, Any]) -> None:
+        """Mirror a function_call line to the session-scoped call-log file
+        — journald suppression (rate-limit burst) erases the journal copy
+        but can't touch this file. One JSON object per line."""
+        if not self._call_log_enabled:
+            return
+        try:
+            day = datetime.now().date().isoformat()
+            safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(self.session_id))
+            self._call_log_dir.mkdir(parents=True, exist_ok=True)
+            line = {
+                "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "session_id": self.session_id,
+                **event,
+            }
+            path = self._call_log_dir / f"{day}-{safe}.jsonl"
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(line, ensure_ascii=False,
+                                    default=str) + "\n")
+        except Exception as exc:
+            if not self._call_log_warned:
+                self._call_log_warned = True
+                logger.warning(
+                    "session=%s call-log write failed (further errors "
+                    "muted): %s", self.session_id, exc)
 
     def _strip_tool_leak(self, text: str) -> str:
         """Remove SPOKEN tool-call text from an output-transcription delta.
@@ -4560,6 +4600,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "session=%s function_call received id=%s name=%s args=%r",
                             self.session_id, call.id, call.name, call.args,
                         )
+                        self._write_call_log({
+                            "event": "function_call",
+                            "id": call.id, "name": call.name,
+                            "args": _safe_args(call.args)})
                         # Consolidated tool surface: absorbed names
                         # (tool_runner._ALIASES) resolve to their canonical
                         # tool BEFORE dispatch — provider-dispatched tools
@@ -5058,6 +5102,12 @@ class GeminiLiveProvider(RealtimeProvider):
                             "session=%s function_call result id=%s name=%s result=%r",
                             self.session_id, call.id, call.name, result,
                         )
+                        self._write_call_log({
+                            "event": "function_result",
+                            "id": call.id, "name": call.name,
+                            "result": _safe_args(result)
+                            if isinstance(result, dict)
+                            else {"value": str(result)[:500]}})
                     await self._session.send_tool_response(
                         function_responses=function_responses
                     )
@@ -5273,6 +5323,12 @@ class GeminiLiveProvider(RealtimeProvider):
                     # the response finished, as its own turn.
                     if self._pending_notifications:
                         await self._drain_notifications()
+                    # Durable-write outbox dead letters — a parked write
+                    # exhausted its retry window; Ada tells the user on
+                    # this next turn rather than letting it stay silent.
+                    for _notice in write_outbox.drain_notices():
+                        await self.notify_or_defer(
+                            _notice, urgent=True)
 
     async def close(self) -> None:
         if self._closed:

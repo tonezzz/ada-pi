@@ -1,0 +1,132 @@
+# SSOT Job: observability resilience — audit-source order, write outbox,
+# function_call file mirror. Card: ada-observability-resilience (chaba
+# kanban). Dispatch 20261005-220830-1-document-the-audit-flow-chan.
+
+title: Journald-suppression resilience — session_events-first audit + durable write outbox
+subtitle: 2026-10-05 mddb storm suppressed 37+ journal messages and silently ate confirmed writes
+
+planning:
+  goal: |
+    Close the two gaps found in session 0d9530dbf7 during the mddb
+    vector_search error storm:
+    (a) journald rate-limiting dropped every function_call line for a
+        live 10-min session — transcript audits must read
+        session_events in reports/*.json BEFORE journals;
+    (b) devin_answer / cms_publish_page / ada_camera_snapshot writes
+        failed and were simply lost (Tony's spoken อนุมัติ for job
+        20260926-205455 evaporated) — write tools need a durable retry
+        outbox and a verbal dead-letter surface.
+  context: |
+    MddbClient write helpers return None on failure; devin_answer never
+    checked it (silent loss) while cms_publish_page returned an honest
+    error dict. memory_ops raises via _must — loud but unretried.
+    session_events (conversation_memory.session_items →
+    reports/<date>-<sid>.json) is journald-independent and survived the
+    storm intact.
+  scope: |
+    - docs/session-audit.md — NEW runbook: evidence-tier order and the
+      ada-transcript-audit flow (session_events → call-logs → journalctl
+      with suppression check)
+    - backend/write_outbox.py — NEW JSONL outbox: pending.jsonl +
+      dead-letters.jsonl under <ADA data dir>/outbox/, exponential
+      backoff bounded by ADA_OUTBOX_WINDOW_S (default 900s)
+    - backend/mddb_client.py — durable= flag on add/update/delete;
+      update replays the read-merge-write so retries re-merge fresh
+    - backend/tool_runner.py — devin_answer, cms_publish_page,
+      cms_note_update, cms_delete_page mark writes durable + report
+      status="queued" honestly; execute() resumes the outbox loop after
+      restart
+    - backend/memory_ops.py — remember/forget/record_outcome/persona
+      writes durable + _queued_note() annotation
+    - backend/realtime_provider.py — session-scoped function_call JSONL
+      mirror (call-logs/<date>-<sid>.jsonl, ADA_CALL_LOG=0 disables) +
+      outbox dead-letter notices drained as urgent notifications at the
+      next turn boundary
+    - tests/test_write_outbox.py — 9 tests: queue/deliver/backoff/
+      dead-letter/restart-resume
+    Out of scope:
+      - side-effect tools (calendar writes, casts, devin_followup
+        injection) — they fail at call time and report to the model
+      - ada-transcript-audit script itself (lives outside this repo)
+      - ha event recorder flush loss (separate buffer, own card)
+  success_criteria:
+    - 'confirmed write during mddb outage returns status=queued, lands
+       after recovery, and dead-letters with a spoken notice if the
+       window expires'
+    - 'every function_call/result line exists in
+       call-logs/<date>-<sid>.jsonl even when journalctl shows
+       "Suppressed N messages"'
+    - 'audit runbook puts reports/*.json session_events ahead of
+       journals'
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "Audit runbook"
+      status: done
+      notes: "docs/session-audit.md: evidence tiers strongest-first —
+        reports/*.json session_events, call-logs/*.jsonl, transcripts,
+        then journalctl (with an explicit Suppressed-messages check)."
+    - id: 2
+      label: "Write outbox"
+      status: done
+      notes: "backend/write_outbox.py — durable=True on MddbClient
+        add/update/delete enqueues {op,collection,key,lang,content_md,
+        meta,tool,session_id}; retry loop 5s→60s backoff, bounded by
+        window/attempts; dead letters append to dead-letters.jsonl +
+        queue a user-facing notice."
+    - id: 3
+      label: "Write-tool wiring"
+      status: done
+      notes: "devin_answer (answer doc + job status flip, incl. flip
+        queued when the outage also ate the job read), cms_publish_page/
+        cms_note_update/cms_delete_page, memory_ops remember/forget/
+        outcome/persona. Results say queued_for_retry + 'do NOT describe
+        as saved yet' — no phantom saves. write_queued logged to
+        session_events for the audit trail."
+    - id: 4
+      label: "Call-log mirror + notice drain"
+      status: done
+      notes: "function_call received/result mirrored to
+        call-logs/<date>-<sid>.jsonl (default on, ADA_CALL_LOG=0 off).
+        Turn boundary drains write_outbox.drain_notices() via
+        notify_or_defer(urgent=True) — the dead letter is spoken on the
+        next turn."
+    - id: 5
+      label: "Tests"
+      status: done
+      notes: "9 new outbox tests pass; suite clean (618 tests; only
+        pre-existing env errors for missing ai_edge_litert/pytest in the
+        scratch .venv). FakeMddb signature updated for durable kwargs."
+
+invoke:
+  env:
+    ADA_OUTBOX_WINDOW_S: "retry window before dead-letter (default 900)"
+    ADA_OUTBOX_MAX_ATTEMPTS: "per-entry attempt cap (default 12)"
+    ADA_OUTBOX_DIR: "outbox dir (default <ADA_TRANSCRIPT_DIR>/../outbox)"
+    ADA_CALL_LOG: "1=on (default) — session-scoped function_call mirror"
+    ADA_CALL_LOG_DIR: "default <ADA_TRANSCRIPT_DIR>/../call-logs"
+  commands:
+    - "cat ~/.local/share/ada/outbox/pending.jsonl     # in-flight retries"
+    - "cat ~/.local/share/ada/outbox/dead-letters.jsonl # lost writes + payloads"
+    - "python3 scripts/report-dig.py report:<date>-<sid>  # audit dig path"
+
+follow_ups:
+  - repo: ada-pi (idc01)
+    task: "deploy on approval; confirm ~/.local/share/ada/outbox/ +
+      call-logs/ are created on first queue/session"
+  - repo: chaba
+    task: "update ada-transcript-audit runner to read reports/*.json
+      session_events before journalctl (script lives outside ada-pi)"
+  - repo: ada-pi
+    task: "ha event recorder _flush drops the batch on mddb failure —
+      route through the outbox or re-queue _pending"
+
+verification:
+  - "python3 -m unittest tests.test_write_outbox -v  # 9 tests"
+  - ".venv/bin/python -m unittest tests.test_scenarios tests.test_tool_runner tests.test_mddb_client  # green"
+  - "simulate: stop mddb, run cms_publish_page -> status=queued; restart mddb -> entry delivers and pending.jsonl empties"
+  - "journalctl -u ada-ha-tony | grep -i suppressed  # call-logs/<date>-<sid>.jsonl still has every call"

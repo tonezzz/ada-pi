@@ -21,6 +21,7 @@ from typing import Any
 from backend import memory_ops
 from backend import chaba_memory
 from backend import speech_sanitize
+from backend import write_outbox
 from backend import devin_dispatch as devin_dispatch_mod
 from backend import tools_loader
 from backend import doc_archive_client
@@ -1207,6 +1208,10 @@ class ToolRunner:
         call_args = {**_implied, **dict(args or {})}
         if _alias_src != name:
             call_args = _alias_call_args(str(_alias_src), call_args)
+        # Resume the write outbox after a restart — entries queued before the
+        # process died retry on the first tool call of the new process.
+        if self.mddb is not None:
+            write_outbox.ensure_running(self.mddb)
         # Per-call identity override: the provider passes the SESSION's
         # resolved identity — the runner is shared across sessions, so its
         # mutable identity fields can race when sessions overlap.
@@ -2259,7 +2264,7 @@ class ToolRunner:
             delivered = True
             via = "followup"
             logger.info("devin_answer: followup to %s -> %s", task_id, res)
-        await self.mddb.add_document(
+        wrote = await self.mddb.add_document(
             DEVIN_JOBS_COLLECTION,
             key=f"answer/{task_id}",
             lang="en",
@@ -2271,18 +2276,43 @@ class ToolRunner:
                 "source": ["voice"], "written_by": ["ada"],
                 "scope": ["tony"], "bank": ["devin-handoff"],
             },
+            durable=True, tool="devin_answer", session_id=self.session_id,
         )
+        queued = write_outbox.is_queued(wrote)
+        if queued:
+            self._log_session_event(
+                "write_queued", tool="devin_answer",
+                key=f"answer/{task_id}")
         job = await self.mddb.get_document(DEVIN_JOBS_COLLECTION, f"job/{task_id}")
         if job:
             meta = dict(job.get("meta") or {})
             meta["status"] = ["answered"]
             meta["answered_at"] = [now]
             await self.mddb.update_document(
-                DEVIN_JOBS_COLLECTION, f"job/{task_id}", meta=meta)
+                DEVIN_JOBS_COLLECTION, f"job/{task_id}", meta=meta,
+                durable=True, tool="devin_answer",
+                session_id=self.session_id)
+        elif queued:
+            # Same outage took the read too — queue the status flip so the
+            # replay re-reads and merges once mddb is back.
+            write_outbox.enqueue(
+                mddb=self.mddb, op="update", collection=DEVIN_JOBS_COLLECTION,
+                key=f"job/{task_id}", lang="en",
+                meta={"status": ["answered"], "answered_at": [now]},
+                tool="devin_answer", session_id=self.session_id)
+        note = ("Answer recorded" +
+                (" and sent to the running session." if delivered
+                 else " — the dispatcher picks it up."))
+        if queued:
+            # mddb is unreachable — the write is parked in the local outbox.
+            # Say it plainly: NOT yet in the ledger, will land on retry.
+            note = ("mddb is unreachable — the answer is queued in the local "
+                    "write outbox and will land automatically within the "
+                    "retry window" +
+                    ("; it was already sent to the running session."
+                     if delivered else "."))
         return {"task_id": task_id, "delivered": delivered, "via": via,
-                "note": ("Answer recorded" +
-                         (" and sent to the running session." if delivered
-                          else " — the dispatcher picks it up."))}
+                "queued_for_retry": queued, "note": note}
 
     # Doc actions that never wrote state before the merge —
     # ada_doc_search/ada_doc_get were free reads.
@@ -4272,7 +4302,21 @@ class ToolRunner:
             lang,
             content,
             meta=meta,
+            durable=True, tool="cms_publish_page",
+            session_id=self.session_id,
         )
+        if write_outbox.is_queued(result):
+            self._log_session_event(
+                "write_queued", tool="cms_publish_page", key=slug)
+            return {
+                "status": "queued",
+                "slug": slug,
+                "note": ("mddb is unreachable — the page is parked in the "
+                         "local write outbox and will publish automatically "
+                         "within the retry window; the user will hear about "
+                         "it if it ultimately fails. Do NOT describe it as "
+                         "published yet."),
+            }
         if result is None:
             return {
                 "status": "error",
@@ -4311,7 +4355,17 @@ class ToolRunner:
     async def cms_delete_page(self, slug: str) -> dict[str, Any]:
         """Delete a miniapp page by slug."""
         slug = self._cms_slug(slug)
-        result = await self.mddb.delete_document(CMS_COLLECTION, slug)
+        result = await self.mddb.delete_document(
+            CMS_COLLECTION, slug,
+            durable=True, tool="cms_delete_page",
+            session_id=self.session_id)
+        if write_outbox.is_queued(result):
+            self._log_session_event(
+                "write_queued", tool="cms_delete_page", key=slug)
+            return {"status": "queued", "slug": slug,
+                    "note": ("mddb is unreachable — the delete is parked in "
+                             "the local write outbox and will land within "
+                             "the retry window.")}
         if result is None:
             return {"status": "not_found", "slug": slug}
         asyncio.create_task(self._cms_reports_index())
@@ -4356,7 +4410,16 @@ class ToolRunner:
         else:
             content = content.rstrip() + f"\n\n{marker}\n\n{line}\n"
         result = await self.mddb.add_document(
-            CMS_COLLECTION, slug, doc.get("lang") or lang, content, meta=meta)
+            CMS_COLLECTION, slug, doc.get("lang") or lang, content, meta=meta,
+            durable=True, tool="cms_note_update",
+            session_id=self.session_id)
+        if write_outbox.is_queued(result):
+            self._log_session_event(
+                "write_queued", tool="cms_note_update", key=slug)
+            return {"status": "queued", "slug": slug,
+                    "note": ("mddb is unreachable — the note is parked in "
+                             "the local write outbox and will land within "
+                             "the retry window.")}
         if result is None:
             return {"status": "error", "error": "mddb write failed", "slug": slug}
         asyncio.create_task(self._cms_reports_index())

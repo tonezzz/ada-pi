@@ -176,7 +176,8 @@ class FakeMddb:
     def _coll(self, name: str) -> dict[str, dict[str, Any]]:
         return self.collections.setdefault(name, {})
 
-    async def add_document(self, collection, key, lang, content_md, meta=None, timeout=None):
+    async def add_document(self, collection, key, lang, content_md, meta=None, timeout=None,
+                           durable=False, tool="", session_id=None):
         self._coll(collection)[str(key)] = {
             "key": str(key),
             "contentMd": str(content_md),
@@ -188,7 +189,8 @@ class FakeMddb:
         doc = self._coll(collection).get(str(key))
         return dict(doc) if doc else None
 
-    async def update_document(self, collection, key, lang="en", content_md=None, meta=None):
+    async def update_document(self, collection, key, lang="en", content_md=None, meta=None,
+                              durable=False, tool="", session_id=None):
         doc = self._coll(collection).get(str(key))
         if doc is None:
             return None

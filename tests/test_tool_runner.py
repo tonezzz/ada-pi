@@ -346,7 +346,9 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
             "cms_delete_page", {"slug": "pool-notes", "confirmed": True}
         )
         self.assertEqual(result["status"], "deleted")
-        self.runner.mddb.delete_document.assert_awaited_once_with("ada-cms-pages", "pool-notes")
+        self.runner.mddb.delete_document.assert_awaited_once_with(
+            "ada-cms-pages", "pool-notes",
+            durable=True, tool="cms_delete_page", session_id=None)
 
     async def test_verify_page_yaml_ok_and_bad(self):
         self.runner.mddb.get_document.return_value = {
