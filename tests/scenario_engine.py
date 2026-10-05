@@ -167,6 +167,9 @@ class FakeMddb:
     def __init__(self) -> None:
         self.collections: dict[str, dict[str, dict[str, Any]]] = {}
 
+    def is_ops_routed(self, collection: str) -> bool:
+        return False
+
     def _coll(self, name: str) -> dict[str, dict[str, Any]]:
         return self.collections.setdefault(name, {})
 
