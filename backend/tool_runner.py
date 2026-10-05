@@ -4028,8 +4028,11 @@ class ToolRunner:
 
     async def yt_cast(self, query: str, language: str = "th") -> dict[str, Any]:
         """Cast a YouTube video to the living-room TV with translated
-        subtitles. `query` is a YouTube URL or a search phrase — prefer the
-        video title plus channel name for accuracy. TV ONLY — if the user
+        subtitles — or a direct media file URL (.mp4/.m4v/.webm/.mkv/.mp3/
+        .m4a/.m3u8), which plays instantly without transcoding (e.g. the
+        dubbed demos under https://tony-dell.taila0626a.ts.net/apps/yt-live/).
+        `query` is a YouTube URL, media file URL, or a search phrase — prefer
+        the video title plus channel name for accuracy. TV ONLY — if the user
         names a numbered screen, use cast_to_screen(action='play') instead;
         vcast displays auto-embed YouTube URLs."""
         import asyncio
