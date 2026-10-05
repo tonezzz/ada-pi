@@ -5161,9 +5161,12 @@ class GeminiLiveProvider(RealtimeProvider):
                         # tool BEFORE dispatch — provider-dispatched tools
                         # share the runner's alias contract so stale
                         # phrasing still lands (tools-merge-camera).
-                        _rname, _rimplied = _resolve_alias(
-                            str(call.name or ""))
-                        if _rname != str(call.name) or _rimplied:
+                        # The FunctionResponse below must echo the AS-CALLED
+                        # name, not the canonical — Gemini correlates
+                        # responses to calls by name+id.
+                        _call_name = str(call.name or "")
+                        _rname, _rimplied = _resolve_alias(_call_name)
+                        if _rname != _call_name or _rimplied:
                             try:
                                 call = call.model_copy(update={
                                     "name": _rname,
@@ -5545,7 +5548,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         self._tools_in_flight = max(0, self._tools_in_flight - 1)
                         function_responses.append(types.FunctionResponse(
                             id=call.id,
-                            name=call.name or "set_facial_expression",
+                            name=_call_name or "set_facial_expression",
                             response=result,
                             # The expression tool often arrives before audio.
                             # WHEN_IDLE lets Gemini continue the spoken reply;
