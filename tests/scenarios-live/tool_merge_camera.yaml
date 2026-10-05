@@ -1,0 +1,63 @@
+# Camera-family merge regression (tools-merge-camera, 2026-10-05):
+# cctv_snapshot + traffic_camera are absorbed into ada_camera_snapshot
+# (source=auto|vms|traffic, view=..., screen=N); the GEV capture_frame
+# command is absorbed into vcast_snapshot's display self-capture.
+# cctv_wall keeps its own name (a wall is a live grid, not a frame).
+# Absorbed names survive as tool_runner._ALIASES rows, hidden from the
+# declared surface.
+# tier: full — real VMS shim, Longdo/iTIC feed, and a real vcast display.
+name: tool_merge_camera
+tier: full
+
+# The screen push needs a real display to land on.
+preflight:
+  - {check: vcast_online, screens: ["{real_screen}"]}
+
+turns:
+  # T1 — property-cam describe: the live/cached freshness path must be
+  # unchanged (stored-first answer, then a live refresh is fine too).
+  - user: "Take a look at the swimming pool camera and tell me what you see."
+    expect:
+      calls_any: [ada_camera_snapshot]
+      response_nonempty: true
+      timeout_s: 220
+      settle_s: 6
+
+  # T2 — traffic source: the absorbed traffic_camera path. The frame's
+  # result carries the camid of the matched Longdo/iTIC camera.
+  - user: "Check a traffic camera on Rama 4 road in Bangkok — what does it show?"
+    expect:
+      calls_any: [ada_camera_snapshot]
+      result_contains: ["camid"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 4
+
+  # T3 — absorbed cctv_snapshot behavior: snap + show on a vcast screen.
+  # or_state waives the call assertion when the frame is already up.
+  - user: "Show me the swimming pool camera on screen {real_screen}."
+    expect:
+      calls_any: [ada_camera_snapshot, cast_to_screen]
+      or_state: {vcast_screen: "{real_screen}", state: image}
+      response_nonempty: true
+      max_calls: 10
+      timeout_s: 240
+      settle_s: 8
+
+  # T4 — display self-capture: vcast_snapshot survives the merge and
+  # still verifies what the screen shows (its internal GEV
+  # capture_frame path is what absorbed that name).
+  - user: "What's actually on screen {real_screen} right now?"
+    expect:
+      calls_any: [vcast_snapshot, vcast_list]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  # T5 — teardown.
+  - user: "Thanks — clear screen {real_screen}."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 5

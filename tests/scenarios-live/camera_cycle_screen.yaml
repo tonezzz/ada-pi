@@ -6,7 +6,7 @@ tier: full
 turns:
   - user: "Show me a camera from zone A on screen 3 and tell me what you see"
     expect:
-      calls_any: [cctv_snapshot, cctv_wall, ada_camera_snapshot]
+      calls_any: [cctv_wall, ada_camera_snapshot]
       response_nonempty: true
       timeout_s: 120
       settle_s: 2

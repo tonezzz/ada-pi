@@ -1,0 +1,130 @@
+# SSOT Job: camera tool-group merge (5 -> 2 model-facing surfaces)
+# Card: tools-merge-camera (chaba kanban). Dispatch 20261005-004926.
+
+title: Camera tool merge — ada_camera_snapshot absorbs cctv_snapshot + traffic_camera
+subtitle: Five camera-ish surfaces collapse to two; absorbed names live on as _ALIASES rows
+
+planning:
+  goal: |
+    Reduce the model-facing camera surface from five tools to two per the
+    consolidation spec (docs/assessments/tool-consolidation-spec-2026-10-04.md):
+    ada_camera_snapshot becomes the single-frame canonical with
+    source=auto|vms|traffic, absorbing cctv_snapshot (snap+show on a
+    display) and traffic_camera (public Thailand cams). vcast_snapshot
+    keeps display self-capture — the GEV capture_frame remote command is
+    retired into it (it was never a separate model declaration; it fires
+    inside vcast_snapshot already). cctv_wall stays unchanged: a wall is
+    a live grid, not a frame.
+  context: |
+    Card spec self-contained (the spec doc's family table sketched a
+    later ada_camera canonical; the card pins the 5->2 shape actually
+    shipped). Rules: absorbed names stay callable via
+    tool_runner._ALIASES (hidden from the declared surface);
+    DEVIN_CONFIRMED_TOOLS/confirm_strip unchanged and the capture gate
+    keys off the RESOLVED tool name; ada_camera_snapshot
+    live-freshness (stored-first cached mode + live pull + stale
+    fallback) unchanged.
+  scope: |
+    In scope:
+      - backend/tool_runner.py — _ALIASES/_ALIAS_ARG_DEFAULTS rows;
+        CAPTURE_CONFIRMED_TOOLS canonical swap; _check_capture_confirmed
+        display-args gate; merged ada_camera_snapshot + _traffic_snapshot
+        + vcast_snapshot runner methods; cctv_snapshot method retired
+      - backend/realtime_provider.py — CAMERA_DECLARATION (merged, always
+        declared), TRAFFIC/VMS_DECLARATION removed; alias resolution at
+        dispatch-loop top; display-push capture gate + confirm_strip on
+        resolved name; _camera_snapshot source routing, _snap_display,
+        _grabbed_result; cctv_snapshot decl removed; instructions updated
+      - docs/ssot/ssot.tool-surface.yml — camera family canonical/absorbed
+      - docs/assessments/tool-consolidation-spec-2026-10-04.md — table row
+      - tests/scenarios-live/tool_merge_camera.yaml — family regression
+      - tests/scenarios-live/*.yaml — tool-name refs -> canonical
+      - tests/benchmark.yml — write_tools canonical swap
+    Out of scope:
+      - live scenario run (tier: full — needs real VMS shim, Longdo/iTIC,
+        a real vcast display; runs on idc02 staging per AGENTS.md)
+      - display-family merge card (vcast_snapshot's own rename lands there)
+  success_criteria:
+    - 'tool-lint exit 0; 3 aliases registered; tool_merge_camera.yaml exists'
+    - 'each absorbed name routes to its canonical via tool_runner.execute'
+    - 'display push (screen=/target=tv|screen) still capture-gated;
+       describe-only snapshot stays open; confirm_strip on resolved name'
+    - 'mode=cached/live freshness path byte-identical to pre-merge'
+  owner: devin (dispatch)
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tool_runner aliases + runner methods"
+      status: done
+      notes: "_ALIASES: cctv_snapshot->ada_camera_snapshot
+        {source:vms,target:tv}, traffic_camera->ada_camera_snapshot
+        {source:traffic}, capture_frame->vcast_snapshot. New runner
+        methods ada_camera_snapshot (VMS/go2rtc/traffic + display push)
+        and vcast_snapshot (snap-request + internal GEV capture_frame +
+        frame poll). cctv_snapshot method retired; capture gate keys off
+        ada_camera_snapshot only when screen=/target= is set."
+    - id: 2
+      label: "provider merge"
+      status: done
+      notes: "Merged CAMERA_DECLARATION (view/source/mode/screen/target/
+        channel/camera/query/lat/lon/heading/confirmed), appended
+        unconditionally — source=traffic needs no VMS shim. Dispatch
+        resolves _resolve_alias at loop top (model_copy update) so legacy
+        names land on canonical; actuation counts display pushes;
+        capture gate + confirm_strip run on 'ada_camera_snapshot'.
+        _camera_snapshot routes source, VMS LookupError falls back to the
+        runner's _cctv_grab chain (home cams/YT), _snap_display pushes
+        via cast_to_screen/tv_action, _grabbed_result attaches the frame."
+    - id: 3
+      label: "SSOT + spec + benchmark"
+      status: done
+      notes: "ssot.tool-surface.yml camera family: canonical
+        ada_camera_snapshot, absorbed [cctv_snapshot, traffic_camera,
+        capture_frame(->vcast_snapshot)], cctv_wall deliberately not
+        absorbed. Spec table row updated. benchmark.yml write_tools swaps
+        cctv_snapshot for the canonical."
+    - id: 4
+      label: "scenario"
+      status: done
+      notes: "tool_merge_camera.yaml (tier: full): VMS describe, traffic
+        source, snap-to-screen push, vcast_snapshot self-capture,
+        teardown. 15 legacy scenario files re-pointed at canonical names."
+    - id: 5
+      label: "verify"
+      status: done
+      notes: "tool-lint clean (104 declared, 3 aliases, cap 106).
+        pytest tests/ : 469 passed; 8 pre-existing/environment failures
+        (ai_edge_litert + live mddb + stale CMS index assertions, all
+        unrelated to this diff). Alias routing verified end-to-end
+        through ToolRunner.execute."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py --verbose"
+    - "python3 -m pytest tests/test_tool_audit.py -q"
+    - "python3 scripts/tools-merge-gate.py --card-id tools-merge-camera"
+  env:
+    ADA_VMS_SNAP_URL: "vms-snap shim; absent -> source=vms answers honestly, traffic still works"
+    VCAST_API: "input-bridge base for runner vcast_snapshot"
+    GEV_CMD_URL: "GEV remote command endpoint (internal capture_frame)"
+
+follow_ups:
+  - repo: ada-pi (idc02)
+    task: "run tool_merge_camera scenario on staging; publish pass|flaky
+           report to ada-ha-scenario-reports so the merge gate passes
+           when the card moves to done"
+
+verification:
+  - "python3 scripts/tool-lint.py  # clean, 3 aliases"
+  - "python3 - <<'EOF'  # alias routing smoke
+    from backend.tool_runner import _resolve_alias
+    assert _resolve_alias('cctv_snapshot') == ('ada_camera_snapshot', {'source': 'vms', 'target': 'tv'})
+    assert _resolve_alias('traffic_camera') == ('ada_camera_snapshot', {'source': 'traffic'})
+    assert _resolve_alias('capture_frame') == ('vcast_snapshot', {})
+    EOF"
+  - "python3 -m pytest tests/ -q  # 469 pass; 8 env/pre-existing fails"
+  - "python3 scripts/tools-merge-gate.py --card-id tools-merge-camera
+     # exit 1 while no live report — expected until the idc02 run"

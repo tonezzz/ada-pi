@@ -7,7 +7,7 @@ tier: smoke
 turns:
   - user: "Show me the Bangna expressway traffic camera."
     expect:
-      calls_any: [traffic_camera]
+      calls_any: [ada_camera_snapshot]
       response_nonempty: true
       timeout_s: 120
       settle_s: 4

@@ -53,7 +53,7 @@ turns:
 - user: Grab one live frame from any Bangkok camera you can — try a couple if needed.
   expect:
     calls_any:
-    - traffic_camera
+    - ada_camera_snapshot
     timeout_s: 150
     settle_s: 12
 - user: Say what you see — narrate it on that screen, out loud.

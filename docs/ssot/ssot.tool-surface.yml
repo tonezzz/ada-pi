@@ -36,13 +36,18 @@ scenario_dir: tests/scenarios-live
 families:
   camera:
     merge_card: tools-merge-camera
-    canonical: ada_camera          # cctv_snapshot/cctv_wall/traffic_camera/ada_camera_snapshot -> action=
+    canonical: ada_camera_snapshot  # cctv_snapshot/traffic_camera -> source= param
     scenario: tool_merge_camera
     absorbed:
-      - cctv_snapshot
-      - cctv_wall
-      - traffic_camera
-      - ada_camera_snapshot
+      - cctv_snapshot             # -> ada_camera_snapshot {source: vms, target: tv}
+      - traffic_camera            # -> ada_camera_snapshot {source: traffic}
+      # GEV remote command — retires into vcast_snapshot's display
+      # self-capture (it already fires capture_frame internally), which
+      # keeps its own name until the display-family merge card runs.
+      - capture_frame             # -> vcast_snapshot
+    # cctv_wall deliberately NOT absorbed: a wall is a live grid, not a
+    # single frame (card spec 2026-10-05). vcast_snapshot stays the
+    # second survivor of the 5->2 merge.
   cms:
     merge_card: tools-merge-cms
     canonical: cms_page            # cms_* publish/verify/note/delete/list/get/automation -> action=

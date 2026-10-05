@@ -24,7 +24,7 @@ turns:
   # T1 — explicit ask: capture + cast directly, no confirm dance.
   - user: "Ada, take a snapshot of the swimming pool camera and put it on screen {real_screen}."
     expect:
-      calls_any: [cctv_snapshot, ada_camera_snapshot, cast_to_screen, cctv_wall]
+      calls_any: [ada_camera_snapshot, cast_to_screen, cctv_wall]
       result_contains: ["delivered"]
       response_nonempty: true
       max_calls: 10
@@ -36,7 +36,7 @@ turns:
   # already shows the image.
   - user: "Yes, go ahead."
     expect:
-      calls_any: [cctv_snapshot, ada_camera_snapshot, cast_to_screen]
+      calls_any: [ada_camera_snapshot, cast_to_screen]
       or_state: {vcast_screen: "{real_screen}", state: image}
       response_nonempty: true
       max_calls: 10

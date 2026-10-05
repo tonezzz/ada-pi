@@ -26,7 +26,7 @@ policy:
                 ada_enroll_speaker,
                 control_entity, tv_action, gev_command,
                 # casting/camera actuation — gated by the capture contract
-                cast_to_screen, cctv_snapshot, cctv_wall,
+                cast_to_screen, cctv_wall,
                 ada_camera_snapshot]
   # scenarios permitted to exercise write tools (incl. denied attempts).
   write_allowed_in:

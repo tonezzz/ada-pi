@@ -70,8 +70,12 @@ CMS_WRITE_TOOLS = {"cms_publish_page", "cms_delete_page", "cms_automation"}
 DEVIN_CONFIRMED_TOOLS = {"devin_dispatch", "devin_followup", "devin_answer"}
 
 # Camera captures/casts visible on screens — gated by action inside
-# _check_capture_confirmed (uplink, wall start, cctv snapshot).
-CAPTURE_CONFIRMED_TOOLS = {"cast_to_screen", "cctv_wall", "cctv_snapshot"}
+# _check_capture_confirmed (uplink, wall start, camera snap-to-display).
+# cctv_snapshot was absorbed into ada_camera_snapshot (tools-merge-camera):
+# the canonical name holds the seat, gated only when the call pushes the
+# frame to a display (screen=/target=) — the describe path stays open.
+CAPTURE_CONFIRMED_TOOLS = {
+    "cast_to_screen", "cctv_wall", "ada_camera_snapshot"}
 
 # Job ledger collection: job/<id> docs (status running|awaiting-user|
 # answered|done|failed) written by devin-dispatch-watch and job-run.sh;
@@ -248,6 +252,13 @@ _ALIASES: dict[str, str] = {
     "guest_remember": "ada_remember",
     "guest_remember_private": "ada_remember",
     "ada_ha_recall": "ada_session_recall",
+    # camera family (tools-merge-camera): cctv_snapshot + traffic_camera
+    # retire into ada_camera_snapshot's source= param; capture_frame
+    # (the GEV remote command) retires into vcast_snapshot, which fires
+    # it internally as part of the display self-capture flow.
+    "cctv_snapshot": "ada_camera_snapshot",
+    "traffic_camera": "ada_camera_snapshot",
+    "capture_frame": "vcast_snapshot",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the
@@ -262,8 +273,11 @@ _ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
     "guest_remember": {"kind": "guest"},
     "guest_remember_private": {"kind": "guest", "private": True},
     "ada_ha_recall": {"scope": "history"},
+    # cctv_snapshot's declared default was target='tv' — keep it so an
+    # old-style call still lands the frame on the living-room TV.
+    "cctv_snapshot": {"source": "vms", "target": "tv"},
+    "traffic_camera": {"source": "traffic"},
 }
-
 
 def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
     """Map a retired tool name to (canonical tool, implied arg defaults)."""
@@ -1125,8 +1139,8 @@ class ToolRunner:
     # Tools that already carry capture state — a reminder on them would
     # be noise (the capture IS the subject of these calls).
     _CAPTURE_AWARE_TOOLS = {
-        "cast_to_screen", "cctv_wall", "cctv_snapshot", "vcast_list",
-        "ada_camera_snapshot", "traffic_camera", "vcast_say",
+        "cast_to_screen", "cctv_wall", "vcast_list",
+        "ada_camera_snapshot", "vcast_say",
     }
     _capture_reminded_ts = 0.0
 
@@ -1339,7 +1353,12 @@ class ToolRunner:
             or (name == "cctv_wall"
                 and str(args.get("action") or "").lower()
                 not in {"stop", "settings", "status"})
-            or name == "cctv_snapshot"
+            # cctv_snapshot's seat: gated only when the call puts the
+            # frame on a display — a describe-only snapshot stays open.
+            or (name == "ada_camera_snapshot"
+                and (args.get("screen")
+                     or str(args.get("target") or "").strip().lower()
+                     in {"tv", "screen"}))
         )
         if gated and confirmed is not True and self._is_secondary_turn():
             logger.warning(
@@ -3930,30 +3949,118 @@ class ToolRunner:
             "https://tony-dell.taila0626a.ts.net:8123/local/cam/")
         return {"ok": True, "url": base + name, "camera": src}
 
-    async def cctv_snapshot(self, camera: str, target: str = "tv",
-                            screen: int = 0) -> dict[str, Any]:
-        """Grab a single frame from a CCTV camera and show it on a screen.
-        camera: c100|c201|coffee corner (or a go2rtc stream name).
-        target: 'tv' (living-room TV) or 'screen' (vcast display number).
-        Pulls ONE frame — no live stream, minimal bandwidth/CPU."""
+    async def ada_camera_snapshot(
+            self, view: str = "", source: str = "auto",
+            mode: str = "live", screen: int = 0, target: str = "",
+            query: str = "", lat: float | None = None,
+            lon: float | None = None, heading: float | None = None,
+            channel: str = "", camera: str = "") -> dict[str, Any]:
+        """One still frame from a camera, optionally pushed to a display.
+
+        Canonical for the camera merge (tools-merge-camera): absorbs
+        cctv_snapshot (snap + show on TV/screen) and traffic_camera
+        (public Thailand traffic cams). source: 'auto' (default — traffic
+        only when traffic-style args arrive), 'vms' (property CCTV +
+        go2rtc home cams), 'traffic' (Longdo/iTIC). mode='cached' serves
+        the camwall's last-good frame instead of a live pull.
+
+        Runner path (tool_runner.execute / REST) — the frame can't attach
+        to a live turn from here, so the result carries a fetchable url.
+        The provider's dispatch attaches the image itself."""
         import asyncio
-        shot = await asyncio.to_thread(self._cctv_grab, camera)
+        src = str(source or "auto").lower()
+        if src == "traffic" or (src == "auto" and (
+                str(query or "").strip() or lat is not None
+                or lon is not None or heading is not None)):
+            return await asyncio.to_thread(
+                self._traffic_snapshot, query or view, lat, lon, heading)
+        if src not in ("auto", "vms"):
+            return {"ok": False,
+                    "error": f"unknown source {source!r} — use auto|vms|traffic"}
+        want = str(view or channel or camera or "").strip()
+        if not want:
+            return {"ok": False,
+                    "error": "view is required — a camera name "
+                             "('swimming pool', 'c201', 'coffee corner')"}
+        if str(mode or "").lower() == "cached":
+            url, note = await asyncio.to_thread(self._camwall_fallback, want)
+            if not url:
+                return {"ok": False,
+                        "error": note or f"no stored frame for {want!r}"}
+            shot = {"ok": True, "url": url, "camera": want, "stored": True}
+        else:
+            shot = await asyncio.to_thread(self._cctv_grab, want)
         if not shot.get("ok"):
             return shot
         url = shot["url"]
-        t = (target or "tv").strip().lower()
-        if t == "screen" or t.startswith("vcast"):
-            n = int(screen or 1)
+        t = (target or "").strip().lower()
+        n = int(screen or 0)
+        if n or t == "screen" or t.startswith("vcast"):
+            n = n or 1
             await self._check_screen_owner(n, self._memory_identity())
             out = await asyncio.to_thread(
                 self._vcast_api, "/pub",
                 {"screen": n, "msg": {"type": "image", "url": url}})
             out.update({"url": url, "camera": shot["camera"], "screen": n})
             return out
-        out = await self.tv_action(cmd="nav", text=url)
-        if isinstance(out, dict):
-            out.update({"url": url, "camera": shot["camera"]})
-        return out
+        if t == "tv":
+            out = await self.tv_action(cmd="nav", text=url)
+            if isinstance(out, dict):
+                out.update({"url": url, "camera": shot["camera"]})
+            return out
+        return {"ok": True, "url": url, "camera": shot["camera"],
+                "output": f"Still frame from camera '{shot['camera']}' "
+                          f"at {url}"}
+
+    @staticmethod
+    def _traffic_snapshot(query: str, lat: float | None,
+                          lon: float | None,
+                          heading: float | None) -> dict[str, Any]:
+        """traffic_camera absorb (runner path): Longdo/iTIC search, snap
+        the best match, publish a same-origin relay asset. Same flow as
+        the provider's _traffic_camera minus the frame attachment."""
+        from backend import traffic_camera as tc
+        query = str(query or "").strip()
+        if not query and lat is None:
+            return {"ok": False,
+                    "error": "pass a query (area/road) or lat+lon "
+                             "(+optional heading)"}
+        try:
+            cams = tc.find_cams(query, lat, lon, heading)
+        except Exception as exc:
+            return {"ok": False, "error": f"camera feed unavailable: {exc}"}
+        if not cams:
+            return {"ok": False,
+                    "error": f"no traffic camera matched "
+                             f"{query or 'that position'}."}
+        if cams[0].get("suspended"):
+            return {"ok": False,
+                    "error": cams[0]["title"] +
+                             " — the feed currently has live frames for "
+                             "Bangkok and Nonthaburi cams only."}
+        dead = []
+        for cand in cams[:4]:
+            try:
+                res = tc.snap(cand, 10)
+            except Exception:
+                res = None
+            if res and res[0]:
+                jpeg, _mime = res
+                slug = re.sub(r"[^a-z0-9]+", "-",
+                              (cand.get("camid") or "cam").lower())
+                out = {"ok": True, "camid": cand["camid"],
+                       "title": cand["title"], "matches": len(cams),
+                       "output": f"Traffic camera '{cand['title']}'"}
+                if cand.get("dist_km") is not None:
+                    out["dist_km"] = cand["dist_km"]
+                cast_url = tc.publish_relay(jpeg, slug)
+                if cast_url:
+                    out["cast_url"] = cast_url
+                return out
+            dead.append(cand["title"][:60])
+        return {"ok": False,
+                "error": f"{len(dead)} matched camera(s) returned no "
+                         f"usable frame ({', '.join(dead)})."}
 
     # -- async chat push (LINE / Telegram) --
 
@@ -4375,6 +4482,94 @@ class ToolRunner:
             pass
         return out
 
+    async def vcast_snapshot(self, screen: int) -> dict[str, Any]:
+        """vcast_snapshot (runner path): ask the display to capture its
+        own frame — /pub {type:snap-request,token} then poll
+        /frame?screen&token until the JPEG lands. GEV iframes can't be
+        read by the vcast page, so the same call also fires the GEV
+        remote capture_frame command at that screen — that command is
+        retired INTO this tool (tools-merge-camera), not a separate
+        surface. The provider's live path attaches the frame to the
+        turn; here the /frame URL is the result."""
+        import asyncio
+        import urllib.request
+        try:
+            n = int(screen)
+        except (TypeError, ValueError):
+            return {"ok": False,
+                    "error": "screen number required — call vcast_list "
+                             "to see registered displays."}
+        base = os.environ.get(
+            "VCAST_API",
+            "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+        token = f"snap-{int(time.time() * 1000)}-runner"
+        try:
+            out = await asyncio.to_thread(
+                self._vcast_api, "/pub",
+                {"screen": n,
+                 "msg": {"type": "snap-request", "token": token}})
+        except Exception as exc:
+            return {"ok": False, "error": f"snap-request failed: {exc}"}
+        if not out.get("delivered", 0):
+            return {"ok": False,
+                    "error": f"screen {n} is not connected — "
+                             "check vcast_list for online displays."}
+
+        def _post(url: str, payload: dict):
+            req = urllib.request.Request(
+                url, data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"})
+            return urllib.request.urlopen(req, timeout=10)
+
+        def _get(url: str):
+            return urllib.request.urlopen(url, timeout=10)
+
+        # Fire the retired capture_frame command at this screen's GEV
+        # remotes; whichever path lands the frame first wins the poll.
+        try:
+            await asyncio.to_thread(
+                _post,
+                os.environ.get(
+                    "GEV_CMD_URL",
+                    "https://tony-dell.taila0626a.ts.net"
+                    "/apps/gev-cmd/command"),
+                {"name": "capture_frame", "args": {"token": token},
+                 "screen": n, "wait": 0})
+        except Exception:
+            pass  # bridge down or no GEV client — snap-request may land
+        last_err = None
+        for _ in range(15):
+            try:
+                r = await asyncio.to_thread(
+                    _get, f"{base}/frame?screen={n}&token={token}")
+                if r.headers.get("Content-Type", "").startswith("image/"):
+                    pub = os.environ.get("VCAST_PUBLIC_API", base)
+                    return {"ok": True, "screen": n,
+                            "url": f"{pub}/frame?screen={n}&token={token}",
+                            "output": f"Still frame captured from vcast "
+                                      f"screen {n}."}
+                body = json.loads(r.read() or b"{}")
+                if body.get("error") == "simulated":
+                    return {"ok": False,
+                            "error": f"screen {n} is a headless/simulated "
+                                     "display — no real pixels to capture "
+                                     f"(state "
+                                     f"'{body.get('state') or 'unknown'}')."}
+                if body.get("error") and body["error"] != "image-load-failed":
+                    last_err = body
+                elif body.get("error"):
+                    return {"ok": False,
+                            "error": f"screen {n} could not capture: "
+                                     f"{body['error']} (state="
+                                     f"{body.get('state') or 'unknown'})."}
+            except Exception as exc:
+                last_err = {"error": str(exc)}
+            await asyncio.sleep(0.8)
+        return {"ok": False,
+                "error": f"screen {n} did not return a frame in time"
+                         + (f" ({last_err.get('error')})"
+                            if last_err else "")}
+
     async def vcast_gesture(self, screen: int | None = None,
                             mode: str = "off") -> dict[str, Any]:
         """Toggle gesture control on a vcast display — publishes a
@@ -4787,7 +4982,8 @@ class ToolRunner:
                     "error": (f"URL is unreachable ({probe['dead']}) — not "
                               "casting. Never invent a URL: re-fetch a "
                               "current one from the source tool (e.g. "
-                              "traffic_camera returns cast_url) and retry "
+                              "ada_camera_snapshot returns cast_url) and "
+                              "retry "
                               "with that exact value.")}
             if (action == "play"
                     and str(probe.get("content_type") or "").lower()

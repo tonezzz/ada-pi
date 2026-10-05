@@ -28,7 +28,7 @@ turns:
         - "ล่าสุด"
         - "ไม่ได้"
         - "ภาพ"
-      no_unattempted_refusal: [ada_camera_snapshot, cctv_snapshot]
+      no_unattempted_refusal: [ada_camera_snapshot]
       max_calls: 8
       timeout_s: 420     # live path: 2 shim retries × ~170s worst + describe
       settle_s: 8
