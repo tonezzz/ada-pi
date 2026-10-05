@@ -374,3 +374,19 @@ coverage_debt:
 # Tools that legitimately never get a live scenario (pure meta/report
 # surfaces). Empty at census — prefer coverage_debt over listing here.
 coverage_exempt: []
+
+# decl<->impl contract (tool-decl-impl-lint, 2026-10-05): every builtin
+# declaration must land on a public async ToolRunner method — execute()
+# awaits getattr(self, name) — and every public async ToolRunner method
+# must resolve to the declared surface or the alias table. Two explicit
+# exceptions:
+#   provider_dispatched — builtin declarations realtime_provider.py
+#     handles inline in its function-call chain (no ToolRunner method;
+#     the call never reaches runner.execute).
+#   runner_internal — public async ToolRunner methods that are dispatch
+#     plumbing, not tools. New public helpers should be _underscore —
+#     a listing here is a deliberate exemption, not the default.
+provider_dispatched:
+  - set_facial_expression     # emits ProviderEvent("expression") inline
+runner_internal:
+  - execute                   # the dispatch entry point itself
