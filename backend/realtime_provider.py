@@ -218,8 +218,10 @@ def _phantom_claim(text: str) -> bool:
     return False
 
 ACTUATING_TOOLS = frozenset({
-    "control_entity", "control_cover", "control_media_player",
-    "press_button", "tv_action", "yt_cast", "yt_cast_stop",
+    # tools-merge-ha (2026-10-05): control_cover/control_media_player/
+    # press_button collapsed into control_entity — the canonical name
+    # carries every actuating action now.
+    "control_entity", "tv_action", "yt_cast", "yt_cast_stop",
     "cast_to_screen", "vcast_say",
     "ada_doc_archive", "ada_doc_print", "ada_set_voice",
     "devin_dispatch",
@@ -526,13 +528,14 @@ CAMERA_DECLARATION = {
 # schemas; the allowlist below swaps out the bank-facing versions.
 CHABA_TOOLS = {"ada_remember", "ada_memory_search", "guest_register"}
 
+# tools-merge-ha (2026-10-05): the finders/history reads consolidated —
+# guests get the canonical trio (home_search kind=device|sensor,
+# get_home_state, home_history) and control_entity for lights/media.
 CHABA_ALLOW = CHABA_TOOLS | {
-    "get_home_state", "list_home_devices", "search_home_devices",
-    "ada_ha_get_state", "ada_ha_search_devices", "ada_ha_search_sensors",
-    "list_sensors", "search_sensors", "get_sensor_history",
+    "get_home_state", "home_search", "home_history",
     "get_power_summary", "get_rk600_weather", "get_pool_status",
     "get_battery_status", "get_battery_detail",
-    "control_entity", "control_media_player",
+    "control_entity",
 }
 
 CHABA_INSTRUCTIONS = (
@@ -544,9 +547,9 @@ CHABA_INSTRUCTIONS = (
     "text); ada_memory_search(scope='guest') searches saved notes; "
     "private=true is only for promoted users and fails for guests. You can "
     "read home state and sensors "
-    "and control lights/media via control_entity and control_media_player, "
-    "but never anything that moves (covers, gates, buttons) — refuse those "
-    "politely."
+    "and control lights/media via control_entity (action=on/off or the "
+    "media_player verbs), but never anything that moves — no cover, gate, "
+    "or button actions; refuse those politely."
 )
 
 CHABA_DECLARATIONS = [
@@ -802,34 +805,38 @@ class GeminiLiveProvider(RealtimeProvider):
             " When the user asks about token usage, API usage, or what a session "
             "costs, call ada_usage_summary and answer from its numbers."
             " You have Home Assistant device control through several tools: "
-            "get_home_state to check occupancy and the state of the configured home plugs, "
-            "list_home_devices to list all devices including lights, switches, covers, buttons, and media players, "
-            "search_home_devices to find a device by name, "
-            "control_entity to turn a light/switch/fan on or off, "
-            "control_cover to open, close, or stop a gate or shutter, "
-            "press_button to press a button entity, "
-            "control_media_player to turn on/off, play, pause, or change source on a TV or speaker, "
+            "get_home_state to check occupancy and the state of the configured home plugs "
+            "(or a single entity with entity_id=, one HA domain with domain=, or the "
+            "stored memory snapshot with domain='memory'), "
+            "home_search to find devices (kind='device'), sensors (kind='sensor'), or "
+            "recorded events (kind='event') — a blank query lists instead of searching, "
+            "control_entity to actuate any one entity — on=true/false or action=on|off "
+            "for lights/switches/fans, action=open|close|stop for covers like gates and "
+            "shutters, action=press for buttons, and the media_player actions "
+            "(turn_on, turn_off, media_play, media_pause, media_stop, volume_up, "
+            "volume_down, volume_mute, select_source with source=) for TVs and speakers, "
             "and tv_action to send a command to the LG TV via rest_command.tv_action. "
-            "When the user asks about devices, occupancy, or what is on/off, call get_home_state or list_home_devices first. "
+            "When the user asks about devices, occupancy, or what is on/off, call get_home_state or home_search first. "
             "When the user asks to turn something on/off, control a gate, or operate the TV, "
-            "use search_home_devices to find the exact entity_id or use tv_action with the right cmd/text, then call the matching control tool. "
-            "For safety, before using control_cover to open or close the gate or any shutter, "
+            "use home_search to find the exact entity_id or use tv_action with the right cmd/text, then call the matching control tool. "
+            "For safety, before opening or closing the gate or any shutter, "
             "always warn that something could be blocking it and ask the user to confirm explicitly. "
-            "Only call control_cover for the gate or a shutter after the user has given a clear second confirmation. "
+            "Only call control_entity on a cover.* after the user has given a clear second confirmation. "
             "Every controllable device has a safety level: safe, caution, or dangerous. "
-            "Use ada_ha_get_device_confidence to check a device's safety before acting. "
+            "Use ha_confidence to check a device's safety before acting. "
             "For safety: dangerous, warn the user, explain the risk, and get explicit confirmation before calling any control tool. "
             "Dangerous devices are enforced server-side: the control call is rejected unless you pass confirmed=true. "
             "Only set confirmed=true after the user has explicitly confirmed the action. "
             "For safety: caution, confirm once before acting. "
             "For safety: safe, proceed directly. "
-            "You can update a device's safety level with ada_ha_set_device_confidence. "
-            "You also have Ada HA memory tools: ada_ha_get_state for the stored home snapshot, "
-            "ada_ha_search_devices to find a device by name, ada_ha_search_sensors to find a sensor, "
+            "You can update a device's trust or safety level with ha_confidence "
+            "(entity_id + status and/or safety). "
+            "You also have stored home memory: get_home_state domain='memory' returns "
+            "the stored home snapshot, "
+            "home_search kind='device'/'sensor' finds devices and sensors by name, "
             "ada_session_recall with scope='history' for free-form recall across the stored devices and sensors, "
-            "ada_ha_history to list recent home snapshots from memory, "
-            "ada_ha_get_device_confidence to list devices by trust level, "
-            "ada_ha_set_device_confidence to change a device's trust level, and "
+            "home_history kind='snapshots' lists recent persisted home snapshots, "
+            "ha_confidence lists devices by trust level and changes a device's trust level, and "
             "ada_session_recall to ask NotebookLM about previous conversations or stored knowledge by topic group, "
             "and curated memory banks you can search and write: "
             "ada_memory_search to find what you know, ada_remember to store or correct a memory "
@@ -883,7 +890,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "conversation so far — never pass a bare pronoun as the query. "
             "Memories returned with unverified=true are low-confidence: hedge or say you are not sure "
             "rather than stating them as fact. "
-            "Prefer the ada_ha_* memory tools for home, device, sensor, or event questions — they answer instantly. "
+            "Prefer the home_search/get_home_state/home_history tools for home, device, sensor, or event questions — they answer instantly. "
             "For any factual lookup — people, projects, purchases, procedures, fixes — "
             "call ada_memory_search with bank='all' first; it fans out across every bank "
             "so you never have to guess which one. For reports, research, or CMS pages "
@@ -905,11 +912,12 @@ class GeminiLiveProvider(RealtimeProvider):
             "transcript FIRST. Do NOT call memory tools to resolve them: the "
             "threads you just discussed outrank stored facts even when a "
             "memory hit looks plausible. "
-            "Use ada_ha_get_device_confidence when the user asks what is broken, new, needs setup, or trusted. "
-            "For event history: get_logbook gives the friendly Home Assistant event log, "
-            "get_recent_events answers what opened, closed, or changed recently across the home, "
-            "get_entity_events gives one entity's open/close timeline with durations, and "
-            "ada_ha_search_events searches recorded events from memory. "
+            "Use ha_confidence when the user asks what is broken, new, needs setup, or trusted. "
+            "For event history: home_history kind='logbook' gives the friendly Home Assistant event log, "
+            "kind='events' answers what opened, closed, or changed recently across the home, "
+            "kind='timeline' gives one entity's open/close timeline with durations, "
+            "kind='series' gives a sensor's numeric history, and "
+            "home_search kind='event' searches recorded events from memory. "
             "Use these when the user asks about the stored home state, past state, or how it has changed. "
             "When the user asks 'what did we talk about' or 'do you remember', call ada_session_recall. "
             "Scope discipline: answer only within the scope you actually queried — a memory answer "
@@ -2207,20 +2215,13 @@ class GeminiLiveProvider(RealtimeProvider):
                     "description": (
                         "Returns current read-only Home Assistant home-plug state, "
                         "whether the user is home, recent local home occupancy, and any "
-                        "active five-minute or latched habit condition. Use this when asked "
-                        "about home plugs, occupancy, or whether plugs were left on."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "control_entity",
-                    "description": (
-                        "Turn on or off a Home Assistant light, switch, fan, or input_boolean. "
-                        "Use this when the user asks to turn something on or off."
+                        "active five-minute or latched habit condition — also handles "
+                        "what used to be ada_ha_get_state. Use this when asked "
+                        "about home plugs, occupancy, or whether plugs were left on. "
+                        "entity_id reads one entity live; domain lists the entities "
+                        "under one HA domain; domain='memory' returns the stored home "
+                        "snapshot (counts of controllable devices and sensors, person "
+                        "entity, and a confidence summary)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2228,11 +2229,54 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "entity_id": {
                                 "type": "string",
-                                "description": "The Home Assistant entity_id to control, e.g. light.living_room.",
+                                "description": "Optional exact entity_id to read live, e.g. binary_sensor.front_door.",
+                            },
+                            "domain": {
+                                "type": "string",
+                                "description": "Optional HA domain to list (e.g. 'light', 'sensor'), or 'memory' for the stored snapshot.",
+                            },
+                        },
+                        "additionalProperties": False,
+                    },
+                }, {
+                    "name": "control_entity",
+                    "description": (
+                        "Actuate one Home Assistant entity — also handles what used to be "
+                        "control_cover, press_button, and control_media_player. The entity's "
+                        "domain picks the path: pass on=true/false or action='on'/'off' for "
+                        "lights, switches, fans, and input_booleans; action='open'/'close'/'stop' "
+                        "for cover.* entities like gates and shutters; action='press' (or no "
+                        "action) for button.* entities; and the media_player actions "
+                        "turn_on, turn_off, media_play, media_pause, media_stop, volume_up, "
+                        "volume_down, volume_mute, select_source (with source=) for "
+                        "media_player.* entities. Only Tony's own TV entities "
+                        "(media_player.tony_tv, media_player.tony_tv_cast) are valid media "
+                        "players — other media_player entities discovered on the network "
+                        "belong to devices we do not own and must not be targeted."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "entity_id": {
+                                "type": "string",
+                                "description": "The Home Assistant entity_id to control, e.g. light.living_room or cover.gate_motor.",
                             },
                             "on": {
                                 "type": "boolean",
-                                "description": "True to turn the entity on, false to turn it off.",
+                                "description": "For light/switch/fan/input_boolean entities: true to turn on, false to turn off.",
+                            },
+                            "action": {
+                                "type": "string",
+                                "enum": ["on", "off", "open", "close", "stop", "press",
+                                         "turn_on", "turn_off", "media_play", "media_pause",
+                                         "media_stop", "volume_up", "volume_down",
+                                         "volume_mute", "select_source"],
+                                "description": "Domain action: on|off for simple entities; open|close|stop for cover.*; press for button.*; media_player verbs for media_player.* (source= required for select_source).",
+                            },
+                            "source": {
+                                "type": "string",
+                                "description": "media_player select_source only: the input/source name to select.",
                             },
                             "confirmed": {
                                 "type": "boolean",
@@ -2243,30 +2287,24 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
-                        "required": ["entity_id", "on"],
+                        "required": ["entity_id"],
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "list_home_devices",
+                    "name": "home_search",
                     "description": (
-                        "Lists every controllable Home Assistant device (lights, switches, fans, input_booleans) "
-                        "with its entity_id, friendly name, current state, domain, and availability. "
-                        "Use this to answer 'what devices are available', 'what can I control', or to find "
-                        "the exact entity_id before calling control_entity."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "search_home_devices",
-                    "description": (
-                        "Searches controllable Home Assistant devices by name or entity_id. "
-                        "Returns the best matching devices with entity_id, friendly name, state, domain, and availability. "
-                        "Use this when the user asks to control a device by name (e.g. 'turn on kitchen table') "
-                        "and you need to find the exact entity_id."
+                        "Find Home Assistant devices, sensors, or recorded events — also "
+                        "handles what used to be list_home_devices, search_home_devices, "
+                        "list_sensors, search_sensors, ada_ha_search_devices, "
+                        "ada_ha_search_sensors, and ada_ha_search_events. kind='device' "
+                        "searches controllable devices (lights, switches, fans, covers, "
+                        "buttons, media players) by name or entity_id — use this to find "
+                        "the exact entity_id before control_entity; a blank query lists "
+                        "all controllable devices (bounded). kind='sensor' searches sensor "
+                        "entities with current state and unit; a blank query lists sensors. "
+                        "kind='event' searches recorded home events from memory — transitions "
+                        "captured by the event recorder plus persisted event batches, for "
+                        "'when did the gate open earlier' or 'any door events this week'."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2274,10 +2312,27 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "A device name or keyword to search, e.g. 'kitchen table', 'front gate', or 'outlet'.",
-                            }
+                                "description": "Name or keyword to search, e.g. 'kitchen table', 'front gate', 'pool temperature', 'door'. Blank lists the kind instead.",
+                            },
+                            "kind": {
+                                "type": "string",
+                                "enum": ["device", "sensor", "event"],
+                                "description": "What to find: a controllable device (default), a sensor entity, or recorded events.",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 100,
+                                "description": "Maximum results. Default 10.",
+                            },
+                            "hours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 720,
+                                "description": "kind='event' only: how many hours of recorded events to search. Default 24.",
+                            },
                         },
-                        "required": ["query"],
+                        "required": [],
                         "additionalProperties": False,
                     },
                 }, {
@@ -2367,132 +2422,6 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["url"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "list_sensors",
-                    "description": (
-                        "Lists available Home Assistant sensor entities with their current state, unit, and friendly name. "
-                        "Use this when the user asks 'what sensors do we have', 'what can we monitor', or about environmental/power/energy information."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "search_sensors",
-                    "description": (
-                        "Searches Home Assistant sensor entities by name or entity_id. "
-                        "Returns matching sensors with current state, unit, and friendly name. "
-                        "Use this when the user asks about a specific reading like 'what is the pool temperature' or 'what is the pool energy'."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "A sensor name or keyword to search, e.g. 'pool', 'temperature', 'pv power'.",
-                            }
-                        },
-                        "required": ["query"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "control_cover",
-                    "description": (
-                        "Open, close, or stop a Home Assistant cover such as a gate or roller shutter. "
-                        "Use this when the user asks to open/close the gate, garage, or shutter. "
-                        "Only call this tool after the user has explicitly confirmed there is nothing blocking the gate or shutter."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "The cover.* entity_id, e.g. cover.gate_motor.",
-                            },
-                            "action": {
-                                "type": "string",
-                                "enum": ["open", "close", "stop"],
-                                "description": "The cover action: open, close, or stop.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required for dangerous-safety covers; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["entity_id", "action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "press_button",
-                    "description": (
-                        "Press a Home Assistant button entity. "
-                        "Use this for 'my position' buttons or one-shot commands."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "The button.* entity_id, e.g. button.gate_motor_my_position.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required for buttons attached to dangerous devices; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["entity_id"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "control_media_player",
-                    "description": (
-                        "Control a Home Assistant media player (TV, speaker). "
-                        "Supports turn_on, turn_off, media_play, media_pause, media_stop, "
-                        "volume_up, volume_down, volume_mute, and select_source. "
-                        "Use this to turn the TV on or off or change playback."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "The media_player.* entity_id, e.g. media_player.tony_tv. Only Tony's own TV entities (media_player.tony_tv, media_player.tony_tv_cast) are valid — other media_player entities discovered on the network belong to devices we do not own and must not be targeted.",
-                            },
-                            "action": {
-                                "type": "string",
-                                "enum": ["turn_on", "turn_off", "media_play", "media_pause", "media_stop", "volume_up", "volume_down", "volume_mute", "select_source"],
-                                "description": "The media_player action.",
-                            },
-                            "source": {
-                                "type": "string",
-                                "description": "Required for select_source; the input/source name to select.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required for dangerous-safety entities; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["entity_id", "action"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -2938,7 +2867,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     "description": (
                         "Returns the local RK600 weather station readings: wind speed, wind direction, temperature, humidity, pressure, rainfall, and device status. "
                         "Use this ONLY when the user explicitly asks about current weather, wind, rain, or the weather station/RK600 card. "
-                        "Do NOT use it for anything else — not UPS/battery/power questions, not forecasts (use search_sensors('weather')), not travel or flood questions (use web_search)."
+                        "Do NOT use it for anything else — not UPS/battery/power questions, not forecasts (use home_search kind='sensor' query='weather'), not travel or flood questions (use web_search)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2987,140 +2916,53 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "get_sensor_history",
+                    "name": "home_history",
                     "description": (
-                        "Fetches the history of a single Home Assistant sensor for the requested hours. "
-                        "Use this when the user asks about a specific sensor's behavior over time."
+                        "Home Assistant history and event reads — also handles what used to be "
+                        "get_logbook, get_sensor_history, get_entity_events, get_recent_events, "
+                        "and ada_ha_history. kind='logbook' returns friendly event entries like "
+                        "'Front door was opened' or automation runs (entity_id narrows it to one "
+                        "entity); kind='events' returns recent state changes across the whole "
+                        "home — 'what opened or closed', 'did anything happen while I was away'; "
+                        "kind='timeline' returns one entity's state-change timeline with durations "
+                        "('when was the door last opened', 'how long was the gate open'); "
+                        "kind='series' returns a sensor's numeric history over the window; "
+                        "kind='snapshots' lists persisted home snapshots from memory — what the "
+                        "state was earlier or how it changed."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "kind": {
+                                "type": "string",
+                                "enum": ["logbook", "events", "timeline", "series", "snapshots"],
+                                "description": "Which history read. Optional — defaults to timeline/series for entity_id, events for query, snapshots for domain='memory', else logbook.",
+                            },
                             "entity_id": {
                                 "type": "string",
-                                "description": "The exact Home Assistant entity_id, e.g. sensor.inverters_1_pv_power.",
+                                "description": "timeline/series (required there), logbook (optional narrow): the exact entity_id, e.g. binary_sensor.front_door or sensor.inverters_1_pv_power.",
                             },
-                            "hours": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 168,
-                                "description": "How many hours of history to include. Defaults to 24.",
-                            }
-                        },
-                        "required": ["entity_id"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "get_logbook",
-                    "description": (
-                        "Fetches the Home Assistant logbook: friendly event entries like "
-                        "'Front door was opened', 'Kitchen light turned on', or automation runs. "
-                        "Use this when the user asks about the event log or what happened recently."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
+                            "domain": {
                                 "type": "string",
-                                "description": "Optional entity_id to limit the logbook to one entity.",
-                            },
-                            "hours": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 168,
-                                "description": "How many hours of logbook to include. Defaults to 24.",
-                            }
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "get_recent_events",
-                    "description": (
-                        "Returns recent state-change events across the whole home: doors/windows "
-                        "opening and closing, covers moving, locks, presence changes, and "
-                        "lights/switches turning on or off. "
-                        "Use this when the user asks 'what opened or closed', 'what changed recently', "
-                        "or 'did anything happen while I was away'."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "hours": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 168,
-                                "description": "How many hours back to scan. Defaults to 24.",
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "Optional keyword to limit events, e.g. 'door', 'gate', 'kitchen'.",
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 200,
-                                "description": "Maximum events to return. Defaults to 50.",
-                            }
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "get_entity_events",
-                    "description": (
-                        "Returns the event timeline for one entity: every state change with a "
-                        "timestamp and how long it stayed in that state. For a door or window "
-                        "sensor this yields open/close times and durations. "
-                        "Use this when the user asks 'when was the door last opened' or "
-                        "'how long was the gate open'."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "The exact Home Assistant entity_id, e.g. binary_sensor.front_door or cover.gate_motor.",
-                            },
-                            "hours": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 168,
-                                "description": "How many hours back to include. Defaults to 24.",
-                            }
-                        },
-                        "required": ["entity_id"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_ha_search_events",
-                    "description": (
-                        "Searches the recorded Home Assistant event memory: transitions captured "
-                        "by the event recorder plus persisted event batches. "
-                        "Use this when the user asks about events from before the current window, "
-                        "e.g. 'when did the gate open earlier' or 'any door events this week'."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Keyword to search, e.g. 'door', 'gate', 'opened'.",
+                                "description": "Optional HA domain to restrict events/logbook to (e.g. 'cover'), or 'memory'/'snapshots' for the persisted snapshots read.",
                             },
                             "hours": {
                                 "type": "integer",
                                 "minimum": 1,
                                 "maximum": 720,
-                                "description": "How many hours of recorded events to search. Defaults to 24.",
+                                "description": "How many hours back the window covers. Defaults to 24.",
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "events: optional keyword to limit the feed, e.g. 'door', 'gate', 'kitchen'.",
                             },
                             "limit": {
                                 "type": "integer",
                                 "minimum": 1,
-                                "maximum": 100,
-                                "description": "Maximum events to return. Defaults to 20.",
-                            }
+                                "maximum": 200,
+                                "description": "Maximum events/snapshots to return. Defaults to 25.",
+                            },
                         },
                         "additionalProperties": False,
                     },
@@ -3135,91 +2977,18 @@ class GeminiLiveProvider(RealtimeProvider):
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {"type": "object", "properties": {}, "additionalProperties": False},
                 }, {
-                    "name": "ada_ha_get_state",
+                    "name": "ha_confidence",
                     "description": (
-                        "Returns the preloaded memory snapshot of the configured Home Assistant: person, home plugs, "
-                        "and counts of controllable devices and sensors. Use this when the user "
-                        "asks about the stored home state or what is in memory."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {"type": "object", "properties": {}, "additionalProperties": False},
-                }, {
-                    "name": "ada_ha_search_devices",
-                    "description": (
-                        "Search the stored Home Assistant memory for controllable devices by name or entity_id. "
-                        "Use this when the user asks 'what devices do we have' or 'find the kitchen light'."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "A device name or keyword, e.g. 'kitchen table'.",
-                            }
-                        },
-                        "required": ["query"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_ha_search_sensors",
-                    "description": (
-                        "Search the stored Home Assistant memory for sensor entities by name or entity_id. "
-                        "Use this when the user asks 'what sensors do we have about power' or 'find the pool temperature sensor'."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "A sensor name or keyword, e.g. 'pool temperature'.",
-                            }
-                        },
-                        "required": ["query"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_ha_history",
-                    "description": (
-                        "Returns recent persisted snapshots of the Home Assistant state from memory. "
-                        "Use this when the user asks what changed, what the state was earlier, or for a history of the home."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "hours": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 168,
-                                "description": "How many hours back to include. Defaults to 24.",
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 50,
-                                "description": "Maximum snapshots to return. Defaults to 10.",
-                            }
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_ha_get_device_confidence",
-                    "description": (
-                        "Returns controllable devices grouped by user confidence: trusted_working, "
-                        "trusted_broken, learning, or needs_integration. "
-                        "Each device also includes a safety level: safe, caution, or dangerous. "
-                        "Use this when the user asks what is broken, what needs setup, what is new, "
-                        "what is trusted, or what is dangerous."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {"type": "object", "properties": {}, "additionalProperties": False},
-                }, {
-                    "name": "ada_ha_set_device_confidence",
-                    "description": (
-                        "Set a controllable device's confidence and/or safety status. "
-                        "Use this when the user says a device is broken, new, trusted, dangerous, safe, or needs caution."
+                        "Device trust and safety registry — also handles what used to be "
+                        "ada_ha_get_device_confidence and ada_ha_set_device_confidence. "
+                        "With no args it returns controllable devices grouped by confidence "
+                        "(trusted_working, trusted_broken, learning, needs_integration) — "
+                        "each device also carries a safety level: safe, caution, or dangerous. "
+                        "Use it when the user asks what is broken, what needs setup, what is "
+                        "new, what is trusted, or what is dangerous — and before acting on a "
+                        "device. entity_id alone returns one device's entry; entity_id with "
+                        "status and/or safety writes new levels — use it when the user says a "
+                        "device is broken, new, trusted, dangerous, safe, or needs caution."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3227,20 +2996,19 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "entity_id": {
                                 "type": "string",
-                                "description": "The exact Home Assistant entity_id.",
+                                "description": "Optional exact entity_id — alone it reads one device, with status/safety it writes.",
                             },
                             "status": {
                                 "type": "string",
                                 "enum": ["trusted_working", "trusted_broken", "learning", "needs_integration"],
-                                "description": "The confidence level to assign.",
+                                "description": "Write path: the confidence level to assign.",
                             },
                             "safety": {
                                 "type": "string",
                                 "enum": ["safe", "caution", "dangerous"],
-                                "description": "The safety level to assign. Use this to mark devices that are dangerous or safe.",
+                                "description": "Write path: the safety level to assign.",
                             }
                         },
-                        "required": ["entity_id", "status"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -4785,12 +4553,14 @@ class GeminiLiveProvider(RealtimeProvider):
             config["system_instruction"] = (
                 config["system_instruction"]
                 .replace(
-                    "get_home_state to check occupancy and the state of the configured home plugs, ",
+                    "get_home_state to check occupancy and the state of the configured home plugs "
+                    "(or a single entity with entity_id=, one HA domain with domain=, or the "
+                    "stored memory snapshot with domain='memory'), ",
                     "",
                 )
                 .replace(
-                    "When the user asks about devices, occupancy, or what is on/off, call get_home_state or list_home_devices first. ",
-                    "When the user asks about devices, occupancy, or what is on/off, call list_home_devices or ada_ha_get_state first. ",
+                    "When the user asks about devices, occupancy, or what is on/off, call get_home_state or home_search first. ",
+                    "When the user asks about devices, occupancy, or what is on/off, call home_search first. ",
                 )
             )
         excluded = {s.strip() for s in os.environ.get("ADA_EXCLUDED_TOOLS", "").split(",") if s.strip()}
@@ -5170,7 +4940,13 @@ class GeminiLiveProvider(RealtimeProvider):
                         elif call.name == "set_facial_expression" and requested in EXPRESSION_NAMES:
                             yield ProviderEvent("expression", {"name": requested})
                             result = {"output": f"Ada is now {requested}"}
-                        elif call.name == "get_home_state" and self.home_assistant_client is not None:
+                        elif (call.name == "get_home_state"
+                              # entity_id=/domain= reads route to the
+                              # runner (tools-merge-ha) — the fast path
+                              # only serves the no-arg occupancy snapshot.
+                              and not (call.args or {}).get("entity_id")
+                              and not (call.args or {}).get("domain")
+                              and self.home_assistant_client is not None):
                             try:
                                 snapshot = await self.home_assistant_client.snapshot(
                                     person_entity=self.current_speaker_ha_person
@@ -5192,45 +4968,44 @@ class GeminiLiveProvider(RealtimeProvider):
                                 }
                             except Exception as exc:
                                 result = {"error": f"home state failed: {exc}"}
-                        elif call.name == "list_home_devices" and self.home_assistant_client is not None:
-                            try:
-                                devices = await self.home_assistant_client.entities()
-                                # Unbounded dumps stay in live context for
-                                # the whole session (2026-10-01: this single
-                                # call pushed a session past 1M input tokens
-                                # during a silent tool storm). Cap it; the
-                                # marker steers the model to search instead.
-                                if len(devices) > LIST_HOME_DEVICES_MAX:
-                                    devices = devices[:LIST_HOME_DEVICES_MAX] + [{
-                                        "_truncated": (
-                                            f"{LIST_HOME_DEVICES_MAX} of {len(devices)} "
-                                            "devices shown — call search_home_devices "
-                                            "with a name/keyword for the rest"),
-                                    }]
-                                result = {"output": devices}
-                            except Exception as exc:
-                                result = {"error": f"list_home_devices failed: {exc}"}
-                        elif call.name == "search_home_devices" and self.home_assistant_client is not None:
-                            try:
-                                query = (call.args or {}).get("query", "")
-                                devices = await self.home_assistant_client.search_entities(str(query))
-                                result = {"output": devices}
-                            except Exception as exc:
-                                result = {"error": f"search_home_devices failed: {exc}"}
-                        elif call.name == "list_sensors" and self.home_assistant_client is not None:
-                            try:
-                                sensors = await self.home_assistant_client.sensors(limit=50)
-                                result = {"output": sensors}
-                            except Exception as exc:
-                                result = {"error": f"list_sensors failed: {exc}"}
-                        elif call.name == "search_sensors" and self.home_assistant_client is not None:
+                        elif (call.name == "home_search"
+                              # kind='event' needs the recorder/MDDB —
+                              # it falls through to the runner.
+                              and str((call.args or {}).get("kind")
+                                      or "device").lower() in ("device", "sensor")
+                              and self.home_assistant_client is not None):
                             try:
                                 args = dict(call.args or {})
-                                query = args.get("query", "")
-                                sensors = await self.home_assistant_client.sensors(search=str(query), limit=10)
-                                result = {"output": sensors}
+                                query = str(args.get("query") or args.get("q") or "")
+                                kind = str(args.get("kind") or "device").lower()
+                                limit = int(args.get("limit") or 10)
+                                if kind == "sensor":
+                                    if query:
+                                        sensors = await self.home_assistant_client.sensors(
+                                            search=query, limit=limit)
+                                    else:
+                                        sensors = await self.home_assistant_client.sensors(limit=50)
+                                    result = {"output": sensors}
+                                elif query:
+                                    devices = await self.home_assistant_client.search_entities(query)
+                                    result = {"output": devices}
+                                else:
+                                    devices = await self.home_assistant_client.entities()
+                                    # Unbounded dumps stay in live context for
+                                    # the whole session (2026-10-01: this single
+                                    # call pushed a session past 1M input tokens
+                                    # during a silent tool storm). Cap it; the
+                                    # marker steers the model to search instead.
+                                    if len(devices) > LIST_HOME_DEVICES_MAX:
+                                        devices = devices[:LIST_HOME_DEVICES_MAX] + [{
+                                            "_truncated": (
+                                                f"{LIST_HOME_DEVICES_MAX} of {len(devices)} "
+                                                "devices shown — call home_search "
+                                                "with a name/keyword for the rest"),
+                                        }]
+                                    result = {"output": devices}
                             except Exception as exc:
-                                result = {"error": f"search_sensors failed: {exc}"}
+                                result = {"error": f"home_search failed: {exc}"}
                         elif call.name == "get_battery_status" and self.home_assistant_client is not None:
                             try:
                                 status = await self.home_assistant_client.battery_status()
@@ -5282,18 +5057,24 @@ class GeminiLiveProvider(RealtimeProvider):
                                 result = {"output": summary}
                             except Exception as exc:
                                 result = {"error": f"get_power_summary failed: {exc}"}
-                        elif call.name == "get_sensor_history" and self.home_assistant_client is not None:
+                        elif (call.name == "home_history"
+                              # The sensor-series read keeps its fast
+                              # path (the absorbed get_sensor_history) —
+                              # every other kind routes to the runner.
+                              and str((call.args or {}).get("kind")
+                                      or "").lower() in ("", "series")
+                              and str((call.args or {}).get("entity_id")
+                                      or "").startswith("sensor.")
+                              and self.home_assistant_client is not None):
                             try:
                                 args = dict(call.args or {})
                                 entity_id = args.get("entity_id")
                                 hours = int(args.get("hours", 24))
-                                if not entity_id:
-                                    result = {"error": "entity_id is required"}
-                                else:
-                                    history = await self.home_assistant_client.history(entity_id, hours=hours)
-                                    result = {"output": history}
+                                history = await self.home_assistant_client.history(
+                                    str(entity_id), hours=hours)
+                                result = {"output": history}
                             except Exception as exc:
-                                result = {"error": f"get_sensor_history failed: {exc}"}
+                                result = {"error": f"home_history failed: {exc}"}
                         elif (call.name == "report_habit_observation"
                               or (call.name == "ada_remember"
                                   and str((call.args or {}).get("kind")

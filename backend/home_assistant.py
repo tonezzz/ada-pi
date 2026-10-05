@@ -445,7 +445,8 @@ class HomeAssistantClient:
         if response.status_code == 404:
             raise ValueError(
                 "The logbook integration is not enabled on this Home Assistant "
-                "instance; use get_recent_events or get_entity_events instead."
+                "instance; use home_history kind='events' or "
+                "kind='timeline' instead."
             )
         response.raise_for_status()
         payload = response.json()
@@ -828,7 +829,7 @@ class HomeAssistantClient:
             "source": "Rika RK600-07B weather station",
             "note": (
                 "This is the local RK600 weather station data. "
-                "For the forecast/compare view, use search_sensors with 'weather' or ask about the HA weather entities."
+                "For the forecast/compare view, use home_search kind='sensor' query='weather' or ask about the HA weather entities."
             ),
             "sensors": {},
         }

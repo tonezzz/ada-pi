@@ -1,0 +1,42 @@
+# tools-merge-ha regression (2026-10-05): the ha group went 21 -> 6 —
+# home_search absorbs the eight device/sensor/event finders
+# (kind=device|sensor|event), get_home_state absorbs ada_ha_get_state
+# (domain='memory'), home_history absorbs the five history/event reads
+# (kind=logbook|events|timeline|series|snapshots), control_entity
+# absorbs the three domain controllers (cover/button/media_player verbs
+# via action=), and ha_confidence absorbs the confidence pair
+# (read with no args, set with entity_id+status/safety). tv_action kept
+# its own seat. The 19 absorbed names survive as tool_runner._ALIASES
+# rows, hidden from the declared surface. Live-side this scenario checks
+# the canonical calls still fire for the absorbed intents — reads only;
+# the actuation path is regression-covered by the confirm-gate unit
+# tests (control_entity keeps the CONTROL_TOOLS seat).
+name: tool_merge_ha
+turns:
+  - user: >-
+      Am I home right now, and did I leave any plugs on? Check the
+      current home state.
+    expect:
+      calls_any: [get_home_state]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Find the entity_id for the kitchen light — I want to control it
+      in a second.
+    expect:
+      calls_any: [home_search]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      What opened or closed around the house in the last few hours?
+      Anything happen while I was out?
+    expect:
+      calls_any: [home_history, home_search]
+      timeout_s: 120
+      settle_s: 10
+  - user: >-
+      Which devices are marked broken or still need setup?
+    expect:
+      calls_any: [ha_confidence]
+      timeout_s: 90
+      settle_s: 10

@@ -124,28 +124,57 @@ families:
       - yt_cast
       - yt_cast_status
       - yt_cast_stop
-  ha:
+  # ha group 21 -> 6 (tools-merge-ha, landed 2026-10-05): the card split
+  # the original single-ada_ha design into five canonical tools +
+  # tv_action kept separate (the cmd/text/selector param surface doesn't
+  # fold into action=). home_search takes kind=device|sensor|event,
+  # home_history takes kind=logbook|events|timeline|series|snapshots,
+  # control_entity dispatches on the entity domain (on=/action=/source=),
+  # ha_confidence is read-without-args / set-with-status, and
+  # get_home_state keeps its name with entity_id=/domain= params
+  # (domain='memory' is the absorbed ada_ha_get_state seat).
+  ha_search:
     merge_card: tools-merge-ha
-    canonical: ada_ha              # ha control + sensor + logbook/event reads -> action=
+    canonical: home_search         # device/sensor/event finders -> kind=
     scenario: tool_merge_ha
     absorbed:
-      - control_entity
-      - control_cover
-      - press_button
-      - control_media_player
-      - list_home_devices
-      - search_home_devices
-      - get_home_state
-      - list_sensors
-      - search_sensors
-      - get_logbook
-      - get_recent_events
-      - get_entity_events
-      - ada_ha_get_state
-      - ada_ha_search_devices
-      - ada_ha_search_sensors
-      - ada_ha_search_events
-      - ada_ha_history
+      - search_home_devices        # -> kind='device'
+      - list_home_devices          # -> kind='device', blank query
+      - search_devices             # -> kind='device'
+      - search_sensors             # -> kind='sensor'
+      - list_sensors               # -> kind='sensor', blank query
+      - ada_ha_search_devices      # -> kind='device'
+      - ada_ha_search_sensors      # -> kind='sensor'
+      - ada_ha_search_events       # -> kind='event'
+  ha_state:
+    merge_card: tools-merge-ha
+    canonical: get_home_state      # entity_id=/domain= params; domain='memory' seat
+    scenario: tool_merge_ha
+    absorbed:
+      - ada_ha_get_state           # -> domain='memory'
+  ha_history:
+    merge_card: tools-merge-ha
+    canonical: home_history        # history/event reads -> kind=
+    scenario: tool_merge_ha
+    absorbed:
+      - get_logbook                # -> kind='logbook'
+      - get_sensor_history         # -> kind='series'
+      - get_entity_events          # -> kind='timeline'
+      - get_recent_events          # -> kind='events'
+      - ada_ha_history             # -> kind='snapshots'
+  ha_control:
+    merge_card: tools-merge-ha
+    canonical: control_entity      # domain dispatch on entity_id; on=/action=/source=
+    scenario: tool_merge_ha
+    absorbed:
+      - control_cover              # -> entity cover.* + action=open|close|stop
+      - control_media_player       # -> entity media_player.* + action/source
+      - press_button               # -> action='press'
+  ha_confidence:
+    merge_card: tools-merge-ha
+    canonical: ha_confidence       # read (no args) / set (entity_id+status/safety)
+    scenario: tool_merge_ha
+    absorbed:
       - ada_ha_get_device_confidence
       - ada_ha_set_device_confidence
   # memory group 8 -> 4 (tools-merge-memory, landed 2026-10-04): the four
@@ -183,33 +212,25 @@ coverage_debt:
   - ada_decision_check
   - ada_doc_archive
   - ada_doc_print
-  - ada_ha_get_device_confidence
-  - ada_ha_history
-  - ada_ha_search_events
-  - ada_ha_set_device_confidence
   - ada_mddb_health
   - ada_outcome
   - ada_resolve_action
   - ada_usage_summary
   - chat_send
-  - control_cover
   - devin_followup
   - devin_job_report
   - drive_update
   - get_battery_detail
   - get_battery_status
   - get_dashboard_tab
-  - get_entity_events
   - get_habit_status
   - get_inverter_status
   - get_pool_status
   - get_power_summary
-  - get_sensor_history
   - gev_tour
   - guest_register
   - photos_pick
   - photos_picked
-  - press_button
   - tasks_move
   - yt_cast_status
 
