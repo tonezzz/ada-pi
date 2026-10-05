@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, patch, ANY
 
 from backend.memory_banks import MemoryBankRegistry
 from backend.tool_runner import AdaMemoryStore, ToolRunner
@@ -653,6 +653,123 @@ class CmsMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):
             await self.runner.execute(
                 "cms_edit", {"action": "delete", "slug": "x"})
+
+
+class CalendarPlanMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-calendar-plan (9 -> 3): the eight absorbed names stay
+    callable via _ALIASES and route to their canonical parent —
+    calendar_read for events/calendars/freebusy, calendar_write for
+    create/delete/shift (confirm-gated), plan_day for the daily digest
+    and weekly comparison."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.search_documents.return_value = []
+        self.runner.mddb.get_document.return_value = None
+        from tests.test_calendar_providers import FakeProvider, TZ
+        from backend.calendar_providers import CalendarService
+        self.provider = FakeProvider("fake")
+        self.runner._calendar = CalendarService(
+            {"fake": self.provider}, write="fake", tz=TZ)
+        self.runner._calendar_loaded = True
+
+    async def test_calendar_readers_alias_route(self):
+        out = await self.runner.execute("calendar_list_events", {"day": "today"})
+        self.assertIn("events", out)
+        out = await self.runner.execute("calendar_list_calendars", {})
+        self.assertIn("calendars", out)
+        out = await self.runner.execute("calendar_freebusy", {"day": "today"})
+        self.assertIn("busy", out)
+
+    async def test_canonical_calendar_read_actions(self):
+        out = await self.runner.execute(
+            "calendar_read", {"action": "calendars"})
+        self.assertIn("calendars", out)
+        with self.assertRaises(ValueError):
+            await self.runner.execute("calendar_read", {"action": "bogus"})
+
+    async def test_create_alias_keeps_confirm_gate(self):
+        args = {"title": "dentist", "start": "2026-10-06T14:00",
+                "end": "2026-10-06T15:00"}
+        with self.assertRaises(PermissionError):
+            await self.runner.execute("calendar_create_event", dict(args))
+        self.assertEqual(self.provider.created, [])
+        out = await self.runner.execute(
+            "calendar_create_event", {**args, "confirmed": True})
+        self.assertEqual(out["title"], "dentist")
+
+    async def test_delete_alias_keeps_confirm_gate(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "calendar_delete_event", {"event_id": "fake:primary/abc"})
+        out = await self.runner.execute(
+            "calendar_delete_event",
+            {"event_id": "fake:primary/abc", "confirmed": True})
+        self.assertIn("deleted", out)
+        self.assertEqual(self.provider.deleted, ["primary/abc"])
+
+    async def test_shift_alias_keeps_confirm_gate(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute("calendar_shift_overdue", {})
+        out = await self.runner.execute(
+            "calendar_shift_overdue", {"to": "tomorrow", "confirmed": True})
+        self.assertIn("moved", out)
+
+    async def test_canonical_calendar_write_dispatch(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "calendar_write",
+                {"action": "delete", "event_id": "fake:primary/abc"})
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "calendar_write", {"action": "bogus", "confirmed": True})
+
+    async def test_daily_summary_alias_returns_bare_digest(self):
+        self.runner.mddb.get_document.return_value = {
+            "key": "daily-2026-10-04", "contentMd": "talked about floods"}
+        out = await self.runner.execute(
+            "ada_daily_summary", {"day": "2026-10-04"})
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(out["summary"], "talked about floods")
+        self.assertNotIn("events", out)
+
+    async def test_weekly_comparison_alias_maps_end_to_day(self):
+        self.runner.mddb.get_document.return_value = {
+            "key": "weekly-2026-10-05", "contentMd": "busy week"}
+        out = await self.runner.execute(
+            "ada_weekly_comparison", {"end": "2026-10-05", "days": 7})
+        self.assertEqual(out["status"], "ok")
+        self.assertEqual(out["comparison"], "busy week")
+        self.runner.mddb.get_document.assert_awaited_with(
+            ANY, "weekly-2026-10-05")
+
+    async def test_plan_day_folds_digest_into_day_view(self):
+        self.runner.mddb.get_document.return_value = {
+            "key": "daily-2026-09-22", "contentMd": "day digest"}
+        out = await self.runner.execute("plan_day", {"day": "2026-09-22"})
+        self.assertIn("events", out)
+        self.assertEqual(out["digest"]["summary"], "day digest")
+
+    async def test_plan_day_week_period(self):
+        self.runner.mddb.get_document.return_value = {
+            "key": "weekly-2026-10-05", "contentMd": "week text"}
+        out = await self.runner.execute(
+            "plan_day", {"period": "week", "day": "2026-10-05"})
+        self.assertEqual(out["comparison"], "week text")
+
+    async def test_plan_day_no_calendar_returns_digest(self):
+        self.runner._calendar = None
+        self.runner.mddb.get_document.return_value = {
+            "key": "daily-2026-09-22", "contentMd": "only digest"}
+        out = await self.runner.execute("plan_day", {"day": "2026-09-22"})
+        self.assertEqual(out["summary"], "only digest")
+        self.assertEqual(out["calendar"], "not configured")
 
 
 class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):

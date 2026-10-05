@@ -58,7 +58,7 @@ turns:
         - tasks_list
         - search_tasks
         - plan_day
-        - calendar_list_events
+        - calendar_read
 
   - user: "Propose a concrete improvement plan — a few prioritized items."
     expect:

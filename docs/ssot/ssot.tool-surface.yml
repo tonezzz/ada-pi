@@ -69,6 +69,36 @@ families:
       - cms_note_update
       - cms_delete_page
       - cms_automation
+  # calendar+plan group 9 -> 3 (tools-merge-calendar-plan, landed
+  # 2026-10-05): the card split into three canonical targets —
+  # calendar_read (action=events|calendars|freebusy), calendar_write
+  # (action=create|delete|shift — the CALENDAR_WRITE_TOOLS seat), and
+  # plan_day (period=today|tomorrow|week; the day view folds the
+  # absorbed ada_daily_summary digest in under 'digest', period='week'
+  # is ada_weekly_comparison). The tasks_* tools stay declared.
+  calendar_read:
+    merge_card: tools-merge-calendar-plan
+    canonical: calendar_read       # events/calendars/freebusy -> action=
+    scenario: tool_merge_calendar_plan
+    absorbed:
+      - calendar_list_events
+      - calendar_list_calendars
+      - calendar_freebusy
+  calendar_write:
+    merge_card: tools-merge-calendar-plan
+    canonical: calendar_write      # create/delete/shift -> action=
+    scenario: tool_merge_calendar_plan
+    absorbed:
+      - calendar_create_event
+      - calendar_delete_event
+      - calendar_shift_overdue
+  plan_day:
+    merge_card: tools-merge-calendar-plan
+    canonical: plan_day            # daily/weekly digests -> period=
+    scenario: tool_merge_calendar_plan
+    absorbed:
+      - ada_daily_summary          # -> period='digest' (alias-internal)
+      - ada_weekly_comparison      # -> period='week', end->day via shim
   devin:
     merge_card: tools-merge-devin-mcp
     canonical: devin               # devin_* dispatch/status/followup/report/pending/jobs/answer -> action=
@@ -150,7 +180,6 @@ families:
 # tools-regression-scenarios card lands coverage. A declared tool absent
 # from BOTH scenarios and this list fails lint (no silent uncovered adds).
 coverage_debt:
-  - ada_daily_summary
   - ada_decision_check
   - ada_doc_archive
   - ada_doc_print
@@ -162,11 +191,6 @@ coverage_debt:
   - ada_outcome
   - ada_resolve_action
   - ada_usage_summary
-  - ada_weekly_comparison
-  - calendar_create_event
-  - calendar_delete_event
-  - calendar_freebusy
-  - calendar_list_calendars
   - chat_send
   - control_cover
   - devin_followup

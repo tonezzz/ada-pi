@@ -27,7 +27,10 @@ policy:
                 control_entity, tv_action, gev_command,
                 # casting/camera actuation — gated by the capture contract
                 cast_to_screen, cctv_wall,
-                ada_camera_snapshot]
+                ada_camera_snapshot,
+                # calendar mutations (tools-merge-calendar-plan seat —
+                # create/delete/shift all confirm-gated)
+                calendar_write]
   # scenarios permitted to exercise write tools (incl. denied attempts).
   write_allowed_in:
     # cms/report writers
@@ -40,6 +43,7 @@ policy:
     - cms_translate
     - cms_reorganize
     - tool_merge_cms           # merge regression exercises cms_edit (note)
+    - shift_overdue            # seeds/shifts/completes a real task (calendar_write)
     - news_pages_update
     - news_audit_fix
     - report_references_lifecycle
