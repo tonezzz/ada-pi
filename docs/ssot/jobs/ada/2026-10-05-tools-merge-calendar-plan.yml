@@ -1,0 +1,98 @@
+# SSOT Job: calendar+plan tool-group merge (9 -> 3)
+# Card: tools-merge-calendar-plan (chaba kanban). Dispatch 20261005-122438.
+
+title: Calendar+plan merge — calendar_read / calendar_write / plan_day absorb eight names
+subtitle: Fourth tools-merge-* card landed — _ALIASES now carries 23 retirees
+
+planning:
+  goal: |
+    Cut the calendar+plan group to its canonical three per the card spec:
+    calendar_read (events|calendars|freebusy), calendar_write
+    (create|delete|shift — write-gated), and plan_day extended with
+    period=today|tomorrow|week absorbing ada_daily_summary +
+    ada_weekly_comparison. Absorbed names stay callable but hidden —
+    soft aliases via tool_runner._ALIASES, removed from the declared
+    surface (the repo's x-legacy mechanism; no literal x-legacy field).
+  decisions: |
+    - Two canonical calendar tools, not one 'cal': the card's
+      "cal(action=...)" maps onto calendar_read / calendar_write so the
+      write gate boundary stays a clean tool-name boundary — every
+      calendar_write action mutates, so the whole tool keeps the
+      CALENDAR_WRITE_TOOLS seat and per-action gate special-casing is
+      unnecessary. ssot.tool-surface.yml got calendar_read /
+      calendar_write / plan_day sub-families (memory-merge precedent).
+    - Alias-internal period 'digest': ada_daily_summary's alias stamps
+      period='digest' so /api/tools/call consumers keep the bare-digest
+      contract; period='today'|'tomorrow' return the merged
+      events+tasks view with the day's session digest folded in under
+      'digest'. plan_day works without a configured calendar — digest
+      alone is the day view, tagged calendar='not configured'.
+    - Arg shim: ada_weekly_comparison's 'end' isn't a plan_day param —
+      _alias_call_args maps end->day (the window end) and keeps days/.
+      refresh. The three calendar writers' args pass through verbatim
+      (title/start/end/notes/location/calendar, event_id, to).
+    - Gate keys off the resolved name: calendar_write replaces the
+      three absorbed names in CALENDAR_WRITE_TOOLS, so _CONFIRM_GATED_
+      TOOLS / confirm_strip / secondary-speaker rules all cover it
+      unchanged. DEVIN_CONFIRMED_TOOLS untouched.
+    - CALENDAR_INSTRUCTIONS rewritten for canonical names and the old
+      SUMMARY_INSTRUCTIONS folded in (daily/weekly digest phrasing now
+      lives under plan_day); SUMMARY_TOOLS set removed.
+    - benchmark.yml write_tools: the three absorbed writers ->
+      calendar_write; tool_merge_calendar_plan joins write_allowed_in.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tool_runner alias tables + arg shim"
+      status: done
+      notes: "8 _ALIASES rows + _ALIAS_ARG_DEFAULTS (action= events/
+        calendars/freebusy/create/delete/shift, period= digest/week);
+        _alias_call_args maps ada_weekly_comparison end->day."
+    - id: 2
+      label: "canonical methods"
+      status: done
+      notes: "calendar_read and calendar_write dispatch per-action onto
+        the unchanged absorbed methods; plan_day gained period + days +
+        refresh and folds the daily digest into the merged day view."
+    - id: 3
+      label: "provider surface"
+      status: done
+      notes: "8 declarations removed; calendar_read + calendar_write
+        declared with explicit action enums, plan_day with a period
+        enum; CALENDAR_TOOLS shrunk to the canonical trio + tasks;
+        CALENDAR_INSTRUCTIONS rewritten and SUMMARY_INSTRUCTIONS
+        folded in; SUMMARY_TOOLS removed."
+    - id: 4
+      label: "SSOT + spec + scenario + tests"
+      status: done
+      notes: "ssot.tool-surface.yml calendar/plan families rewritten,
+        absorbed names pruned from coverage_debt; spec table row
+        updated; tests/scenarios-live/tool_merge_calendar_plan.yaml;
+        shift_overdue.yaml + chaba_memory_review.yaml repointed;
+        CalendarPlanMergeAliasTests (11 tests)."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # 88 declared, 23 aliases, clean"
+    - "PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest tests.test_tool_runner.CalendarPlanMergeAliasTests"
+    - "PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest discover -s tests"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0 — 88 declared (94->88),
+    23 aliases, 12 pre-existing warnings"
+  - "alias smoke: execute(calendar_list_events) -> calendar_read events;
+    calendar_list_calendars -> calendars; calendar_freebusy -> freebusy;
+    calendar_create_event/delete_event/shift_overdue -> calendar_write
+    create/delete/shift (all confirm-gated); ada_daily_summary ->
+    plan_day digest; ada_weekly_comparison -> plan_day week"
+  - "CalendarPlanMergeAliasTests: 11/11 — every absorbed name routes to
+    its parent, write aliases keep the confirmation gate, unknown
+    action/period rejected, digest-only fallback when calendar absent"
+  - "full suite: 489 tests, 2F/3E — identical to HEAD (verified via
+    stash): memory-lifecycle + michael-technician scenarios need live
+    mddb; detection/pose/hailo errors are missing ai_edge_litert on
+    this host. No merge regressions."

@@ -52,10 +52,12 @@ CONTROL_TOOLS = {
 MEMORY_WRITE_TOOLS = {"ada_remember", "ada_forget", "ada_outcome"}
 
 # Calendar/task writes: creating or deleting events and tasks mutates the
-# user's real calendar, so all writes require confirmed=true.
+# user's real calendar, so all writes require confirmed=true. tools-merge-
+# calendar-plan (2026-10-05): create/delete/shift collapsed into
+# calendar_write — the canonical name holds the seat; every action=
+# (create|delete|shift) is a write, so the whole tool stays gated.
 CALENDAR_WRITE_TOOLS = {
-    "calendar_create_event", "calendar_delete_event",
-    "calendar_shift_overdue",
+    "calendar_write",
     "tasks_add", "tasks_complete", "tasks_move",
 }
 
@@ -272,6 +274,17 @@ _ALIASES: dict[str, str] = {
     "cms_note_update": "cms_edit",
     "cms_delete_page": "cms_edit",
     "cms_automation": "cms_edit",
+    # calendar+plan family — tools-merge-calendar-plan (2026-10-05): 9 -> 3.
+    # The three readers route to calendar_read, the three gated writers to
+    # calendar_write, and the two summary rollups to plan_day.
+    "calendar_list_events": "calendar_read",
+    "calendar_list_calendars": "calendar_read",
+    "calendar_freebusy": "calendar_read",
+    "calendar_create_event": "calendar_write",
+    "calendar_delete_event": "calendar_write",
+    "calendar_shift_overdue": "calendar_write",
+    "ada_daily_summary": "plan_day",
+    "ada_weekly_comparison": "plan_day",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the
@@ -296,6 +309,16 @@ _ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
     "cms_note_update": {"action": "note"},
     "cms_delete_page": {"action": "delete"},
     "cms_automation": {"action": "automate"},
+    "calendar_list_events": {"action": "events"},
+    "calendar_list_calendars": {"action": "calendars"},
+    "calendar_freebusy": {"action": "freebusy"},
+    "calendar_create_event": {"action": "create"},
+    "calendar_delete_event": {"action": "delete"},
+    "calendar_shift_overdue": {"action": "shift"},
+    # 'digest' is an alias-internal period: plan_day returns the bare
+    # daily digest so ada_daily_summary keeps its exact return contract.
+    "ada_daily_summary": {"period": "digest"},
+    "ada_weekly_comparison": {"period": "week"},
 }
 
 def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
@@ -338,6 +361,11 @@ def _alias_call_args(alias: str, args: dict[str, Any]) -> dict[str, Any]:
         args["action"] = "automate"
         if sub and sub != "automate":
             args.setdefault("op", sub)
+    elif alias == "ada_weekly_comparison":
+        # ada_weekly_comparison(end, days) -> plan_day(period='week',
+        # day=<window end>, days) — 'end' isn't a plan_day param.
+        if "day" not in args and "end" in args:
+            args["day"] = args.pop("end")
     return args
 
 
@@ -2104,6 +2132,56 @@ class ToolRunner:
             )
         return svc
 
+    async def calendar_read(
+        self,
+        action: str = "events",
+        day: str = "today",
+        days: int = 1,
+        query: str | None = None,
+        calendar: str | None = None,
+    ) -> dict[str, Any]:
+        """Calendar reads — tools-merge-calendar-plan consolidated
+        calendar_list_events / calendar_list_calendars / calendar_freebusy.
+        Free reads — no confirmation."""
+        action = (action or "").strip().lower()
+        if action == "calendars":
+            return await self.calendar_list_calendars()
+        if action == "events":
+            return await self.calendar_list_events(
+                day=day, days=days, query=query, calendar=calendar)
+        if action == "freebusy":
+            return await self.calendar_freebusy(day=day, days=days)
+        raise ValueError(
+            f"invalid action {action!r}: expected events|calendars|freebusy")
+
+    async def calendar_write(
+        self,
+        action: str,
+        title: str = "",
+        start: str = "",
+        end: str = "",
+        notes: str | None = None,
+        location: str | None = None,
+        calendar: str | None = None,
+        event_id: str = "",
+        to: str = "tomorrow",
+    ) -> Any:
+        """Calendar writes — tools-merge-calendar-plan consolidated
+        calendar_create_event / calendar_delete_event /
+        calendar_shift_overdue. Every action mutates the real calendar —
+        the CALENDAR_WRITE_TOOLS seat keeps confirmed=true mandatory."""
+        action = (action or "").strip().lower()
+        if action == "create":
+            return await self.calendar_create_event(
+                title=title, start=start, end=end, notes=notes,
+                location=location, calendar=calendar)
+        if action == "delete":
+            return await self.calendar_delete_event(event_id=event_id)
+        if action == "shift":
+            return await self.calendar_shift_overdue(to=to)
+        raise ValueError(
+            f"invalid action {action!r}: expected create|delete|shift")
+
     async def calendar_list_calendars(self) -> dict[str, Any]:
         return await self._calendar_svc().list_calendars()
 
@@ -2174,8 +2252,44 @@ class ToolRunner:
         Returns per-item old->new so Ada can report exactly what moved."""
         return await self._calendar_svc().shift_overdue(to=str(to))
 
-    async def plan_day(self, day: str = "today") -> dict[str, Any]:
-        return await self._calendar_svc().plan_day(day=str(day))
+    async def plan_day(
+        self,
+        period: str = "today",
+        day: str | None = None,
+        days: int = 7,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        """One 'how does <period> look' entry — tools-merge-calendar-plan
+        absorbed ada_daily_summary + ada_weekly_comparison here.
+
+        period='today'|'tomorrow' → that day's merged events+tasks view,
+        with the day's session digest folded in under 'digest' (the
+        absorbed ada_daily_summary — for a day with no sessions it reports
+        no_sessions). day= overrides the target ('yesterday', YYYY-MM-DD)
+        and also works without a configured calendar — the digest alone
+        is the day view then. period='week' → the weekly digest
+        comparison (absorbed ada_weekly_comparison): day= sets the window
+        end, days= the window size."""
+        period = str(period or "today").strip().lower()
+        if period == "week":
+            return await self.ada_weekly_comparison(
+                end=str(day or "today"), days=int(days or 7),
+                refresh=bool(refresh))
+        if period == "digest":
+            # ada_daily_summary's alias seat — keeps the absorbed tool's
+            # bare-digest contract for /api/tools/call consumers.
+            return await self.ada_daily_summary(
+                day=str(day or "today"), refresh=bool(refresh))
+        target = str(day or period or "today")
+        svc = self.calendar
+        plan = await svc.plan_day(day=target) if svc is not None else None
+        digest = await self.ada_daily_summary(
+            day=target, refresh=bool(refresh))
+        if plan is None:
+            digest.setdefault("calendar", "not configured")
+            return digest
+        plan["digest"] = digest
+        return plan
 
     async def ada_resolve_action(self, key: str, resolution: str) -> str:
         """Resolve a pending action proposal (applied|dismissed). Bookkeeping

@@ -70,10 +70,14 @@ EXPRESSION_NAMES = (
 # Kept as constants so ADA_EXCLUDED_TOOLS can strip both declarations and
 # instructions together (dark-launching the tools without confusing the model).
 CALENDAR_TOOLS = {
-    "calendar_list_calendars", "calendar_list_events", "calendar_freebusy",
-    "plan_day", "calendar_create_event", "calendar_delete_event",
+    # tools-merge-calendar-plan (2026-10-05): 9 -> 3. The absorbed names
+    # (calendar_list_calendars/calendar_list_events/calendar_freebusy/
+    # calendar_create_event/calendar_delete_event/calendar_shift_overdue/
+    # ada_daily_summary/ada_weekly_comparison) live on as
+    # tool_runner._ALIASES.
+    "calendar_read", "calendar_write", "plan_day",
     "tasks_list", "tasks_add", "tasks_complete", "tasks_move",
-    "calendar_shift_overdue", "ada_resolve_action",
+    "ada_resolve_action",
 }
 
 # Same constant pattern as CALENDAR_TOOLS: lets ADA_EXCLUDED_TOOLS strip the
@@ -87,19 +91,23 @@ CMS_TOOLS = {
 
 CALENDAR_INSTRUCTIONS = (
     " You have calendar and task tools backed by the user's configured providers: "
-    "calendar_list_calendars shows which calendars exist, "
-    "calendar_list_events and calendar_freebusy read the schedule, "
-    "plan_day returns one merged view of events plus open tasks for a day, "
-    "calendar_create_event and calendar_delete_event modify the calendar, and "
-    "tasks_list, tasks_add, tasks_move, and tasks_complete manage the task list, and "
-    "calendar_shift_overdue moves every overdue task plus already-ended event to a "
-    "new day in one call (to='tomorrow' default; restate the target date and get a "
-    "yes first). "
-    "For any schedule question call calendar_list_events or plan_day first and answer "
-    "from the result; never recite a schedule from memory. "
+    "calendar_read action='calendars' shows which calendars exist, "
+    "calendar_read action='events' and action='freebusy' read the schedule, "
+    "plan_day returns one merged view of a day's events plus open tasks and that "
+    "day's session digest (period='today'/'tomorrow', or day='yesterday'/a "
+    "YYYY-MM-DD date for a recap of that day), period='week' compares the last 7 "
+    "days of daily digests into a weekly trend view — use it when the user asks "
+    "for a recap of a day or how the week went, "
+    "calendar_write action='create'/'delete'/'shift' modifies the calendar ('shift' "
+    "moves every overdue task plus already-ended event to a new day in one call, "
+    "to='tomorrow' default), and "
+    "tasks_list, tasks_add, tasks_move, and tasks_complete manage the task list. "
+    "For any schedule question call calendar_read action='events' or plan_day first "
+    "and answer from the result; never recite a schedule from memory. "
     "Interpret relative dates ('tomorrow', 'Friday') in the user's local timezone and "
     "echo the resolved day+date in your reply (see the date-echo rule). "
-    "Before creating or deleting an event, or adding or completing a task, restate the "
+    "Before creating or deleting an event, shifting overdue items, or adding or "
+    "completing a task, restate the "
     "exact details (title, resolved date with weekday, time — never a bare 'tomorrow'/"
     "'พรุ่งนี้') and get an explicit yes, then call the tool with "
     "confirmed=true — writes are enforced server-side. "
@@ -111,7 +119,8 @@ CALENDAR_INSTRUCTIONS = (
     "the matching calendar/task tool with confirmed=true, then call ada_resolve_action with the "
     "shown key and resolution 'applied'. If declined, call ada_resolve_action with 'dismissed'. "
     "When the user states a plan, appointment, or reminder intention unprompted, proactively "
-    "offer to put it on the calendar or task list instead of waiting to be asked."
+    "offer to put it on the calendar or task list instead of waiting to be asked. "
+    "When a day has no sessions the plan_day digest says so rather than guessing."
 )
 
 CMS_INSTRUCTIONS = (
@@ -214,8 +223,7 @@ ACTUATING_TOOLS = frozenset({
     "cast_to_screen", "vcast_say",
     "ada_doc_archive", "ada_doc_print", "ada_set_voice",
     "devin_dispatch",
-    "calendar_create_event", "calendar_delete_event",
-    "calendar_shift_overdue",
+    "calendar_write",
     "tasks_add", "tasks_complete", "tasks_move",
 })
 
@@ -261,19 +269,10 @@ DEVIN_INSTRUCTIONS = (
     "section; never list failed jobs among the active ones."
 )
 
-# Summary rollup tools — same constant pattern: ADA_EXCLUDED_TOOLS strips
-# the declarations and this instruction paragraph together.
-SUMMARY_TOOLS = {"ada_daily_summary", "ada_weekly_comparison"}
-
-SUMMARY_INSTRUCTIONS = (
-    " You keep rollup summaries of past sessions: ada_daily_summary returns "
-    "the digest for one day ('today', 'yesterday', or a YYYY-MM-DD date), and "
-    "ada_weekly_comparison compares the last 7 days of daily digests into a "
-    "weekly trend view. Use them when the user asks for a recap of a day, how "
-    "the week went, or how this week compares — answer from the returned "
-    "text, naming the period it covers. Both read generated summaries; when a "
-    "day has no sessions the tool says so rather than guessing."
-)
+# Summary rollup tools — tools-merge-calendar-plan (2026-10-05) folded
+# ada_daily_summary/ada_weekly_comparison into plan_day (period='week' /
+# day=<date>); their guidance now lives in CALENDAR_INSTRUCTIONS so
+# ADA_EXCLUDED_TOOLS strips it with the rest of the calendar surface.
 
 # Habit tracking tools — same constant pattern: ADA_EXCLUDED_TOOLS strips
 # the declarations and this instruction paragraph together. Only meaningful
@@ -907,7 +906,6 @@ class GeminiLiveProvider(RealtimeProvider):
             + DOC_INSTRUCTIONS
             + DRIVE_INSTRUCTIONS
             + HABIT_INSTRUCTIONS
-            + SUMMARY_INSTRUCTIONS
         )
         self.vms_snap_url = vms_camera.snap_url()
         if self.vms_snap_url:
@@ -3764,154 +3762,151 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "calendar_list_calendars",
+                    "name": "calendar_read",
                     "description": (
-                        "Lists every calendar across the configured providers (Google, etc.) "
-                        "with provider, id, and which provider receives new events by default. "
-                        "Use this when the user asks which calendars exist or before writing to "
-                        "a non-default calendar."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "calendar_list_events",
-                    "description": (
-                        "Lists calendar events for a day or range across all configured "
-                        "providers, sorted by start time. Use this FIRST whenever the user asks "
-                        "about their schedule, what's next, or whether they're free."
+                        "Calendar reads — also handles what used to be "
+                        "calendar_list_events, calendar_list_calendars, and "
+                        "calendar_freebusy. action='events' lists calendar events "
+                        "for a day or range across all configured providers, "
+                        "sorted by start time — use this FIRST whenever the user "
+                        "asks about their schedule, what's next, or whether "
+                        "they're free; 'calendars' lists every calendar with "
+                        "provider, id, and which provider receives new events by "
+                        "default; 'freebusy' returns busy time slots for 'am I "
+                        "free between X and Y' or finding an open slot."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["events", "calendars", "freebusy"],
+                                "description": "Read operation.",
+                            },
                             "day": {
                                 "type": "string",
-                                "description": "Day to list: 'today', 'tomorrow', or ISO date 'YYYY-MM-DD'. Default 'today'.",
+                                "description": "events/freebusy: day to read — 'today', 'tomorrow', or ISO date 'YYYY-MM-DD'. Default 'today'.",
                             },
                             "days": {
                                 "type": "integer",
                                 "minimum": 1,
                                 "maximum": 31,
-                                "description": "Number of days to span starting at day. Default 1; use 7 for 'this week'.",
+                                "description": "events/freebusy: number of days to span starting at day. Default 1; use 7 for 'this week'.",
                             },
                             "query": {
                                 "type": "string",
-                                "description": "Optional text filter on event titles, e.g. 'dentist'.",
+                                "description": "events: optional text filter on event titles, e.g. 'dentist'.",
                             },
                             "calendar": {
                                 "type": "string",
-                                "description": "Optional 'provider:calendar_id' to read one calendar only (from calendar_list_calendars).",
+                                "description": "events: optional 'provider:calendar_id' to read one calendar only (from action='calendars').",
                             },
                         },
-                        "required": [],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "calendar_freebusy",
-                    "description": (
-                        "Returns busy time slots across all configured providers for a day or range. "
-                        "Use this for 'am I free between X and Y' or finding an open slot."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "day": {
-                                "type": "string",
-                                "description": "Day to check: 'today', 'tomorrow', or ISO date 'YYYY-MM-DD'. Default 'today'.",
-                            },
-                            "days": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 31,
-                                "description": "Number of days to span. Default 1.",
-                            },
-                        },
-                        "required": [],
+                        "required": ["action"],
                         "additionalProperties": False,
                     },
                 }, {
                     "name": "plan_day",
                     "description": (
-                        "Merged view of one day's calendar events plus all open tasks — the data "
-                        "for 'plan my day' or 'what does tomorrow look like'. Read-only; speak the "
-                        "proposed plan but never create events without approval."
+                        "One 'how does the period look' view — also handles what "
+                        "used to be ada_daily_summary and ada_weekly_comparison. "
+                        "period='today'/'tomorrow' returns that day's merged "
+                        "calendar events plus all open tasks and the day's "
+                        "session digest (a recap of what was discussed); "
+                        "period='week' compares the last days of daily digests "
+                        "into a weekly trend view — use it when the user asks how "
+                        "the week went or to compare days. day= overrides the "
+                        "target ('yesterday' or a YYYY-MM-DD date — also the way "
+                        "to recap a specific past day). Read-only; speak the "
+                        "proposed plan but never create events without approval. "
+                        "When the user wants the weekly comparison kept, offer to "
+                        "publish it to the miniapp with cms_publish_page "
+                        "(confirmed=true)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "period": {
+                                "type": "string",
+                                "enum": ["today", "tomorrow", "week"],
+                                "description": "Which window: a day's merged plan ('today' default, 'tomorrow') or the weekly digest ('week').",
+                            },
                             "day": {
                                 "type": "string",
-                                "description": "Day to plan: 'today', 'tomorrow', or ISO date 'YYYY-MM-DD'. Default 'today'.",
+                                "description": "Optional day override — 'yesterday' or 'YYYY-MM-DD'. For a day period it's the day viewed; for 'week' the window's last day.",
+                            },
+                            "days": {
+                                "type": "integer",
+                                "minimum": 2,
+                                "maximum": 14,
+                                "description": "week: days in the comparison window (default 7).",
+                            },
+                            "refresh": {
+                                "type": "boolean",
+                                "description": "Regenerate the day's digest / weekly comparison instead of returning the stored one.",
                             },
                         },
                         "required": [],
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "calendar_create_event",
+                    "name": "calendar_write",
                     "description": (
-                        "Creates a calendar event on the default write provider (or a named "
-                        "'provider:calendar_id'). Always restate title/date/time to the user and "
-                        "get an explicit yes, then pass confirmed=true."
+                        "Calendar writes — also handles what used to be "
+                        "calendar_create_event, calendar_delete_event, and "
+                        "calendar_shift_overdue. action='create' makes an event "
+                        "on the default write provider (or a named "
+                        "'provider:calendar_id'); 'delete' removes an event by "
+                        "its provider-qualified id (e.g. 'google:primary/abc123', "
+                        "from calendar_read action='events'); 'shift' moves every "
+                        "overdue item to a new day in one call — open tasks whose "
+                        "due date is in the past plus calendar events that "
+                        "already ended (to='tomorrow' default). Always restate "
+                        "the details to the user, get an explicit yes, then call "
+                        "with confirmed=true. For 'shift', restate the target "
+                        "date and report the moved list back."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["create", "delete", "shift"],
+                                "description": "Write operation.",
+                            },
                             "title": {
                                 "type": "string",
-                                "description": "Event title as the user phrased it.",
+                                "description": "create: event title as the user phrased it.",
                             },
                             "start": {
                                 "type": "string",
-                                "description": "Start as ISO 8601 datetime ('2026-09-22T14:00:00') or date ('2026-09-22') for all-day.",
+                                "description": "create: start as ISO 8601 datetime ('2026-09-22T14:00:00') or date ('2026-09-22') for all-day.",
                             },
                             "end": {
                                 "type": "string",
-                                "description": "End as ISO 8601 datetime or date (exclusive for all-day).",
+                                "description": "create: end as ISO 8601 datetime or date (exclusive for all-day).",
                             },
                             "notes": {
                                 "type": "string",
-                                "description": "Optional event description/notes.",
+                                "description": "create: optional event description/notes.",
                             },
                             "location": {
                                 "type": "string",
-                                "description": "Optional location string.",
+                                "description": "create: optional location string.",
                             },
                             "calendar": {
                                 "type": "string",
-                                "description": "Optional 'provider:calendar_id' to write a non-default calendar.",
+                                "description": "create: optional 'provider:calendar_id' to write a non-default calendar.",
                             },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["title", "start", "end"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "calendar_delete_event",
-                    "description": (
-                        "Deletes a calendar event by its provider-qualified id "
-                        "(e.g. 'google:primary/abc123', from calendar_list_events). "
-                        "Always confirm the event with the user first, then pass confirmed=true."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
                             "event_id": {
                                 "type": "string",
-                                "description": "Provider-qualified event id exactly as returned by calendar_list_events.",
+                                "description": "delete: provider-qualified event id exactly as returned by calendar_read action='events'.",
+                            },
+                            "to": {
+                                "type": "string",
+                                "description": "shift: target day — 'tomorrow' (default) or 'YYYY-MM-DD'.",
                             },
                             "confirmed": {
                                 "type": "boolean",
@@ -3922,7 +3917,7 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
-                        "required": ["event_id"],
+                        "required": ["action"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -4034,36 +4029,6 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["task_id", "due"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "calendar_shift_overdue",
-                    "description": (
-                        "Move every overdue item to a new day in one call: open tasks "
-                        "whose due date is in the past, and calendar events that "
-                        "already ended (they keep their duration and same id — the old "
-                        "slot disappears, the new one shows on the target day). "
-                        "Default to='tomorrow'. Restate the target date aloud, get an "
-                        "explicit yes, then call with confirmed=true. Report the moved "
-                        "list back to the user."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "to": {
-                                "type": "string",
-                                "description": "Target day: 'tomorrow' (default) or 'YYYY-MM-DD'.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": [],
                         "additionalProperties": False,
                     },
                 }, {
@@ -4781,62 +4746,6 @@ class GeminiLiveProvider(RealtimeProvider):
                         },
                         "additionalProperties": False,
                     },
-                }, {
-                    "name": "ada_daily_summary",
-                    "description": (
-                        "Daily digest of all voice sessions on one day, rolled up "
-                        "from that day's stored session summaries. Use when the user "
-                        "asks for a summary of today, yesterday, or a specific date, "
-                        "or 'what did we do on <day>'. Returns the stored digest, "
-                        "generating it on first use; pass refresh=true only when the "
-                        "user asks to rebuild it."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "day": {
-                                "type": "string",
-                                "description": "'today' (default), 'yesterday', or a YYYY-MM-DD date.",
-                            },
-                            "refresh": {
-                                "type": "boolean",
-                                "description": "Regenerate the digest instead of returning the stored one.",
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_weekly_comparison",
-                    "description": (
-                        "Weekly trend view: compares the daily digests of the last 7 "
-                        "days ending at 'end' — recurring themes, what changed across "
-                        "the week, and open items. Use when the user asks how the week "
-                        "went, for weekly trends, or to compare days. When the user "
-                        "wants the comparison kept, offer to publish it to the miniapp "
-                        "with cms_publish_page (confirmed=true)."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "end": {
-                                "type": "string",
-                                "description": "Last day of the window: 'today' (default), 'yesterday', or YYYY-MM-DD.",
-                            },
-                            "days": {
-                                "type": "integer",
-                                "minimum": 2,
-                                "maximum": 14,
-                                "description": "Days in the window (default 7).",
-                            },
-                            "refresh": {
-                                "type": "boolean",
-                                "description": "Regenerate the comparison instead of returning the stored one.",
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
                 }]
             }],
         }
@@ -4887,10 +4796,6 @@ class GeminiLiveProvider(RealtimeProvider):
             if HABIT_TOOLS <= excluded:
                 config["system_instruction"] = config["system_instruction"].replace(
                     HABIT_INSTRUCTIONS, ""
-                )
-            if SUMMARY_TOOLS <= excluded:
-                config["system_instruction"] = config["system_instruction"].replace(
-                    SUMMARY_INSTRUCTIONS, ""
                 )
         # The merged camera tool is declared on every instance — its
         # source='traffic' path needs no VMS shim (tools-merge-camera).

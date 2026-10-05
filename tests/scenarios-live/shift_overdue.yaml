@@ -39,14 +39,14 @@ turns:
 
   - user: "Now shift all my overdue tasks to tomorrow."
     expect:
-      calls_any: [calendar_shift_overdue, tasks_list, plan_day]
+      calls_any: [calendar_write, tasks_list, plan_day]
       response_nonempty: true
       timeout_s: 120
       settle_s: 8
 
   - user: "Yes, do it."
     expect:
-      calls_any: [calendar_shift_overdue]
+      calls_any: [calendar_write]
       result_contains: ["moved"]
       response_nonempty: true
       timeout_s: 120

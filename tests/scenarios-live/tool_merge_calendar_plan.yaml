@@ -1,0 +1,39 @@
+# tools-merge-calendar-plan regression (2026-10-05): the calendar+plan
+# group went 9 -> 3 — calendar_read absorbs
+# calendar_list_events/calendar_list_calendars/calendar_freebusy
+# (action=events|calendars|freebusy), calendar_write absorbs
+# calendar_create_event/calendar_delete_event/calendar_shift_overdue
+# (action=create|delete|shift — confirmed-gated), and plan_day absorbs
+# ada_daily_summary/ada_weekly_comparison (period=today|tomorrow|week).
+# The eight absorbed names survive as tool_runner._ALIASES rows, hidden
+# from the declared surface. Live-side this scenario checks the canonical
+# calls still fire for the absorbed intents (reads only — the write path
+# is regression-covered by shift_overdue's real-account round-trip):
+#   schedule/calendars/free-busy — calendar_read
+#   day plan / day recap / weekly recap — plan_day
+name: tool_merge_calendar_plan
+turns:
+  - user: >-
+      What's on my calendar today? Just read it, don't change anything.
+    expect:
+      calls_any: [calendar_read, plan_day]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Which calendars do I have configured?
+    expect:
+      calls_any: [calendar_read]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Am I free tomorrow afternoon? Check my free/busy.
+    expect:
+      calls_any: [calendar_read, plan_day]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      How did this week go — give me a quick recap of what we did.
+    expect:
+      calls_any: [plan_day]
+      timeout_s: 120
+      settle_s: 10
