@@ -11,6 +11,18 @@ from backend.memory_banks import MemoryBankRegistry
 from backend.tool_runner import AdaMemoryStore, ToolRunner
 
 
+def _page_call(runner, slug):
+    """Return (args, kwargs) of the add_document call that wrote `slug`.
+
+    Publishing/auto-ops also fire the reports-index regen in the background,
+    so `call_args` (the LAST call) is unreliable — find the page write.
+    """
+    for c in runner.mddb.add_document.call_args_list:
+        if len(c.args) > 1 and c.args[1] == slug:
+            return c.args, c.kwargs
+    raise AssertionError(f"no add_document call for slug {slug!r}")
+
+
 def _hermetic_registry(instance="test") -> MemoryBankRegistry:
     """Empty local registry so gate tests don't depend on the ambient
     ~/.config/ada/memory-banks.json (whose control_policies vary by host)."""
@@ -287,7 +299,7 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["status"], "published")
         self.assertEqual(result["slug"], "pool-notes")
-        args, kwargs = self.runner.mddb.add_document.call_args
+        args, kwargs = _page_call(self.runner, "pool-notes")
         self.assertEqual(args[:3], ("ada-cms-pages", "pool-notes", "en"))
         meta = kwargs["meta"]
         self.assertEqual(meta["kind"], ["page"])
@@ -400,7 +412,7 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
             {"slug": "flood-report", "title": "Flood",
              "content": "# Flood\nnew", "confirmed": True},
         )
-        meta = self.runner.mddb.add_document.call_args.kwargs["meta"]
+        meta = _page_call(self.runner, "flood-report")[1]["meta"]
         self.assertEqual(meta["generated_by"],
                          ["flood-news-update.py --page flood-report"])
         self.assertEqual(meta["report_role"], ["leaf"])
@@ -876,7 +888,7 @@ class DevinJobReportTests(unittest.IsolatedAsyncioTestCase):
             result = await self.runner.execute(
                 "devin_job_report", {"publish": True, "confirmed": True})
         self.assertEqual(result["status"], "published")
-        args, kwargs = self.runner.mddb.add_document.call_args
+        args, kwargs = _page_call(self.runner, "devin-job-report")
         self.assertEqual(args[:3], ("ada-cms-pages", "devin-job-report", "en"))
         self.assertIn("## Failed jobs", args[3])
 
