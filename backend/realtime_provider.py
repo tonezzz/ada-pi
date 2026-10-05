@@ -78,7 +78,10 @@ CALENDAR_TOOLS = {
     # ada_daily_summary/ada_weekly_comparison) live on as
     # tool_runner._ALIASES.
     "calendar_read", "calendar_write", "plan_day",
-    "tasks_list", "tasks_add", "tasks_complete", "tasks_move",
+    # tools-merge-tasks-status (2026-10-05): tasks_add/tasks_list/
+    # tasks_complete/tasks_move collapsed into tasks(action=add|list|done|
+    # move); the absorbed names live on as tool_runner._ALIASES.
+    "tasks",
     "ada_resolve_action",
 }
 
@@ -103,7 +106,9 @@ CALENDAR_INSTRUCTIONS = (
     "calendar_write action='create'/'delete'/'shift' modifies the calendar ('shift' "
     "moves every overdue task plus already-ended event to a new day in one call, "
     "to='tomorrow' default), and "
-    "tasks_list, tasks_add, tasks_move, and tasks_complete manage the task list. "
+    "tasks manages the task list — action='list' reads open tasks (free read), "
+    "action='add'/'done'/'move' add, complete, or reschedule and need "
+    "confirmed=true like other calendar writes. "
     "For any schedule question call calendar_read action='events' or plan_day first "
     "and answer from the result; never recite a schedule from memory. "
     "Interpret relative dates ('tomorrow', 'Friday') in the user's local timezone and "
@@ -234,7 +239,10 @@ ACTUATING_TOOLS = frozenset({
     # at the call site below.
     "devin_dispatch",
     "calendar_write",
-    "tasks_add", "tasks_complete", "tasks_move",
+    # tools-merge-tasks-status: the merged tasks tool holds the absorbed
+    # writers' seat — a stray action='list' call draws on the same budget,
+    # same name-keyed convention as the other merged actuators.
+    "tasks",
 })
 # tools-merge-meta-voice: ada_set_voice's actuating seat (it drops the
 # live session for a reconnect) moved to ada_persona action='set_voice' —
@@ -315,7 +323,10 @@ DEVIN_INSTRUCTIONS = (
 # the declarations and this instruction paragraph together. Only meaningful
 # where the hardware backend (camera + pose pipeline, backend/main.py)
 # supplies a habit_state_getter; pwa-only instances should exclude both.
-HABIT_TOOLS = {"get_habit_status", "ada_remember"}
+# tools-merge-tasks-status: get_habit_status folded into home_status
+# (what='habit') — the canonical name takes its seat, so excluding habit
+# tools on a pwa-only instance now also drops the other status reads.
+HABIT_TOOLS = {"home_status", "ada_remember"}
 
 HABIT_INSTRUCTIONS = (
     " You monitor habits such as seated posture: local pose estimation proposes "
@@ -327,7 +338,8 @@ HABIT_INSTRUCTIONS = (
     "structured context: give a brief, dry observation and one practical "
     "correction, distinguishing a first possible habit from an established one. "
     "When the user asks what habits are tracked, their status, or progress, "
-    "always call get_habit_status and ground the answer in its current result. "
+    "always call home_status what='habit' and ground the answer in its "
+    "current result. "
     "For habits, make it clear that you noticed the pattern, then give one "
     "useful, realistic correction — mild judgment, never mockery or repetitive "
     "roasting. Never claim a habit occurred unless the application reports a "
@@ -363,9 +375,12 @@ DOC_INSTRUCTIONS = (
 # tools-merge-docs-drive (2026-10-05): the four drive_* names collapsed
 # into drive(action=search|show|get|update); old names live on as
 # tool_runner._ALIASES rows, not declarations.
+# tools-merge-tasks-status: photos_pick/photos_picked folded into
+# chat_send (photo='pick'/'picked') — no seat here; excluding Drive
+# leaves chat_send's plain sends working while photo=/doc= flows fail
+# honestly.
 DRIVE_TOOLS = {
     "drive",
-    "photos_pick", "photos_picked",
 }
 
 DRIVE_INSTRUCTIONS = (
@@ -378,8 +393,9 @@ DRIVE_INSTRUCTIONS = (
     "file and change, and it cannot edit Google-native Docs/Sheets/Slides. "
     "Photos in Google Photos are NOT browsable — Google limited the "
     "library API to app-created media, so for 'show my photos' use "
-    "photos_pick: it returns a picker_uri the user opens on their "
-    "signed-in phone or laptop to select items, then photos_picked "
+    "chat_send photo='pick': it returns a picker_uri (and texts it to the "
+    "channel) the user opens on their signed-in phone or laptop to "
+    "select items, then chat_send photo='picked' with the session_id "
     "returns and can cast what they chose. If the user means photos saved "
     "in a Drive folder instead, drive action='search' with mime='image/' "
     "is the direct path — prefer that when it fits."
@@ -559,7 +575,10 @@ CHABA_TOOLS = {"ada_remember", "ada_memory_search", "ada_enroll_speaker"}
 # get_home_state, home_history) and control_entity for lights/media.
 CHABA_ALLOW = CHABA_TOOLS | {
     "get_home_state", "home_search", "home_history",
-    "get_power_summary", "get_rk600_weather", "get_pool_status",
+    # tools-merge-tasks-status: the status getters merged into
+    # home_status — the canonical name keeps the guest seat.
+    "home_status",
+    "get_rk600_weather", "get_pool_status",
     "get_battery_status", "get_battery_detail",
     "control_entity",
 }
@@ -725,7 +744,7 @@ Conversation discipline:
   give the answer.
 - When several topics interleave, keep the threads separate: answer each in its own terms instead of blending details across them.
 - "Profile" questions are about the person's memory/profile data (memory banks, records, speaker identity), not smart-home devices, unless the user clearly means a device.
-- Questions about ongoing work, development, projects, or "where we left off" are memory questions — search memory first with ada_memory_search (bank='all') or ada_session_recall. Calendar/task tools (plan_day, tasks_list) are only for schedules and todos, never for project status.
+- Questions about ongoing work, development, projects, or "where we left off" are memory questions — search memory first with ada_memory_search (bank='all') or ada_session_recall. Calendar/task tools (plan_day, tasks) are only for schedules and todos, never for project status.
 - Gather the minimum tool data needed, then answer — never enumerate devices, sensors, or settings to answer a memory or planning question.
 - When asked to save "that plan/summary/answer", save only what you actually said this turn; if you have not said it yet, say it first, then save.
 - If a tool, service, or lookup fails or is unavailable, say so plainly and offer the nearest fallback — never describe an imagined state.
@@ -2630,7 +2649,13 @@ class GeminiLiveProvider(RealtimeProvider):
                         "lands. Attach one image via 'camera' (VMS channel name — a fresh "
                         "snapshot is taken) or 'image_url' (a camwall thumb or a cast_url you "
                         "already produced — do NOT pass arbitrary web URLs). 'text' is the "
-                        "message/caption. Omit 'to' to send to the default owner chat."
+                        "message/caption. Omit 'to' to send to the default owner chat. "
+                        "photo='pick' starts a Google Photos picker and texts the picker_uri "
+                        "to the channel; photo='picked' polls a picker session (session_id) "
+                        "and sends/casts what was chosen. doc='show' posts a held document "
+                        "upload's summary (key= intake key, default newest); 'process' "
+                        "returns its intake assessment; 'card' with op='archive' files the "
+                        "held upload into the document archive (confirmation-gated)."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
@@ -2654,6 +2679,36 @@ class GeminiLiveProvider(RealtimeProvider):
                             "to": {
                                 "type": "string",
                                 "description": "Optional explicit LINE userId or Telegram chat_id; default = owner.",
+                            },
+                            "photo": {
+                                "type": "string",
+                                "enum": ["pick", "picked"],
+                                "description": "Photos picker flow: 'pick' opens a picker session (returns picker_uri), 'picked' polls it and delivers the selection.",
+                            },
+                            "session_id": {
+                                "type": "string",
+                                "description": "Picker session id (required with photo='picked').",
+                            },
+                            "screen": {
+                                "type": "integer",
+                                "description": "Vcast screen to cast the first picked item to (photo='picked', default 1).",
+                            },
+                            "show": {
+                                "type": "boolean",
+                                "description": "Cast the first picked item to the screen (default true).",
+                            },
+                            "doc": {
+                                "type": "string",
+                                "enum": ["show", "process", "card"],
+                                "description": "Document-upload flow: 'show' texts the held upload's summary, 'process' returns its intake assessment, 'card' runs a card button via op.",
+                            },
+                            "key": {
+                                "type": "string",
+                                "description": "Held document intake key (doc= flows; default: newest upload).",
+                            },
+                            "op": {
+                                "type": "string",
+                                "description": "Card button for doc='card' — 'archive' files the held upload (confirmation-gated).",
                             },
                         },
                         "required": [],
@@ -2810,59 +2865,47 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "get_battery_status",
+                    "name": "home_status",
                     "description": (
-                        "Returns current battery details: total and per-battery SOC, voltage, current, power, temperature, and state of health. "
-                        "Use this when the user asks about battery levels, battery health, or battery status."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "get_battery_detail",
-                    "description": (
-                        "Returns detailed readings for a single battery (1, 2, or 3). "
-                        "Use this when the user asks for 'battery 1 details', 'battery 2 status', or 'tell me about each battery'."
+                        "Home status reads — one tool for the merged status getters "
+                        "(tools-merge-tasks-status). what='battery' returns battery SOC, "
+                        "voltage, power, temperature, and health (add battery_index 1-3 "
+                        "for one battery's detail); 'power' returns the G3 power summary "
+                        "for solar, grid, load, battery, and inverter (hours= history "
+                        "window, default 24); 'inverter' returns PV/load/grid/battery "
+                        "power and operating mode; 'pool' returns pool sensor and switch "
+                        "states; 'dashboard' reads one michael-ha dashboard tab (tab= "
+                        "e.g. 'TPL', 'V1'); 'habit' returns tracked habits, lifecycle "
+                        "status, and monitor progress."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "what": {
+                                "type": "string",
+                                "enum": ["battery", "power", "inverter", "pool",
+                                         "dashboard", "habit"],
+                                "description": "Which status read to run.",
+                            },
                             "battery_index": {
                                 "type": "integer",
                                 "minimum": 1,
                                 "maximum": 3,
-                                "description": "The battery number to detail: 1, 2, or 3.",
-                            }
+                                "description": "what='battery' only: detail one battery (1, 2, or 3); omit for the whole bank.",
+                            },
+                            "hours": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 168,
+                                "description": "what='power' only: hours of history in the summary (default 24).",
+                            },
+                            "tab": {
+                                "type": "string",
+                                "description": "what='dashboard' only: the dashboard tab title, e.g. 'TPL', 'V0', 'V1', 'SK'.",
+                            },
                         },
-                        "required": ["battery_index"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "get_inverter_status",
-                    "description": (
-                        "Returns current inverter details: PV power, load power, grid power, battery power, AC output, voltage, frequency, and operating mode. "
-                        "Use this when the user asks about the inverter, solar, grid, or load status."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "get_pool_status",
-                    "description": (
-                        "Returns the current pool sensor and switch states, separating available and unavailable/unknown entities. "
-                        "Use this when the user asks about the pool, pool pump, or pool energy."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
+                        "required": ["what"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -2876,46 +2919,6 @@ class GeminiLiveProvider(RealtimeProvider):
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "get_dashboard_tab",
-                    "description": (
-                        "Reads the named tab from the michael-ha tony-test dashboard and returns "
-                        "the entities it displays with their current states. "
-                        "Use this when the user asks 'what is on the TPL tab', 'what devices are on V1', "
-                        "or 'what does the TPL tab show'."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "tab": {
-                                "type": "string",
-                                "description": "The dashboard tab title, e.g. 'TPL', 'V0', 'V1', 'SK'.",
-                            }
-                        },
-                        "required": ["tab"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "get_power_summary",
-                    "description": (
-                        "Returns the current G3 power summary for solar, grid, load, battery, and inverter. "
-                        "Also returns min/max/mean over the requested hours. "
-                        "Use this when the user asks about solar generation, grid usage, battery, load, or a power summary."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "hours": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 168,
-                                "description": "How many hours of history to include in the summary. Defaults to 24.",
-                            }
-                        },
                         "additionalProperties": False,
                     },
                 }, {
@@ -2969,17 +2972,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         },
                         "additionalProperties": False,
                     },
-                }, {
-                    "name": "get_habit_status",
-                    "description": (
-                        "Returns every habit Ada tracks, including habits with no occurrences, "
-                        "their lifecycle status, rolling seven-day occurrences and days, and "
-                        "current monitor state and progress. Use this whenever the user asks "
-                        "what habits are tracked or how their habits are progressing."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {"type": "object", "properties": {}, "additionalProperties": False},
-                }, {
+                },  {
                     "name": "ha_confidence",
                     "description": (
                         "Device trust and safety registry — also handles what used to be "
@@ -3705,114 +3698,56 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "tasks_list",
+                    "name": "tasks",
                     "description": (
-                        "Lists open (not completed) tasks across task-capable providers. "
-                        "Use this when the user asks what's on their todo list."
+                        "Manage the task list across task-capable providers "
+                        "(tools-merge-tasks-status: absorbed tasks_list / tasks_add / "
+                        "tasks_complete / tasks_move). action='list' reads open tasks; "
+                        "'add' creates one (title, optional due/notes/task_list); 'done' "
+                        "marks a task complete by task_id; 'move' reschedules a task's "
+                        "due date by task_id. Writes need confirmed=true: restate the "
+                        "task and resolved date, get an explicit yes, then call — "
+                        "enforced server-side."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["add", "list", "done", "move"],
+                                "description": "Which task operation to run (default 'list').",
+                            },
                             "task_list": {
                                 "type": "string",
-                                "description": "Optional 'provider:list_id' to read one list only.",
+                                "description": "Optional 'provider:list_id' — narrows 'list' or targets a non-default list for 'add'.",
                             },
-                        },
-                        "required": [],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "tasks_add",
-                    "description": (
-                        "Adds a task to the default write provider's task list. "
-                        "Restate the task and due date, get an explicit yes, then pass confirmed=true."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
                             "title": {
                                 "type": "string",
-                                "description": "Task title as the user phrased it.",
+                                "description": "action='add': task title as the user phrased it.",
                             },
                             "due": {
                                 "type": "string",
-                                "description": "Optional due date: 'today', 'tomorrow', or 'YYYY-MM-DD'.",
+                                "description": "action='add'/'move': due date — 'today', 'tomorrow', or 'YYYY-MM-DD'.",
                             },
                             "notes": {
                                 "type": "string",
-                                "description": "Optional task notes.",
+                                "description": "action='add': optional task notes.",
                             },
-                            "task_list": {
-                                "type": "string",
-                                "description": "Optional 'provider:list_id' for a non-default list.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["title"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "tasks_complete",
-                    "description": (
-                        "Marks a task complete by its provider-qualified id "
-                        "(e.g. 'google:@default/abc123', from tasks_list). "
-                        "Confirm which task first, then pass confirmed=true."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
                             "task_id": {
                                 "type": "string",
-                                "description": "Provider-qualified task id exactly as returned by tasks_list.",
+                                "description": "action='done'/'move': provider-qualified task id exactly as returned by action='list' (e.g. 'google:@default/abc123').",
                             },
                             "confirmed": {
                                 "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
+                                "description": "Required for add/done/move; set true only after explicit user confirmation.",
                             },
                             "confirm_token": {
                                 "type": "string",
                                 "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
-                        "required": ["task_id"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "tasks_move",
-                    "description": (
-                        "Reschedule a task's due date by its provider-qualified id "
-                        "(from tasks_list) — same task, new date. Confirm which task "
-                        "first, then pass confirmed=true."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "task_id": {
-                                "type": "string",
-                                "description": "Provider-qualified task id exactly as returned by tasks_list.",
-                            },
-                            "due": {
-                                "type": "string",
-                                "description": "New due date: 'today', 'tomorrow', or 'YYYY-MM-DD'.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["task_id", "due"],
+                        "required": [],
                         "additionalProperties": False,
                     },
                 }, {
@@ -4411,46 +4346,6 @@ class GeminiLiveProvider(RealtimeProvider):
                         "required": ["action"],
                         "additionalProperties": False,
                     },
-                }, {
-                    "name": "photos_pick",
-                    "description": (
-                        "Browse Google Photos: starts a picker session and returns a "
-                        "picker_uri — the ONLY way to reach library photos since Google "
-                        "limited the Photos API to app-created data. Give the user the "
-                        "picker_uri to open on their signed-in phone or laptop, then call "
-                        "photos_picked with the session_id when they've chosen."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "photos_picked",
-                    "description": (
-                        "Poll a photos_pick session. When the user has picked items, "
-                        "returns them and casts the first one to their screen (images "
-                        "as image, videos as play). Set show=false to only list."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "session_id": {
-                                "type": "string",
-                                "description": "Session id from photos_pick.",
-                            },
-                            "screen": {
-                                "type": "number",
-                                "description": "Vcast screen number (default 1).",
-                            },
-                            "show": {
-                                "type": "boolean",
-                                "description": "Cast the first picked item to the screen (default true).",
-                            },
-                        },
-                        "required": ["session_id"],
-                        "additionalProperties": False,
-                    },
                 }]
             }],
         }
@@ -4942,32 +4837,43 @@ class GeminiLiveProvider(RealtimeProvider):
                                     result = {"output": devices}
                             except Exception as exc:
                                 result = {"error": f"home_search failed: {exc}"}
-                        elif call.name == "get_battery_status" and self.home_assistant_client is not None:
+                        elif call.name == "home_status":
+                            # tools-merge-tasks-status: the seven status
+                            # getters collapsed into home_status(what=...).
+                            # Alias resolution already rewrote absorbed
+                            # names and merged their implied what=/args.
+                            _hargs = dict(call.args or {})
+                            _hwhat = str(_hargs.get("what") or "").strip().lower()
                             try:
-                                status = await self.home_assistant_client.battery_status()
-                                result = {"output": status}
+                                if _hwhat == "battery" and self.home_assistant_client is not None:
+                                    _hidx = _hargs.get("battery_index")
+                                    if _hidx in (None, ""):
+                                        status = await self.home_assistant_client.battery_status()
+                                    else:
+                                        status = await self.home_assistant_client.battery_detail(int(_hidx))
+                                    result = {"output": status}
+                                elif _hwhat == "power" and self.home_assistant_client is not None:
+                                    hours = int(_hargs.get("hours", 24))
+                                    result = {"output": await self.home_assistant_client.power_summary(hours=hours)}
+                                elif _hwhat == "inverter" and self.home_assistant_client is not None:
+                                    result = {"output": await self.home_assistant_client.inverter_status()}
+                                elif _hwhat == "pool" and self.home_assistant_client is not None:
+                                    result = {"output": await self.home_assistant_client.pool_status()}
+                                elif _hwhat == "dashboard" and self.home_assistant_client is not None:
+                                    tab = _hargs.get("tab")
+                                    if not tab:
+                                        result = {"error": "tab is required"}
+                                    else:
+                                        result = {"output": await self.home_assistant_client.dashboard_tab(str(tab))}
+                                elif _hwhat == "habit" and self.habit_state_getter is not None:
+                                    result = {"output": self.habit_state_getter()}
+                                else:
+                                    result = {"error": (
+                                        f"invalid what {_hwhat!r}: expected "
+                                        "battery|power|inverter|pool|dashboard|habit"
+                                        if _hwhat else "what is required")}
                             except Exception as exc:
-                                result = {"error": f"get_battery_status failed: {exc}"}
-                        elif call.name == "get_battery_detail" and self.home_assistant_client is not None:
-                            try:
-                                args = dict(call.args or {})
-                                index = int(args.get("battery_index", 1))
-                                status = await self.home_assistant_client.battery_detail(index)
-                                result = {"output": status}
-                            except Exception as exc:
-                                result = {"error": f"get_battery_detail failed: {exc}"}
-                        elif call.name == "get_inverter_status" and self.home_assistant_client is not None:
-                            try:
-                                status = await self.home_assistant_client.inverter_status()
-                                result = {"output": status}
-                            except Exception as exc:
-                                result = {"error": f"get_inverter_status failed: {exc}"}
-                        elif call.name == "get_pool_status" and self.home_assistant_client is not None:
-                            try:
-                                status = await self.home_assistant_client.pool_status()
-                                result = {"output": status}
-                            except Exception as exc:
-                                result = {"error": f"get_pool_status failed: {exc}"}
+                                result = {"error": f"home_status({_hwhat or '?'}) failed: {exc}"}
                         elif call.name == "get_rk600_weather" and self.home_assistant_client is not None:
                             try:
                                 weather = await self.home_assistant_client.rk600_weather()
@@ -5020,8 +4926,6 @@ class GeminiLiveProvider(RealtimeProvider):
                             args = dict(call.args or {})
                             yield ProviderEvent("habit_observation", args)
                             result = {"output": "Observation delivered to the habit monitor"}
-                        elif call.name == "get_habit_status" and self.habit_state_getter is not None:
-                            result = {"output": self.habit_state_getter()}
                         elif (
                             # tools-merge-meta-voice: ada_decision_check ->
                             # ada_ops action='check'; ada_set_voice ->

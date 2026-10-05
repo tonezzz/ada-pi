@@ -329,6 +329,13 @@ class DocumentCheckEngine:
     def held(self, key: str) -> _Held | None:
         return self._held.get(key)
 
+    def latest(self) -> tuple[str, _Held] | None:
+        """Newest held intake (key, result) — for 'show the doc I just
+        uploaded' flows that never carried an explicit key."""
+        if not self._held:
+            return None
+        return next(reversed(self._held.items()))
+
     def _hold(self, key: str, pdf: bytes, preview: bytes, meta: dict) -> None:
         self._held[key] = _Held(pdf, preview, meta)
         self._held.move_to_end(key)

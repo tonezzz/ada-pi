@@ -277,6 +277,42 @@ families:
     scenario: tool_merge_meta_voice
     absorbed:
       - guest_register
+  # tasks+status group 10 -> 3 (tools-merge-tasks-status, 2026-10-05):
+  # the card-counted ten are the four tasks_* + six status getters plus
+  # the photos picker pair under chat_send; home_status actually absorbs
+  # seven getters (battery detail included) and chat_send also takes the
+  # three chaba-side doc-upload card names as forward aliases.
+  tasks:
+    merge_card: tools-merge-tasks-status
+    canonical: tasks               # add/list/done/move -> action= (list is a free read, rest confirm-gated)
+    scenario: tool_merge_tasks_status
+    absorbed:
+      - tasks_add
+      - tasks_list
+      - tasks_complete
+      - tasks_move
+  home_status:
+    merge_card: tools-merge-tasks-status
+    canonical: home_status         # status getters -> what=battery|power|inverter|pool|dashboard|habit
+    scenario: tool_merge_tasks_status
+    absorbed:
+      - get_battery_status
+      - get_battery_detail         # -> what='battery', battery_index carried through
+      - get_power_summary
+      - get_inverter_status
+      - get_pool_status
+      - get_dashboard_tab
+      - get_habit_status
+  chat_send:
+    merge_card: tools-merge-tasks-status
+    canonical: chat_send           # photos picker -> photo=pick|picked; doc card actions -> doc=show|process|card
+    scenario: tool_merge_tasks_status
+    absorbed:
+      - photos_pick
+      - photos_picked
+      - sys_show_uploaded_document   # chaba-side name — never declared here; forward alias
+      - process_document_upload      # chaba-side name — never declared here; forward alias
+      - doc_upload_card_action       # chaba-side name — never declared here; forward alias
 
 # Tools with no reference in any tests/scenarios-live/*.yaml tool field
 # (calls/calls_any/no_calls*/needs_tools/needs_any, @family-expanded) at
@@ -284,27 +320,10 @@ families:
 # tools-regression-scenarios card lands coverage. A declared tool absent
 # from BOTH scenarios and this list fails lint (no silent uncovered adds).
 coverage_debt:
-  - ada_decision_check
-  - ada_ha_get_device_confidence
-  - ada_ha_history
-  - ada_ha_search_events
-  - ada_ha_set_device_confidence
   - ada_resolve_action
   - chat_send
   - devin_followup
   - devin_job_report
-  - get_battery_detail
-  - get_battery_status
-  - get_dashboard_tab
-  - get_habit_status
-  - get_inverter_status
-  - get_pool_status
-  - get_power_summary
-  - get_sensor_history
-  - gev_tour
-  - photos_pick
-  - photos_picked
-  - tasks_move
   - yt_cast_status
 
 # Tools that legitimately never get a live scenario (pure meta/report

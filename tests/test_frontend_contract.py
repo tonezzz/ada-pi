@@ -210,7 +210,9 @@ class FrontendContractTests(unittest.TestCase):
         self.assertIn("activeWaterChallenge.deadline", app)
         provider = (ROOT / "backend/realtime_provider.py").read_text()
         self.assertIn("report_habit_observation", provider)
-        self.assertIn("get_habit_status", provider)
+        # get_habit_status folded into home_status(what='habit') —
+        # tools-merge-tasks-status.
+        self.assertIn("home_status", provider)
         self.assertIn("habit_state_getter=habit_tool_snapshot", backend)
         self.assertIn("def habit_tool_snapshot", backend)
 

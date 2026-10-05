@@ -1,0 +1,49 @@
+# tools-merge-tasks-status regression (2026-10-05): the tasks+status
+# group went 10 -> 3 on the declared surface — tasks absorbs
+# tasks_add/tasks_list/tasks_complete/tasks_move (action=add|list|done|
+# move), home_status absorbs the seven status getters
+# (what=battery|power|inverter|pool|dashboard|habit), and chat_send
+# absorbs photos_pick/photos_picked plus the three chaba-side
+# doc-upload card names (photo=pick|picked, doc=show|process|card).
+# All sixteen absorbed names survive as tool_runner._ALIASES rows,
+# hidden from the declared surface. Live-side this scenario checks the
+# canonical calls still fire for the absorbed intents — reads and the
+# free parts only; the write path (tasks add/done/move) is
+# confirm-gated and regression-covered by the CalendarGateTests +
+# TasksStatusMergeAliasTests unit suite:
+#   todo list read        — tasks action='list'
+#   battery/power reads   — home_status what='battery'|'power'
+#   photos picker         — chat_send photo='pick'
+name: tool_merge_tasks_status
+turns:
+  - user: >-
+      What's on my todo list? Just read it, don't change anything.
+    expect:
+      calls_any: [tasks]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      How are the home batteries doing — state of charge and health?
+    expect:
+      calls_any: [home_status]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Give me a power summary for the last day — solar, grid, load.
+    expect:
+      calls_any: [home_status]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      How are my habits tracking this week?
+    expect:
+      calls_any: [home_status]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      I want to pick photos from my Google Photos library to look at —
+      start a picker for me.
+    expect:
+      calls_any: [chat_send]
+      timeout_s: 90
+      settle_s: 10

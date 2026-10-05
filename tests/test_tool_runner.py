@@ -911,7 +911,6 @@ class MetaVoiceMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     callable via _ALIASES and route to their canonical parent —
     ada_persona for the voice actions, ada_ops for the five meta tools,
     ada_enroll_speaker for chaba's guest_register."""
-
     async def asyncSetUp(self):
         self.ha_client = AsyncMock()
         self.ha_client.base_url = "http://test:8123"
@@ -1051,6 +1050,251 @@ class MetaVoiceMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.runner.chaba.register_pending.assert_called_once_with(
             "Nat", session_id=self.runner.session_id)
         self.assertEqual(out, {"ok": True, "name": "Nat"})
+
+
+def _doc_registry(instance="test") -> MemoryBankRegistry:
+    """Hermetic registry WITH a 'documents' bank — the photo/doc flows
+    absorbed into chat_send are owner-tier (DRIVE_TOOLS bank gate), so a
+    runner on the empty registry would deny them before routing."""
+    path = Path(tempfile.mkdtemp()) / "banks.json"
+    path.write_text(json.dumps({"banks": {"documents": {
+        "instances": [instance],
+        "mddb_collection": "ada-docs",
+        "scope": "shared",
+        "writable": True,
+    }}}))
+    return MemoryBankRegistry(path=str(path), instance=instance,
+                              notebook_ids={})
+
+
+class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-tasks-status (10 -> 3 on the card's count): the
+    sixteen absorbed names stay callable via _ALIASES — tasks_* route to
+    tasks(action=add|list|done|move) with writes confirm-gated and
+    action='list' free; the seven status getters route to
+    home_status(what=...); photos_pick/photos_picked plus the three
+    chaba-side doc-upload card names route to chat_send
+    (photo=pick|picked, doc=show|process|card)."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.ha_client.battery_status.return_value = {"soc": 90}
+        self.ha_client.battery_detail.return_value = {"battery": 2}
+        self.ha_client.power_summary.return_value = {"solar_kwh": 5}
+        self.ha_client.inverter_status.return_value = {"mode": "normal"}
+        self.ha_client.pool_status.return_value = {"pump": "off"}
+        self.ha_client.dashboard_tab.return_value = {"entities": []}
+        self.runner = ToolRunner(
+            self.ha_client, habit_state_getter=lambda: {"habits": []},
+            instance_id="test")
+        self.runner._banks = _doc_registry()
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.search_documents.return_value = []
+        from tests.test_calendar_providers import FakeProvider, TZ
+        from backend.calendar_providers import CalendarService, Task
+        from datetime import datetime
+        self.provider = FakeProvider("fake")
+        self.provider.move_task = AsyncMock(return_value=Task(
+            id="@default/t1", title="moved", provider="fake",
+            task_list="@default", due="2026-10-07"))
+        self.runner._calendar = CalendarService(
+            {"fake": self.provider}, write="fake", tz=TZ)
+        self.runner._calendar_loaded = True
+        # chat_send queues a real relay POST in the background — stub the
+        # runner so no test reaches the network.
+        self.runner._chat_send_run = AsyncMock()
+    # -- alias table + declarations ------------------------------------
+
+    async def test_alias_table_routes_all_absorbed_names(self):
+        from backend.tool_runner import _ALIASES
+        expected = {
+            "tasks_add": "tasks", "tasks_list": "tasks",
+            "tasks_complete": "tasks", "tasks_move": "tasks",
+            "get_battery_status": "home_status",
+            "get_battery_detail": "home_status",
+            "get_power_summary": "home_status",
+            "get_inverter_status": "home_status",
+            "get_pool_status": "home_status",
+            "get_dashboard_tab": "home_status",
+            "get_habit_status": "home_status",
+            "photos_pick": "chat_send", "photos_picked": "chat_send",
+            "sys_show_uploaded_document": "chat_send",
+            "process_document_upload": "chat_send",
+            "doc_upload_card_action": "chat_send",
+        }
+        for old, new in expected.items():
+            self.assertEqual(_ALIASES.get(old), new,
+                             f"{old} should alias to {new}")
+        provider = (Path(__file__).resolve().parents[1]
+                    / "backend/realtime_provider.py").read_text()
+        for canonical in ("tasks", "home_status", "chat_send"):
+            self.assertIn(f'"name": "{canonical}"', provider)
+        # no absorbed name survives as a declaration dict
+        for absorbed in expected:
+            self.assertNotIn(f'"name": "{absorbed}"', provider)
+
+    # -- tasks family ---------------------------------------------------
+
+    async def test_tasks_list_alias_is_a_free_read(self):
+        out = await self.runner.execute("tasks_list", {})
+        self.assertIn("tasks", out)
+        # canonical read path is equally ungated — action='list' never
+        # had a confirmed= requirement.
+        out = await self.runner.execute("tasks", {"action": "list"})
+        self.assertIn("tasks", out)
+
+    async def test_task_write_aliases_keep_confirm_gate(self):
+        for name, args in [
+            ("tasks_add", {"title": "buy milk"}),
+            ("tasks_complete", {"task_id": "fake:@default/t1"}),
+            ("tasks_move", {"task_id": "fake:@default/t1",
+                            "due": "tomorrow"}),
+            ("tasks", {"action": "add", "title": "x"}),
+            ("tasks", {"action": "done", "task_id": "fake:@default/t1"}),
+            ("tasks", {"action": "move", "task_id": "fake:@default/t1",
+                       "due": "tomorrow"}),
+        ]:
+            with self.assertRaises(PermissionError, msg=name):
+                await self.runner.execute(name, dict(args))
+        self.assertEqual(self.provider.tasks, [])
+        self.assertEqual(self.provider.completed, [])
+
+    async def test_task_write_aliases_execute_when_confirmed(self):
+        out = await self.runner.execute(
+            "tasks_add", {"title": "buy milk", "confirmed": True})
+        self.assertEqual(out["title"], "buy milk")
+        out = await self.runner.execute(
+            "tasks_complete",
+            {"task_id": "fake:@default/t1", "confirmed": True})
+        self.assertIn("completed", out)
+        out = await self.runner.execute(
+            "tasks_move",
+            {"task_id": "fake:@default/t1", "due": "tomorrow",
+             "confirmed": True})
+        self.assertEqual(out["title"], "moved")
+        self.provider.move_task.assert_awaited_once()
+
+    async def test_tasks_rejects_unknown_action(self):
+        # gate runs before action validation (same as cms_edit) — a bogus
+        # action still needs confirmed to reach the ValueError.
+        with self.assertRaises(PermissionError):
+            await self.runner.execute("tasks", {"action": "bogus"})
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "tasks", {"action": "bogus", "confirmed": True})
+
+    # -- home_status family ----------------------------------------------
+
+    async def test_home_status_aliases_route(self):
+        await self.runner.execute("get_battery_status", {})
+        self.ha_client.battery_status.assert_awaited_once()
+        await self.runner.execute(
+            "get_battery_detail", {"battery_index": 2})
+        self.ha_client.battery_detail.assert_awaited_once_with(2)
+        await self.runner.execute("get_power_summary", {"hours": 6})
+        self.ha_client.power_summary.assert_awaited_once_with(hours=6)
+        await self.runner.execute("get_inverter_status", {})
+        self.ha_client.inverter_status.assert_awaited_once()
+        await self.runner.execute("get_pool_status", {})
+        self.ha_client.pool_status.assert_awaited_once()
+        await self.runner.execute("get_dashboard_tab", {"tab": "TPL"})
+        self.ha_client.dashboard_tab.assert_awaited_once_with("TPL")
+        out = await self.runner.execute("get_habit_status", {})
+        self.assertEqual(out, {"habits": []})
+
+    async def test_home_status_canonical_what_dispatch(self):
+        out = await self.runner.execute(
+            "home_status", {"what": "power", "hours": 12})
+        self.assertEqual(out, {"solar_kwh": 5})
+        self.ha_client.power_summary.assert_awaited_once_with(hours=12)
+        # what='battery' with no index reads the bank, with an index
+        # reads one battery (the absorbed get_battery_detail path).
+        out = await self.runner.execute("home_status", {"what": "battery"})
+        self.assertEqual(out, {"soc": 90})
+        out = await self.runner.execute(
+            "home_status", {"what": "battery", "battery_index": 2})
+        self.assertEqual(out, {"battery": 2})
+        with self.assertRaises(ValueError):
+            await self.runner.execute("home_status", {"what": "bogus"})
+        with self.assertRaises(ValueError):
+            await self.runner.execute("home_status", {})
+
+    # -- chat_send photo/doc flows ---------------------------------------
+
+    async def test_photos_pick_alias_starts_picker_and_queues_send(self):
+        self.runner._chat_send_queue = AsyncMock(
+            return_value={"status": "queued", "job_id": "chat-x"})
+        with patch("backend.tool_runner.doc_archive_client"
+                   ".photos_picker_create",
+                   new=AsyncMock(return_value={
+                       "session_id": "s1",
+                       "picker_uri": "https://photos.example/pick"})):
+            out = await self.runner.execute("photos_pick", {})
+        self.assertEqual(out["session_id"], "s1")
+        self.assertEqual(out["send"]["status"], "queued")
+        sent = self.runner._chat_send_queue.call_args.kwargs
+        self.assertIn("https://photos.example/pick", sent["text"])
+
+    async def test_photos_picked_alias_polls_and_delivers(self):
+        self.runner._chat_send_queue = AsyncMock(
+            return_value={"status": "queued", "job_id": "chat-x"})
+        self.runner.cast_to_screen = AsyncMock(return_value={"ok": True})
+        with patch("backend.tool_runner.doc_archive_client"
+                   ".photos_picker_poll",
+                   new=AsyncMock(return_value={
+                       "picked": True,
+                       "items": [{"baseUrl": "https://photos.example/i1",
+                                  "mimeType": "image/jpeg",
+                                  "filename": "a.jpg"}]})):
+            out = await self.runner.execute(
+                "photos_picked", {"session_id": "s1", "screen": 3})
+        self.assertTrue(out["picked"])
+        self.runner.cast_to_screen.assert_awaited_once()
+        sent = self.runner._chat_send_queue.call_args.kwargs
+        self.assertEqual(sent["image_url"],
+                         "https://photos.example/i1=w2048")
+
+    async def test_doc_aliases_route_and_gate(self):
+        from backend import document_check
+        engine = document_check.engine()
+        engine._hold("doc/test-1", b"pdf", b"jpg",
+                     {"doc_type": "letter", "filename": "deed.pdf"})
+        try:
+            out = await self.runner.execute(
+                "sys_show_uploaded_document", {"intake_key": "doc/test-1"})
+            self.assertEqual(out["doc"], "doc/test-1")
+            self.assertEqual(out["doc_type"], "letter")
+            out = await self.runner.execute(
+                "process_document_upload", {})
+            self.assertEqual(out["doc"], "doc/test-1")  # newest held
+            # The card action's 'archive' button re-dispatches through
+            # execute() — ada_doc_archive's confirm gate still applies.
+            with self.assertRaises(PermissionError):
+                await self.runner.execute(
+                    "doc_upload_card_action",
+                    {"action": "archive", "intake_key": "doc/test-1"})
+        finally:
+            engine._held.pop("doc/test-1", None)
+
+    async def test_doc_alias_without_held_intake_errors(self):
+        with self.assertRaises(RuntimeError):
+            await self.runner.execute(
+                "sys_show_uploaded_document", {"intake_key": "doc/nope"})
+
+    async def test_chat_send_plain_send_still_queues(self):
+        self.runner._chat_send_run = AsyncMock()
+        out = await self.runner.execute(
+            "chat_send", {"channel": "line", "text": "hello"})
+        self.assertEqual(out["status"], "queued")
+
+    async def test_chat_send_rejects_unknown_photo_doc(self):
+        with self.assertRaises(ValueError):
+            await self.runner.execute("chat_send", {"photo": "bogus"})
+        with self.assertRaises(ValueError):
+            await self.runner.execute("chat_send", {"doc": "bogus"})
 
 
 class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):
