@@ -228,23 +228,41 @@ CONTROL_MAX_GLOBAL = int(os.environ.get("ADA_CONTROL_MAX_GLOBAL", "30"))
 # LLM callers occasionally use a synonym for a declared parameter. Map the
 # alias to the real name only when the method declares it and the caller did
 # not already pass the canonical name.
-_ARG_ALIASES = {"question": "query"}
+_ARG_ALIASES = {"question": "query", "q": "query"}
 
 # Tool-NAME aliases for the consolidation program
 # (docs/assessments/tool-consolidation-spec-2026-10-04.md): when a merge
-# card retires a tool name into a canonical action= tool, the old name
-# stays callable here as a soft alias so prompts/scenarios/habits keep
-# working. A key must never be a declared tool name, every value must be
-# one, and every absorbed name in docs/ssot/ssot.tool-surface.yml must
-# land a row once it leaves the surface — scripts/tool-lint.py fails on
-# drift. Populated by the tools-merge-* cards.
-_ALIASES: dict[str, str] = {}
+# card retires a tool name into a canonical action=/kind=/scope= tool,
+# the old name stays callable here as a soft alias — registered but
+# hidden from the declared surface (x-legacy semantics) so prompts,
+# scenarios and habits keep working. A key must never be a declared
+# tool name, every value must be one, and every absorbed name in
+# docs/ssot/ssot.tool-surface.yml must land a row once it leaves the
+# surface — scripts/tool-lint.py fails on drift. Populated by the
+# tools-merge-* cards.
+_ALIASES: dict[str, str] = {
+    # memory family — tools-merge-memory (2026-10-04): 8 -> 4.
+    "guest_recall": "ada_memory_search",
+    "vocab_note": "ada_remember",
+    "report_habit_observation": "ada_remember",
+    "guest_remember": "ada_remember",
+    "guest_remember_private": "ada_remember",
+    "ada_ha_recall": "ada_session_recall",
+}
 
 # Args an aliased call carries implicitly — the absorbed name implies the
-# canonical tool's action= (e.g. cctv_snapshot -> ada_camera implies
-# action="snapshot"). Merged under the caller's args, never overriding
-# them. scripts/tool-lint.py checks every key here has an _ALIASES row.
-_ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {}
+# canonical tool's action=/kind=/scope= (e.g. cctv_snapshot -> ada_camera
+# implies action="snapshot", guest_recall -> ada_memory_search implies
+# scope="guest"). Merged under the caller's args, never overriding them.
+# scripts/tool-lint.py checks every key here has an _ALIASES row.
+_ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
+    "guest_recall": {"scope": "guest"},
+    "vocab_note": {"kind": "vocab"},
+    "report_habit_observation": {"kind": "habit"},
+    "guest_remember": {"kind": "guest"},
+    "guest_remember_private": {"kind": "guest", "private": True},
+    "ada_ha_recall": {"scope": "history"},
+}
 
 
 def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
@@ -254,6 +272,36 @@ def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
         logger.info("tool alias %s -> %s", name, canonical)
         return canonical, dict(_ALIAS_ARG_DEFAULTS.get(name) or {})
     return name, {}
+
+
+def _alias_call_args(alias: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Surrogate-arg mapping for absorbed names whose parameters don't
+    match the canonical tool 1:1 — the spec keeps this explicit per
+    family, not generic. Runs on the merged args (implied defaults under
+    caller args) before dispatch."""
+    if alias == "vocab_note":
+        # vocab_note(term, correct, note) -> ada_remember(text, kind=vocab)
+        term = str(args.pop("term", "") or "").strip()
+        correct = str(args.pop("correct", "") or "").strip()
+        note = str(args.pop("note", "") or "").strip()
+        if term or correct:
+            args.setdefault("text", f"{term} → {correct}".strip(" →"))
+        if note:
+            args.setdefault("note", note)
+    elif alias == "ada_ha_recall":
+        # ada_ha_recall(query) -> ada_session_recall(question, scope=history)
+        if "question" not in args and "query" in args:
+            args["question"] = args.pop("query")
+    return args
+
+
+# ada_remember kinds that don't write a curated memory bank: 'vocab'
+# appends the speaker's own vocab log (append-only, ungated like the
+# absorbed vocab_note), 'guest' writes the chaba guest store (gated by
+# chaba promotion), 'habit' is provider-dispatched telemetry. These skip
+# the MEMORY_WRITE_TOOLS bank gate and the secondary-speaker block so the
+# absorbed names keep exactly the access they had before the merge.
+_REMEMBER_NONBANK_KINDS = frozenset({"vocab", "habit", "guest"})
 
 
 def _first(value: list[str] | None) -> str | None:
@@ -811,6 +859,7 @@ class ToolRunner:
         # phonetic normalization below is just typo repair. The alias's
         # implied args (its action=) go under the caller's, not over.
         _implied: dict[str, Any] = {}
+        _alias_src = name
         if isinstance(name, str):
             name, _implied = _resolve_alias(name)
         # Gemini sometimes spells underscore-heavy tool names phonetically
@@ -832,6 +881,8 @@ class ToolRunner:
                 raise KeyError(f"Unknown tool: {name}")
             method = self._bind_dynamic(dyn_spec)
         call_args = {**_implied, **dict(args or {})}
+        if _alias_src != name:
+            call_args = _alias_call_args(str(_alias_src), call_args)
         # Per-call identity override: the provider passes the SESSION's
         # resolved identity — the runner is shared across sessions, so its
         # mutable identity fields can race when sessions overlap.
@@ -904,12 +955,26 @@ class ToolRunner:
             # turns — the manifest must explicitly set secondary_allowed.
             if dyn_spec is not None and not dyn_spec.secondary_allowed:
                 blocked = blocked | {name}
+            # ada_remember's non-bank kinds (vocab/guest/habit) absorbed
+            # tools that were never secondary-blocked — the carve-out keeps
+            # a guest's own notes and vocab log reachable on their turn.
+            nonbank_remember = (
+                name == "ada_remember" and str(
+                    call_args.get("kind") or "").lower()
+                in _REMEMBER_NONBANK_KINDS)
+            # scope='guest' absorbed guest_recall — a public-store read that
+            # was never secondary-blocked.
+            guest_scope_search = (
+                name == "ada_memory_search" and str(
+                    call_args.get("scope") or "").lower() == "guest")
             # ada_enroll_speaker is exempt here — its own check is smarter:
             # the owner can re-enroll even while a secondary voice is
             # identified, as long as the buffer voice isn't the secondary's
             # (2026-09-29 deadlock: Tony locked out of his own session
             # because KK's identification was sticky and enroll refused).
-            if (name in blocked and name != "ada_enroll_speaker") or (
+            if (name in blocked and name != "ada_enroll_speaker"
+                    and not nonbank_remember
+                    and not guest_scope_search) or (
                 name == "ada_persona" and action in ("set", "reset")
                 and "persona_write" in blocked
             ):
@@ -936,7 +1001,13 @@ class ToolRunner:
                 await self._check_control_allowed(name, call_args, *confirm)
 
             elif name in MEMORY_WRITE_TOOLS:
-                self._check_memory_write_allowed(name, call_args, *confirm)
+                # ada_remember kind=vocab/guest/habit writes outside the
+                # curated banks (own vocab log, chaba guest store, habit
+                # telemetry) — the absorbed tools were never bank-gated.
+                if not (name == "ada_remember" and str(
+                        call_args.get("kind") or "").lower()
+                        in _REMEMBER_NONBANK_KINDS):
+                    self._check_memory_write_allowed(name, call_args, *confirm)
             elif name in CALENDAR_WRITE_TOOLS:
                 self._check_calendar_write_allowed(name, call_args, *confirm)
             elif name in CMS_WRITE_TOOLS:
@@ -2363,17 +2434,95 @@ class ToolRunner:
         bank: str = "all",
         limit: int = 5,
         include_inactive: bool = False,
+        scope: str | None = None,
     ) -> dict[str, Any]:
-        """Search a curated memory bank's MDDB collection."""
-        return await memory_ops.memory_search(
-            self.mddb, self.banks, bank, query, limit, include_inactive,
-            person_entity=self._memory_identity(),
-        )
+        """Search memory across scopes (tools-merge-memory):
+
+        banks    — the curated memory banks (memory_ops.memory_search)
+        sessions — the per-instance recall-summary collection (session,
+                   daily, weekly rollup docs)
+        guest    — the chaba guest store (replaces guest_recall)
+        all      — every scope available on this instance
+        """
+        scope_s = str(scope or "").strip().lower()
+        if not scope_s:
+            # An explicit bank name narrows to that bank only — the same
+            # behavior the pre-merge tool had for bank-scoped callers.
+            scope_s = "all" if str(bank or "all") == "all" else "banks"
+        if scope_s not in ("all", "banks", "sessions", "guest"):
+            raise ValueError(
+                f"unknown memory search scope {scope!r} "
+                "(all|banks|sessions|guest)")
+        if scope_s == "guest" and self.chaba is None:
+            self._require_chaba()  # raises: guest store is chaba-only
+        if scope_s == "banks" and self.mddb is None:
+            raise ValueError("no curated memory banks on this instance")
+        hits: list[dict[str, Any]] = []
+        degraded = False
+        if scope_s in ("all", "banks") and self.mddb is not None:
+            res = await memory_ops.memory_search(
+                self.mddb, self.banks, bank, query, limit, include_inactive,
+                person_entity=self._memory_identity(),
+            )
+            hits.extend(res.get("hits") or [])
+            degraded = bool(res.get("degraded"))
+        if scope_s in ("all", "sessions") and self.mddb is not None:
+            hits.extend(await self._session_hits(str(query), int(limit)))
+        if scope_s in ("all", "guest") and self.chaba is not None:
+            for h in self.chaba.recall(
+                    str(query), session_id=self.session_id,
+                    limit=int(limit)):
+                hits.append({
+                    "bank": "guest", "key": h.get("key"),
+                    "subject": h.get("name"), "score": h.get("score"),
+                    "content": h.get("text"), "at": h.get("at"),
+                })
+        hits.sort(key=lambda h: float(h.get("score") or 0), reverse=True)
+        hits = hits[: int(limit)]
+        return {
+            "bank": bank if scope_s == "banks" else scope_s,
+            "scope": scope_s,
+            "count": len(hits),
+            "hits": hits,
+            "degraded": degraded,
+        }
+
+    async def _session_hits(
+        self, query: str, limit: int
+    ) -> list[dict[str, Any]]:
+        """scope=sessions — search the recall-summary collection
+        (session/daily/weekly/monthly summary docs) that
+        ada_session_recall's mid tier reads."""
+        from backend.conversation_memory import _summary_collection
+        coll = _summary_collection()
+        q = str(query or "").strip()
+        docs = None
+        if q and q != "*":
+            docs = await self.mddb.vector_search(
+                collection=coll, query=q, limit=int(limit) * 2)
+        if docs is None:
+            listed = await self.mddb.search_documents(
+                collection=coll, limit=max(int(limit) * 5, 20))
+            docs = (memory_ops._keyword_rank(listed, q)
+                    if q and q != "*" else listed)
+        hits = []
+        for d in docs or []:
+            meta = d.get("meta") or {}
+            content = str(d.get("contentMd") or d.get("content_md") or "")
+            hits.append({
+                "bank": "sessions",
+                "key": d.get("key"),
+                "score": d.get("score"),
+                "kind": _first(meta.get("kind")),
+                "date": _first(meta.get("date")),
+                "content": content[:800],
+            })
+        return hits[: int(limit)]
 
     async def ada_remember(
         self,
-        bank: str,
-        text: str,
+        bank: str | None = None,
+        text: str | None = None,
         key: str | None = None,
         subject: str | None = None,
         attribute: str | None = None,
@@ -2382,14 +2531,82 @@ class ToolRunner:
         applies_to: list[str] | str | None = None,
         supersedes: str | None = None,
         prime: bool | None = None,
+        private: bool = False,
+        note: str | None = None,
     ) -> dict[str, Any]:
-        """Write a memory to a bank: create, correct-in-place, or supersede."""
+        """Store a memory. `kind` selects the store (tools-merge-memory):
+
+        fact/preference/person/procedure/note — curated bank write
+        (bank required); vocab — append the caller's own vocab log
+        (absorbed vocab_note); guest — the chaba guest store, private=true
+        for a promoted user's private namespace (absorbed guest_remember /
+        guest_remember_private); habit — observation telemetry, delivered
+        by the live session (absorbed report_habit_observation).
+        """
+        k = str(kind or "").strip().lower()
+        if not k and self.chaba is not None:
+            k = "guest"
+        if k == "vocab":
+            return await self._vocab_append(text, note)
+        if k == "guest":
+            self._require_chaba()
+            if not str(text or "").strip():
+                raise ValueError("remember(kind='guest') requires text")
+            slug = str(key or _slug(str(text))[:40] or "note")
+            if private:
+                return self.chaba.remember_private(
+                    self.session_id, slug, str(text))
+            return self.chaba.remember(self.session_id, slug, str(text))
+        if k == "habit":
+            # Provider-dispatched: the observation reaches the habit
+            # monitor as a ProviderEvent. A store-side call gets a clear
+            # answer rather than a silent no-op.
+            return {"error": (
+                "habit observations are delivered by the live session "
+                "monitor — this call reached the store directly")}
+        if self.mddb is None or self.memory is None:
+            raise PermissionError(
+                "curated memory banks are not available on this instance")
+        if not str(bank or "").strip():
+            raise ValueError(
+                "ada_remember requires 'bank' for curated-bank writes "
+                "(kind fact/preference/person/procedure/note)")
+        if not str(text or "").strip():
+            raise ValueError("ada_remember requires 'text'")
         return await memory_ops.remember(
             self.mddb, self.banks, self.memory.instance,
-            bank, text, key, subject, attribute, kind, valid_until, applies_to,
-            supersedes, session_id=self.session_id,
+            str(bank), str(text), key, subject, attribute, kind, valid_until,
+            applies_to, supersedes, session_id=self.session_id,
             person_entity=self._memory_identity(), prime=prime,
         )
+
+    async def ada_session_recall(
+        self,
+        question: str = "",
+        scope: str | None = None,
+        limit: int = 10,
+        **_unused: Any,
+    ) -> dict[str, Any]:
+        """Conversation/home-history recall (tools-merge-memory).
+
+        scope='history' is the absorbed ada_ha_recall — inline search of
+        the stored HA memory + recorded events. scope='sessions' (the
+        deep NotebookLM ask) is provider-dispatched: outside a live voice
+        session there is no conversation to attach the async answer to.
+        """
+        scope_s = str(scope or "sessions").strip().lower()
+        if scope_s == "history":
+            # Models trained on the absorbed ada_ha_recall schema sometimes
+            # still send query= on the canonical name too.
+            q = str(question or "") or str(_unused.get("query") or "") or "*"
+            return await self.ada_ha_recall(q, int(limit))
+        if scope_s != "sessions":
+            raise ValueError(
+                f"unknown recall scope {scope!r} (sessions|history)")
+        return {"error": (
+            "session recall runs inside a live voice session — for a "
+            "direct lookup use ada_memory_search scope='sessions' to "
+            "search session summaries")}
 
     async def ada_persona(
         self, action: str, knob: str | None = None, value: Any = None,
@@ -2450,20 +2667,35 @@ class ToolRunner:
     async def vocab_note(
         self, term: str, correct: str, note: str | None = None
     ) -> dict[str, Any]:
+        """Retired surface name (tools-merge-memory) — kept as the direct
+        call form of ada_remember kind='vocab'; the alias shim maps
+        term/correct onto `text` for execute()-routed calls."""
+        term, correct = (term or "").strip(), (correct or "").strip()
+        if not term or not correct:
+            raise ValueError("vocab_note requires term and correct")
+        return await self._vocab_append(f"{term} → {correct}", note)
+
+    async def _vocab_append(
+        self, text: Any, note: Any = None
+    ) -> dict[str, Any]:
         """Append a term-coaching entry to the current speaker's personal
         vocab log (vocab/log in their own personal bank — KK's notes land in
         personal-kk, Tony's in personal-tony). Not confirmation-gated:
         append-only, scoped to the caller's own bank."""
+        if self.mddb is None:
+            raise PermissionError(
+                "vocab notes are unavailable on this instance")
         bank = memory_ops.persona_bank_for(self.banks, self._memory_identity())
         if bank is None:
             raise PermissionError(
-                "vocab_note needs a personal bank — this identity has none"
+                "vocab notes need a personal bank — this identity has none"
             )
-        term, correct = (term or "").strip(), (correct or "").strip()
-        if not term or not correct:
-            raise ValueError("vocab_note requires term and correct")
+        entry = str(text or "").strip()
+        note_s = str(note).strip() if note else ""
+        if not entry:
+            raise ValueError("vocab memory requires text ('term → correction')")
         today = datetime.now(timezone.utc).date().isoformat()
-        line = f"- {term} → {correct} — {today}" + (f" ({note.strip()})" if note else "")
+        line = f"- {entry} — {today}" + (f" ({note_s})" if note_s else "")
         doc = await self.mddb.get_document(bank.mddb_collection, self.VOCAB_DOC_KEY)
         body = ((doc or {}).get("contentMd") or doc and doc.get("content_md") or "")
         if not body.strip():
@@ -2484,7 +2716,7 @@ class ToolRunner:
         if not ok:
             return {"status": "error", "error": "mddb write failed"}
         return {"status": "noted", "bank": bank.name, "key": self.VOCAB_DOC_KEY,
-                "term": term, "correct": correct}
+                "entry": entry}
 
     def _persona_admin(self, caller: str | None) -> bool:
         """Full-access identities may manage other people's profiles.

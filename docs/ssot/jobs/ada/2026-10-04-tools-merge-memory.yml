@@ -1,0 +1,91 @@
+# SSOT Job: memory tool-group merge (8 -> 4)
+# Card: tools-merge-memory (chaba kanban). Dispatch 20261004-210440.
+
+title: Memory tool merge — ada_memory_search / ada_remember / ada_session_recall absorb six names
+subtitle: First tools-merge-* card landed — the _ALIASES machinery now carries real retirees
+
+planning:
+  goal: |
+    Cut the memory group to its canonical four:
+    ada_memory_search, ada_remember, ada_forget, ada_session_recall.
+    Absorbed names stay callable but hidden — soft aliases via
+    tool_runner._ALIASES, removed from the declared surface
+    (the repo's x-legacy mechanism; no literal x-legacy field exists).
+  decisions: |
+    - Three canonical targets, not one: the card's mapping is
+      scope=/kind= onto existing tools, so the SSOT family is split
+      into memory_search / memory_remember / memory_recall rather than
+      a single 'ada_memory' canonical (spec table updated to match).
+    - Alias resolution runs BEFORE gates, so confirm/secondary gates
+      always key off the canonical name (DEVIN_CONFIRMED_TOOLS and
+      confirm_strip untouched).
+    - Gate carve-outs preserve pre-merge access exactly:
+      ada_remember kind in {vocab, guest, habit} skips the
+      MEMORY_WRITE_TOOLS bank gate + secondary block + Jev probe +
+      budget remember_block (the absorbed vocab_note / guest_* /
+      report_habit_observation were never gated);
+      ada_memory_search scope=guest skips the secondary block
+      (guest_recall read a public store);
+      ada_session_recall scope=history skips the provider secondary
+      block and the redundant-recall gate (ada_ha_recall had neither).
+    - kind='habit' is provider-dispatched telemetry (ProviderEvent
+      'habit_observation' to visual_habits), not a store write — a
+      direct runner call returns a descriptive error.
+    - Chaba guest mode re-declares ada_remember/ada_memory_search with
+      guest-scoped schemas (kind='guest' / scope='guest' fixed) — the
+      main bank-facing declarations are swapped out so no name is
+      declared twice.
+    - ada_memory_search defaults: bank='all' + no scope searches
+      banks+sessions(+guest on chaba); an explicit bank name implies
+      scope='banks' so pre-merge single-bank callers keep their result
+      shape.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-04"
+  steps:
+    - id: 1
+      label: "tool_runner alias tables + arg shim"
+      status: done
+      notes: "6 _ALIASES rows + _ALIAS_ARG_DEFAULTS (scope/kind/private);
+        _alias_call_args maps vocab_note(term,correct,note)->text and
+        ada_ha_recall(query)->question; _ARG_ALIASES gains q->query."
+    - id: 2
+      label: "canonical scope/kind params"
+      status: done
+      notes: "ada_memory_search scope=all|banks|sessions|guest with
+        _session_hits() over the recall-summary collection and chaba
+        guest recall; ada_remember kind=fact|vocab|habit|guest(+curated)
+        + private; ada_session_recall scope=sessions|history delegating
+        history to ada_ha_recall; vocab write refactored to _vocab_append."
+    - id: 3
+      label: "provider surface + dispatch"
+      status: done
+      notes: "6 declarations removed; canonical schemas extended;
+        habit elif catches both spellings; scope=history falls to the
+        runner (skips recall gate + secondary block); chaba allowlist /
+        declarations / instructions rewritten for canonical names."
+    - id: 4
+      label: "SSOT + spec + scenario + tests"
+      status: done
+      notes: "ssot.tool-surface.yml memory family -> 3 sub-families,
+        ada_ha_recall moved out of ha absorbed, coverage_debt pruned;
+        spec table updated; tests/scenarios-live/tool_merge_memory.yaml
+        added; MemoryMergeAliasTests (7 tests) + canonical habit-event
+        provider test."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # 100 declared, 6 aliases, clean"
+    - "PYTHONPATH=.teststubs python3 -m unittest tests.test_tool_runner.MemoryMergeAliasTests"
+    - "python3 -m unittest tests.test_tool_audit tests.test_provider_events tests.test_visual_habits"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0"
+  - "alias smoke: execute(guest_recall) -> ada_memory_search scope=guest;
+     execute(vocab_note) -> _vocab_append; execute(ada_ha_recall) ->
+     ada_session_recall scope=history -> memory.search_all"
+  - "provider: ada_remember kind=habit emits habit_observation event"
+  - "full suite: 469 tests; only pre-existing failures (ai_edge_litert
+     absent on this host, CMS publish mock drift — identical on HEAD)"

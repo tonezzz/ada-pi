@@ -1,0 +1,39 @@
+# tools-merge-memory regression (2026-10-04): the memory group went
+# 8 -> 4 — ada_memory_search/ada_remember/ada_forget/ada_session_recall
+# are the whole surface; guest_recall, vocab_note, report_habit_observation,
+# guest_remember, guest_remember_private and ada_ha_recall are hidden
+# _ALIASES that route to the canonical tools. Live-side this scenario
+# checks the canonical calls still fire for the absorbed intents:
+#   search  — memory lookup lands on ada_memory_search (any scope)
+#   write   — 'remember' lands on ada_remember (any kind)
+#   recall  — stored HA device/sensor recall lands on ada_session_recall
+#             scope='history' (the absorbed ada_ha_recall path)
+name: tool_merge_memory
+turns:
+  - user: >-
+      What do you have stored in memory about the gate remote?
+    expect:
+      calls_any: [ada_memory_search]
+      timeout_s: 120
+      settle_s: 15
+  - user: >-
+      Remember this in the general bank: marker zeta-merge-2604 — the
+      memory tool merge regression ran today.
+    expect:
+      calls_any: [ada_remember]
+      timeout_s: 120
+      settle_s: 15
+  - user: >-
+      From the stored home memory — which devices or sensors relate to
+      the pool?
+    expect:
+      calls_any: [ada_session_recall, ada_ha_search_devices,
+                  ada_ha_search_sensors]
+      timeout_s: 120
+      settle_s: 15
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-general, contains: "zeta-merge-2604"}
+    - {collection: ada-ha-bank-personal-tony, contains: "zeta-merge-2604"}
+    - {collection: ada-ha-bank-personal-testo, contains: "zeta-merge-2604"}
+    - {collection: ada-ha-bank-personal-kk, contains: "zeta-merge-2604"}

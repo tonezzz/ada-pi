@@ -262,7 +262,7 @@ SUMMARY_INSTRUCTIONS = (
 # the declarations and this instruction paragraph together. Only meaningful
 # where the hardware backend (camera + pose pipeline, backend/main.py)
 # supplies a habit_state_getter; pwa-only instances should exclude both.
-HABIT_TOOLS = {"get_habit_status", "report_habit_observation"}
+HABIT_TOOLS = {"get_habit_status", "ada_remember"}
 
 HABIT_INSTRUCTIONS = (
     " You monitor habits such as seated posture: local pose estimation proposes "
@@ -453,7 +453,12 @@ VMS_DECLARATION = {
 # backed chaba store instead of MDDB banks. Guest tools are appended and the
 # tool surface is cut to CHABA_ALLOW — an allowlist so new Ada tools never
 # leak into guest sessions by accident.
-CHABA_TOOLS = {"guest_remember", "guest_remember_private", "guest_recall", "guest_register"}
+# Guest memory rides the canonical tools (tools-merge-memory, 2026-10-04):
+# ada_remember(kind='guest'[, private=true]) absorbs guest_remember /
+# guest_remember_private, ada_memory_search(scope='guest') absorbs
+# guest_recall. CHABA_DECLARATIONS re-declares them with guest-scoped
+# schemas; the allowlist below swaps out the bank-facing versions.
+CHABA_TOOLS = {"ada_remember", "ada_memory_search", "guest_register"}
 
 CHABA_ALLOW = CHABA_TOOLS | {
     "get_home_state", "list_home_devices", "search_home_devices",
@@ -467,11 +472,12 @@ CHABA_ALLOW = CHABA_TOOLS | {
 CHABA_INSTRUCTIONS = (
     " You are Chaba, the house assistant for visitors. On first contact ask "
     "the visitor's name and call guest_register with it — registration lets an "
-    "admin promote them to a named user later. Before the first guest_remember "
+    "admin promote them to a named user later. Before the first ada_remember "
     "in a session, say clearly that saved memories are visible to everyone in "
-    "this household. guest_remember saves a PUBLIC note (key + text); "
-    "guest_recall searches saved notes; guest_remember_private is only for "
-    "promoted users and fails for guests. You can read home state and sensors "
+    "this household. ada_remember(kind='guest') saves a PUBLIC note (key + "
+    "text); ada_memory_search(scope='guest') searches saved notes; "
+    "private=true is only for promoted users and fails for guests. You can "
+    "read home state and sensors "
     "and control lights/media via control_entity and control_media_player, "
     "but never anything that moves (covers, gates, buttons) — refuse those "
     "politely."
@@ -479,47 +485,42 @@ CHABA_INSTRUCTIONS = (
 
 CHABA_DECLARATIONS = [
     {
-        "name": "guest_remember",
+        "name": "ada_remember",
         "description": (
-            "Save a public memory under the visitor's declared name. "
-            "Disclose first that guest memories are visible to the household."
+            "Save a guest memory under the visitor's declared name — always "
+            "call with kind='guest'. Disclose first that guest memories are "
+            "visible to the household. private=true is only for "
+            "admin-promoted users; it fails for guests."
         ),
         "parameters_json_schema": {
             "type": "object",
             "properties": {
+                "kind": {"type": "string", "enum": ["guest"]},
                 "key": {"type": "string", "description": "Short slug, e.g. 'favorite-drink'."},
                 "text": {"type": "string", "description": "The fact or note to remember."},
+                "private": {
+                    "type": "boolean",
+                    "description": "Promoted users only — saves to their private namespace.",
+                },
             },
-            "required": ["key", "text"],
+            "required": ["kind", "key", "text"],
             "additionalProperties": False,
         },
     },
     {
-        "name": "guest_remember_private",
+        "name": "ada_memory_search",
         "description": (
-            "Save a private note — only works for admin-promoted users; "
-            "fails for guests."
+            "Search public guest memories by keyword — always call with "
+            "scope='guest'."
         ),
         "parameters_json_schema": {
             "type": "object",
             "properties": {
-                "key": {"type": "string"},
-                "text": {"type": "string"},
-            },
-            "required": ["key", "text"],
-            "additionalProperties": False,
-        },
-    },
-    {
-        "name": "guest_recall",
-        "description": "Search public guest memories by keyword.",
-        "parameters_json_schema": {
-            "type": "object",
-            "properties": {
+                "scope": {"type": "string", "enum": ["guest"]},
                 "query": {"type": "string"},
                 "limit": {"type": "integer", "description": "Max hits (default 10)."},
             },
-            "required": ["query"],
+            "required": ["scope", "query"],
             "additionalProperties": False,
         },
     },
@@ -593,7 +594,7 @@ DEFAULT_ADA_INSTRUCTIONS = """You are Ada, a polished, highly capable voice assi
 Personality:
 - Default register is polite but very straightforward: composed, professional, factual — no unsolicited wit, sarcasm, or playful quips. Only show dry wit when the speaker's persona has sassiness=light/playful (see persona knobs below); sassiness=none means strictly straightforward answers.
 - Correction duty: when the speaker asserts something factually wrong, misremembers, or proposes a wrong direction, correct it plainly — accuracy over agreement. If the question rests on a misunderstanding, briefly explain the right model. Never validate a false premise just to be agreeable; check memory/tools when unsure rather than guessing along.
-- Word coaching: when the speaker uses a term slightly wrong (mishearing, wrong-but-nearby word, coinage like "methodogy"), recast — use the correct term naturally in your reply instead of calling out the mistake, and quietly log it with vocab_note so it lands in their personal glossary. Only name the right word explicitly when the misuse makes the meaning ambiguous or the same word keeps recurring; never stop the conversation to lecture on vocabulary.
+- Word coaching: when the speaker uses a term slightly wrong (mishearing, wrong-but-nearby word, coinage like "methodogy"), recast — use the correct term naturally in your reply instead of calling out the mistake, and quietly log it with ada_remember (kind='vocab', text as 'term → correction') so it lands in their personal glossary. Only name the right word explicitly when the misuse makes the meaning ambiguous or the same word keeps recurring; never stop the conversation to lecture on vocabulary.
 - Target the behavior, never the person's identity, appearance, intelligence, or worth. Never be cruel, humiliating, threatening, or relentless.
 - Drop the sarcasm for emergencies, genuine distress, medical concerns, or other sensitive moments; be direct and caring instead.
 
@@ -758,7 +759,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "You can update a device's safety level with ada_ha_set_device_confidence. "
             "You also have Ada HA memory tools: ada_ha_get_state for the stored home snapshot, "
             "ada_ha_search_devices to find a device by name, ada_ha_search_sensors to find a sensor, "
-            "ada_ha_recall for free-form recall across the stored devices and sensors, "
+            "ada_session_recall with scope='history' for free-form recall across the stored devices and sensors, "
             "ada_ha_history to list recent home snapshots from memory, "
             "ada_ha_get_device_confidence to list devices by trust level, "
             "ada_ha_set_device_confidence to change a device's trust level, and "
@@ -2926,30 +2927,6 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "report_habit_observation",
-                    "description": (
-                        "Reports the structured result of a water or junk-food camera "
-                        "observation requested by the ADA backend. Call this only when a "
-                        "backend prompt supplies a challenge_id, after reviewing the full "
-                        "observation window. Mere containers or food presence are not consumption."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "challenge_id": {"type": "string"},
-                            "habit_key": {"type": "string", "enum": ["not_drinking_enough_water", "junk_food"]},
-                            "observed": {"type": "boolean"},
-                            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                            "reason": {"type": "string"},
-                            "item_identified": {"type": "string", "description": "For junk-food checks, the specific visible food or drink; empty when none is identifiable."},
-                            "consumption_visible": {"type": "boolean", "description": "For junk-food checks, true only when actual eating or drinking is visibly confirmed."},
-                            "classified_unhealthy": {"type": "boolean", "description": "For junk-food checks, true only when the identified item clearly belongs to the configured unhealthy categories."},
-                        },
-                        "required": ["challenge_id", "habit_key", "observed", "confidence", "reason"],
-                        "additionalProperties": False,
-                    },
-                }, {
                     "name": "get_habit_status",
                     "description": (
                         "Returns every habit Ada tracks, including habits with no occurrences, "
@@ -2999,24 +2976,6 @@ class GeminiLiveProvider(RealtimeProvider):
                             "query": {
                                 "type": "string",
                                 "description": "A sensor name or keyword, e.g. 'pool temperature'.",
-                            }
-                        },
-                        "required": ["query"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_ha_recall",
-                    "description": (
-                        "Free-form recall across the stored Home Assistant memory for devices and sensors. "
-                        "Use this for broad questions like 'what sensors are about power' or 'pool devices'."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "The question or keyword to recall.",
                             }
                         },
                         "required": ["query"],
@@ -3089,15 +3048,21 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_session_recall",
                     "description": (
-                        "Recall previous voice conversations. Use ONLY when the user asks "
+                        "Recall previous voice conversations or stored home history "
+                        "(also handles what used to be ada_ha_recall). "
+                        "Default scope='sessions': use ONLY when the user asks "
                         "'what did we talk about', 'do you remember', or wants something "
                         "from an earlier conversation — not for fact lookup (use "
                         "ada_memory_search bank='all' for that). NOT for test, scenario, "
                         "benchmark, or report results — those are stored documents, "
                         "use ada_memory_search. "
+                        "scope='history' answers instantly from the stored Home "
+                        "Assistant memory of devices, sensors and recorded events — "
+                        "use it for broad questions like 'what sensors are about "
+                        "power' or 'pool devices'. "
                         "Pick the group or bank that best matches the topic. "
-                        "The recall runs in the background and can take up to ~20 seconds; "
-                        "the result will be spoken when ready."
+                        "The sessions recall runs in the background and can take up "
+                        "to ~20 seconds; the result will be spoken when ready."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3106,6 +3071,22 @@ class GeminiLiveProvider(RealtimeProvider):
                             "question": {
                                 "type": "string",
                                 "description": "The recall question, e.g. 'what did we discuss in the previous session?'.",
+                            },
+                            "scope": {
+                                "type": "string",
+                                "enum": ["sessions", "history"],
+                                "description": (
+                                    "'sessions' (default) deep-recalls past conversations "
+                                    "in the background; 'history' searches the stored "
+                                    "Home Assistant device/sensor memory plus recorded "
+                                    "events inline (the absorbed ada_ha_recall)."
+                                ),
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 50,
+                                "description": "scope='history' only — maximum results (default 10).",
                             },
                             "group": {
                                 "type": "string",
@@ -3143,8 +3124,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_memory_search",
                     "description": (
-                        "Search curated memory banks for stored facts, preferences, people, "
-                        "procedures, notes, and test/scenario/benchmark/report results — "
+                        "Search memory: curated banks, session summaries, and guest "
+                        "notes (also handles what used to be guest_recall). "
+                        "Stored facts, preferences, people, procedures, notes, and "
+                        "test/scenario/benchmark/report results — "
                         "the FIRST tool for any factual lookup including 'which tests ran' "
                         "or 'what did the last report say'; "
                         "pass bank='all' (default) when unsure which bank holds the fact. "
@@ -3157,6 +3140,18 @@ class GeminiLiveProvider(RealtimeProvider):
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "scope": {
+                                "type": "string",
+                                "enum": ["all", "banks", "sessions", "guest"],
+                                "description": (
+                                    "Where to search. 'all' (default) fans out over the "
+                                    "curated banks plus session summaries (plus guest "
+                                    "notes on guest instances); 'banks' restricts to the "
+                                    "curated banks named by bank=; 'sessions' searches "
+                                    "session/daily/weekly summaries; 'guest' searches "
+                                    "public guest memories (the absorbed guest_recall)."
+                                ),
+                            },
                             "bank": {
                                 "type": "string",
                                 "description": "Memory bank name ({banks}), or 'all' to search every bank — default when unsure.",
@@ -3212,13 +3207,22 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_remember",
                     "description": (
-                        "Store or update a curated memory in a bank when the user says "
-                        "'remember that…' or states a fact worth keeping. "
+                        "Store or update a memory (also handles what used to be "
+                        "vocab_note, guest_remember, guest_remember_private and "
+                        "report_habit_observation). For curated memory banks, call it "
+                        "when the user says 'remember that…' or states a fact worth "
+                        "keeping — bank is required for those kinds. "
                         "Find-then-update: if you pass a key or a subject+attribute pair that "
                         "matches an existing memory, it is corrected in place; otherwise a new "
                         "memory is created. Pass supersedes=<key> to replace a misattributed "
                         "fact with a new one. Some banks require confirmed=true — only set it "
-                        "after the user has explicitly confirmed the write."
+                        "after the user has explicitly confirmed the write. "
+                        "kind='vocab' quietly logs a term the speaker misused into their "
+                        "own personal glossary (text as 'term → correction', optional note) — "
+                        "append-only, no confirmation. kind='guest' saves a public guest "
+                        "memory on guest instances (private=true for a promoted user's "
+                        "private namespace). kind='habit' reports a camera habit "
+                        "observation — only when a backend prompt supplies a challenge_id."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3226,15 +3230,15 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "bank": {
                                 "type": "string",
-                                "description": "Memory bank name ({writable_banks}).",
+                                "description": "Memory bank name ({writable_banks}). Required for the curated-bank kinds (fact/preference/person/procedure/note).",
                             },
                             "text": {
                                 "type": "string",
-                                "description": "The fact or note to store, phrased as a standalone sentence.",
+                                "description": "The fact or note to store, phrased as a standalone sentence. For kind='vocab': 'term → correction'.",
                             },
                             "key": {
                                 "type": "string",
-                                "description": "Existing document key to correct in place (from ada_memory_search). Omit to find-or-create.",
+                                "description": "Existing document key to correct in place (from ada_memory_search), or the guest-memory slug for kind='guest'. Omit to find-or-create.",
                             },
                             "subject": {
                                 "type": "string",
@@ -3246,8 +3250,59 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "kind": {
                                 "type": "string",
-                                "enum": ["fact", "preference", "person", "procedure", "note"],
-                                "description": "Memory kind. Defaults to note.",
+                                "enum": ["fact", "preference", "person", "procedure",
+                                         "note", "vocab", "guest", "habit"],
+                                "description": (
+                                    "Memory kind. Curated-bank kinds default to note. "
+                                    "vocab: speaker's own glossary append (no bank, no "
+                                    "confirmation). guest: chaba guest store (pair with "
+                                    "private for a promoted user's private notes). "
+                                    "habit: camera-observation verdict — needs the "
+                                    "habit_* / challenge_id fields below."
+                                ),
+                            },
+                            "private": {
+                                "type": "boolean",
+                                "description": "kind='guest' only — save to the promoted user's private namespace instead of the public one.",
+                            },
+                            "note": {
+                                "type": "string",
+                                "description": "kind='vocab' only — optional one-line meaning or context appended to the entry.",
+                            },
+                            "challenge_id": {
+                                "type": "string",
+                                "description": "kind='habit' only — the challenge id supplied by the habit monitor's prompt.",
+                            },
+                            "habit_key": {
+                                "type": "string",
+                                "enum": ["not_drinking_enough_water", "junk_food"],
+                                "description": "kind='habit' only — the habit under review.",
+                            },
+                            "observed": {
+                                "type": "boolean",
+                                "description": "kind='habit' only — whether the challenged behavior was observed.",
+                            },
+                            "confidence": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1,
+                                "description": "kind='habit' only — confidence in the verdict.",
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "kind='habit' only — short evidence summary.",
+                            },
+                            "item_identified": {
+                                "type": "string",
+                                "description": "kind='habit' junk-food only — the specific visible food or drink; empty when none is identifiable.",
+                            },
+                            "consumption_visible": {
+                                "type": "boolean",
+                                "description": "kind='habit' junk-food only — true only when actual eating or drinking is visibly confirmed.",
+                            },
+                            "classified_unhealthy": {
+                                "type": "boolean",
+                                "description": "kind='habit' junk-food only — true only when the identified item clearly belongs to the configured unhealthy categories.",
                             },
                             "valid_until": {
                                 "type": "string",
@@ -3274,7 +3329,6 @@ class GeminiLiveProvider(RealtimeProvider):
                                 ),
                             },
                         },
-                        "required": ["bank", "text"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -3398,35 +3452,6 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "vocab_note",
-                    "description": (
-                        "Log a term the speaker used slightly wrong into their personal "
-                        "vocabulary list (vocab/log in their own memory bank). Call this "
-                        "quietly whenever you recast a misused word — it builds the "
-                        "speaker's personal glossary without interrupting the conversation. "
-                        "No confirmation needed; it is an append-only note in their own bank."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "term": {
-                                "type": "string",
-                                "description": "What the speaker said, e.g. 'methodogy'.",
-                            },
-                            "correct": {
-                                "type": "string",
-                                "description": "The intended term, e.g. 'methodology'.",
-                            },
-                            "note": {
-                                "type": "string",
-                                "description": "Optional one-line meaning or context.",
-                            },
-                        },
-                        "required": ["term", "correct"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -4759,9 +4784,14 @@ class GeminiLiveProvider(RealtimeProvider):
         if chaba_memory.enabled():
             # Guest mode: allowlist the tool surface, append chaba guest tools,
             # and inject the rendered guest context instead of MDDB priming.
+            # CHABA_DECLARATIONS re-declares the canonical memory names
+            # guest-scoped — drop the bank-facing versions so no function
+            # name is declared twice.
+            chaba_declared = {d["name"] for d in CHABA_DECLARATIONS}
             config["tools"][0]["function_declarations"] = [
                 fd for fd in config["tools"][0]["function_declarations"]
                 if fd.get("name") in CHABA_ALLOW
+                and fd.get("name") not in chaba_declared
             ]
             config["tools"][0]["function_declarations"].extend(CHABA_DECLARATIONS)
             config["system_instruction"] += CHABA_INSTRUCTIONS
@@ -5180,7 +5210,12 @@ class GeminiLiveProvider(RealtimeProvider):
                                     result = {"output": history}
                             except Exception as exc:
                                 result = {"error": f"get_sensor_history failed: {exc}"}
-                        elif call.name == "report_habit_observation":
+                        elif (call.name == "report_habit_observation"
+                              or (call.name == "ada_remember"
+                                  and str((call.args or {}).get("kind")
+                                          or "").lower() == "habit")):
+                            # Legacy name stays callable as a hidden alias;
+                            # the canonical path is ada_remember kind='habit'.
                             args = dict(call.args or {})
                             yield ProviderEvent("habit_observation", args)
                             result = {"output": "Observation delivered to the habit monitor"}
@@ -5189,6 +5224,10 @@ class GeminiLiveProvider(RealtimeProvider):
                         elif (
                             call.name in ("ada_session_recall", "ada_decision_check",
                                           "ada_set_voice")
+                            # scope='history' absorbed ada_ha_recall, which was
+                            # never secondary-blocked — keep that access.
+                            and not (call.name == "ada_session_recall"
+                                     and (call.args or {}).get("scope") == "history")
                             and self.tool_runner is not None
                             and self.tool_runner._is_secondary_turn()
                         ):
@@ -5200,7 +5239,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             result = {"error": (
                                 "Reserved for the session owner — propose it to "
                                 "them aloud and let them ask in their own voice.")}
-                        elif call.name == "ada_session_recall":
+                        elif (call.name == "ada_session_recall"
+                              and (call.args or {}).get("scope") != "history"):
+                            # scope='history' (absorbed ada_ha_recall) falls
+                            # through to the runner for an inline answer.
                             # `force=true` is the user's explicit push
                             # ("dig deeper", "check again") — it overrides
                             # the redundant-recall gate.
@@ -5242,7 +5284,9 @@ class GeminiLiveProvider(RealtimeProvider):
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
                         elif call.name == "ada_deep_research" and self.tool_runner is not None:
                             result = {"output": self._start_deep_research(dict(call.args or {}))}
-                        elif call.name == "ada_remember" and budget_hit:
+                        elif (call.name == "ada_remember" and budget_hit
+                              and str((call.args or {}).get("kind") or "")
+                              .lower() not in ("vocab", "habit", "guest")):
                             self._emit_ops_event(
                                 "remember_block",
                                 "ada_remember refused — turn hit the tool "
@@ -5259,7 +5303,14 @@ class GeminiLiveProvider(RealtimeProvider):
                             if self.tool_runner is not None:
                                 try:
                                     call_args = dict(call.args or {})
-                                    if str(call.name) in _CONFIRM_GATED_TOOLS:
+                                    if (str(call.name) in _CONFIRM_GATED_TOOLS
+                                            # non-bank ada_remember kinds
+                                            # (vocab/guest/habit) absorbed
+                                            # ungated tools — skip the probe.
+                                            and not (str(call.name) == "ada_remember"
+                                                     and str(call_args.get("kind")
+                                                             or "").lower()
+                                                     in ("vocab", "habit", "guest"))):
                                         # Resolved source text shared by the
                                         # gate and the Jev advisory probe —
                                         # probe fires on every gated call,

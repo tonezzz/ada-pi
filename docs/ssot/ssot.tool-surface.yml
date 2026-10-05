@@ -102,20 +102,33 @@ families:
       - ada_ha_search_sensors
       - ada_ha_search_events
       - ada_ha_history
-      - ada_ha_recall
       - ada_ha_get_device_confidence
       - ada_ha_set_device_confidence
-  memory:
+  # memory group 8 -> 4 (tools-merge-memory, landed 2026-10-04): the four
+  # canonical memory tools stay on-surface; each sub-family below maps its
+  # absorbed names onto the right canonical via scope=/kind=. ada_forget is
+  # unchanged; ada_resolve_action stays separate (workflow, not memory).
+  memory_search:
     merge_card: tools-merge-memory
-    canonical: ada_memory          # memory search/remember/forget/recall/persona -> action=
+    canonical: ada_memory_search   # guest_recall -> scope=guest
     scenario: tool_merge_memory
     absorbed:
-      - ada_memory_search
-      - ada_remember
-      - ada_forget
-      - ada_session_recall
-      - ada_outcome
-      - ada_persona
+      - guest_recall
+  memory_remember:
+    merge_card: tools-merge-memory
+    canonical: ada_remember        # vocab/habit/guest writes -> kind=
+    scenario: tool_merge_memory
+    absorbed:
+      - vocab_note
+      - report_habit_observation
+      - guest_remember
+      - guest_remember_private
+  memory_recall:
+    merge_card: tools-merge-memory
+    canonical: ada_session_recall  # ada_ha_recall -> scope=history
+    scenario: tool_merge_memory
+    absorbed:
+      - ada_ha_recall
 
 # Tools with no reference in any tests/scenarios-live/*.yaml tool field
 # (calls/calls_any/no_calls*/needs_tools/needs_any, @family-expanded) at
@@ -155,16 +168,11 @@ coverage_debt:
   - get_power_summary
   - get_sensor_history
   - gev_tour
-  - guest_recall
   - guest_register
-  - guest_remember
-  - guest_remember_private
   - photos_pick
   - photos_picked
   - press_button
-  - report_habit_observation
   - tasks_move
-  - vocab_note
   - yt_cast_status
 
 # Tools that legitimately never get a live scenario (pure meta/report
