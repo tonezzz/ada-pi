@@ -148,6 +148,31 @@ families:
       - ada_ha_history
       - ada_ha_get_device_confidence
       - ada_ha_set_device_confidence
+  # docs+drive group 8 -> 2 (tools-merge-docs-drive, landed 2026-10-05):
+  # the four ada_doc_* archive tools collapse into docs(action=
+  # search|get|print|archive) and the four drive_* Drive tools into
+  # drive(action=search|show|get|update). Args map 1:1 — only the implied
+  # action= rides in _ALIAS_ARG_DEFAULTS. docs holds the DOC_TOOLS +
+  # DOC_CONFIRMED_TOOLS seat (archive/print gated per-action), drive the
+  # DRIVE_TOOLS + DRIVE_CONFIRMED_TOOLS seat (update gated per-action).
+  docs:
+    merge_card: tools-merge-docs-drive
+    canonical: docs               # ada_doc_* -> action=search|get|print|archive
+    scenario: tool_merge_docs_drive
+    absorbed:
+      - ada_doc_search
+      - ada_doc_get
+      - ada_doc_print
+      - ada_doc_archive
+  drive:
+    merge_card: tools-merge-docs-drive
+    canonical: drive              # drive_* -> action=search|show|get|update
+    scenario: tool_merge_docs_drive
+    absorbed:
+      - drive_search
+      - drive_show
+      - drive_get
+      - drive_update
   # memory group 8 -> 4 (tools-merge-memory, landed 2026-10-04): the four
   # canonical memory tools stay on-surface; each sub-family below maps its
   # absorbed names onto the right canonical via scope=/kind=. ada_forget is
@@ -181,8 +206,6 @@ families:
 # from BOTH scenarios and this list fails lint (no silent uncovered adds).
 coverage_debt:
   - ada_decision_check
-  - ada_doc_archive
-  - ada_doc_print
   - ada_ha_get_device_confidence
   - ada_ha_history
   - ada_ha_search_events
@@ -195,7 +218,6 @@ coverage_debt:
   - control_cover
   - devin_followup
   - devin_job_report
-  - drive_update
   - get_battery_detail
   - get_battery_status
   - get_dashboard_tab

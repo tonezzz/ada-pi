@@ -221,7 +221,9 @@ ACTUATING_TOOLS = frozenset({
     "control_entity", "control_cover", "control_media_player",
     "press_button", "tv_action", "yt_cast", "yt_cast_stop",
     "cast_to_screen", "vcast_say",
-    "ada_doc_archive", "ada_doc_print", "ada_set_voice",
+    # tools-merge-docs-drive: ada_doc_archive/ada_doc_print collapsed into
+    # docs — actuation is keyed per-action at the call site below.
+    "ada_set_voice",
     "devin_dispatch",
     "calendar_write",
     "tasks_add", "tasks_complete", "tasks_move",
@@ -318,46 +320,53 @@ HABIT_INSTRUCTIONS = (
 
 # Document archive tools — same constant pattern: ADA_EXCLUDED_TOOLS strips
 # the declarations and this instruction paragraph together.
-DOC_TOOLS = {"ada_doc_search", "ada_doc_get", "ada_doc_archive", "ada_doc_print"}
+# tools-merge-docs-drive (2026-10-05): the four ada_doc_* names collapsed
+# into docs(action=search|get|print|archive); old names live on as
+# tool_runner._ALIASES rows, not declarations.
+DOC_TOOLS = {"docs"}
 
 DOC_INSTRUCTIONS = (
     " You have a personal document archive (scans of deeds, IDs, passports, "
     "receipts — เอกสาร). Questions about documents, scans, or archived papers — "
-    "including Thai words like เอกสาร/สำเนา/โฉนด — go to ada_doc_search to find "
-    "the archive slug, then ada_doc_get for details; NEVER search home devices "
-    "for documents. ada_doc_archive saves a newly uploaded document set into "
-    "the archive, and ada_doc_print prints archived pages on the DeskJet — both "
-    "need confirmed=true after restating what will be archived or printed. "
-    "When a document was just uploaded (the system note carries an intake "
-    "key), propose a slug from the filename and assessment, and confirm the "
-    "slug and action before archiving — intake keys are held in RAM only, so "
-    "archive promptly rather than deferring. If ada_doc_archive reports "
-    "duplicates or near-duplicates, say so plainly and ask whether it's a "
-    "re-scan or a new version before proceeding."
+    "including Thai words like เอกสาร/สำเนา/โฉนด — go to docs action='search' "
+    "to find the archive slug, then action='get' for details; NEVER search "
+    "home devices for documents. action='archive' saves a newly uploaded "
+    "document set into the archive, and action='print' prints archived pages "
+    "on the DeskJet — both need confirmed=true after restating what will be "
+    "archived or printed. When a document was just uploaded (the system note "
+    "carries an intake key), propose a slug from the filename and "
+    "assessment, and confirm the slug and action before archiving — intake "
+    "keys are held in RAM only, so archive promptly rather than deferring. "
+    "If docs action='archive' reports duplicates or near-duplicates, say so "
+    "plainly and ask whether it's a re-scan or a new version before "
+    "proceeding."
 )
 
 
 # Google Drive / Photos tools — excluded together with the declarations.
+# tools-merge-docs-drive (2026-10-05): the four drive_* names collapsed
+# into drive(action=search|show|get|update); old names live on as
+# tool_runner._ALIASES rows, not declarations.
 DRIVE_TOOLS = {
-    "drive_search", "drive_get", "drive_update", "drive_show",
+    "drive",
     "photos_pick", "photos_picked",
 }
 
 DRIVE_INSTRUCTIONS = (
-    " You can reach the operator's Google Drive: drive_search finds files "
-    "by name or content (narrow with mime like 'image/' or 'video/'), "
-    "drive_get reads a file (text comes back inline, binary gets a "
-    "media_url), drive_show puts a Drive photo, video, or file on the "
-    "user's screen or the TV, and drive_update replaces a text file's "
-    "content — that one needs confirmed=true after restating the file and "
-    "change, and it cannot edit Google-native Docs/Sheets/Slides. "
+    " You can reach the operator's Google Drive: drive action='search' "
+    "finds files by name or content (narrow with mime like 'image/' or "
+    "'video/'), action='get' reads a file (text comes back inline, binary "
+    "gets a media_url), action='show' puts a Drive photo, video, or file "
+    "on the user's screen or the TV, and action='update' replaces a text "
+    "file's content — that one needs confirmed=true after restating the "
+    "file and change, and it cannot edit Google-native Docs/Sheets/Slides. "
     "Photos in Google Photos are NOT browsable — Google limited the "
     "library API to app-created media, so for 'show my photos' use "
     "photos_pick: it returns a picker_uri the user opens on their "
     "signed-in phone or laptop to select items, then photos_picked "
     "returns and can cast what they chose. If the user means photos saved "
-    "in a Drive folder instead, drive_search with mime='image/' is the "
-    "direct path — prefer that when it fits."
+    "in a Drive folder instead, drive action='search' with mime='image/' "
+    "is the direct path — prefer that when it fits."
 )
 
 
@@ -4482,231 +4491,146 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "ada_doc_search",
+                    # tools-merge-docs-drive (2026-10-05): the four ada_doc_*
+                    # tools consolidated into one action= surface. The old
+                    # names stay callable via tool_runner._ALIASES.
+                    "name": "docs",
                     "description": (
-                        "Searches the personal document archive (scans of deeds, ID cards, "
-                        "passports, house registrations, receipts — เอกสาร) indexed in the "
-                        "documents memory bank. Use for ANY question about stored/scanned "
-                        "documents — never search home devices for documents. Returns slugs "
-                        "to pass to ada_doc_get / ada_doc_print."
+                        "Personal document archive — scans of deeds, ID cards, "
+                        "passports, house registrations, receipts (เอกสาร). "
+                        "action='search' finds archive slugs by name/content "
+                        "(absorbs ada_doc_search — use for ANY question about "
+                        "stored/scanned documents, never home devices); 'get' "
+                        "returns one set's manifest: page names, drive path, "
+                        "hashes (absorbs ada_doc_get); 'archive' saves a "
+                        "just-uploaded document set into gdrive:ada-documents "
+                        "from intake_key/intake_keys or a host directory "
+                        "(absorbs ada_doc_archive); 'print' prints archived "
+                        "pages on the DeskJet (absorbs ada_doc_print). "
+                        "archive and print require confirmed=true."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["search", "get", "print", "archive"],
+                                "description": "search|get|print|archive — which archive operation.",
+                            },
                             "query": {
                                 "type": "string",
-                                "description": "What to find, e.g. 'A-68 deed', 'passport', 'ทะเบียนบ้าน'.",
+                                "description": "search: what to find, e.g. 'A-68 deed', 'passport', 'ทะเบียนบ้าน'.",
+                            },
+                            "slug": {
+                                "type": "string",
+                                "description": "get/print/archive: archive slug, e.g. 'A-68' or 'visa-2026'.",
                             },
                             "limit": {
                                 "type": "number",
-                                "description": "Max results (default 5).",
-                            },
-                        },
-                        "required": ["query"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_doc_get",
-                    "description": (
-                        "Returns manifest + index metadata for one archived document set "
-                        "by slug (from ada_doc_search): page names, drive path, hashes, "
-                        "archive timestamp."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "slug": {
-                                "type": "string",
-                                "description": "Archive slug, e.g. 'A-68'.",
-                            },
-                        },
-                        "required": ["slug"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_doc_archive",
-                    "description": (
-                        "Archives a document set to gdrive:ada-documents and indexes it in "
-                        "the documents bank: from a just-uploaded intake result "
-                        "(intake_key, preferred — the upload panel returns it) or a "
-                        "directory of images on the Ada host (source_dir). Deduplicates "
-                        "against existing archives. Requires confirmed=true after "
-                        "restating the slug and contents."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "slug": {
-                                "type": "string",
-                                "description": "Archive slug, e.g. 'A-68' or 'visa-2026'.",
+                                "description": "search: max results (default 5).",
                             },
                             "doc_type": {
                                 "type": "string",
-                                "description": "Document type: deed, id_card, passport, contract, receipt, form, document.",
+                                "description": "archive: document type — deed, id_card, passport, contract, receipt, form, document.",
                             },
                             "intake_key": {
                                 "type": "string",
-                                "description": "Held intake key from /api/documents/intake (doc/...).",
+                                "description": "archive: held intake key from /api/documents/intake (doc/...).",
                             },
                             "intake_keys": {
                                 "type": "array",
                                 "items": {"type": "string"},
-                                "description": "Multiple held intake keys — one set spanning several uploads/pages.",
+                                "description": "archive: multiple held intake keys — one set spanning several uploads/pages.",
                             },
                             "source_dir": {
                                 "type": "string",
-                                "description": "Directory of page images on the Ada host.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["slug"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_doc_print",
-                    "description": (
-                        "Prints pages of an archived document set on the HP DeskJet via "
-                        "tony-dell CUPS — renders each page onto A4 at 300dpi with the "
-                        "print-enhance pipeline. Requires confirmed=true after restating "
-                        "which pages will be printed."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "slug": {
-                                "type": "string",
-                                "description": "Archive slug, e.g. 'A-68'.",
+                                "description": "archive: directory of page images on the Ada host.",
                             },
                             "pages": {
                                 "type": "string",
-                                "description": "'all' (default), '1-3', or '2,4' — 1-based.",
+                                "description": "print: 'all' (default), '1-3', or '2,4' — 1-based.",
                             },
                             "true_size_mm": {
                                 "type": "string",
-                                "description": "Print at real physical size, e.g. '85.6x54' for an ID-1 card. Omit for fit-to-A4.",
+                                "description": "print: real physical size, e.g. '85.6x54' for an ID-1 card. Omit for fit-to-A4.",
                             },
                             "confirmed": {
                                 "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
+                                "description": "archive/print: required; set true only after explicit user confirmation.",
                             },
                             "confirm_token": {
                                 "type": "string",
                                 "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
-                        "required": ["slug"],
+                        "required": ["action"],
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "drive_search",
+                    # tools-merge-docs-drive (2026-10-05): the four drive_*
+                    # tools consolidated into one action= surface. The old
+                    # names stay callable via tool_runner._ALIASES.
+                    "name": "drive",
                     "description": (
-                        "Search Google Drive by file name or content — the operator's "
-                        "whole Drive, not just the document archive (for archived deed/ID "
-                        "sets use ada_doc_search instead). Narrow with mime: 'image/', "
-                        "'video/', 'application/pdf', 'text/'. Returns file ids for "
-                        "drive_get / drive_show / drive_update."
+                        "The operator's Google Drive. action='search' finds "
+                        "files by name or content (absorbs drive_search — "
+                        "narrow with mime like 'image/'; for archived deed/ID "
+                        "sets use docs action=search instead); 'get' reads a "
+                        "file — text inline, binary gets a castable media_url "
+                        "(absorbs drive_get); 'show' puts a file/photo/video "
+                        "on a vcast screen or the TV (absorbs drive_show); "
+                        "'update' replaces a regular text/md/json/csv file's "
+                        "content in place — Google-native docs can't be "
+                        "media-updated (absorbs drive_update). update requires "
+                        "confirmed=true."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["search", "show", "get", "update"],
+                                "description": "search|show|get|update — which Drive operation.",
+                            },
                             "query": {
                                 "type": "string",
-                                "description": "Name or content to find, e.g. 'condo photos', 'รูปบ้าน', 'budget 2026'.",
+                                "description": "search: name or content to find, e.g. 'condo photos', 'รูปบ้าน', 'budget 2026'.",
                             },
                             "mime": {
                                 "type": "string",
-                                "description": "Optional mimeType filter: 'image/', 'video/', 'application/pdf', 'text/'.",
+                                "description": "search: optional mimeType filter: 'image/', 'video/', 'application/pdf', 'text/'.",
                             },
                             "limit": {
                                 "type": "number",
-                                "description": "Max results (default 10).",
+                                "description": "search: max results (default 10).",
                             },
-                        },
-                        "required": ["query"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "drive_get",
-                    "description": (
-                        "Read one Drive file by id (from drive_search). Text files and "
-                        "Google docs come back as inline text; images/video/binary return "
-                        "metadata plus a castable media_url for drive_show."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
                             "file_id": {
                                 "type": "string",
-                                "description": "Drive file id from drive_search.",
-                            },
-                        },
-                        "required": ["file_id"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "drive_update",
-                    "description": (
-                        "Replace a Drive file's content in place — text, markdown, json, "
-                        "csv and other regular files. Google-native docs/sheets/slides "
-                        "can't be media-updated. Requires confirmed=true after restating "
-                        "the file and the change."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "file_id": {
-                                "type": "string",
-                                "description": "Drive file id from drive_search.",
+                                "description": "get/show/update: Drive file id from a search.",
                             },
                             "content": {
                                 "type": "string",
-                                "description": "The complete new file content (replaces, not appends).",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["file_id", "content"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "drive_show",
-                    "description": (
-                        "Show a Drive file on a display — photos, videos, pdfs, any file "
-                        "from drive_search. Casts to the speaker's vcast screen by "
-                        "default; target='tv' for the living-room TV. Picks the right "
-                        "action from the file type."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "file_id": {
-                                "type": "string",
-                                "description": "Drive file id from drive_search.",
+                                "description": "update: the complete new file content (replaces, not appends).",
                             },
                             "screen": {
                                 "type": "number",
-                                "description": "Vcast screen number (default 1).",
+                                "description": "show: vcast screen number (default 1).",
                             },
                             "target": {
                                 "type": "string",
                                 "enum": ["screen", "tv"],
-                                "description": "'screen' (vcast display, default) or 'tv' (living-room TV).",
+                                "description": "show: 'screen' (vcast display, default) or 'tv' (living-room TV).",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "update: required; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
-                        "required": ["file_id"],
+                        "required": ["action"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -5134,7 +5058,12 @@ class GeminiLiveProvider(RealtimeProvider):
                             .strip().lower() in ("tv", "screen"))
                         if call.name in ACTUATING_TOOLS or (
                                 call.name == "ada_camera_snapshot"
-                                and _display_push):
+                                and _display_push) or (
+                                # docs absorbed ada_doc_archive/print —
+                                # only the write actions actuate.
+                                call.name == "docs" and str(
+                                    _cargs_probe.get("action") or "")
+                                .strip().lower() in ("archive", "print")):
                             actuations_this_turn += 1
                         if tool_calls_this_turn > tool_budget:
                             if not budget_hit:

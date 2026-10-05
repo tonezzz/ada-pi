@@ -104,15 +104,18 @@ _JOB_STALE_STATUSES = {"superseded", "cancel", "cancelled", "stale"}
 # only applies past this age.
 _JOB_GONE_GRACE_S = 1800.0
 
-# Document archive/print: ada_doc_archive writes pages to gdrive:ada-documents
-# and ada_doc_print sends real pages to the printer — both require
-# confirmed=true. ada_doc_search and ada_doc_get are read-only.
-DOC_CONFIRMED_TOOLS = {"ada_doc_archive", "ada_doc_print"}
-# ALL doc tools (incl. read-only) are scoped to identities that can see the
-# `documents` bank — the tools hit MDDB/the archive service directly and
-# would otherwise bypass person_policies (e.g. a KK/guest session reading
-# document metadata for an ID card).
-DOC_TOOLS = DOC_CONFIRMED_TOOLS | {"ada_doc_search", "ada_doc_get"}
+# Document archive/print: docs action=archive writes pages to
+# gdrive:ada-documents and action=print sends real pages to the printer —
+# both require confirmed=true. tools-merge-docs-drive (2026-10-05): the
+# four ada_doc_* names collapsed into docs — the canonical name holds the
+# seat; _check_doc_confirmed keys the per-action split (search/get are
+# read-only) off args.
+DOC_CONFIRMED_TOOLS = {"docs"}
+# ALL doc actions (incl. read-only) are scoped to identities that can see
+# the `documents` bank — the tool hits MDDB/the archive service directly
+# and would otherwise bypass person_policies (e.g. a KK/guest session
+# reading document metadata for an ID card).
+DOC_TOOLS = {"docs"}
 DOC_BANK = "documents"
 
 # Upper bound for list_home_devices — an unbounded HA entity dump stays in
@@ -121,11 +124,13 @@ DOC_BANK = "documents"
 LIST_HOME_DEVICES_MAX = int(os.environ.get("ADA_LIST_HOME_DEVICES_MAX", "60"))
 
 # Google Drive / Photos tools — same access scope as DOC_TOOLS (the whole
-# Drive is owner-tier data). drive_update replaces file content in place,
-# so it needs confirmed=true; search/get/show/pick are read-side.
-DRIVE_CONFIRMED_TOOLS = {"drive_update"}
+# Drive is owner-tier data). drive action=update replaces file content in
+# place, so it needs confirmed=true; search/get/show/pick are read-side.
+# tools-merge-docs-drive (2026-10-05): the four drive_* names collapsed
+# into drive — the canonical holds the seat; _check_drive_confirmed keys
+# the per-action split off args.
+DRIVE_CONFIRMED_TOOLS = {"drive"}
 DRIVE_TOOLS = DRIVE_CONFIRMED_TOOLS | {
-    "drive_search", "drive_get", "drive_show",
     "photos_pick", "photos_picked",
 }
 # Sentinel: identity unset → fall back to runner-level _memory_identity();
@@ -285,6 +290,17 @@ _ALIASES: dict[str, str] = {
     "calendar_shift_overdue": "calendar_write",
     "ada_daily_summary": "plan_day",
     "ada_weekly_comparison": "plan_day",
+    # docs+drive family — tools-merge-docs-drive (2026-10-05): 8 -> 2.
+    # The four ada_doc_* archive tools route to docs(action=...), the
+    # four drive_* Drive tools route to drive(action=...).
+    "ada_doc_search": "docs",
+    "ada_doc_get": "docs",
+    "ada_doc_print": "docs",
+    "ada_doc_archive": "docs",
+    "drive_search": "drive",
+    "drive_show": "drive",
+    "drive_get": "drive",
+    "drive_update": "drive",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the
@@ -319,6 +335,16 @@ _ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
     # daily digest so ada_daily_summary keeps its exact return contract.
     "ada_daily_summary": {"period": "digest"},
     "ada_weekly_comparison": {"period": "week"},
+    # ada_doc_*/drive_* args map 1:1 onto the canonical schemas — only
+    # the implied action= is needed.
+    "ada_doc_search": {"action": "search"},
+    "ada_doc_get": {"action": "get"},
+    "ada_doc_print": {"action": "print"},
+    "ada_doc_archive": {"action": "archive"},
+    "drive_search": {"action": "search"},
+    "drive_show": {"action": "show"},
+    "drive_get": {"action": "get"},
+    "drive_update": {"action": "update"},
 }
 
 def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
@@ -1115,11 +1141,7 @@ class ToolRunner:
                     raise PermissionError(
                         "drive/photos tools are outside this session's access policy")
                 if name in DRIVE_CONFIRMED_TOOLS:
-                    self._require_confirmation(
-                        name, call_args, *confirm,
-                        f"{name} modifies a Drive file. Restate the file "
-                        "and change, get an explicit yes, then call again "
-                        "with confirmed=true.")
+                    self._check_drive_confirmed(name, call_args, *confirm)
         except PermissionError as exc:
             # Phantom-save guard (2026-09-28): the model papered over refused
             # writes and claimed success aloud. Every gate denial now carries
@@ -1147,7 +1169,7 @@ class ToolRunner:
     # controls (lights, media) and memory-bank writes are deliberately
     # excluded — noisy, and already tracked elsewhere.
     _CHANGE_LOG_TOOLS = {
-        "cms_publish_page", "cms_edit", "ada_doc_archive", "ada_forget",
+        "cms_publish_page", "cms_edit", "docs", "ada_forget",
         "ada_ha_set_device_confidence", "devin_dispatch",
         "devin_followup", "devin_answer", "devin_job_report",
     }
@@ -1158,6 +1180,11 @@ class ToolRunner:
         (events.md -> ada-review -> Devin memory render) so changes Tony
         asks Ada for vocally reach Devin sessions — the team-sync lane."""
         if name not in self._CHANGE_LOG_TOOLS:
+            return
+        # ada_doc_archive's old seat — only the archive action is a
+        # state change worth logging, not the read actions.
+        if (name == "docs" and str(args.get("action") or "").lower()
+                != "archive"):
             return
         if isinstance(result, dict) and (
                 result.get("error") or result.get("needs_confirm")):
@@ -1880,11 +1907,22 @@ class ToolRunner:
                          (" and sent to the running session." if delivered
                           else " — the dispatcher picks it up."))}
 
+    # Doc actions that never wrote state before the merge —
+    # ada_doc_search/ada_doc_get were free reads.
+    _DOC_READ_ACTIONS = frozenset({"search", "get"})
+
     def _check_doc_confirmed(
         self, name: str, args: dict[str, Any], confirmed: Any,
         confirm_token: Any = None,
     ) -> None:
         """Server-side gate for doc archive/print. Raises PermissionError on denial."""
+        if name == "docs":
+            # Per-action split after the tools-merge-docs-drive collapse —
+            # alias resolution ran before this gate, so name is canonical:
+            # search/get stay free reads; archive, print, and anything
+            # unrecognized fall through to confirmation.
+            if str(args.get("action") or "").lower() in self._DOC_READ_ACTIONS:
+                return
         if os.environ.get("ADA_READ_ONLY") == "true":
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("document tools are disabled (ADA_READ_ONLY=true)")
@@ -1894,8 +1932,57 @@ class ToolRunner:
             "target, get an explicit yes, then call again with confirmed=true.",
         )
 
+    def _check_drive_confirmed(
+        self, name: str, args: dict[str, Any], confirmed: Any,
+        confirm_token: Any = None,
+    ) -> None:
+        """Server-side gate for drive update. Raises PermissionError on denial."""
+        if name == "drive":
+            # Per-action split after the tools-merge-docs-drive collapse:
+            # only action='update' mutated before the merge — search/get/
+            # show were free (show's cast runs inside cast_to_screen/
+            # tv_action, which carry their own gates).
+            if str(args.get("action") or "").lower() in (
+                    "search", "get", "show"):
+                return
+        if os.environ.get("ADA_READ_ONLY") == "true":
+            logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
+            raise PermissionError("drive tools are disabled (ADA_READ_ONLY=true)")
+        self._require_confirmation(
+            name, args, confirmed, confirm_token,
+            f"{name} modifies a Drive file. Restate the file "
+            "and change, get an explicit yes, then call again "
+            "with confirmed=true.",
+        )
+
     # -- Document archive tools (doc-archive service on idc01 + MDDB
     #    `documents` collection — the shared Ada/Devin document index) --
+
+    async def docs(
+        self, action: str, query: str = "", slug: str = "",
+        limit: int = 5, doc_type: str = "document",
+        intake_key: str | None = None, intake_keys: list[str] | None = None,
+        source_dir: str | None = None, pages: str | None = None,
+        true_size_mm: str | None = None,
+    ) -> Any:
+        """Personal document archive surface (tools-merge-docs-drive):
+        action='search'|'get' read the archive index (absorbed
+        ada_doc_search/ada_doc_get); 'archive'|'print' write — the
+        confirm gate runs in _execute_gated before dispatch."""
+        action = (action or "").strip().lower()
+        if action == "search":
+            return await self.ada_doc_search(query, limit=limit)
+        if action == "get":
+            return await self.ada_doc_get(slug)
+        if action == "archive":
+            return await self.ada_doc_archive(
+                slug, doc_type=doc_type, intake_key=intake_key,
+                intake_keys=intake_keys, source_dir=source_dir)
+        if action == "print":
+            return await self.ada_doc_print(
+                slug, pages=pages, true_size_mm=true_size_mm)
+        raise ValueError(
+            f"invalid action {action!r}: expected search|get|print|archive")
 
     def _doc_record(self, action: str, **fields: Any) -> None:
         """Append to the session's L0 doc-work timeline (conversation
@@ -1988,6 +2075,28 @@ class ToolRunner:
         return out
 
     # -- Google Drive / Photos tools (doc-archive /v1/drive + /v1/photos) --
+
+    async def drive(
+        self, action: str, query: str = "", mime: str | None = None,
+        limit: int = 10, file_id: str = "", content: str = "",
+        screen: int = 0, target: str = "screen",
+    ) -> Any:
+        """Google Drive surface (tools-merge-docs-drive): action=
+        'search'|'get'|'show' read (absorbed drive_search/drive_get/
+        drive_show); 'update' rewrites a file's content — the confirm
+        gate runs in _execute_gated before dispatch."""
+        action = (action or "").strip().lower()
+        if action == "search":
+            return await self.drive_search(query, mime=mime, limit=limit)
+        if action == "get":
+            return await self.drive_get(file_id)
+        if action == "show":
+            return await self.drive_show(
+                file_id, screen=screen, target=target)
+        if action == "update":
+            return await self.drive_update(file_id, content)
+        raise ValueError(
+            f"invalid action {action!r}: expected search|show|get|update")
 
     async def drive_search(self, query: str, mime: str | None = None,
                            limit: int = 10) -> Any:

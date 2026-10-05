@@ -1,91 +1,63 @@
-# Dispatch outcome — tools-merge-calendar-plan (20261005-122438)
+# Dispatch outcome — tools-merge-docs-drive (8 -> 2)
 
-Merged the calendar+plan tool group 9 → 3 per the card's self-contained
-spec. Eight names absorbed into canonical tools via
-`tool_runner._ALIASES` — the repo's established hidden-alias mechanism
-(registered in the runner, absent from declarations; there is no
-literal `x-legacy` field — this IS the x-legacy semantics).
-
-## Alias map (all verified by tests)
-
-| absorbed name              | resolves to                              |
-|----------------------------|------------------------------------------|
-| `calendar_list_events`     | `calendar_read` action=`events`          |
-| `calendar_list_calendars`  | `calendar_read` action=`calendars`       |
-| `calendar_freebusy`        | `calendar_read` action=`freebusy`        |
-| `calendar_create_event`    | `calendar_write` action=`create`         |
-| `calendar_delete_event`    | `calendar_write` action=`delete`         |
-| `calendar_shift_overdue`   | `calendar_write` action=`shift`          |
-| `ada_daily_summary`        | `plan_day` period=`digest` (alias-only)  |
-| `ada_weekly_comparison`    | `plan_day` period=`week`, `end`→`day`    |
+**Result: done.** The docs+drive group is merged to two canonical
+action= tools; the eight absorbed names are soft aliases off the
+declared surface.
 
 ## What changed
 
 - `backend/tool_runner.py`
-  - `_ALIASES` + `_ALIAS_ARG_DEFAULTS`: the eight rows above.
-  - `_alias_call_args`: `ada_weekly_comparison(end=…)` maps `end`→`day`
-    (the window end); `days`/`refresh` pass through.
-  - `calendar_read(action=events|calendars|freebusy, day, days, query,
-    calendar)` and `calendar_write(action=create|delete|shift, title,
-    start, end, notes, location, calendar, event_id, to)` — per-action
-    dispatch onto the unchanged absorbed methods; unknown action raises.
-  - `plan_day(period=today|tomorrow|week, day, days, refresh)`:
-    today/tomorrow return the merged events+tasks view with the day's
-    session digest folded in under `digest`; `week` returns the weekly
-    digest comparison; `day=` overrides the target. Works without a
-    configured calendar (digest-only, tagged `calendar: not
-    configured`). `period='digest'` is the alias-only seat that
-    preserves ada_daily_summary's bare-digest contract.
-  - `CALENDAR_WRITE_TOOLS` = {`calendar_write`, `tasks_add`,
-    `tasks_complete`, `tasks_move`} — the canonical holds the seat so
-    every create/delete/shift (direct or aliased) stays
-    confirm-gated. `DEVIN_CONFIRMED_TOOLS` / `confirm_strip` untouched —
-    gates key off the resolved name.
-
+  - `_ALIASES`: `ada_doc_search|ada_doc_get|ada_doc_print|ada_doc_archive`
+    -> `docs`; `drive_search|drive_show|drive_get|drive_update` -> `drive`
+    (31 retirees total). `_ALIAS_ARG_DEFAULTS` carries the implied
+    `action=`; arg shapes are 1:1 so `_alias_call_args` needed nothing.
+  - New canonical methods `docs()` and `drive()` dispatch per-action
+    onto the unchanged absorbed methods.
+  - Gates key off the resolved name: `docs` holds `DOC_TOOLS` +
+    `DOC_CONFIRMED_TOOLS`; `drive` holds `DRIVE_TOOLS` +
+    `DRIVE_CONFIRMED_TOOLS`. Per-action splits: `_check_doc_confirmed`
+    frees search/get; new `_check_drive_confirmed` frees search/get/show
+    and gates update (also gained the ADA_READ_ONLY denial every other
+    write gate has — deliberate tightening, noted in the job file).
+  - `_CHANGE_LOG_TOOLS`: `ada_doc_archive` -> `docs`, filtered to
+    action=archive so reads don't log.
 - `backend/realtime_provider.py`
-  - Eight declarations removed; `calendar_read` + `calendar_write`
-    declared with explicit `action` enums, `plan_day` with a `period`
-    enum; descriptions name the absorbed tools for legacy phrasing.
-  - `CALENDAR_TOOLS` / actuation sets updated to canonical names;
-    `CALENDAR_INSTRUCTIONS` rewritten and `SUMMARY_INSTRUCTIONS`
-    folded in; `SUMMARY_TOOLS` removed. `ADA_EXCLUDED_TOOLS` filtering
-    unchanged.
+  - Removed the 8 absorbed declarations; added `docs` and `drive` with
+    explicit action enums and absorbed-name callouts in descriptions.
+  - `DOC_TOOLS`/`DRIVE_TOOLS` and `DOC_INSTRUCTIONS`/`DRIVE_INSTRUCTIONS`
+    rewritten for canonical names; `ACTUATING_TOOLS` now keys docs off
+    action in {archive,print} at the call site.
+  - `DEVIN_CONFIRMED_TOOLS`/`confirm_strip` untouched.
+- `docs/ssot/ssot.tool-surface.yml` — `docs` + `drive` families
+  (scenario `tool_merge_docs_drive`); retired names pruned from
+  `coverage_debt`.
+- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — family
+  table row added.
+- `scripts/scenario-live.py` — `LEGACY_TOOL_ALIASES` synced: the 8 new
+  rows plus the 8 calendar+plan rows the previous merge missed.
+- `tests/benchmark.yml` — write_tools `ada_doc_*` -> `docs`;
+  `doc_recall`, `chaba_memory_review`, `tool_merge_docs_drive` join
+  `write_allowed_in` (name-level policy can't split actions).
+- `tests/scenarios-live/doc_upload.yaml` — `events_not_contain` now
+  checks canonical `docs` (absorbed names can never match resolved
+  tool_call events).
+- New `tests/scenarios-live/tool_merge_docs_drive.yaml` (family
+  regression: docs search, drive search, drive get).
+- New `DocsDriveMergeAliasTests` in `tests/test_tool_runner.py` — 8
+  tests covering alias routing, confirm gates, and bank-policy denial.
+- Job trail: `docs/ssot/jobs/ada/2026-10-05-tools-merge-docs-drive.yml`.
 
-- `docs/ssot/ssot.tool-surface.yml` — calendar/plan families rewritten
-  as calendar_read / calendar_write / plan_day sub-families; absorbed
-  names pruned from coverage_debt.
-- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — the group
-  row updated to the landed design.
-- `tests/benchmark.yml` — `write_tools` three absorbed writers →
-  `calendar_write`; `tool_merge_calendar_plan` joins `write_allowed_in`.
-- `tests/scenarios-live/tool_merge_calendar_plan.yaml` — family
-  regression scenario (lint requires it once the merge starts);
-  `shift_overdue.yaml` + `chaba_memory_review.yaml` repointed to
-  canonical names.
-- `tests/test_tool_runner.py` — `CalendarPlanMergeAliasTests` (11
-  tests): every absorbed name routes to its parent, write aliases keep
-  the confirmation gate, unknown action/period rejected, digest-only
-  fallback when the calendar is unconfigured.
-- `docs/ssot/jobs/ada/2026-10-05-tools-merge-calendar-plan.yml` — this
-  job's SSOT trail.
-- `.teststubs/` (gitignored, local only) — google.genai import stub for
-  this SDK-less host so the suite can run.
+## Verification
 
-## Verify
+- `python3 scripts/tool-lint.py` — clean: 82 declared (79 builtin + 3
+  tools.d), 31 aliases, 0 errors.
+- `_resolve_alias` smoke: all 8 absorbed names map to the right
+  canonical + action.
+- `DocsDriveMergeAliasTests` + `test_doc_archive_tool`: 20 tests pass.
+- Full suite: 519 tests; 2 failures + 4 errors all environmental and
+  identical at HEAD (memory backend absent, `ai_edge_litert` missing,
+  one genai-stub quirk). No docs/drive regressions.
 
-- `python3 scripts/tool-lint.py` → clean: 88 declared (94 → 88), 23
-  aliases, 0 violations (12 pre-existing warnings).
-- `PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest
-  tests.test_tool_runner.CalendarPlanMergeAliasTests` → 11/11.
-- Full suite: 489 tests, 2F/3E — identical failure set to HEAD
-  (verified via stash): memory-lifecycle + michael-technician
-  scenarios need a live mddb; detection/pose/hailo errors are
-  `ai_edge_litert` absent on this host. No merge regressions.
-
-## Notes
-
-- `tools-merge-gate.py` needs a passing `tool_merge_calendar_plan` run
-  in `ada-ha-scenario-reports` before the card can close — scenario
-  file ships here; the live run is idc02's lane.
-- Not committed to the default branch, not pushed, not deployed
-  (dispatch rules).
+Note: the worktree lacked the gitignored `.teststubs/` harness — a
+minimal `google.genai` stub was recreated in-worktree (untracked) to run
+the suite.
