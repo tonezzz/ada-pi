@@ -62,3 +62,7 @@ sections:
         text: "Rendered into ~/.config/ada/memory-banks.json alongside banks: {reports: {keep_days: {...}}, session_security: {secondary_blocked: [...]}}. tool_runner reads the rendered block list; absent config fails closed to the built-in default."
       - label: Producers
         text: "conversation_memory (L0 items + L1 fold), realtime_provider (turn_latency/tool_call timing events), scripts/report-rollup.py (L2/L3), scripts/identify_eval.py + recall-bench.py + scenario-live --json-out (run records), scripts/devin-memory-bridge.py (Devin artifacts → MDDB)."
+      - label: "Read order (ada_ritual)"
+        text: "Most distilled first, outside last: reports-index / ada-cms-pages → linked page → memory banks (L3→L2→L1→L0) → only then an outside source (web_search, ada_deep_research). CMS-first is declared in realtime_provider CMS_INSTRUCTIONS and the web_search/ada_deep_research tool descriptions; every web_search result carries a save-back note."
+      - label: "Save-back standard"
+        text: "When an outside source supplies the answer, the finding is written back to CMS the same turn — cms_note_update on the matching page (no confirmation) or cms_publish_page for a new page (confirm handshake). Repeat questions must be answerable from pages, never a re-search. Verified by tests/scenarios-live/cms_first_answer.yaml."
