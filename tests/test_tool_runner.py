@@ -1219,6 +1219,267 @@ class CastToScreenRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("action_fixed", out)
 
 
+class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-ha (21 -> 6): every absorbed name stays callable via
+    _ALIASES and routes to its canonical parent — home_search for the
+    device/sensor/event finders, get_home_state for ada_ha_get_state,
+    home_history for the five history reads, control_entity for the
+    three domain controllers, ha_confidence for the confidence pair."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = [
+            {"entity_id": "light.office", "state": "on",
+             "attributes": {"friendly_name": "Office"}},
+            {"entity_id": "cover.gate", "state": "closed",
+             "attributes": {"friendly_name": "Gate"}},
+        ]
+        self.ha_client.sensors.return_value = [
+            {"entity_id": "sensor.temp", "state": "23.4", "name": "Temp"},
+        ]
+        self.ha_client.entities.return_value = [
+            {"entity_id": "cover.gate", "state": "closed",
+             "available": True, "name": "Gate"},
+            {"entity_id": "light.office", "state": "on",
+             "available": True, "name": "Office"},
+            {"entity_id": "button.gate_my_position", "state": "unknown",
+             "available": True, "name": "Gate my position"},
+            {"entity_id": "media_player.tony_tv", "state": "idle",
+             "available": True, "name": "TV"},
+        ]
+        self.ha_client.search_entities.return_value = [
+            {"entity_id": "light.kitchen", "name": "Kitchen"},
+        ]
+        self.ha_client.get_state.return_value = {
+            "entity_id": "light.office", "state": "on"}
+        self.ha_client.control_cover.return_value = {"ok": True}
+        self.ha_client.press_button.return_value = {"pressed": True}
+        self.ha_client.control_media_player.return_value = {"ok": True}
+        self.ha_client.set_power.return_value = {"state": "off"}
+        self.ha_client.history.return_value = [[{"state": "22"}]]
+        self.ha_client.logbook.return_value = [
+            {"entity_id": "cover.gate", "message": "closed"}]
+        self.ha_client.state_transitions.return_value = {"transitions": []}
+        self.ha_client.recent_events.return_value = {"events": []}
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        # memory/events/mddb are real objects in non-chaba mode — swap the
+        # network faces so the suite stays hermetic.
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.search_documents.return_value = []
+        self.runner.mddb.add_document.return_value = {"status": "ok"}
+        self.runner.memory = AdaMemoryStore(
+            self.ha_client, mddb_client=self.runner.mddb,
+            instance_id="test")
+        self.runner.events = Mock()
+        self.runner.events.collection = "ha-events"
+        self.runner.events.status.return_value = {"running": True}
+        self.runner.events.recent.return_value = [{"kind": "ha"}]
+
+    # -- home_search --
+
+    async def test_device_finder_aliases_route_to_home_search(self):
+        for alias in ("search_home_devices", "search_devices",
+                      "ada_ha_search_devices"):
+            self.ha_client.search_entities.reset_mock()
+            out = await self.runner.execute(alias, {"query": "kitchen"})
+            self.assertEqual(out[0]["entity_id"], "light.kitchen")
+            self.ha_client.search_entities.assert_awaited_once()
+
+    async def test_list_home_devices_alias_lists_bounded(self):
+        out = await self.runner.execute("list_home_devices", {})
+        self.assertEqual(len(out), 4)
+        self.ha_client.entities.assert_awaited_once()
+
+    async def test_sensor_finder_aliases_route_to_home_search(self):
+        for alias in ("search_sensors", "ada_ha_search_sensors"):
+            self.ha_client.sensors.reset_mock()
+            out = await self.runner.execute(alias, {"query": "temp"})
+            self.assertEqual(out[0]["entity_id"], "sensor.temp")
+            self.ha_client.sensors.assert_awaited_once()
+        out = await self.runner.execute("list_sensors", {})
+        self.assertEqual(out[0]["entity_id"], "sensor.temp")
+
+    async def test_event_search_alias_uses_recorder_and_mddb(self):
+        out = await self.runner.execute(
+            "ada_ha_search_events", {"query": "gate"})
+        self.assertEqual(out["events"], [{"kind": "ha"}])
+        self.runner.events.recent.assert_called_once()
+
+    async def test_home_search_canonical_kinds(self):
+        out = await self.runner.execute(
+            "home_search", {"query": "kitchen", "kind": "device"})
+        self.assertEqual(out[0]["entity_id"], "light.kitchen")
+        out = await self.runner.execute(
+            "home_search", {"kind": "sensor"})
+        self.assertEqual(out[0]["entity_id"], "sensor.temp")
+        with self.assertRaises(ValueError):
+            await self.runner.execute("home_search", {"kind": "bogus"})
+
+    # -- get_home_state --
+
+    async def test_ada_ha_get_state_alias_routes_to_memory_overview(self):
+        sentinel = {"controllable": 4, "sensors": 1}
+        self.runner.memory.overview = AsyncMock(return_value=sentinel)
+        out = await self.runner.execute("ada_ha_get_state", {})
+        self.assertEqual(out, sentinel)
+        out = await self.runner.execute(
+            "get_home_state", {"domain": "memory"})
+        self.assertEqual(out, sentinel)
+
+    async def test_get_home_state_entity_and_domain_reads(self):
+        out = await self.runner.execute(
+            "get_home_state", {"entity_id": "light.office"})
+        self.assertEqual(out["state"], "on")
+        self.ha_client.get_state.assert_awaited_once_with("light.office")
+        out = await self.runner.execute(
+            "get_home_state", {"domain": "light"})
+        self.assertEqual(
+            [d["entity_id"] for d in out], ["light.office"])
+
+    # -- home_history --
+
+    async def test_history_aliases_route_to_home_history(self):
+        out = await self.runner.execute("get_logbook", {"hours": 6})
+        self.assertEqual(out["count"], 1)
+        out = await self.runner.execute(
+            "get_sensor_history", {"entity_id": "sensor.temp"})
+        self.assertEqual(out, [[{"state": "22"}]])
+        out = await self.runner.execute(
+            "get_entity_events", {"entity_id": "cover.gate"})
+        self.assertIn("transitions", out)
+        out = await self.runner.execute("get_recent_events", {})
+        self.assertIn("events", out)
+        out = await self.runner.execute("ada_ha_history", {})
+        self.assertEqual(out, [])
+        self.runner.mddb.search_documents.assert_awaited()
+
+    async def test_home_history_default_kind_resolution(self):
+        # entity sensor -> series, other entity -> timeline, query -> events,
+        # bare -> logbook, domain='memory' -> snapshots.
+        await self.runner.execute(
+            "home_history", {"entity_id": "sensor.temp"})
+        self.ha_client.history.assert_awaited_once()
+        await self.runner.execute(
+            "home_history", {"entity_id": "cover.gate"})
+        self.ha_client.state_transitions.assert_awaited_once()
+        await self.runner.execute(
+            "home_history", {"query": "gate"})
+        self.ha_client.recent_events.assert_awaited_once()
+        await self.runner.execute("home_history", {})
+        self.ha_client.logbook.assert_awaited_once()
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "home_history", {"kind": "bogus"})
+
+    # -- control_entity --
+
+    async def test_control_aliases_dispatch_by_domain(self):
+        # cover.* -> control_cover (dangerous: needs confirmed)
+        out = await self.runner.execute(
+            "control_cover",
+            {"entity_id": "cover.gate", "action": "open",
+             "confirmed": True})
+        self.assertEqual(out, {"ok": True})
+        self.ha_client.control_cover.assert_awaited_once_with(
+            "cover.gate", "open")
+        # button.* -> press_button (inherits gate danger via prefix)
+        out = await self.runner.execute(
+            "press_button",
+            {"entity_id": "button.gate_my_position", "confirmed": True})
+        self.assertEqual(out, {"pressed": True})
+        self.ha_client.press_button.assert_awaited_once_with(
+            "button.gate_my_position")
+        # media_player.* -> control_media_player
+        out = await self.runner.execute(
+            "control_media_player",
+            {"entity_id": "media_player.tony_tv", "action": "turn_on"})
+        self.assertEqual(out, {"ok": True})
+        self.ha_client.control_media_player.assert_awaited_once_with(
+            "media_player.tony_tv", "turn_on", None)
+
+    async def test_control_entity_canonical_dispatch(self):
+        out = await self.runner.execute(
+            "control_entity",
+            {"entity_id": "light.office", "on": False})
+        self.assertIn("Turned off light.office", out)
+        self.ha_client.set_power.assert_awaited_once_with(
+            "light.office", False)
+        # action=on|off shims the absorbed on= surface
+        await self.runner.execute(
+            "control_entity",
+            {"entity_id": "light.office", "action": "on"})
+        self.ha_client.set_power.assert_awaited_with("light.office", True)
+        # domain dispatch fires even via the canonical name
+        await self.runner.execute(
+            "control_entity",
+            {"entity_id": "cover.gate", "action": "stop",
+             "confirmed": True})
+        self.ha_client.control_cover.assert_awaited_with(
+            "cover.gate", "stop")
+        await self.runner.execute(
+            "control_entity",
+            {"entity_id": "media_player.tony_tv", "action": "mute"})
+        self.ha_client.control_media_player.assert_awaited_with(
+            "media_player.tony_tv", "mute", None)
+        # press_button absorbed action='press' shim
+        await self.runner.execute(
+            "control_entity",
+            {"entity_id": "button.gate_my_position",
+             "action": "press", "confirmed": True})
+        self.ha_client.press_button.assert_awaited_with(
+            "button.gate_my_position")
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "control_entity", {"entity_id": "light.office"})
+
+    async def test_control_aliases_keep_the_danger_gate(self):
+        # The absorbed names resolve to control_entity before the gate —
+        # dangerous entities still demand confirmed=true under the alias.
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "control_cover",
+                {"entity_id": "cover.gate", "action": "open"})
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "press_button",
+                {"entity_id": "button.gate_my_position"})
+
+    # -- ha_confidence --
+
+    async def test_confidence_aliases_read_and_set(self):
+        groups = await self.runner.execute(
+            "ada_ha_get_device_confidence", {})
+        self.assertIn("trusted_working", groups)
+        out = await self.runner.execute("ha_confidence", {})
+        self.assertIn("needs_integration", out)
+        # single-entity read
+        out = await self.runner.execute(
+            "ha_confidence", {"entity_id": "cover.gate"})
+        self.assertEqual(out["entity_id"], "cover.gate")
+        # absorbed set alias + canonical set path write through memory
+        out = await self.runner.execute(
+            "ada_ha_set_device_confidence",
+            {"entity_id": "cover.gate", "status": "trusted_working",
+             "safety": "safe"})
+        self.assertIn("trusted_working", str(out))
+        self.assertEqual(
+            self.runner.memory._confidence["cover.gate"],
+            "trusted_working")
+        self.assertEqual(
+            self.runner.memory._safety["cover.gate"], "safe")
+        out = await self.runner.execute(
+            "ha_confidence",
+            {"entity_id": "light.office", "status": "learning"})
+        self.assertIn("learning", str(out))
+        # status is required on any write — safety-only still fails
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "ha_confidence",
+                {"entity_id": "light.office", "safety": "safe"})
+
+
 class GevTourTests(unittest.IsolatedAsyncioTestCase):
     """gev_command's tour= branch — named flyover tours must be
     discoverable and return an executable card. The tours lived only

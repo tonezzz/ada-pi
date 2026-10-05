@@ -43,8 +43,11 @@ logger = logging.getLogger("tools")
 # dangerous devices require confirmed=true, all are rate-limited, and all
 # are blocked entirely when ADA_READ_ONLY=true.
 CONTROL_TOOLS = {
-    "control_entity", "control_cover", "press_button",
-    "control_media_player", "tv_action", "cast_to_screen", "gev_command",
+    # tools-merge-ha (2026-10-05): control_cover/press_button/
+    # control_media_player collapsed into control_entity — the canonical
+    # name holds the seat; every action= actuates, so the whole tool
+    # stays gated.
+    "control_entity", "tv_action", "cast_to_screen", "gev_command",
 }
 
 # Tools that mutate curated memory banks. Each bank's write_policy decides
@@ -146,7 +149,11 @@ SECONDARY_BLOCKED_TOOLS = (
     | CMS_WRITE_TOOLS | DEVIN_CONFIRMED_TOOLS | DOC_TOOLS | DRIVE_TOOLS
     | {
         "ada_enroll_speaker", "ada_memory_search",
-        "ada_ha_set_device_confidence", "ada_resolve_action",
+        # tools-merge-ha: ha_confidence absorbed the confidence pair; the
+        # resolved name holds the seat, and _execute_gated carves the
+        # read path (no status/safety args) back out so a guest can still
+        # ask what is broken — only writes stay blocked.
+        "ha_confidence", "ada_resolve_action",
     }
 )
 
@@ -305,6 +312,29 @@ _ALIASES: dict[str, str] = {
     # into gev_command's tour= param — same arg name, so no
     # _ALIAS_ARG_DEFAULTS/_alias_call_args shim is needed.
     "gev_tour": "gev_command",
+    # ha family — tools-merge-ha (2026-10-05): 19 names -> 6 canonical
+    # (home_search / get_home_state / home_history / control_entity /
+    # ha_confidence; tv_action kept its own seat — the cmd/text/selector
+    # param surface doesn't fold into action=).
+    "search_home_devices": "home_search",
+    "list_home_devices": "home_search",
+    "search_devices": "home_search",
+    "search_sensors": "home_search",
+    "list_sensors": "home_search",
+    "ada_ha_search_devices": "home_search",
+    "ada_ha_search_sensors": "home_search",
+    "ada_ha_search_events": "home_search",
+    "ada_ha_get_state": "get_home_state",
+    "get_logbook": "home_history",
+    "get_sensor_history": "home_history",
+    "get_entity_events": "home_history",
+    "get_recent_events": "home_history",
+    "ada_ha_history": "home_history",
+    "control_cover": "control_entity",
+    "control_media_player": "control_entity",
+    "press_button": "control_entity",
+    "ada_ha_get_device_confidence": "ha_confidence",
+    "ada_ha_set_device_confidence": "ha_confidence",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the
@@ -349,6 +379,30 @@ _ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
     "drive_show": {"action": "show"},
     "drive_get": {"action": "get"},
     "drive_update": {"action": "update"},
+    # ha family — tools-merge-ha (2026-10-05). kind= carries which of the
+    # absorbed finders/history readers the old name meant; press_button's
+    # implied action lets control_entity skip domain probing.
+    "search_home_devices": {"kind": "device"},
+    "list_home_devices": {"kind": "device"},
+    "search_devices": {"kind": "device"},
+    "ada_ha_search_devices": {"kind": "device"},
+    "search_sensors": {"kind": "sensor"},
+    "list_sensors": {"kind": "sensor"},
+    "ada_ha_search_sensors": {"kind": "sensor"},
+    "ada_ha_search_events": {"kind": "event"},
+    # 'memory' is an alias-internal domain: get_home_state returns the
+    # stored AdaMemoryStore overview so ada_ha_get_state keeps its exact
+    # return contract.
+    "ada_ha_get_state": {"domain": "memory"},
+    "get_logbook": {"kind": "logbook"},
+    "get_sensor_history": {"kind": "series"},
+    "get_entity_events": {"kind": "timeline"},
+    "get_recent_events": {"kind": "events"},
+    "ada_ha_history": {"kind": "snapshots"},
+    "press_button": {"action": "press"},
+    # control_cover/control_media_player and the confidence pair already
+    # speak the canonical arg shape (action/source, entity_id/status/
+    # safety) — no implied args needed.
 }
 
 def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
@@ -1076,6 +1130,12 @@ class ToolRunner:
             cms_note_edit = (
                 name == "cms_edit" and str(
                     call_args.get("action") or "").lower() == "note")
+            # ha_confidence without status/safety absorbed
+            # ada_ha_get_device_confidence — a read that was never
+            # secondary-blocked; only the set path stays gated.
+            ha_confidence_read = (
+                name == "ha_confidence" and not (
+                    call_args.get("status") or call_args.get("safety")))
             # ada_enroll_speaker is exempt here — its own check is smarter:
             # the owner can re-enroll even while a secondary voice is
             # identified, as long as the buffer voice isn't the secondary's
@@ -1084,7 +1144,8 @@ class ToolRunner:
             if (name in blocked and name != "ada_enroll_speaker"
                     and not nonbank_remember
                     and not guest_scope_search
-                    and not cms_note_edit) or (
+                    and not cms_note_edit
+                    and not ha_confidence_read) or (
                 name == "ada_persona" and action in ("set", "reset")
                 and "persona_write" in blocked
             ):
@@ -1174,7 +1235,7 @@ class ToolRunner:
     # excluded — noisy, and already tracked elsewhere.
     _CHANGE_LOG_TOOLS = {
         "cms_publish_page", "cms_edit", "docs", "ada_forget",
-        "ada_ha_set_device_confidence", "devin_dispatch",
+        "ha_confidence", "devin_dispatch",
         "devin_followup", "devin_answer", "devin_job_report",
     }
 
@@ -1189,6 +1250,11 @@ class ToolRunner:
         # state change worth logging, not the read actions.
         if (name == "docs" and str(args.get("action") or "").lower()
                 != "archive"):
+            return
+        # ha_confidence holds the absorbed ada_ha_set_device_confidence
+        # seat — reads (no status/safety) aren't changes.
+        if name == "ha_confidence" and not (
+                args.get("status") or args.get("safety")):
             return
         if isinstance(result, dict) and (
                 result.get("error") or result.get("needs_confirm")):
@@ -2424,7 +2490,37 @@ class ToolRunner:
 
     # -- Home Assistant tools --
 
-    async def get_home_state(self) -> dict[str, Any]:
+    async def get_home_state(
+        self,
+        entity_id: str | None = None,
+        domain: str | None = None,
+    ) -> Any:
+        """Current home state — tools-merge-ha absorbed ada_ha_get_state
+        here (domain='memory' returns the stored AdaMemoryStore overview,
+        keeping the alias's exact contract). entity_id reads one entity
+        live, domain= lists the entities under one HA domain."""
+        entity_id = str(entity_id or "").strip()
+        domain = str(domain or "").strip().lower()
+        if entity_id:
+            return await self.context.ha_client.get_state(entity_id)
+        if domain == "memory":
+            if self.memory is None:
+                raise RuntimeError("stored home snapshot not available")
+            return await self.memory.overview()
+        if domain:
+            states = await self.context.ha_client._states()
+            out = []
+            for item in states:
+                eid = str(item.get("entity_id") or "")
+                if eid.partition(".")[0] != domain:
+                    continue
+                attrs = item.get("attributes") or {}
+                out.append({
+                    "entity_id": eid,
+                    "state": str(item.get("state", "unknown")),
+                    "name": str(attrs.get("friendly_name") or eid),
+                })
+            return out[:LIST_HOME_DEVICES_MAX]
         snapshot = await self.context.ha_client.snapshot()
         plugs_on_named = [
             {"entity_id": e, "name": snapshot.plug_names.get(e, e)}
@@ -2440,6 +2536,37 @@ class ToolRunner:
             "all_plugs": all_plugs,
         }
 
+    async def home_search(
+        self,
+        query: str = "",
+        kind: str = "device",
+        limit: int = 10,
+        hours: int = 24,
+    ) -> Any:
+        """Home Assistant finders — tools-merge-ha consolidated
+        search_home_devices / list_home_devices / search_sensors /
+        list_sensors / ada_ha_search_devices / ada_ha_search_sensors /
+        ada_ha_search_events / search_devices behind kind=. A blank
+        query lists (bounded) instead of searching."""
+        kind = str(kind or "device").strip().lower()
+        query = str(query or "").strip()
+        if kind == "device":
+            if query:
+                return await self.search_home_devices(query)
+            return await self.list_home_devices()
+        if kind == "sensor":
+            if query:
+                return await self.context.ha_client.sensors(
+                    search=query, limit=int(limit))
+            return await self.list_sensors()
+        if kind == "event":
+            if self.events is None or self.mddb is None:
+                raise RuntimeError("recorded event memory not available")
+            return await self.ada_ha_search_events(
+                query=query, hours=int(hours), limit=int(limit))
+        raise ValueError(
+            f"invalid kind {kind!r}: expected device|sensor|event")
+
     async def list_home_devices(self) -> list[dict[str, Any]]:
         # Bound the dump — an unbounded entity list stays in the live
         # context for the rest of the session and ballooned one past 1M
@@ -2450,17 +2577,46 @@ class ToolRunner:
             return devices[:LIST_HOME_DEVICES_MAX] + [{
                 "_truncated": (
                     f"{LIST_HOME_DEVICES_MAX} of {len(devices)} devices shown "
-                    "— call search_home_devices with a name/keyword for the rest"),
+                    "— call home_search with a name/keyword for the rest"),
             }]
         return devices
 
     async def search_home_devices(self, query: str) -> list[dict[str, Any]]:
         return await self.context.ha_client.search_entities(str(query))
 
-    async def control_entity(self, entity_id: str, on: bool) -> str:
-        if not entity_id or not isinstance(on, bool):
-            raise ValueError("entity_id and on are required")
-        outcome = await self.context.ha_client.set_power(entity_id, on)
+    async def control_entity(
+        self,
+        entity_id: str,
+        action: str = "",
+        on: bool | None = None,
+        source: str | None = None,
+    ) -> Any:
+        """Actuate one HA entity — tools-merge-ha consolidated
+        control_cover / press_button / control_media_player here; the
+        entity domain picks the path. on= is the absorbed on/off arg;
+        action= carries the domain verbs (open|close|stop for cover.*,
+        press for button.*, the media_player verbs, on|off otherwise)."""
+        entity_id = str(entity_id or "")
+        if not entity_id:
+            raise ValueError("entity_id is required")
+        domain = entity_id.partition(".")[0]
+        action = str(action or "").strip().lower()
+        if domain == "cover":
+            return await self.control_cover(entity_id, action)
+        if domain in ("button", "input_button") or action == "press":
+            return await self.press_button(entity_id)
+        if domain == "media_player":
+            return await self.control_media_player(entity_id, action, source)
+        if on is None:
+            if action in ("on", "turn_on"):
+                on = True
+            elif action in ("off", "turn_off"):
+                on = False
+            else:
+                raise ValueError(
+                    "pass on=true/false or action=on|off for "
+                    f"{domain or entity_id} entities")
+        outcome = await self.context.ha_client.set_power(entity_id, bool(on))
         return f"Turned {'on' if on else 'off'} {entity_id}: {outcome}"
 
     async def list_sensors(self) -> list[dict[str, Any]]:
@@ -2552,6 +2708,67 @@ class ToolRunner:
             limit=int(limit),
         )
 
+    async def home_history(
+        self,
+        entity_id: str | None = None,
+        domain: str | None = None,
+        kind: str | None = None,
+        hours: int = 24,
+        query: str | None = None,
+        limit: int = 25,
+    ) -> Any:
+        """Home history reads — tools-merge-ha consolidated get_logbook /
+        get_sensor_history / get_entity_events / get_recent_events /
+        ada_ha_history behind kind=. Default routing: entity_id -> the
+        entity timeline ('series' for sensor.*, 'timeline' otherwise),
+        query -> the whole-home events feed, domain='memory'|'snapshots'
+        -> persisted memory snapshots, else the logbook."""
+        entity_id = str(entity_id or "").strip()
+        domain = str(domain or "").strip().lower()
+        kind = str(kind or "").strip().lower()
+        if not kind:
+            if entity_id:
+                kind = ("series" if entity_id.startswith("sensor.")
+                        else "timeline")
+            elif domain in ("memory", "snapshots"):
+                kind = "snapshots"
+            elif query:
+                kind = "events"
+            else:
+                kind = "logbook"
+        hours = int(hours or 24)
+        limit = int(limit or 25)
+        if kind == "series":
+            if not entity_id:
+                raise ValueError("entity_id is required for kind='series'")
+            return await self.context.ha_client.history(
+                entity_id, hours=hours)
+        if kind == "timeline":
+            if not entity_id:
+                raise ValueError("entity_id is required for kind='timeline'")
+            return await self.context.ha_client.state_transitions(
+                entity_id, hours=hours)
+        if kind == "logbook":
+            entries = await self.context.ha_client.logbook(
+                entity_id=entity_id or None, hours=hours)
+            if domain:
+                prefix = f"{domain}."
+                entries = [e for e in entries if str(
+                    e.get("entity_id") or "").startswith(prefix)]
+            return {"hours": hours, "count": len(entries),
+                    "entries": entries[:100]}
+        if kind == "events":
+            return await self.get_recent_events(
+                hours=hours, query=query or (domain or None), limit=limit)
+        if kind == "snapshots":
+            if self.mddb is None:
+                raise RuntimeError(
+                    "persisted home snapshots not available")
+            return await self.ada_ha_history(hours=hours, limit=limit)
+        raise ValueError(
+            f"invalid kind {kind!r}: expected logbook|events|timeline|"
+            "series|snapshots")
+
     # -- Habit tools --
 
     async def get_habit_status(self) -> Any:
@@ -2629,6 +2846,43 @@ class ToolRunner:
                 "refreshed_at": _first(meta.get("refreshed_at")),
             })
         return results
+
+    async def ha_confidence(
+        self,
+        entity_id: str = "",
+        status: str = "",
+        safety: str = "",
+    ) -> Any:
+        """Device trust/safety registry — tools-merge-ha consolidated
+        ada_ha_get_device_confidence + ada_ha_set_device_confidence.
+
+        No args → controllable devices grouped by confidence.
+        entity_id alone → that device's entry. entity_id + status and/or
+        safety → the write path (the absorbed set tool's contract)."""
+        if self.memory is None:
+            raise RuntimeError("device confidence not available")
+        entity_id = str(entity_id or "").strip()
+        status = str(status or "").strip()
+        safety = str(safety or "").strip()
+        if status or safety:
+            if not entity_id:
+                raise ValueError(
+                    "entity_id is required to set confidence")
+            if not status:
+                raise ValueError(
+                    "status is required — pass the confidence level "
+                    "alongside safety")
+            return await self.memory.set_confidence(
+                entity_id, status, safety or None)
+        await self.memory._ensure_confidence()
+        groups = self.memory.confidence_groups()
+        if not entity_id:
+            return groups
+        for group_name, devices in groups.items():
+            for dev in devices:
+                if dev.get("entity_id") == entity_id:
+                    return {**dev, "confidence": group_name}
+        return {"entity_id": entity_id, "confidence": "unknown"}
 
     async def ada_ha_get_device_confidence(self) -> dict[str, list[dict[str, Any]]]:
         """Return controllable devices grouped by user confidence."""

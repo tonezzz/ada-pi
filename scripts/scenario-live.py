@@ -184,6 +184,26 @@ LEGACY_TOOL_ALIASES: dict[str, str] = {
     "drive_get": "drive",
     "drive_update": "drive",
     "gev_tour": "gev_command",
+    # ha family — tools-merge-ha (2026-10-05)
+    "search_home_devices": "home_search",
+    "list_home_devices": "home_search",
+    "search_devices": "home_search",
+    "search_sensors": "home_search",
+    "list_sensors": "home_search",
+    "ada_ha_search_devices": "home_search",
+    "ada_ha_search_sensors": "home_search",
+    "ada_ha_search_events": "home_search",
+    "ada_ha_get_state": "get_home_state",
+    "get_logbook": "home_history",
+    "get_sensor_history": "home_history",
+    "get_entity_events": "home_history",
+    "get_recent_events": "home_history",
+    "ada_ha_history": "home_history",
+    "control_cover": "control_entity",
+    "control_media_player": "control_entity",
+    "press_button": "control_entity",
+    "ada_ha_get_device_confidence": "ha_confidence",
+    "ada_ha_set_device_confidence": "ha_confidence",
 }
 
 _VCAST_API = os.environ.get(

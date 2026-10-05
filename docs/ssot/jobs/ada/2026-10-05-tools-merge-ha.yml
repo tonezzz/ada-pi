@@ -1,0 +1,125 @@
+# SSOT Job: ha tool-group merge (21 -> 6)
+# Card: tools-merge-ha (chaba kanban). Dispatch 20261005-173343.
+
+title: HA merge — home_search / get_home_state / home_history / control_entity / ha_confidence absorb nineteen names
+subtitle: Fifth tools-merge-* card landed — _ALIASES now carries 42 retirees
+
+planning:
+  goal: |
+    Cut the Home Assistant group to its canonical six per the card spec:
+    home_search (kind=device|sensor|event), get_home_state extended with
+    entity_id=/domain= (domain='memory' is the stored-snapshot seat),
+    home_history (kind=logbook|events|timeline|series|snapshots),
+    control_entity with domain dispatch on entity_id (on=/action=/
+    source=), ha_confidence (read with no args, write with entity_id+
+    status/safety), and tv_action kept separate — its cmd/text/selector/
+    role/key/dx/dy/factor surface doesn't fold into action=. Absorbed
+    names stay callable but hidden — soft aliases via
+    tool_runner._ALIASES, removed from the declared surface.
+  decisions: |
+    - Five canonicals, not one 'ada_ha': the card superseded the
+      2026-10-04 spec's single-canonical design. The split keeps the
+      gate boundary on a tool-name boundary (control_entity is the only
+      actuation seat) and keeps each read family's kind= enum small
+      enough for Gemini Live to validate.
+    - home_search kind='event' routes to the memory event search
+      (recorder + persisted MDDB batches); the provider fast-path only
+      serves kind=device|sensor — kind='event' falls through to the
+      runner, and CHABA/no-memory mode fails closed with 'recorded event
+      memory not available'.
+    - get_home_state keeps its name: entity_id= reads one entity live,
+      domain= lists a domain, domain='memory' is the alias-internal seat
+      for the absorbed ada_ha_get_state (returns memory.overview(),
+      preserving its contract exactly).
+    - home_history kind resolution: explicit kind wins; else entity_id
+      -> series for sensor.* / timeline for other domains, domain=
+      'memory'|'snapshots' -> snapshots, query -> events, bare -> logbook.
+      The provider kept the sensor-series fast-path
+      (home_history + sensor.* entity -> ha_client.history).
+    - control_entity dispatches on the entity domain: cover.* -> cover
+      verbs, button.*/input_button.* or action='press' -> press,
+      media_player.* -> the media verbs (with source=), everything else
+      -> set_power via on=/action=on|off. CONTROL_TOOLS keeps one seat;
+      the resolved canonical name is what every gate sees.
+    - ha_confidence is read-without-args / write-with-status: the
+      secondary-speaker block covers the resolved name with a read
+      carve-out (absorbed ada_ha_get_device_confidence was never
+      blocked); _CHANGE_LOG_TOOLS logs writes only.
+    - DEVIN_CONFIRMED_TOOLS and the provider's confirm_strip logic are
+      byte-for-byte unchanged — gates key off the resolved name.
+    - ada_ha_search_devices/sensors searched the memory snapshot while
+      search_home_devices/search_sensors searched HA live — both lanes
+      converge on kind=device|sensor (same {entity_id,name,state,
+      available} shape); live search is the shape-compatible superset.
+    - benchmark.yml write_tools already listed control_entity — no
+      change needed; tool_merge_ha scenario is read-only so no
+      write_allowed_in entry.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tool_runner alias tables + gate seats"
+      status: done
+      notes: "19 _ALIASES rows + 15 _ALIAS_ARG_DEFAULTS rows (kind=/
+        domain='memory'/action='press'); control_entity holds the
+        CONTROL_TOOLS seat; ha_confidence holds the SECONDARY_BLOCKED
+        seat with a read carve-out and joins _CHANGE_LOG_TOOLS
+        (writes only)."
+    - id: 2
+      label: "canonical methods"
+      status: done
+      notes: "home_search / home_history / ha_confidence added;
+        get_home_state and control_entity extended with their param
+        surfaces and domain dispatch; every canonical delegates to the
+        unchanged absorbed methods."
+    - id: 3
+      label: "provider surface"
+      status: done
+      notes: "18 declarations removed, 3 added (home_search,
+        home_history, ha_confidence), 2 rewritten (get_home_state,
+        control_entity); ACTUATING_TOOLS and CHABA_ALLOW cut to the
+        canonicals; HA + CHABA instructions rewritten; fast-paths for
+        the no-arg occupancy snapshot, device/sensor search, and the
+        sensor-series history read retained under canonical names."
+    - id: 4
+      label: "SSOT + spec + scenario + tests"
+      status: done
+      notes: "ssot.tool-surface.yml ha family split into five
+        sub-families (memory-merge precedent), 8 stale coverage_debt
+        entries pruned; spec table ha row updated;
+        tests/scenarios-live/tool_merge_ha.yaml (4 turns);
+        scenario-live.py LEGACY_TOOL_ALIASES +19;
+        HaMergeAliasTests (10 tests)."
+    - id: 5
+      label: "model-visible text sweep"
+      status: done
+      notes: "home_assistant.py logbook-404 and rk600 'note' strings
+        repointed to home_history/home_search; DISABLE_GET_HOME_STATE
+        replace strings verified against the new instruction text."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # 73 declared, 42 aliases, clean"
+    - "ADA_INSTANCE_ID=test .venv/bin/python -m unittest tests.test_tool_runner tests.test_tool_audit"
+    - "python3 -m compileall -q backend"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0 — 73 declared (88->73),
+    42 aliases (23->42), 12 pre-existing warnings (unrelated families)"
+  - "alias smoke: execute() on all 19 absorbed names routes to its
+    canonical — search finders -> home_search kinds, ada_ha_get_state ->
+    get_home_state domain='memory', five history reads -> home_history
+    kinds, three controllers -> control_entity dispatch, confidence pair
+    -> ha_confidence read/set"
+  - "HaMergeAliasTests: 10/10 — kind/action dispatch, default kind
+    resolution, danger-gate on absorbed control_cover/press_button
+    aliases (denial logs show resolved 'control_entity'), confidence
+    read/set contract, invalid kinds rejected"
+  - "full suite: tests.test_tool_runner + tests.test_tool_audit — 109
+    tests OK under ADA_INSTANCE_ID=test with the ada-pi venv python"
+  - "gates: DEVIN_CONFIRMED_TOOLS unchanged; confirm_strip unchanged;
+    CONTROL_TOOLS = {control_entity, tv_action, cast_to_screen,
+    gev_command}; SECONDARY_BLOCKED covers ha_confidence writes only"
