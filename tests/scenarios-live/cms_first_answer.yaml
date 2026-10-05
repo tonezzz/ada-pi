@@ -1,0 +1,90 @@
+# CMS-first answering + save-back (card ada-cms-first-answers).
+#
+# The standard: Ada answers from reports-index / ada-cms-pages BEFORE
+# searching elsewhere — reports are the first read, outside search is the
+# fallback. When she does answer from an outside source, the finding goes
+# back to CMS (cms_note_update / cms_publish_page) so a repeat question
+# never needs a re-search.
+#
+# What this exercises:
+#   1. Covered topic — a question about content a miniapp page already
+#      tracks must be answered from a page/index read. ANY web_search or
+#      ada_deep_research call on this turn is the free-search failure the
+#      card is about.
+#   2. Outside check + save-back — the user explicitly asks for a live
+#      web check on the same topic; the search runs AND the finding is
+#      written back to CMS (note on the matching page, or a new page when
+#      none covers it).
+#   3. Repeat question — the same covered question again must come from
+#      CMS/memory alone, still no outside search.
+#
+# tier: full — turn 2 can write a real timeline note on a real page
+# (kept on purpose, same convention as flood_situation.yaml).
+name: cms-first-answer
+tier: full
+
+turns:
+  # --- covered topic: page read, never a free search --------------------
+  - user: >-
+      Ada, catch me up — what does the news digest on your miniapp say
+      right now? Check your own pages.
+    expect:
+      calls_any: [cms_get_page, cms_list_pages]
+      # Pin the turn to read-only CMS/memory tools — web_search or
+      # ada_deep_research here is the regression this scenario guards.
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_list_pages
+        - cms_get_page
+        - cms_verify_page
+        - ada_memory_search
+        - ada_session_recall
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  # --- outside check + save-back ----------------------------------------
+  # Explicitly asks for a live check, so web_search is correct — but the
+  # finding must land back on a page (note_update needs no confirmation;
+  # publish_page is accepted when nothing covers the topic yet).
+  - user: >-
+      Now check online whether anything important changed on that, and
+      add whatever you find as a note on the page.
+    expect:
+      calls: [web_search]
+      calls_any: [cms_note_update, cms_publish_page]
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - web_search
+        - cms_list_pages
+        - cms_get_page
+        - cms_verify_page
+        - cms_note_update
+        - cms_publish_page
+        - cms_automation
+        - ada_memory_search
+      max_calls: 10
+      response_nonempty: true
+      timeout_s: 150
+      settle_s: 10
+
+  # --- repeat question: pages answer it, no re-search --------------------
+  - user: >-
+      And again — what's the latest news? Answer from your pages.
+    expect:
+      calls_any: [cms_get_page, cms_list_pages, cms_note_update,
+                  ada_memory_search, ada_session_recall]
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_list_pages
+        - cms_get_page
+        - cms_verify_page
+        - cms_note_update
+        - ada_memory_search
+        - ada_session_recall
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8

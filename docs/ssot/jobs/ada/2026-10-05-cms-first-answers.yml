@@ -1,0 +1,83 @@
+# SSOT Job: Ada CMS-first answers + save-back standard
+# Card: ada-cms-first-answers (chaba kanban). Dispatch 20261005-105014.
+
+title: Ada CMS-first answers — reports are the first read, search is the fallback
+subtitle: Generalize the reports-index ritual to all covered topics and write outside findings back to CMS
+
+planning:
+  goal: |
+    Two-part standard for CMS documents:
+    (1) Ada answers from reports-index / ada-cms-pages BEFORE searching
+        elsewhere — the read order is most-distilled-first: index → page →
+        memory banks → outside source (mirrors the L3→L2→L1→L0 hierarchy
+        declared in ssot.apps.ada-cms-reports.yml).
+    (2) When an outside source does supply the answer, the finding is
+        saved back to CMS (cms_note_update / cms_publish_page) so repeat
+        questions never need a re-search.
+    Evidence of the gap: education-correction and session summaries show
+    Ada free-searching instead of reading her own pages first.
+  scope: |
+    In scope:
+      - backend/realtime_provider.py CMS_INSTRUCTIONS — READ ORDER +
+        SAVE-BACK clauses; web_search and ada_deep_research descriptions
+        reframed as fallback tools.
+      - backend/tool_runner.py web_search — result now carries a `note`
+        field restating the save-back standard (tool-result reinforcement,
+        the established "note" pattern).
+      - tests/scenarios-live/cms_first_answer.yaml (new)
+      - tests/scenarios-live/language_lock.yaml (new)
+      - docs/ssot-drafts/ssot.apps.ada-reports.yml — Runtime Wiring
+        records the read order + save-back contract.
+    Out of scope:
+      - Hard gating web_search behind a prior CMS read — a hard block
+        would break legitimate fresh-fact lookups; enforcement is
+        instruction + tool-result reinforcement + scenario verification.
+      - Deploy to idc01 (deploy-only checkout; needs approval).
+  success_criteria:
+    - 'covered-topic question triggers cms_get_page/cms_list_pages, never web_search'
+    - 'outside-source answer is followed by cms_note_update or cms_publish_page'
+    - 'repeat question is answered from CMS/memory without re-search'
+  risks:
+    - 'cms_note_update targets an existing page — not_found on an unknown
+      slug should route to cms_publish_page, which needs the confirm
+      handshake; scenario accepts either call.'
+    - 'Staged scenario files (stacks/services/ada-scenario-runner/
+      scenarios-staging/*.yaml) live outside this worktree and were not
+      readable in-session; equivalent scenarios were authored to the same
+      intent — reconcile if the staged versions differ.'
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "Instructions + tool descriptions"
+      status: done
+      notes: "CMS_INSTRUCTIONS: READ ORDER (reports-index → page → banks → outside) + SAVE-BACK (cms_note_update free, cms_publish_page confirm). web_search/ada_deep_research descriptions now say fallback-first."
+    - id: 2
+      label: "Tool-result reinforcement"
+      status: done
+      notes: "web_search results carry note=save-back standard on all provider paths (gemini/ddg/auto-fallback)."
+    - id: 3
+      label: "Scenarios"
+      status: done
+      notes: "cms_first_answer.yaml (full tier — real note writes) and language_lock.yaml (smoke tier — TH/EN fidelity + no third-language hijack)."
+    - id: 4
+      label: "Verify"
+      status: done
+      notes: "tool-lint clean; suite 470 tests — only pre-existing failures (3 Pi-only deps, 3 CMS mock-drift, 1 surface count, 2 offline-scenario env) identical on HEAD."
+
+invoke:
+  voice:
+    - '"what does the flood report say" -> cms_get_page(reports-index) first, page read, no web_search'
+    - '"check online X and save it" -> web_search then cms_note_update/cms_publish_page'
+  env:
+    ADA_CMS_COLLECTION: "ada-cms-pages (default) — the pages bank searched via ada_memory_search bank='cms'"
+
+verification:
+  - "python3 scripts/tool-lint.py  # clean, 98 declared"
+  - "python3 -m unittest discover tests  # 470 tests; only pre-existing env failures"
+  - "scenario-live: tests/scenarios-live/cms_first_answer.yaml (needs live Ada on idc01/idc02)"
+  - "scenario-live: tests/scenarios-live/language_lock.yaml"

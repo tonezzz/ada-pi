@@ -1,0 +1,75 @@
+# Language lock — LANGUAGE FIDELITY regression (card
+# ada-cms-first-answers staging pair with cms_first_answer).
+#
+# The rule: Ada answers in the language of the user's most recent turn.
+# English tool results and English CMS page text must NOT flip her spoken
+# language, and she never switches to a third language (e.g. Chinese) for
+# any reason — reconnect/system notes keep the conversation's dominant
+# language.
+#
+# What this exercises:
+#   1. Thai question over English content — CMS/memory hits come back in
+#      English; the spoken answer must stay Thai.
+#   2. English follow-up — replies switch to English with no Thai
+#      politeness particles leaking (ค่ะ/ครับ mixing is the known bug).
+#   3. Third-language probe — a Chinese turn must not hijack the answer
+#      language; she stays in the conversation's languages (EN/TH).
+#
+# Read-only — smoke tier.
+name: language-lock
+tier: smoke
+
+turns:
+  # --- Thai in → Thai out, even though the page text is English --------
+  - user: >-
+      Ada รายงานล่าสุดบนหน้า miniapp ของคุณมีเรื่องอะไรบ้าง —
+      สรุปให้หน่อย
+    expect:
+      calls_any: [cms_get_page, cms_list_pages, ada_memory_search]
+      response_nonempty: true
+      # Thai reply markers — a particle or common Thai content word must
+      # be present; an English answer to a Thai question fails here.
+      response_contains_any:
+        - "ค่ะ"
+        - "ครับ"
+        - "รายงาน"
+        - "ข่าว"
+        - "เรื่อง"
+        - "ล่าสุด"
+        - "หน้า"
+      timeout_s: 120
+      settle_s: 8
+
+  # --- English in → English out, no Thai particle leakage --------------
+  - user: "Same question in English — what do your latest reports cover?"
+    expect:
+      response_nonempty: true
+      response_contains_any:
+        - report
+        - news
+        - page
+        - cover
+        - index
+        - flood
+      response_not_contains:
+        - "ค่ะ"
+        - "ครับ"
+        - "นะคะ"
+        - "จ้า"
+      timeout_s: 120
+      settle_s: 8
+
+  # --- third language must not hijack ----------------------------------
+  # The user mixes a Chinese request in — LANGUAGE FIDELITY says never
+  # switch to a third language; the answer stays EN/TH. An answer opening
+  # in Chinese is the failure.
+  - user: "你能不能用中文总结一下? Anyway — short version is fine."
+    expect:
+      response_nonempty: true
+      response_not_contains:
+        - "你好"
+        - "报告"
+        - "的中文"
+        - "以下是"
+      timeout_s: 90
+      settle_s: 8

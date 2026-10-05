@@ -2366,16 +2366,27 @@ class ToolRunner:
                              "(auto|gemini|duckduckgo)")
         if want in ("auto", "gemini"):
             try:
-                return await self._web_search_gemini(query)
+                out = await self._web_search_gemini(query)
             except Exception as e:
                 if want == "gemini":
                     raise
                 # auto: quota/error → free fallback
                 try:
-                    return await self._web_search_ddg(query)
+                    out = await self._web_search_ddg(query)
                 except Exception:
                     raise e
-        return await self._web_search_ddg(query)
+        else:
+            out = await self._web_search_ddg(query)
+        # Save-back standard — every outside-source answer carries the
+        # reminder so the finding lands back in CMS and repeat questions
+        # never need a re-search (card ada-cms-first-answers).
+        out["note"] = (
+            "outside-source answer — save-back standard: if this updates a "
+            "tracked topic or may be asked again, write it to CMS this turn "
+            "(cms_note_update on the matching page, or offer "
+            "cms_publish_page for a new one)."
+        )
+        return out
 
     async def _web_search_gemini(self, query: str) -> dict[str, Any]:
         api_key = os.environ.get("GEMINI_API_KEY")
