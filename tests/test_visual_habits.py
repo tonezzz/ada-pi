@@ -154,7 +154,8 @@ class VisualHabitTests(unittest.IsolatedAsyncioTestCase):
             await service._run_challenge("not_drinking_enough_water",challenge)
         self.assertEqual(5,len(live.frames))
         self.assertEqual("completed",service.states["not_drinking_enough_water"]["state"])
-        self.assertIn("report_habit_observation",live.messages[-1])
+        self.assertIn("ada_remember",live.messages[-1])
+        self.assertIn("kind='habit'",live.messages[-1])
 
 
 if __name__ == "__main__": unittest.main()

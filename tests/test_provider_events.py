@@ -52,6 +52,16 @@ class HabitObservationToolSession(ExpressionToolSession):
         self.provider._closed=True
 
 
+class HabitObservationCanonicalToolSession(ExpressionToolSession):
+    # Canonical form after tools-merge-memory: ada_remember kind='habit'
+    # must emit the same habit_observation event as the retired name.
+    async def receive(self):
+        yield types.LiveServerMessage(tool_call=types.LiveServerToolCall(function_calls=[
+            types.FunctionCall(id="habit-2",name="ada_remember",args={"kind":"habit","challenge_id":"water-2","habit_key":"not_drinking_enough_water","observed":False,"confidence":.7,"reason":"no drink visible"})
+        ]))
+        self.provider._closed=True
+
+
 class HabitStatusToolSession(ExpressionToolSession):
     async def receive(self):
         yield types.LiveServerMessage(tool_call=types.LiveServerToolCall(function_calls=[
@@ -105,6 +115,15 @@ class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[1].data["challenge_id"],"water-1")
         self.assertTrue(events[1].data["observed"])
         self.assertEqual(session.responses[0].name,"report_habit_observation")
+
+    async def test_habit_observation_via_canonical_ada_remember(self) -> None:
+        provider=GeminiLiveProvider(); session=HabitObservationCanonicalToolSession(provider); provider._session=session
+        events=[event async for event in provider.events()]
+        self.assertEqual(events[0].type,"tool_call")
+        self.assertEqual(events[1].type,"habit_observation")
+        self.assertEqual(events[1].data["challenge_id"],"water-2")
+        self.assertFalse(events[1].data["observed"])
+        self.assertEqual(session.responses[0].name,"ada_remember")
 
     async def test_habit_status_tool_returns_complete_snapshot(self) -> None:
         snapshot={"window_days":7,"habits":[{"habit_key":"posture","lifecycle_status":"possible"}]}

@@ -413,7 +413,7 @@ class VisualHabitService:
                         "whether the user visibly consumed a specifically identifiable broadly unhealthy food such as a sugary drink, candy, chips, cookies, pastries, dessert, fast food, or a heavily processed snack or meal. The hand-to-face gesture that triggered this review is not evidence. Face touching, scratching, nail biting, an empty hand, chewing with no identifiable item, holding food, and food merely being present must all return observed=false")
             await self.notifier.send_text_turn(
                 f"Silently review the complete observation window and decide {criteria}. "
-                f"Call report_habit_observation exactly once with challenge_id='{challenge['id']}', habit_key='{key}', observed, confidence, reason, item_identified, consumption_visible, and classified_unhealthy. "
+                f"Call ada_remember exactly once with kind='habit', challenge_id='{challenge['id']}', habit_key='{key}', observed, confidence, reason, item_identified, consumption_visible, and classified_unhealthy. "
                 "For junk food, observed may be true only when item_identified is specific and both consumption_visible and classified_unhealthy are true. Do not speak a verdict."
             )
             event = await self._next_matching(queue, "habit_observation", 20, challenge["id"])

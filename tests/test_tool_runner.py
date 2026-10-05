@@ -4,7 +4,8 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from backend.memory_banks import MemoryBankRegistry
 from backend.tool_runner import AdaMemoryStore, ToolRunner
@@ -153,6 +154,84 @@ class ControlGateTests(unittest.IsolatedAsyncioTestCase):
         self.runner.events.recent = lambda *a, **kw: []
         await self.runner.execute("ada_ha_recall", {"query": "power", "session_id": "abc"})
         self.runner.memory.search_all.assert_awaited_once_with("power", 10)
+
+
+class MemoryMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-memory (8 -> 4): the six absorbed names stay callable
+    via _ALIASES and route to their canonical parent — search, remember
+    kinds, and recall scope."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.search_documents.return_value = []
+        self.runner.mddb.vector_search.return_value = []
+        self.runner.memory.mddb = self.runner.mddb
+        self.runner.memory.search_all = AsyncMock(return_value={})
+        self.runner.events.recent = lambda *a, **kw: []
+
+    async def test_guest_recall_alias_routes_to_search_guest_scope(self):
+        self.runner.chaba = SimpleNamespace()
+        self.runner.chaba.recall = lambda q, session_id=None, limit=10: [
+            {"key": "fav-drink", "name": "guest", "score": 1.0,
+             "text": "likes iced tea", "at": "2026-10-04"}]
+        result = await self.runner.execute("guest_recall", {"query": "tea"})
+        self.assertEqual(result["scope"], "guest")
+        self.assertEqual(result["hits"][0]["bank"], "guest")
+        self.assertEqual(result["hits"][0]["key"], "fav-drink")
+
+    async def test_vocab_note_alias_maps_term_correct_to_text(self):
+        with patch.object(self.runner, "_vocab_append",
+                          new=AsyncMock(return_value={"status": "noted"})) as v:
+            result = await self.runner.execute(
+                "vocab_note",
+                {"term": "methodogy", "correct": "methodology",
+                 "note": "heard in passing"})
+        v.assert_awaited_once_with("methodogy → methodology", "heard in passing")
+        self.assertEqual(result["status"], "noted")
+
+    async def test_report_habit_observation_alias_is_provider_dispatched(self):
+        result = await self.runner.execute(
+            "report_habit_observation",
+            {"challenge_id": "w1", "habit_key": "not_drinking_enough_water",
+             "observed": True, "confidence": 0.9, "reason": "saw a drink"})
+        self.assertIn("live session", result["error"])
+
+    async def test_guest_remember_alias_routes_public(self):
+        self.runner.chaba = SimpleNamespace()
+        self.runner.chaba.remember = Mock(return_value={"ok": True})
+        self.runner.chaba.remember_private = Mock(return_value={"ok": True})
+        result = await self.runner.execute(
+            "guest_remember", {"key": "fav-drink", "text": "likes iced tea"})
+        self.runner.chaba.remember.assert_called_once_with(
+            self.runner.session_id, "fav-drink", "likes iced tea")
+        self.runner.chaba.remember_private.assert_not_called()
+        self.assertEqual(result, {"ok": True})
+
+    async def test_guest_remember_private_alias_routes_private(self):
+        self.runner.chaba = SimpleNamespace()
+        self.runner.chaba.remember = Mock(return_value={"ok": True})
+        self.runner.chaba.remember_private = Mock(return_value={"ok": True})
+        await self.runner.execute(
+            "guest_remember_private", {"key": "wifi", "text": "pw on fridge"})
+        self.runner.chaba.remember_private.assert_called_once_with(
+            self.runner.session_id, "wifi", "pw on fridge")
+        self.runner.chaba.remember.assert_not_called()
+
+    async def test_ada_ha_recall_alias_routes_to_session_recall_history(self):
+        result = await self.runner.execute("ada_ha_recall", {"query": "power"})
+        self.runner.memory.search_all.assert_awaited_once_with("power", 10)
+        self.assertIn("events", result)
+
+    async def test_canonical_search_scope_rejects_unknown(self):
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "ada_memory_search", {"query": "x", "scope": "bogus"})
 
 
 class CmsToolTests(unittest.IsolatedAsyncioTestCase):

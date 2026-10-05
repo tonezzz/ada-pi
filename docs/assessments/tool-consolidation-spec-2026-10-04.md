@@ -32,8 +32,8 @@ SSOT disagree.
 | cms     | tools-merge-cms       | `cms_page`    | cms_list_pages, cms_get_page, cms_verify_page, cms_publish_page, cms_note_update, cms_delete_page, cms_automation |
 | devin   | tools-merge-devin-mcp | `devin`       | devin_dispatch, devin_status, devin_followup, devin_job_report, devin_pending, devin_jobs, devin_answer |
 | display | tools-merge-display   | `ada_display` | cast_to_screen, vcast_list, vcast_say, vcast_snapshot, vcast_gesture, yt_cast, yt_cast_status, yt_cast_stop |
-| ha      | tools-merge-ha        | `ada_ha`      | control_entity, control_cover, press_button, control_media_player, list_home_devices, search_home_devices, get_home_state, list_sensors, search_sensors, get_logbook, get_recent_events, get_entity_events, ada_ha_* (9) |
-| memory  | tools-merge-memory    | `ada_memory`  | ada_memory_search, ada_remember, ada_forget, ada_session_recall, ada_outcome, ada_persona |
+| ha      | tools-merge-ha        | `ada_ha`      | control_entity, control_cover, press_button, control_media_player, list_home_devices, search_home_devices, get_home_state, list_sensors, search_sensors, get_logbook, get_recent_events, get_entity_events, ada_ha_* (7 — ada_ha_recall moved to the memory family) |
+| memory  | tools-merge-memory    | `ada_memory_search`, `ada_remember`, `ada_session_recall` (+ `ada_forget` unchanged) | guest_recall, vocab_note, report_habit_observation, guest_remember, guest_remember_private, ada_ha_recall (→ `scope=`/`kind=`) |
 
 Roughly 56 absorbed names retire into 6 canonical tools; with the
 un-merged remainder the surface lands near the ~38 target.
