@@ -1,0 +1,46 @@
+# Read-tool coverage probes — battery/inverter/pool/power, history,
+# habits, dashboards, usage, health. One turn per tool; assert the call.
+name: tools_probe_readonly
+tier: gate
+turns:
+  - user: "How's the battery right now?"
+    expect: {calls_any: [get_battery_status, get_battery_detail, get_power_summary],
+             timeout_s: 90, settle_s: 8}
+  - user: "Is the inverter producing?"
+    expect: {calls_any: [get_inverter_status, get_power_summary],
+             timeout_s: 90, settle_s: 8}
+  - user: "Pool pump status?"
+    expect: {calls_any: [get_pool_status, ada_ha_get_state, get_home_state],
+             timeout_s: 90, settle_s: 8}
+  - user: "Give me today's power summary."
+    expect: {calls_any: [get_power_summary, get_battery_status],
+             timeout_s: 90, settle_s: 8}
+  - user: "Show me the living room temperature history for the last hour."
+    expect:
+      calls_any: [get_sensor_history, ada_ha_history, ada_ha_search_sensors,
+                  search_sensors]
+      timeout_s: 90
+      settle_s: 8
+  - user: "What dashboard tab is the phone showing?"
+    expect: {calls_any: [get_dashboard_tab], timeout_s: 60, settle_s: 8}
+  - user: "What did the living room motion sensor do recently?"
+    expect:
+      calls_any: [get_entity_events, get_recent_events, ada_ha_search_events,
+                  get_logbook, ada_ha_history]
+      timeout_s: 90
+      settle_s: 8
+  - user: "Any habits I should know about today?"
+    expect: {calls_any: [get_habit_status], timeout_s: 90, settle_s: 8}
+  - user: "Summarize my Ada usage this week."
+    expect: {calls_any: [ada_usage_summary, ada_weekly_comparison,
+                         ada_daily_summary],
+             timeout_s: 90, settle_s: 8}
+  - user: "Is MDDB healthy right now?"
+    expect: {calls_any: [ada_mddb_health, web_search, ada_memory_search],
+             timeout_s: 90, settle_s: 8}
+  - user: "What tours do I have on the map?"
+    expect: {calls_any: [gev_tour, gev_command], timeout_s: 90, settle_s: 8}
+  - user: "Check device confidence for the washer."
+    expect: {calls_any: [ada_ha_get_device_confidence, ada_ha_search_devices,
+                         ada_ha_get_state],
+             timeout_s: 90, settle_s: 8}
