@@ -29,7 +29,7 @@ SSOT disagree.
 | family  | merge card            | canonical    | absorbed (→ `action=`/`source=`) |
 |---------|-----------------------|--------------|------------------------|
 | camera  | tools-merge-camera    | `ada_camera_snapshot` (`source=`) | cctv_snapshot, traffic_camera, capture_frame (→ `vcast_snapshot`). cctv_wall stays — a wall is a live grid, not a frame |
-| cms     | tools-merge-cms       | `cms_page`    | cms_list_pages, cms_get_page, cms_verify_page, cms_publish_page, cms_note_update, cms_delete_page, cms_automation |
+| cms     | tools-merge-cms       | `cms_publish_page` (unchanged), `cms_read` (`action=get\|list\|verify`), `cms_edit` (`action=note\|delete\|automate`, `op=` carries the registry op) | cms_list_pages, cms_get_page, cms_verify_page → `cms_read`; cms_note_update, cms_delete_page, cms_automation → `cms_edit`. Landed 7→3 instead of the original single-`cms_page` design |
 | devin   | tools-merge-devin-mcp | `devin`       | devin_dispatch, devin_status, devin_followup, devin_job_report, devin_pending, devin_jobs, devin_answer |
 | display | tools-merge-display   | `ada_display` | cast_to_screen, vcast_list, vcast_say, vcast_snapshot, vcast_gesture, yt_cast, yt_cast_status, yt_cast_stop |
 | ha      | tools-merge-ha        | `ada_ha`      | control_entity, control_cover, press_button, control_media_player, list_home_devices, search_home_devices, get_home_state, list_sensors, search_sensors, get_logbook, get_recent_events, get_entity_events, ada_ha_* (7 — ada_ha_recall moved to the memory family) |

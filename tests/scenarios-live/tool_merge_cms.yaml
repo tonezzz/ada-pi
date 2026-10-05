@@ -1,0 +1,32 @@
+# tools-merge-cms regression (2026-10-05): the cms group went 7 -> 3 —
+# cms_publish_page is the unchanged writer; cms_read absorbs
+# cms_list_pages/cms_get_page/cms_verify_page (action=get|list|verify,
+# key=<page slug>); cms_edit absorbs cms_note_update/cms_delete_page/
+# cms_automation (action=note|delete|automate, op= carries the registry
+# op). The six absorbed names survive as tool_runner._ALIASES rows,
+# hidden from the declared surface. Live-side this scenario checks the
+# canonical calls still fire for the absorbed intents:
+#   list/get — cms_read
+#   note     — cms_edit action='note' (ungated merge, safe write)
+name: tool_merge_cms
+turns:
+  - user: >-
+      What pages exist in the miniapp right now? Just list them.
+    expect:
+      calls_any: [cms_read]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Read the reports-index page and tell me what reports are in it.
+    expect:
+      calls_any: [cms_read]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Add a short timeline note to the reports-index page saying
+      "cms merge regression check" — just the note, don't republish or
+      delete anything.
+    expect:
+      calls_any: [cms_edit]
+      timeout_s: 90
+      settle_s: 10

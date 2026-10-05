@@ -2095,7 +2095,7 @@ async def cms_edit_page(request: Request, slug: str) -> dict:
     except Exception:
         raise HTTPException(status_code=400, detail="invalid json body")
     try:
-        result = await tool_runner.cms_edit(
+        result = await tool_runner._cms_edit_sections(
             slug,
             op=str(body.get("op") or ""),
             text=str(body.get("text") or ""),

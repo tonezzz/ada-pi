@@ -48,15 +48,24 @@ families:
     # cctv_wall deliberately NOT absorbed: a wall is a live grid, not a
     # single frame (card spec 2026-10-05). vcast_snapshot stays the
     # second survivor of the 5->2 merge.
-  cms:
+  # cms group 7 -> 3 (tools-merge-cms, landed 2026-10-05): the card split
+  # the original single-canonical design into two action= tools —
+  # cms_publish_page stays declared unchanged (the big writer), the three
+  # readers consolidate into cms_read, and the three writers/registry-ops
+  # into cms_edit.
+  cms_read:
     merge_card: tools-merge-cms
-    canonical: cms_page            # cms_* publish/verify/note/delete/list/get/automation -> action=
+    canonical: cms_read            # list/get/verify -> action=, page slug in key=
     scenario: tool_merge_cms
     absorbed:
       - cms_list_pages
       - cms_get_page
       - cms_verify_page
-      - cms_publish_page
+  cms_edit:
+    merge_card: tools-merge-cms
+    canonical: cms_edit            # note/delete/automate -> action= (+ op= for automate)
+    scenario: tool_merge_cms
+    absorbed:
       - cms_note_update
       - cms_delete_page
       - cms_automation

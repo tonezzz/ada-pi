@@ -996,7 +996,7 @@ def persona_instruction(knobs: dict[str, Any], registry: MemoryBankRegistry) -> 
 # --- L0 hot headlines -------------------------------------------------------
 # Recall-ladder tier 0: fresh report/digest one-liners injected at session
 # open so Ada can say "what's new" immediately — detail is fetched lazily
-# via cms_get_page only when the user asks. A headline is announced once
+# via cms_read action='get' only when the user asks. A headline is announced once
 # (announced_at stamped when injected) then cools to the warm tier.
 HEADLINE_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 HEADLINE_MAX_AGE_S = float(os.environ.get("ADA_HEADLINE_MAX_AGE_H", "72")) * 3600

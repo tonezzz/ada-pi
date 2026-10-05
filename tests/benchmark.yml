@@ -21,7 +21,7 @@ policy:
   # "write" = persistent state or real-world actuation; a DENIED attempt
   # still shows in the tool-call list, so gate scenarios belong in the
   # allowed set too (the gate's refusal is what makes it safe).
-  write_tools: [cms_publish_page, cms_delete_page, ada_remember, ada_forget,
+  write_tools: [cms_publish_page, cms_edit, ada_remember, ada_forget,
                 ada_doc_archive, ada_doc_print, devin_dispatch,
                 ada_enroll_speaker,
                 control_entity, tv_action, gev_command,
@@ -39,6 +39,7 @@ policy:
     - cms_rich_blocks
     - cms_translate
     - cms_reorganize
+    - tool_merge_cms           # merge regression exercises cms_edit (note)
     - news_pages_update
     - news_audit_fix
     - report_references_lifecycle

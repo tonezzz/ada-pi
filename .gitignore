@@ -7,3 +7,4 @@ __pycache__/
 logs/
 data/
 tests/voice-corpus/clips/
+.teststubs/
