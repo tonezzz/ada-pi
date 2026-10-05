@@ -1,0 +1,54 @@
+name: cast-dub-to-tv
+# Live scenario — "play the dub demo on my TV" end-to-end (Tony ask
+# 2026-10-05). Exercises the direct-mp4 fast path added to yt-live-api
+# today: yt_cast with an .mp4/.m3u8 URL hits play_media directly instead
+# of the yt-dlp+HLS pipeline, and wakes media_player.tony_tv_cast first
+# (off-TV 200-but-no-op incident fixed in yt-live.sh cast_now too).
+#
+# What it verifies:
+#   - CMS discovery: cms_read gets voice-dub-demos -> file URLs
+#   - TV cast: yt_cast(<mp4 url>) -> playing on media_player.tony_tv_cast
+#     (NOT cast_to_screen — that would hit a numbered vcast display;
+#     NOT yt_cast of a YouTube query — the file is local)
+#   - state: follow-up asks Ada to verify via ada_ha_get_state
+#   - stop: media stop returns TV to idle
+#
+# tier: full — actuates the real living-room TV.
+tier: full
+
+turns:
+  - user: "What voice-dub demos do we have? Check the CMS page voice-dub-demos."
+    expect:
+      calls_any: [cms_read, cms_get_page]
+      result_contains_any: ["gn-v17-diar", "noel", "yt-live"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 4
+
+  # the actual cast — Ada must resolve the URL and use yt_cast on it.
+  # The TV may already be playing something; replacing it on the TV is
+  # fine (the interrupt gate applies to numbered vcast screens, not TV).
+  - user: "Play the Noel Gallagher interview dub on the TV — the Graham Norton one."
+    expect:
+      calls_any: [yt_cast, tv_action]
+      no_calls_except: [yt_cast, tv_action, cms_read, cms_get_page,
+                        ada_ha_get_state, cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  # verify she confirms real state, not just "done"
+  - user: "Is it actually playing? Check the TV state."
+    expect:
+      calls_any: [ada_ha_get_state]
+      result_contains_any: ["playing", "tony_tv_cast"]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 4
+
+  - user: "Stop it."
+    expect:
+      calls_any: [yt_cast_stop, control_media_player, tv_action]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 5

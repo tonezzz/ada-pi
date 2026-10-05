@@ -1,0 +1,51 @@
+# Write-tool coverage — targets are deliberately nonexistent so nothing
+# actuates; asserting the CALL is enough (double-serves honesty: the
+# result should fail and the narration should admit it).
+name: tools_probe_writes
+tier: gate
+turns:
+  - user: "Close the poolside roller shutter."
+    expect:
+      calls_any: [control_cover, control_entity, ada_ha_search_devices,
+                  search_home_devices]
+      response_contains_any:
+        - "can't"
+        - "couldn't"
+        - "not find"
+        - "don't have"
+        - "doesn't exist"
+        - "ไม่พบ"
+        - "ไม่มี"
+      timeout_s: 90
+      settle_s: 8
+  - user: "Press the doorbell chime test button on the thingamajig."
+    expect:
+      calls_any: [press_button, control_entity]
+      timeout_s: 90
+      settle_s: 8
+  - user: "Move my 'water plants' task to tomorrow."
+    expect:
+      calls_any: [tasks_move, tasks_list]
+      timeout_s: 90
+      settle_s: 8
+  - user: "Check the status of that YouTube cast."
+    expect:
+      calls_any: [yt_cast_status, vcast_list]
+      timeout_s: 60
+      settle_s: 8
+  - user: "Send 'test ping' to the chat."
+    expect:
+      calls_any: [chat_send]
+      timeout_s: 60
+      settle_s: 8
+  - user: "Update my drive doc 'meeting notes' with a one-line summary."
+    expect:
+      calls_any: [drive_update, drive_search, drive_get]
+      timeout_s: 90
+      settle_s: 8
+  - user: "Mark the thingamajig sensor as unreliable."
+    expect:
+      calls_any: [ada_ha_set_device_confidence, ada_ha_search_devices,
+                  ada_ha_get_device_confidence]
+      timeout_s: 90
+      settle_s: 8

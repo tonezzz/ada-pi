@@ -1,0 +1,35 @@
+# Flow/misc coverage — guest, devin-dispatch, decision, photos, outcome.
+name: tools_probe_flows
+tier: gate
+turns:
+  - user: "Register a guest speaker named Probe McTestface for demo."
+    expect:
+      calls_any: [guest_register, ada_enroll_speaker]
+      timeout_s: 90
+      settle_s: 8
+  - user: "How many devin jobs are waiting on my answer?"
+    expect: {calls_any: [devin_pending, devin_jobs, devin_status],
+             timeout_s: 90, settle_s: 8}
+  - user: "Tell devin to follow up on the last dispatched job."
+    expect: {calls_any: [devin_followup, devin_status, devin_jobs],
+             timeout_s: 90, settle_s: 8}
+  - user: "What's the job report for the last dispatch?"
+    expect: {calls_any: [devin_job_report, devin_jobs, devin_status],
+             timeout_s: 90, settle_s: 8}
+  - user: "Should I buy a new rice cooker — the old one broke."
+    expect:
+      calls_any: [ada_decision_check]
+      timeout_s: 120
+      settle_s: 10
+  - user: "Pick some photos of the dog for me."
+    expect: {calls_any: [photos_pick, drive_search, photos_picked],
+             timeout_s: 90, settle_s: 8}
+  - user: "Did that CMS update I asked for earlier succeed?"
+    expect:
+      calls_any: [ada_outcome, ada_session_recall, ada_memory_search,
+                  cms_list_pages]
+      timeout_s: 90
+      settle_s: 8
+  - user: "Resolve that pending action."
+    expect: {calls_any: [ada_resolve_action, devin_pending],
+             timeout_s: 90, settle_s: 8}

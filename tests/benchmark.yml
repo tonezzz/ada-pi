@@ -255,6 +255,9 @@ suites:
     - tool_args_shape
     - tool_honesty
     - tool_storm_budget
+    - tools_probe_readonly
+    - tools_probe_writes
+    - tools_probe_flows
     - education_correction
     - doc_policy_gate
     - cross_instance_isolation
