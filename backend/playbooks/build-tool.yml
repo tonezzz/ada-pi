@@ -1,0 +1,60 @@
+# build-tool — the self-development loop's last stage.
+#
+# A devteam-reviewed spec (ada_devteam_review -> kind=spec-review doc in
+# the devin-handoff bank) is the gate: this playbook refuses to dispatch
+# unless params.spec_key resolves to a spec doc whose meta status is
+# 'pass'. No passing spec -> the caller is steered to ada_devteam_review.
+name: build-tool
+description: >-
+  Build a new Ada tool (backend/tools.d module + manifest line + tests +
+  live scenario) from a devteam-reviewed spec doc.
+params:
+  spec_key:
+    required: true
+    description: >-
+      Key of the reviewed spec doc in ada-ha-bank-devin-handoff —
+      spec/<yyyymmdd-hhmmss>-<slug>, written by ada_devteam_review. A bare
+      slug is prefixed with 'spec/' for the lookup.
+  tool_name:
+    required: false
+    description: >-
+      Optional override for the tool name when the spec deliberately
+      leaves it open.
+    line: "\n  Tool name override: {value} — use this instead of the spec's name."
+gate:
+  confirm: true        # devin_dispatch confirm gate applies (confirmed=true)
+  identity: owner      # only full person_policies identities may build tools
+requires:
+  spec_status: pass    # spec doc must exist with kind=spec-review + this status
+task_template: |
+  Build the Ada tool specified by devin-handoff doc `{spec_key}`
+  (collection ada-ha-bank-devin-handoff, kind=spec-review — its status was
+  already verified as pass by the dispatcher; do NOT re-review the
+  verdict, build what it says).
+
+  Fetch the spec via the mddb MCP (get/search on that collection, key
+  `{spec_key}`) — the 'Revised spec' section is the build contract. If the
+  doc is unreadable, stop and write needs-input.txt.{tool_name_line}
+
+  Follow docs/ada-tool-dev.md exactly:
+  - one module backend/tools.d/<name>.py: DECLARATION dict + async
+    run(runner, **args) -> dict; errors return {{"ok": false, "error": ...}},
+    never raise into the model
+  - one manifest.yml entry: policy / secondary_allowed / timeout_s per the
+    spec's policy class
+  - unit tests in tests/ (mocked runner/mddb): happy path, error path,
+    policy gate
+  - tests/scenarios-live/<name>.yaml expectation when the tool is
+    user-facing
+  - honest results — report what actually happened, never claim a write
+    that did not occur
+  Do NOT edit tool_runner.py confirm-gate internals; the tools.d loader
+  picks the tool up without provider edits. If the spec demands core-file
+  edits, stop and write needs-input.txt instead of improvising.
+memory_domains:
+  - devin-handoff      # the spec doc itself + job ledger conventions
+verify:
+  - "python3 scripts/tool-lint.py"
+  - "python3 -m unittest discover -s tests"
+report_to: ada-ha-bank-devin-handoff
+max_runtime_min: 45

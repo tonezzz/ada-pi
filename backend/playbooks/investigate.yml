@@ -1,0 +1,42 @@
+# investigate — read-only research job: look, report, don't change code.
+#
+# Produces a written report (dispatch-outcome.md + the job ledger), not a
+# diff — code changes stay out of scope unless the fix is trivially safe.
+# Lighter identity gate (any identified caller) since the deliverable is a
+# report; the dispatch confirm gate still applies to everyone.
+name: investigate
+description: >-
+  Investigate a subject — a stuck sensor, a flaky job, a repo question —
+  and produce a written report. Read-only by contract.
+params:
+  subject:
+    required: true
+    description: What to investigate, in one self-contained sentence.
+  context:
+    required: false
+    description: Extra context — entity ids, time ranges, links, prior jobs.
+    line: "\n  Context: {value}"
+gate:
+  confirm: true
+  identity: identified   # any identified caller; result is a report only
+task_template: |
+  Investigate and report — do NOT change code or config; if the fix is
+  obvious, describe it in the report rather than applying it.
+
+  Subject: {subject}
+  {context_line}
+
+  Read whatever is needed — repo code, docs/ssot, git log, and the memory
+  domains listed below via the mddb MCP. Deliverables:
+  - dispatch-outcome.md: what you found, the evidence, and a recommended
+    next step
+  - if the answer needs a human decision, write needs-input.txt (first
+    line = the one-line question) and stop
+  Keep the report honest: distinguish observed facts from inference, and
+  say plainly when the evidence is inconclusive.
+memory_domains:
+  - devin-handoff   # job ledger + handoff specs
+  - reports         # ada-ha-reports-* session/run reports
+verify: []           # report-only playbook — nothing executable to check
+report_to: ada-ha-bank-devin-handoff
+max_runtime_min: 30

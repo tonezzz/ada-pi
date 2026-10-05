@@ -275,8 +275,12 @@ DEVIN_INSTRUCTIONS = (
     "(done/failed/running/awaiting-user); never guess a job's outcome. "
     "devin_pending lists jobs blocked waiting for the user's answer — when the "
     "user asks what needs their attention, or says a job is waiting, call it and "
-    "read each job's question back with its short detail. To deliver an answer: "
-    "refine the user's reply into a self-contained instruction (the job sees "
+    "read each job's question back with its short detail. To build a new tool, "
+    "use playbook='build-tool' with params.spec_key naming the reviewed spec "
+    "doc; when it refuses because no passing spec exists, offer to run "
+    "ada_devteam_review first instead of dispatching without a spec. "
+    "To deliver an answer: refine the user's reply into a self-contained "
+    "instruction (the job sees "
     "only the text, not this conversation), read the refined text back, get an "
     "explicit yes, then call devin_answer with confirmed=true. "
     "When discussing an implementation task the user wants built later, offer to "
@@ -4311,7 +4315,12 @@ class GeminiLiveProvider(RealtimeProvider):
                         "git worktree. The session runs to completion by itself; the user is "
                         "notified on their phone when it finishes. Use when the user asks to "
                         "have a code task done later or autonomously. Requires confirmed=true "
-                        "after restating the repo and task."
+                        "after restating the repo and task. Optional playbook= names a "
+                        "registered playbook: 'build-tool' builds a new Ada tool from a "
+                        "devteam-reviewed spec (requires params.spec_key — it refuses when the "
+                        "spec doc is missing or not status=pass; offer ada_devteam_review "
+                        "instead), 'fix-scenario' repairs a named live scenario, 'investigate' "
+                        "researches a subject and reports back."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
@@ -4330,7 +4339,33 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "task": {
                                 "type": "string",
-                                "description": "The task prompt for the Devin session.",
+                                "description": "The task prompt for the Devin session. With playbook= this becomes extra request context appended to the rendered template.",
+                            },
+                            "playbook": {
+                                "type": "string",
+                                "enum": ["build-tool", "fix-scenario", "investigate"],
+                                "description": (
+                                    "Optional playbook from backend/playbooks/. The task is "
+                                    "rendered from the playbook's template and its gate is "
+                                    "enforced server-side before anything is dispatched."
+                                ),
+                            },
+                            "params": {
+                                "type": "object",
+                                "description": (
+                                    "Playbook params keyed by name. build-tool: spec_key "
+                                    "(required — spec/<ts>-<slug> doc key in the devin-handoff "
+                                    "bank) and tool_name; fix-scenario: scenario (required) "
+                                    "and symptom; investigate: subject (required) and context."
+                                ),
+                                "properties": {
+                                    "spec_key": {"type": "string"},
+                                    "tool_name": {"type": "string"},
+                                    "scenario": {"type": "string"},
+                                    "symptom": {"type": "string"},
+                                    "subject": {"type": "string"},
+                                    "context": {"type": "string"},
+                                },
                             },
                             "confirmed": {
                                 "type": "boolean",

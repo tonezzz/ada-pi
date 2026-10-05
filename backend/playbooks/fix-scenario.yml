@@ -1,0 +1,48 @@
+# fix-scenario — repair a failing or stale live scenario.
+#
+# The verify bar is tool-lint (it validates scenario references) plus the
+# unit suite; the live re-run itself is idc02's lane — the session flags
+# when one is needed instead of pretending it ran.
+name: fix-scenario
+description: >-
+  Diagnose and fix a failing tests/scenarios-live/<name>.yaml — scenario
+  file, tool behavior, or runner, in that order of preference.
+params:
+  scenario:
+    required: true
+    description: >-
+      Live-scenario name or file under tests/scenarios-live/
+      (e.g. 'devin_answer_gate' or 'devin_answer_gate.yaml').
+  symptom:
+    required: false
+    description: What the failure looks like, if the requester said.
+    line: "\n\n  Reported symptom: {value}"
+gate:
+  confirm: true        # unattended session edits the repo — confirm gate applies
+  identity: owner
+task_template: |
+  The live scenario `{scenario}` (a yaml file under
+  tests/scenarios-live/) is failing or stale — diagnose and fix it.{symptom_line}
+
+  Steps:
+  1. Read the scenario yaml and the expect vocabulary in
+     scripts/scenario-live.py (calls/calls_any/no_calls_except/
+     result_contains/response_contains/call_args_contain, cleanup blocks).
+  2. Pull the latest run for this scenario from the mddb MCP: collection
+     ada-ha-scenario-reports (ops-routed, kind=scenario-run docs). Match
+     the failure to a specific expectation before changing anything.
+  3. Fix the smallest honest thing: the scenario file, the tool, or the
+     runner — in that order. Never weaken an assertion just to go green;
+     if the expectation is wrong for the current contract, update it and
+     say so in dispatch-outcome.md.
+  4. Re-run cheap checks (unit tests, tool-lint). Do NOT claim a live
+     pass you did not observe — a real live run is idc02's lane; if one
+     is needed, say so explicitly in dispatch-outcome.md.
+memory_domains:
+  - devin-handoff            # job ledger + prior handoff notes
+  - ada-ha-scenario-reports  # live scenario run results (ops store)
+verify:
+  - "python3 scripts/tool-lint.py"
+  - "python3 -m unittest discover -s tests"
+report_to: ada-ha-bank-devin-handoff
+max_runtime_min: 30

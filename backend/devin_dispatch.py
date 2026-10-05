@@ -16,8 +16,13 @@ import logging
 import os
 import re
 import shlex
+import string
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import yaml
 
 logger = logging.getLogger("tools.devin_dispatch")
 
@@ -135,8 +140,318 @@ async def _run(*args: str) -> str:
     return out.decode(errors="replace").strip()
 
 
-async def dispatch(repo: str, task: str) -> dict:
-    """Start a headless Devin session. Returns the task id + registry info."""
+# -- Playbook registry (backend/playbooks/*.yml) ------------------------------
+#
+# A playbook is a named dispatch contract: declared params feed a
+# task_template, a gate block states the confirm/identity requirements,
+# `requires` names bank-side preconditions (today: the build-tool spec
+# doc must carry status=pass), verify lists the commands the session runs
+# before finishing, and report_to / max_runtime_min bound the job. A
+# dispatched playbook job is stamped into the devin-handoff ledger as
+# job/<task_id>/contract so devin-dispatch-watch can pick up the verify
+# list (kind=job-contract — inside the job/ namespace so the handoff
+# inbox skips it, and not kind=job so report feeds don't count it as a
+# job row).
+
+PLAYBOOKS_DIR = Path(
+    os.environ.get("ADA_PLAYBOOKS_DIR")
+    or Path(__file__).resolve().parent / "playbooks"
+)
+HANDOFF_COLLECTION = os.environ.get(
+    "ADA_DEVIN_HANDOFF_COLLECTION", "ada-ha-bank-devin-handoff")
+
+_PLAYBOOK_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+_VALID_GATE_IDENTITIES = {"owner", "identified", "any"}
+
+
+class PlaybookError(ValueError):
+    """Bad playbook file or bad playbook call — reported to the caller."""
+
+
+def list_playbooks(playbooks_dir: Path | None = None) -> list[str]:
+    root = Path(playbooks_dir) if playbooks_dir else PLAYBOOKS_DIR
+    if not root.is_dir():
+        return []
+    return sorted(p.stem for p in root.glob("*.yml")
+                  if _PLAYBOOK_NAME_RE.match(p.stem))
+
+
+def _template_fields(template: str) -> set[str]:
+    return {
+        field for _, field, _, _ in string.Formatter().parse(template)
+        if field
+    }
+
+
+def _validate_playbook(path: Path, data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise PlaybookError(f"{path.name}: playbook file must be a mapping")
+    pb = dict(data)
+    name = str(pb.get("name") or path.stem)
+    if name != path.stem:
+        raise PlaybookError(
+            f"{path.name}: name {name!r} != filename {path.stem!r}")
+    for field in ("description", "task_template", "report_to"):
+        if not isinstance(pb.get(field), str) or not pb[field].strip():
+            raise PlaybookError(f"{path.name}: missing non-empty '{field}'")
+    params = pb.get("params")
+    if not isinstance(params, dict) or not params:
+        raise PlaybookError(f"{path.name}: 'params' must be a mapping")
+    for pname, cfg in params.items():
+        if not isinstance(cfg, dict):
+            raise PlaybookError(
+                f"{path.name}: param {pname!r} must be a mapping "
+                "(required/description/line)")
+    gate = pb.get("gate")
+    if not isinstance(gate, dict):
+        raise PlaybookError(f"{path.name}: 'gate' must be a mapping")
+    identity = str(gate.get("identity") or "any").lower()
+    if identity not in _VALID_GATE_IDENTITIES:
+        raise PlaybookError(
+            f"{path.name}: gate.identity {identity!r} not in "
+            f"{sorted(_VALID_GATE_IDENTITIES)}")
+    pb["gate"] = {"confirm": bool(gate.get("confirm", True)),
+                  "identity": identity}
+    verify = pb.get("verify") or []
+    if not isinstance(verify, list) or not all(
+            isinstance(v, str) and v.strip() for v in verify):
+        raise PlaybookError(
+            f"{path.name}: 'verify' must be a list of commands ([] allowed)")
+    pb["verify"] = [v.strip() for v in verify]
+    domains = pb.get("memory_domains") or []
+    if not isinstance(domains, list) or not all(
+            isinstance(d, str) and d.strip() for d in domains):
+        raise PlaybookError(
+            f"{path.name}: 'memory_domains' must be a list of bank names")
+    pb["memory_domains"] = [d.strip() for d in domains]
+    try:
+        pb["max_runtime_min"] = int(pb.get("max_runtime_min") or 0)
+    except (TypeError, ValueError):
+        pb["max_runtime_min"] = 0
+    if pb["max_runtime_min"] <= 0:
+        raise PlaybookError(
+            f"{path.name}: 'max_runtime_min' must be a positive int")
+    declared = {str(p) for p in params}
+    allowed = declared | {f"{p}_line" for p in params}
+    unknown = _template_fields(pb["task_template"]) - allowed
+    if unknown:
+        raise PlaybookError(
+            f"{path.name}: task_template placeholder(s) {sorted(unknown)} "
+            "not declared in params")
+    return pb
+
+
+def load_playbook(name: str,
+                  playbooks_dir: Path | None = None) -> dict[str, Any]:
+    """Load + validate backend/playbooks/<name>.yml. Raises PlaybookError."""
+    if not _PLAYBOOK_NAME_RE.match(name or ""):
+        raise PlaybookError(f"invalid playbook name {name!r}")
+    root = Path(playbooks_dir) if playbooks_dir else PLAYBOOKS_DIR
+    path = root / f"{name}.yml"
+    if not path.is_file():
+        raise PlaybookError(
+            f"unknown playbook {name!r} (available: "
+            f"{', '.join(list_playbooks(root)) or 'none'})")
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise PlaybookError(f"{name}: yaml parse failed: {exc}") from exc
+    return _validate_playbook(path, data)
+
+
+def _resolve_params(pb: dict[str, Any],
+                    params: dict[str, Any] | None) -> dict[str, str]:
+    """Validate params against the playbook and build template values.
+
+    Every declared param maps to a string value; a param with a 'line'
+    sub-template also yields '<name>_line' — the rendered line when the
+    param was given, else "" (clean optional-section interpolation).
+    """
+    declared = pb["params"]
+    params = dict(params or {})
+    unknown = sorted(str(k) for k in params if k not in declared)
+    if unknown:
+        raise PlaybookError(
+            f"{pb['name']}: unknown param(s) {', '.join(unknown)} "
+            f"(declared: {', '.join(sorted(declared))})")
+    values: dict[str, str] = {}
+    missing: list[str] = []
+    for pname, cfg in declared.items():
+        raw = params.get(pname)
+        v = "" if raw is None else str(raw).strip()
+        if not v and cfg.get("default") is not None:
+            v = str(cfg["default"]).strip()
+        if cfg.get("required") and not v:
+            missing.append(str(pname))
+        values[str(pname)] = v
+        values[str(pname) + "_line"] = (
+            str(cfg["line"]).format(value=v)
+            if v and cfg.get("line") else "")
+    if missing:
+        raise PlaybookError(
+            f"{pb['name']}: missing required param(s) {', '.join(missing)}")
+    return values
+
+
+def _render_task(pb: dict[str, Any], values: dict[str, str],
+                 task: str | None = None) -> str:
+    """task_template + params + the contract trailer the session sees."""
+    body = pb["task_template"].format_map(values).strip()
+    trailer = [f"Playbook: {pb['name']}"]
+    if pb["verify"]:
+        trailer.append(
+            "Verify before finishing — run each command and record the "
+            "results in dispatch-outcome.md:")
+        trailer += [f"  - {c}" for c in pb["verify"]]
+    else:
+        trailer.append("Verify: none — this is a report-only playbook.")
+    trailer.append(f"Report to: {pb['report_to']}")
+    if pb["memory_domains"]:
+        trailer.append("Memory domains you may consult via the mddb MCP: "
+                       + ", ".join(pb["memory_domains"]))
+    trailer.append(f"Timebox: {pb['max_runtime_min']} minutes.")
+    rendered = body + "\n\n" + "\n".join(trailer)
+    if task and str(task).strip():
+        rendered += "\n\nRequest context:\n" + str(task).strip()
+    return rendered
+
+
+def _meta_first(meta: dict[str, Any], field: str) -> str:
+    v = (meta or {}).get(field)
+    if isinstance(v, list):
+        return str(v[0]) if v else ""
+    return str(v) if v is not None else ""
+
+
+async def _enforce_gate(name: str, pb: dict[str, Any],
+                        values: dict[str, str], mddb: Any,
+                        caller: str | None, is_owner: bool) -> dict | None:
+    """Playbook gate: identity + declared bank-side requirements.
+
+    Returns a refusal dict the tool surfaces to the model, or None when
+    the call may proceed. Fails closed: an unverifiable requirement is a
+    refusal, not a pass.
+    """
+    identity_req = pb["gate"]["identity"]
+    if identity_req == "owner" and not is_owner:
+        return {"ok": False, "playbook": name, "gate": "identity",
+                "error": f"playbook '{name}' is owner-gated — only the "
+                         "owner's identities may dispatch it."}
+    if identity_req == "identified" and not (caller or is_owner):
+        return {"ok": False, "playbook": name, "gate": "identity",
+                "error": f"playbook '{name}' requires an identified caller."}
+
+    want_status = str(
+        (pb.get("requires") or {}).get("spec_status") or "").lower()
+    if not want_status:
+        return None
+    spec_key = values.get("spec_key") or ""
+    if mddb is None:
+        return {"ok": False, "playbook": name, "gate": "spec_status",
+                "spec_key": spec_key,
+                "error": f"playbook '{name}' cannot verify spec "
+                         f"'{spec_key}' — the memory store is unavailable, "
+                         "so the spec's review status cannot be checked. "
+                         "Refusing to dispatch unverified."}
+    doc = await mddb.get_document(HANDOFF_COLLECTION, spec_key)
+    if doc is None and spec_key and not spec_key.startswith("spec/"):
+        spec_key = "spec/" + spec_key
+        doc = await mddb.get_document(HANDOFF_COLLECTION, spec_key)
+    meta = (doc or {}).get("meta") or {}
+    kinds = meta.get("kind") or []
+    status = _meta_first(meta, "status").lower()
+    base = {"ok": False, "playbook": name, "gate": "spec_status",
+            "spec_key": spec_key, "spec_status": status or None,
+            "offer": "ada_devteam_review"}
+    if doc is None or "spec-review" not in kinds:
+        return {**base, "error": (
+            f"playbook '{name}' refused: no spec-review doc '{spec_key}' "
+            "in the devin-handoff bank. Do NOT dispatch anyway — offer to "
+            "run ada_devteam_review first so a reviewed spec exists.")}
+    if status != want_status:
+        return {**base, "error": (
+            f"playbook '{name}' refused: spec doc '{spec_key}' has status "
+            f"'{status or 'unknown'}', needs '{want_status}'. Do NOT "
+            "dispatch anyway — offer to run ada_devteam_review so the "
+            "spec can be (re)reviewed to a passing verdict.")}
+    values["spec_key"] = spec_key  # resolved key (bare slug -> spec/<slug>)
+    return None
+
+
+async def _stamp_contract(mddb: Any, task_id: str, name: str,
+                          pb: dict[str, Any],
+                          values: dict[str, str]) -> str | None:
+    """job/<task_id>/contract doc — the playbook + verify list the watch
+    timer picks up alongside the job/<id> ledger entry it owns.
+
+    Companion doc, not meta on job/<id>: the watcher's own /add rewrites
+    that doc's meta wholesale on every transition, so a stamp there would
+    die at exactly the moment the verify list is needed.
+    """
+    if mddb is None:
+        return None
+    key = f"job/{task_id}/contract"
+    verify = pb["verify"]
+    body = (f"Playbook contract for job {task_id}: {name}.\n\n"
+            + ("Verify:\n" + "\n".join(f"- {c}" for c in verify)
+               if verify else "Verify: none (report-only playbook).")
+            + f"\n\nReport to: {pb['report_to']}"
+            + f"\nMax runtime: {pb['max_runtime_min']} min"
+            + (f"\nSpec: {values['spec_key']}" if values.get("spec_key") else ""))
+    meta: dict[str, list[str]] = {
+        "kind": ["job-contract"], "status": ["stamped"],
+        "job_id": [task_id], "playbook": [name],
+        "report_to": [str(pb["report_to"])],
+        "max_runtime_min": [str(pb["max_runtime_min"])],
+        "ts": [datetime.now(timezone.utc).isoformat()],
+        "subject": [f"{name}-{task_id}"],
+        "source": ["devin_dispatch"], "written_by": ["ada"],
+        "scope": ["tony"], "bank": ["devin-handoff"],
+    }
+    if verify:
+        meta["verify"] = verify
+    if pb["memory_domains"]:
+        meta["memory_domains"] = pb["memory_domains"]
+    if values.get("spec_key"):
+        meta["spec_key"] = [values["spec_key"]]
+    ok = await mddb.add_document(
+        HANDOFF_COLLECTION, key=key, lang="en", content_md=body, meta=meta)
+    return key if ok else None
+
+
+async def dispatch(repo: str, task: str | None = None, *,
+                   playbook: str | None = None,
+                   params: dict[str, Any] | None = None,
+                   mddb: Any = None,
+                   caller: str | None = None,
+                   is_owner: bool = False) -> dict:
+    """Start a headless Devin session. Returns the task id + registry info.
+
+    With playbook=<name> the task is rendered from
+    backend/playbooks/<name>.yml: params feed the template, the declared
+    gate is enforced before anything is dispatched (build-tool refuses
+    when its spec doc is missing or not status=pass), and the finished
+    task is stamped into the job ledger as job/<task_id>/contract carrying
+    the playbook + verify list for devin-dispatch-watch.
+    """
+    pb: dict[str, Any] | None = None
+    values: dict[str, str] = {}
+    if playbook:
+        try:
+            pb = load_playbook(playbook)
+            values = _resolve_params(pb, params)
+        except PlaybookError as exc:
+            return {"ok": False, "playbook": playbook, "error": str(exc)}
+        refusal = await _enforce_gate(
+            playbook, pb, values, mddb, caller, is_owner)
+        if refusal is not None:
+            logger.info("dispatch refused: playbook=%s gate=%s",
+                        playbook, refusal.get("gate"))
+            return refusal
+        task = _render_task(pb, values, task)
+    if not task or not str(task).strip():
+        return {"ok": False,
+                "error": "task or playbook is required"}
     now = time.monotonic()
     toks = _task_tokens(task)
     entries = _recent_dispatches.setdefault(repo, [])
@@ -157,7 +472,7 @@ async def dispatch(repo: str, task: str) -> dict:
         return _dedup_result(dupe, repo)
     task_id = (await _run("start", repo, task)).strip()
     entries.append((toks, task_id, now))
-    return {
+    result = {
         "task_id": task_id,
         "repo": repo,
         "note": (
@@ -166,6 +481,20 @@ async def dispatch(repo: str, task: str) -> dict:
             "notification is sent automatically when it finishes."
         ),
     }
+    if pb is not None:
+        contract = await _stamp_contract(mddb, task_id, playbook, pb, values)
+        result.update({
+            "playbook": playbook,
+            "verify": pb["verify"],
+            "report_to": pb["report_to"],
+            "max_runtime_min": pb["max_runtime_min"],
+        })
+        if contract:
+            result["job_contract"] = contract
+        else:
+            result["note"] += (" (job-contract stamp skipped — memory "
+                               "store unavailable)")
+    return result
 
 
 async def status(task_id: str | None = None) -> str:

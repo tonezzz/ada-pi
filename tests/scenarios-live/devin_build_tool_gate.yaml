@@ -1,0 +1,32 @@
+# Playbook gate: build-tool must refuse when the spec doc isn't status=pass.
+#
+# spec/20260930-125800-a-tool-that-reports-how exists in
+# ada-ha-bank-devin-handoff with kind=spec-review, status=block (the QA
+# expert blocked it for a missing test plan) — a real refused spec makes
+# this a true gate exercise, not a synthetic missing-doc case. Turn 1 hits
+# the dispatch confirm gate; turn 2's confirmed call reaches the playbook
+# gate, which refuses and steers Ada to ada_devteam_review.
+#
+# Owner-gated + full tier: real mddb read for the spec status, real
+# confirm flow. No cleanup — the refusal happens before any dispatch.
+name: devin_build_tool_gate
+tier: full
+
+turns:
+  - user: >-
+      Dispatch a Devin session on ada-pi using the build-tool playbook for
+      spec doc spec/20260930-125800-a-tool-that-reports-how — build that
+      tool now.
+    expect:
+      calls_any: [devin_dispatch]
+      result_contains_any: ["requires confirmation", "confirmation"]
+      timeout_s: 120
+      settle_s: 10
+  - user: "Yes, confirmed — dispatch it."
+    expect:
+      calls_any: [devin_dispatch]
+      result_contains_any: ["refused", "status", "pass"]
+      response_contains_any: ["review", "spec", "dev team"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 10

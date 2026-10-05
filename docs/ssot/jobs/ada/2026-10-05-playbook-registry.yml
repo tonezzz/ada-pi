@@ -1,0 +1,109 @@
+# SSOT Job: playbook registry — dispatch contract layer for Ada's
+# self-development loop.
+# Card: ada-devteam-pipeline (chaba kanban). Dispatch 20261005-173154.
+
+title: Playbook registry — devin_dispatch gains gated, templated playbooks
+subtitle: >-
+  build-tool / fix-scenario / investigate; build-tool refuses without a
+  status=pass spec-review doc and steers to ada_devteam_review
+
+planning:
+  goal: |
+    Close the loop Ada devteam pipeline left open: specs land in the
+    devin-handoff bank (kind=spec-review) but nothing stopped Ada from
+    dispatching a build with no reviewed spec. backend/playbooks/*.yml is
+    the registry; devin_dispatch(playbook=, params=) renders the task,
+    enforces the gate, and stamps the job ledger for the watch timer.
+  decisions: |
+    - Registry is data, not code: backend/playbooks/*.yml loaded +
+      validated inside devin_dispatch.py (mirrors tools_loader's
+      data-dir convention). Fields: params (with `line:` sub-templates
+      for optional sections), task_template, memory_domains,
+      gate {confirm, identity}, requires, verify, report_to,
+      max_runtime_min. Template placeholders are checked at load —
+      {name} must be a declared param, {name}_line auto-renders the
+      param's line template (or empty when unset).
+    - Gate enforcement lives in dispatch(): identity (owner|identified|
+      any) checked against the caller; requires.spec_status does an
+      mddb get_document on the devin-handoff bank and refuses unless the
+      doc is kind=spec-review with the required status. Fails CLOSED —
+      mddb unavailable is a refusal, not a pass. Refusals return
+      {ok: false, gate, offer: "ada_devteam_review"} so the model steers
+      to the review pipeline instead of dispatching raw.
+    - Job stamp = job/<task_id>/contract doc, kind=job-contract — NOT
+      meta on job/<id>: devin-dispatch(-watch)'s mddb_job rewrites that
+      doc's meta wholesale on every transition, so a stamp there dies at
+      exactly the completion moment the verify list is needed. A
+      job/-prefixed companion key is skipped by render-handoff-inbox.py
+      and (being kind != job) invisible to devin_job_report /
+      render-report-feed job rows.
+    - confirm gate unchanged: devin_dispatch stays in
+      DEVIN_CONFIRMED_TOOLS; the playbook's gate.confirm is declarative
+      (documents the requirement). tool_runner confirm internals not
+      touched per card rails — only the devin_dispatch method signature
+      gained playbook/params, and it passes policy_identity() +
+      _persona_admin() through as caller/is_owner.
+    - devin_dispatch tool declaration: playbook enum (registry names) +
+      params object (union of declared param names); `task` stays
+      required and becomes 'Request context' appended to the rendered
+      template, so dedup still sees the requester's phrasing.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "playbook registry"
+      status: done
+      notes: "backend/playbooks/{build-tool,fix-scenario,investigate}.yml:
+        params/task_template/memory_domains/gate/requires/verify/
+        report_to/max_runtime_min. build-tool requires.spec_status=pass."
+    - id: 2
+      label: "devin_dispatch playbook args"
+      status: done
+      notes: "list_playbooks/load_playbook/_resolve_params/_render_task/
+        _enforce_gate/_stamp_contract; dispatch() gained playbook, params,
+        mddb, caller, is_owner kwargs — plain dispatch(repo, task)
+        unchanged. Rendered task feeds the existing dedup."
+    - id: 3
+      label: "tool surface"
+      status: done
+      notes: "tool_runner.devin_dispatch passthrough with policy_identity
+        + _persona_admin; realtime_provider declaration gained playbook
+        enum + params object; DEVIN_INSTRUCTIONS names the build-tool
+        gate and the ada_devteam_review fallback."
+    - id: 4
+      label: "tests + scenario + docs"
+      status: done
+      notes: "19 new tests in tests/test_devin_dispatch.py
+        (PlaybookRegistryTests + PlaybookDispatchTests, _FakeMddb —
+        no ssh, no network);
+        tests/scenarios-live/devin_build_tool_gate.yaml (tier: full,
+        gates on the real blocked spec spec/20260930-125800-*);
+        docs/ada-tool-dev.md Playbooks section."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py"
+    - "python3 -m unittest tests.test_devin_dispatch"
+
+verification:
+  - "python3 scripts/tool-lint.py  # clean — 88 declared, 23 aliases,
+    12 pre-existing warnings"
+  - "test_devin_dispatch: 26 tests — registry loads/validates, build-tool
+    refuses missing/wrong-kind/block spec, fails closed without mddb,
+    owner gate before bank access, pass-status dispatch stamps
+    job/<id>/contract with verify meta, dedup on rendered text"
+  - "full suite: 528 tests, 2 failures + 3 errors — ALL reproduce on
+    clean HEAD (ai_edge_litert missing on this host; memory_lifecycle +
+    michael_technician FakeMddb search baseline). See dispatch-outcome.md."
+
+followups:
+  - "chaba: teach devin-dispatch-watch to read job/<id>/contract docs and
+    run meta.verify in the task worktree before marking the job done —
+    the stamp is written by this change; the consumer is a chaba-side
+    card."
+  - "chaba SSOT line DELIVERED: tonezzz/chaba PR #35 (branch
+    dispatch/playbook-registry-ssot) adds the playbook-registry item to
+    docs/ssot/apps/ssot.apps.ada_pi.yml — awaiting review/merge."
