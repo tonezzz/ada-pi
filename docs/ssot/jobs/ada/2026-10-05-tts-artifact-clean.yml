@@ -1,0 +1,86 @@
+# SSOT Job: TTS markup-artifact scrub
+# Card: tts-artifact-clean (chaba kanban). Dispatch 20261005-122233.
+
+title: Speech sanitize — &nbsp;, ][, markdown remnants stripped before transcript/TTS
+subtitle: Extends the transcript sanitize stage past tool-call leaks to markup leaks
+
+planning:
+  goal: |
+    Transcript 519088cb6d (2026-10-04): Ada spoke "&nbsp;ชัดเจน" and
+    "][พาสเจอร์ไรซ์]" — HTML entities and markdown remnants reached
+    speech. The existing sanitize stage (_strip_tool_leak /
+    transcript_tool_leak ops event) only catches spoken tool-call text;
+    extend coverage to markup artifacts. Metric: 0 transcript lines
+    containing '&nbsp;' or '][' in Ada speech.
+  decisions: |
+    - Shared module backend/speech_sanitize.py: sanitize_speech() scrubs
+      ;-terminated HTML entities (html.unescape), bare &nbsp, unknown
+      &word; tokens, HTML tags, markdown link/image/ref syntax (keeps the
+      link text), ']['/']( '/ ')[' junctions, stray brackets, '*'/backtick
+      markup chars, and a truncated trailing entity. Legacy semicolon-less
+      entity decoding is deliberately NOT used — '&not that' must not
+      become '¬that'; 'R&D' and 'AT&T' survive.
+    - Live transcript stream (realtime_provider): unlike _strip_tool_leak,
+      which suppresses the rest of a turn, markup artifacts are REMOVED
+      and the utterance continues ("&nbsp;ชัดเจน" -> " ชัดเจน"). Deltas
+      can split a token ("&nbs" | "p;", "[link" | "](u)"), so
+      split_artifact_tail() holds a possible partial in _artifact_hold
+      until the next delta or the turn boundary flushes it (flush emits
+      the tail delta so display == stored log; suppressed when
+      _leak_active already truncated the turn).
+    - vcast_say (tool_runner): text is sanitized AFTER the 300-char cut —
+      the cut can leave a partial entity — so browser speechSynthesis and
+      the backend Gemini-TTS path never vocalize markup. All-artifact
+      input now raises 'text required' (sanitized text is whitespace).
+    - Prevention: DEFAULT_ADA_INSTRUCTIONS gains a SPEECH IS PLAIN TEXT
+      rule — never voice markup/URLs; quote page/memory content as words.
+    - Ops event 'transcript_artifact_leak' fires once per turn alongside
+      the existing transcript_tool_leak feed (gated on markup chars in the
+      stripped span so whitespace-only diffs don't spam).
+    - The card's recorded benchmark greps
+      tests/fixtures/tts-artifact-clean-transcript.txt — the fixture is
+      the SANITIZED golden transcript (count 0); the raw observed
+      fragments live in test_speech_sanitize.py as sanitizer inputs.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "backend/speech_sanitize.py"
+      status: done
+      notes: "sanitize_speech() + split_artifact_tail() + ARTIFACT_TAIL_RE."
+    - id: 2
+      label: "realtime_provider transcript path"
+      status: done
+      notes: "_strip_speech_artifacts on every output_transcription delta;
+        _artifact_hold/_artifact_logged state; flush at turn_complete,
+        clear on interrupt; ops event transcript_artifact_leak."
+    - id: 3
+      label: "vcast_say TTS input"
+      status: done
+      notes: "sanitize after the 300-char truncation, before /pub speak
+        msg and _vcast_tts."
+    - id: 4
+      label: "instruction + tests + fixture"
+      status: done
+      notes: "SPEECH IS PLAIN TEXT rule; tests/test_speech_sanitize.py —
+        16 tests (sanitize cases, tail-split, provider delta splits,
+        vcast_say); sanitized golden fixture."
+
+invoke:
+  commands:
+    - "PYTHONPATH=.teststubs:. python3 -m unittest tests.test_speech_sanitize"
+    - "PYTHONPATH=.teststubs:. python3 -m unittest discover -s tests -p 'test_*.py'"
+    - "python3 scripts/tool-lint.py"
+    - "grep -cE '&nbsp;|\\]\\[' tests/fixtures/tts-artifact-clean-transcript.txt"
+
+verification:
+  - "tests.test_speech_sanitize: 16/16 pass"
+  - "full suite: 494 tests, 2F/3E — all environmental (hailo/litert/mddb
+    absent), none in changed code paths"
+  - "tool-lint: clean (94 declared, 15 aliases)"
+  - "card benchmark command returns 0 on the fixture"
+  - "live verify (post-deploy, idc01's lane): grep latest session
+    transcripts for '&nbsp;' / '][' after a cast session — card metric"

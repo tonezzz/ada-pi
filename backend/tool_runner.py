@@ -20,6 +20,7 @@ from typing import Any
 
 from backend import memory_ops
 from backend import chaba_memory
+from backend import speech_sanitize
 from backend import devin_dispatch as devin_dispatch_mod
 from backend import tools_loader
 from backend import doc_archive_client
@@ -5302,8 +5303,13 @@ class ToolRunner:
         and reports speak-blocked instead of speaking."""
         import asyncio
         screen = int(screen)
-        text = str(text or "").strip()[:300]
-        if not text:
+        # Scrub markup before it reaches a synthesizer — CMS/memory content
+        # carries HTML entities and markdown remnants the TTS would speak
+        # verbatim ("&nbsp;ชัดเจน", "][พาสเจอร์ไรซ์]" — transcript
+        # 519088cb6d). Truncate first so sanitize also drops a cut-off
+        # partial entity at the tail.
+        text = speech_sanitize.sanitize_speech(str(text or "").strip()[:300])
+        if not text.strip():
             raise ValueError("text required")
         await self._check_screen_owner(screen, self._memory_identity())
         msg: dict[str, Any] = {"type": "speak", "text": text}

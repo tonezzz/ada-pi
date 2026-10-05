@@ -25,6 +25,7 @@ from google.genai import types
 from backend import chaba_memory, tools_loader, voice_config, vms_camera, vision_describe
 from backend.instance import ada_instance_id
 from backend.conversation_memory import ConversationMemory
+from backend.speech_sanitize import sanitize_speech, split_artifact_tail
 from backend.tool_runner import (
     ToolRunner,
     CALENDAR_WRITE_TOOLS,
@@ -661,6 +662,7 @@ Conversation discipline:
 - Always answer the user's most recent question before ending a turn — never drop it or pivot to a different topic unprompted.
 - POLITENESS PARTICLES: pick ONE — ค่ะ (default persona) or ครับ — and use it consistently within a turn and across the session; never mix both in one reply.
 - NO ROUTINE CLOSER: do not end turns with "มีอะไรให้ช่วยไหมคะ" / "anything else?" — it's noise. Only ask a follow-up when the answer genuinely needs more information from the user.
+- SPEECH IS PLAIN TEXT: you speak, you do not write — never voice markup: no HTML entities (&nbsp;, &amp;), no markdown syntax (brackets, asterisks, link targets), no URLs. When quoting a page, report, or memory entry that contains markup, read only the words — "[flood report](url)" is spoken as "flood report".
 - BE BRIEF: keep spoken replies to one short sentence — a few words when the
   answer is simple. Never narrate your own mechanics ("let me check",
   "the system says", "please wait while I…"), tool names, or
@@ -938,6 +940,13 @@ class GeminiLiveProvider(RealtimeProvider):
         self._tool_leak_re = None
         self._tool_leaks_stripped = 0
         self._leak_active = False
+        # Markup-artifact scrubber for the output transcript (&nbsp;, '][',
+        # markdown links — transcript 519088cb6d spoke them aloud). Deltas
+        # can split a token mid-way ("&nbs" | "p;"), so the possible
+        # partial is held until the next delta completes it or the turn
+        # flushes it through the sanitizer.
+        self._artifact_hold = ""
+        self._artifact_logged = False
         # Jev advisory probe — set ADA_JEV_URL to the systemone service
         # (e.g. http://tony-omen:8777) to measure regex-vs-Jev divergence
         # on confirm-gate decisions. Advisory only: the regex enforces.
@@ -1033,6 +1042,41 @@ class GeminiLiveProvider(RealtimeProvider):
             tool=m.group(0).rstrip("{").strip(),
         )
         return text[:m.start()]
+
+    # Chars that only appear when markup leaked — a sanitize diff without
+    # any of these is just whitespace normalization, not an artifact.
+    _ARTIFACT_HINT_RE = re.compile(r"[&\[\]`*<>]")
+
+    def _strip_speech_artifacts(self, text: str) -> str:
+        """Scrub markup out of an output-transcription delta.
+
+        Unlike _strip_tool_leak this REMOVES the artifact and keeps the
+        rest of the utterance — "&nbsp;ชัดเจน" becomes " ชัดเจน", not a
+        truncated turn. A trailing fragment that could complete into an
+        artifact on the next delta ("&nbs", "[link", "](") is held in
+        _artifact_hold and retried then; turn_complete/interrupt flush it."""
+        buf = self._artifact_hold + text
+        emit, self._artifact_hold = split_artifact_tail(buf)
+        clean = sanitize_speech(emit)
+        if (clean != emit and self._ARTIFACT_HINT_RE.search(emit)
+                and not self._artifact_logged):
+            self._artifact_logged = True
+            logger.warning(
+                "session=%s markup artifact stripped from transcript (%r)",
+                self.session_id, emit[:80],
+            )
+            self._emit_ops_event(
+                "transcript_artifact_leak",
+                "stripped spoken markup from transcript: "
+                f"{emit[:80]!r}",
+            )
+        return clean
+
+    def _flush_artifact_hold(self) -> str:
+        """Sanitize + release the held tail at a turn boundary."""
+        tail = sanitize_speech(self._artifact_hold)
+        self._artifact_hold = ""
+        return tail
 
     # An affirmation is a consent utterance, not a content word: it must
     # either lead the user's turn ("yes, save it") or the turn must be
@@ -5617,6 +5661,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     budget_hit = False
                     budget_nudged = False
                     self._leak_active = False
+                    self._artifact_hold = ""
+                    self._artifact_logged = False
                     self._turn_open = False
                     barge_pending = True
                     self.conversation.log_event(
@@ -5646,6 +5692,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         response_audio_bytes = 0
                         yield ProviderEvent("response_started", {})
                     clean = self._strip_tool_leak(output_transcription.text)
+                    if clean:
+                        clean = self._strip_speech_artifacts(clean)
                     if clean:
                         assistant_turn_text += clean
                         yield ProviderEvent(
@@ -5697,7 +5745,18 @@ class GeminiLiveProvider(RealtimeProvider):
                     actuations_this_turn = 0
                     budget_hit = False
                     budget_nudged = False
+                    if self._artifact_hold and not self._leak_active:
+                        tail = self._flush_artifact_hold()
+                        if tail:
+                            assistant_turn_text += tail
+                            yield ProviderEvent(
+                                "assistant_transcript_delta",
+                                {"text": tail},
+                            )
+                    else:
+                        self._artifact_hold = ""
                     self._leak_active = False
+                    self._artifact_logged = False
                     if assistant_turn_text.strip():
                         self.conversation.add_assistant(assistant_turn_text)
                         assistant_turn_text = ""
