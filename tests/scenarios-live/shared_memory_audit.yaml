@@ -7,7 +7,7 @@ turns:
       We share a memory bank between you, me, and Devin — audit it. What's
       in it, what's stale, and is anything missing?
     expect:
-      calls_any: [devin_jobs, ada_memory_search, devin_pending]
+      calls_any: [devin_read, ada_memory_search]
       timeout_s: 90
       settle_s: 12
   - user: >-
@@ -16,6 +16,6 @@ turns:
       # "clean up" legitimately means ada_forget too — 2026-10-04 she
       # proposed deleting two stale devin-handoff docs, which IS the
       # requested cleanup, not a wrong-tool failure.
-      calls_any: [ada_remember, ada_forget, devin_jobs, ada_memory_search]
+      calls_any: [ada_remember, ada_forget, devin_read, ada_memory_search]
       timeout_s: 120
       settle_s: 12

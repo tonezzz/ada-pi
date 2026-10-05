@@ -1598,6 +1598,147 @@ class DevinJobReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("## Failed jobs", args[3])
 
 
+class DevinMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-devin-mcp (8 -> 2): the eight absorbed names stay
+    callable via _ALIASES and route to their canonical parent — devin
+    for dispatch/followup/answer (confirm-gated), devin_read for
+    status/jobs/pending/report/review."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.search_documents.return_value = []
+        self.runner.mddb.add_document.return_value = {"status": "ok"}
+        self.runner.mddb.get_document.return_value = None
+
+    async def test_dispatch_alias_keeps_confirm_gate(self):
+        args = {"repo": "ada-pi", "task": "do the thing"}
+        with self.assertRaises(PermissionError):
+            await self.runner.execute("devin_dispatch", dict(args))
+        with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
+                   new=AsyncMock(return_value={"task_id": "t-1"})) as disp:
+            out = await self.runner.execute(
+                "devin_dispatch", {**args, "confirmed": True})
+        self.assertEqual(out["task_id"], "t-1")
+        args, kwargs = disp.await_args
+        self.assertEqual(args, ("ada-pi", "do the thing"))
+        self.assertIsNone(kwargs.get("playbook"))
+
+    async def test_followup_alias_keeps_confirm_gate(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "devin_followup", {"task_id": "t-1", "message": "hi"})
+        with patch("backend.tool_runner.devin_dispatch_mod.followup",
+                   new=AsyncMock(return_value="sent")) as fu:
+            out = await self.runner.execute(
+                "devin_followup",
+                {"task_id": "t-1", "message": "hi", "confirmed": True})
+        self.assertEqual(out, "sent")
+        fu.assert_awaited_once_with("t-1", "hi")
+
+    async def test_answer_alias_keeps_confirm_gate_and_records(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "devin_answer",
+                {"task_id": "test-ans-9", "message": "use chaba"})
+        self.runner.mddb.add_document.assert_not_awaited()
+        out = await self.runner.execute(
+            "devin_answer",
+            {"task_id": "test-ans-9", "message": "use chaba",
+             "confirmed": True})
+        self.assertEqual(out["task_id"], "test-ans-9")
+        keys = [c.kwargs.get("key")
+                for c in self.runner.mddb.add_document.call_args_list]
+        self.assertIn("answer/test-ans-9", keys)
+
+    async def test_read_aliases_route_to_devin_read(self):
+        with patch("backend.tool_runner.devin_dispatch_mod.status",
+                   new=AsyncMock(return_value="two tasks")) as st:
+            out = await self.runner.execute("devin_status", {})
+        self.assertEqual(out, "two tasks")
+        st.assert_awaited_once_with(None)
+
+        self.assertEqual(await self.runner.execute("devin_pending", {}), [])
+        self.assertEqual(
+            await self.runner.execute("devin_jobs", {"status": "failed"}),
+            [])
+        fm = self.runner.mddb.search_documents.call_args.kwargs[
+            "filter_meta"]
+        self.assertEqual(fm["status"], ["failed"])
+
+    async def test_canonical_devin_read_actions(self):
+        self.assertEqual(
+            await self.runner.execute("devin_read", {"action": "pending"}),
+            [])
+        with self.assertRaises(ValueError):
+            await self.runner.execute("devin_read", {"action": "bogus"})
+        # devin is a confirm-gated seat — the gate runs before action
+        # validation, same as the absorbed writers did pre-merge.
+        with self.assertRaises(PermissionError):
+            await self.runner.execute("devin", {"action": "bogus"})
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "devin", {"action": "bogus", "confirmed": True})
+
+    async def test_canonical_devin_dispatch(self):
+        with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
+                   new=AsyncMock(return_value={"task_id": "t-9"})) as disp:
+            out = await self.runner.execute(
+                "devin",
+                {"action": "dispatch", "repo": "chaba", "task": "x",
+                 "confirmed": True})
+        self.assertEqual(out["task_id"], "t-9")
+        args, kwargs = disp.await_args
+        self.assertEqual(args, ("chaba", "x"))
+        self.assertIsNone(kwargs.get("playbook"))
+
+    async def test_report_publish_gate_on_canonical(self):
+        with patch("backend.tool_runner.devin_dispatch_mod.tasks",
+                   new=AsyncMock(return_value=[])):
+            with self.assertRaises(PermissionError):
+                await self.runner.execute(
+                    "devin_read", {"action": "report", "publish": True})
+            self.runner.mddb.add_document.assert_not_awaited()
+            out = await self.runner.execute(
+                "devin_read",
+                {"action": "report", "publish": True, "confirmed": True})
+        self.assertEqual(out["status"], "published")
+
+    async def test_review_alias_denied_without_full_policy(self):
+        # ada_devteam_review was manifest owner_only — the hermetic
+        # registry has no person_policies, so the review action refuses.
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "ada_devteam_review", {"request": "a tool that counts"})
+
+    async def test_review_action_owner_allowed(self):
+        reg_path = Path(tempfile.mkdtemp()) / "banks.json"
+        reg_path.write_text(json.dumps({
+            "banks": {},
+            "person_policies": {"person.tony": {"full": True}},
+        }))
+        self.runner._banks = MemoryBankRegistry(
+            path=str(reg_path), instance="test", notebook_ids={})
+        review = {
+            "verdict": "revise", "model": "m",
+            "panel": [{"role": "security", "verdict": "ok",
+                       "summary": "fine", "comments": []}],
+            "spec": "## spec",
+        }
+        with patch("backend.devteam.review",
+                   new=AsyncMock(return_value=review)):
+            out = await self.runner.execute(
+                "ada_devteam_review", {"request": "a tool that counts"},
+                identity="person.tony")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["verdict"], "revise")
+        key = self.runner.mddb.add_document.call_args.kwargs["key"]
+        self.assertTrue(key.startswith("spec/"))
+
+
 class CastToScreenRouteTests(unittest.IsolatedAsyncioTestCase):
     """Regression coverage for the 2026-10-01 "camera never changes"
     failure: Ada cast a JPEG snapshot with action='play' (renders a black
@@ -2112,9 +2253,9 @@ class DisplayMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         # Card rule: confirm gating keys off the resolved canonical name;
         # the DEVIN_CONFIRMED_TOOLS set itself is untouched.
         from backend.tool_runner import DEVIN_CONFIRMED_TOOLS
-        self.assertEqual(DEVIN_CONFIRMED_TOOLS,
-                         {"devin_dispatch", "devin_followup",
-                          "devin_answer"})
+        # tools-merge-devin-mcp: the set holds the canonical seat —
+        # absorbed names route through _ALIASES before the gate sees them.
+        self.assertEqual(DEVIN_CONFIRMED_TOOLS, {"devin"})
 
 
 class GevTourTests(unittest.IsolatedAsyncioTestCase):

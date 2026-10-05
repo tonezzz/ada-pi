@@ -7,14 +7,14 @@ turns:
       Summarize my dispatched Devin tasks — which are done, which failed,
       and which are waiting for me.
     expect:
-      calls_any: [devin_jobs, devin_pending, devin_status]
+      calls_any: [devin_read]
       timeout_s: 90
       settle_s: 12
   - user: >-
       What happened with the logs-digesting and idc01-migration jobs?
       Tell me their real status.
     expect:
-      calls_any: [devin_jobs, devin_status, ada_memory_search]
+      calls_any: [devin_read, ada_memory_search]
       timeout_s: 90
       settle_s: 12
       # Ada must say "failed" — the job docs exist in devin-handoff bank.

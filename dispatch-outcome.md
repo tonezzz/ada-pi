@@ -1,56 +1,90 @@
-# dispatch outcome — tools-merge-yt (yt group 4 -> 1)
+# Dispatch outcome — tools-merge-devin-mcp (20261005-143702)
 
-Task: merge the yt group per the consolidation spec —
-`yt_cast` + `yt_cast_status` + `yt_cast_stop` + `yt_transcript`
-collapse into one declared tool `yt(action=cast|status|stop|transcript)`.
-Absorbed names stay registered-but-hidden via `tool_runner._ALIASES`;
-gates key off the resolved tool name, not the alias.
+Merged the devin tool group 8 → 2 per the card's self-contained spec.
+Eight names absorbed into canonical tools via `tool_runner._ALIASES` —
+the repo's established hidden-alias mechanism (registered in the runner,
+absent from declarations; there is no literal `x-legacy` field — this IS
+the x-legacy semantics).
+
+## Alias map (all verified by tests)
+
+| absorbed name        | resolves to                          |
+|----------------------|--------------------------------------|
+| `devin_dispatch`     | `devin` action=`dispatch`            |
+| `devin_followup`     | `devin` action=`followup`            |
+| `devin_answer`       | `devin` action=`answer`              |
+| `devin_status`       | `devin_read` action=`status`         |
+| `devin_jobs`         | `devin_read` action=`jobs`           |
+| `devin_pending`      | `devin_read` action=`pending`        |
+| `devin_job_report`   | `devin_read` action=`report`         |
+| `ada_devteam_review` | `devin_read` action=`review`         |
 
 ## What changed
 
-- `backend/realtime_provider.py`
-  - Four yt declarations replaced by a single `yt` declaration —
-    explicit `action` enum `[cast, status, stop, transcript]`, params
-    `query` (cast target / search phrase), `url` (transcript target),
-    `language`; `required: ["action"]`. Description names the absorbed
-    tools so legacy phrasing still routes.
-  - `ACTUATING_TOOLS` dropped `yt_cast`/`yt_cast_stop`; added a
-    per-action probe so `yt(action=cast|stop)` counts against the
-    actuation budget while `status`/`transcript` reads stay free —
-    exact parity with the old seats (same pattern as
-    `ada_camera_snapshot`'s display-push probe).
-  - Instruction text repointed: NEWS-vs-MEDIA bullet and the
-    `cast_to_screen` description now say `yt(action='cast')`.
 - `backend/tool_runner.py`
-  - `_ALIASES` +4 rows: `yt_cast`, `yt_cast_status`, `yt_cast_stop`,
-    `yt_transcript` → `yt`.
-  - `_ALIAS_ARG_DEFAULTS` +4 rows carrying the implied `action=`.
-    No `_alias_call_args` shim needed — params map 1:1 after the
-    implied action merges.
-  - New `yt(action, query, url, language)` method dispatches per-action
-    onto the unchanged absorbed methods (calendar_read pattern);
-    `query`/`url` cross-fill so either arg name works; unknown action
-    raises `ValueError`. `yt` enters no gate set — the old names were
-    ungated.
-- `docs/ssot/ssot.tool-surface.yml`
-  - New `yt` family (merge_card tools-merge-yt, canonical `yt`,
-    scenario `tool_merge_yt`, four absorbed names).
-  - `display` family absorbed list now names `yt` instead of the three
-    `yt_*` names (they're already aliases — absorbing them directly
-    would chain). `yt_cast_status` removed from `coverage_debt`
-    (stale once off-surface).
-- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — yt row
-  added to the family table; display row repointed at `yt`.
-- `scripts/scenario-live.py` — `LEGACY_TOOL_ALIASES` +4 rows.
-- `tests/scenarios-live/tool_merge_yt.yaml` — family regression
-  scenario (read-side turns: cast status + transcript; the real-cast
-  path stays covered by tv_cast_control / cast_dub_to_tv).
-- `tests/test_tool_runner.py` — `YtMergeAliasTests` (5 tests): each
-  absorbed name routes to `yt` with the right action, canonical
-  dispatch + query/url fallback, unknown action rejected.
-- `docs/ssot/jobs/ada/2026-10-05-tools-merge-yt.yml` — SSOT job record.
+  - `_ALIASES` + `_ALIAS_ARG_DEFAULTS`: the eight rows above. No
+    `_alias_call_args` shim needed — every absorbed name's args map 1:1.
+  - `devin(action, repo, task, task_id, message)` — per-action dispatch
+    onto the unchanged absorbed methods; per-action required-arg guards
+    (the flat schema can't express per-action `required`).
+  - `devin_read(action, task_id, status, limit, publish, confirmed,
+    confirm_token, request, title)` — routes the four reads plus the
+    ported `ada_devteam_review` pipeline.
+  - `ada_devteam_review(request, title)` — the tools.d module's run()
+    ported verbatim onto the runner: manifest `owner_only` +
+    `secondary_allowed=false` re-implemented as an inline gate
+    (secondary turn OR no `full: true` person_policy → PermissionError),
+    guest-mode mddb guard added, `timeout_s=300` kept via
+    `asyncio.wait_for` in the review branch.
+  - `DEVIN_CONFIRMED_TOOLS = {"devin"}` — the canonical name holds the
+    seat; every `devin` action is a session write so the whole tool
+    stays confirm-gated. Gate keys off the resolved name — alias and
+    canonical calls are gated identically; confirm_strip / token
+    binding / SECONDARY_BLOCKED (`devin_confirmed` group token) cover it
+    unchanged. `devin_read` stays ungated except `report`'s publish
+    path, which re-checks confirmation internally (fingerprint now
+    under `devin_read`).
+  - `_CHANGE_LOG_TOOLS`: `devin_*` quartet → `devin` + `devin_read`,
+    with devin_read filtered to `report`/`review` so reads don't spam
+    the change feed.
 
-## Files changed
+- `backend/realtime_provider.py`
+  - Seven declarations removed; `devin` declared with
+    `action` enum `dispatch|followup|answer`, `devin_read` with
+    `status|jobs|pending|report|review`; descriptions name the absorbed
+    tools for legacy phrasing.
+  - `DEVIN_TOOLS` → `{"devin", "devin_read"}` (ADA_EXCLUDED_TOOLS strip
+    set); `ACTUATING_TOOLS` `devin_dispatch` → `devin`;
+    `DEVIN_INSTRUCTIONS` rewritten in action= phrasing.
+
+- `backend/devin_dispatch.py` — model-facing note strings now say
+  `devin_read action='status'`.
+
+- `backend/tools.d/manifest.yml` — `ada_devteam_review` entry removed;
+  `backend/tools.d/ada_devteam_review.py` deleted (logic lives on the
+  runner now).
+
+- `docs/ssot/ssot.tool-surface.yml` — devin family split into `devin` +
+  `devin_read` sub-families (cms/calendar precedent);
+  `devin_followup`/`devin_job_report` pruned from coverage_debt.
+- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — devin row
+  updated to the landed 8→2 design.
+- `tests/benchmark.yml` — `write_tools` `devin_dispatch` → `devin`.
+- `tests/scenarios-live/tool_merge_devin.yaml` — new family regression
+  scenario (lint requires it once the merge starts);
+  devin_status_accuracy / devin_pending_list / devin_answer_gate /
+  shared_memory_audit / tool_selection_accuracy /
+  deep_research_tiny_models / devteam_review repointed to canonical
+  names.
+- `tests/test_tool_runner.py` — `DevinMergeAliasTests` (9 tests): every
+  absorbed name routes to its parent, write aliases keep the
+  confirmation gate, report publish re-checks on the canonical name,
+  review denies without a full policy and runs for a full-policy
+  identity.
+- `docs/ssot/jobs/ada/2026-10-05-tools-merge-devin-mcp.yml` — this job's
+  SSOT trail.
+- `.venv-test/` (local only, removed at cleanup) — minimal venv with
+  google-genai so the suite runs on this SDK-less host.
 
 - `python3 scripts/tool-lint.py` — clean; 85 declared (was 88),
   27 aliases, 41 warnings (all pre-existing; HEAD had 43).
@@ -61,8 +95,30 @@ gates key off the resolved tool name, not the alias.
 - `DEVIN_CONFIRMED_TOOLS` / confirm_strip untouched — gates resolve on
   the canonical name; yt family was never confirm-gated.
 
-## Notes / follow-ups
+- `python3 scripts/tool-lint.py` → clean: **82 declared (88 → 82), 31
+  aliases (23 → 31)**, 0 violations (12 pre-existing warnings).
+- `ADA_INSTANCE_ID=test .venv-test/bin/python -m unittest
+  tests.test_tool_runner tests.test_tool_audit tests.test_devteam
+  tests.test_devin_dispatch tests.test_tools_loader` → **126 tests, OK**
+  (with a bare interpreter the runner/devteam modules need
+  `google-genai`, absent here — hence the venv; ADA_INSTANCE_ID is
+  required by memory-collection identity codepaths).
 
-- tools-merge-display should now absorb `yt` (not the `yt_*` names) and
-  re-point the four yt aliases at `ada_display` to avoid alias chains.
-- Not committed/pushed per dispatch rules — worktree only.
+## Notes / decisions
+
+- The card's read-side enum listed `status|jobs|pending|report` but
+  also assigned `ada_devteam_review` to `devin_read` — `review` is the
+  fifth enum value; it runs an LLM panel and files a spec doc, so none
+  of the four read verbs describe it. Flagged in card comms.
+- Deploy caveat: any `ADA_EXCLUDED_TOOLS` config listing the old
+  `devin_*` names no longer strips anything — use `devin,devin_read`
+  (env files live outside this repo).
+- `tools-merge-gate.py` needs a passing `tool_merge_devin` run in
+  `ada-ha-scenario-reports` before the card can close — the scenario
+  file ships here; the live run is idc02's lane.
+- The card's second half — the chaba-side MCP-server audit (mcp-health
+  vs mcp-debug overlap, ha/michael-ha/michael-dev dups) — is NOT done:
+  it reads chaba/Devin config an ada-pi worktree cannot reach. Raised as
+  a board request on the card per the card's own instruction.
+- Not committed to the default branch, not pushed, not deployed
+  (dispatch rules).

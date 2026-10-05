@@ -26,6 +26,7 @@ policy:
                 # name-level policy can't split actions, so read-heavy
                 # doc scenarios are listed in write_allowed_in.
                 docs, devin_dispatch,
+                devin,
                 ada_enroll_speaker,
                 control_entity, tv_action, gev_command,
                 # casting/camera actuation — gated by the capture contract

@@ -188,9 +188,12 @@ CMS_INSTRUCTIONS = (
 
 # Same constant pattern as CALENDAR_TOOLS/CMS_TOOLS: lets ADA_EXCLUDED_TOOLS
 # strip the devin declarations and their instruction paragraph together.
+# tools-merge-devin-mcp (2026-10-05): 8 -> 2. The absorbed names
+# (devin_dispatch/devin_status/devin_followup/devin_job_report/
+# devin_pending/devin_jobs/devin_answer/ada_devteam_review) live on as
+# tool_runner._ALIASES.
 DEVIN_TOOLS = {
-    "devin_dispatch", "devin_status", "devin_followup", "devin_job_report",
-    "devin_pending", "devin_jobs", "devin_answer",
+    "devin", "devin_read",
 }
 
 # Tools with real-world side effects — they share a tighter per-turn cap
@@ -288,33 +291,33 @@ _CONFIRM_VERB_RE = re.compile(
 
 DEVIN_INSTRUCTIONS = (
     " You can dispatch unattended Devin coding sessions on tony-dell: "
-    "devin_dispatch starts one in a dedicated git worktree (repos: chaba, ada-pi, "
-    "sunsynk-card), devin_status lists running and finished tasks, and "
-    "devin_followup sends a message into a running session. "
+    "devin action='dispatch' starts one in a dedicated git worktree (repos: "
+    "chaba, ada-pi, sunsynk-card), devin_read action='status' lists running "
+    "and finished tasks, and devin action='followup' sends a message into a "
+    "running session. "
     "Before dispatching, restate the repo and task and get an explicit yes, then "
     "call with confirmed=true — writes are enforced server-side. "
     "Dispatched sessions run unattended; the user is notified on their phone when "
     "one finishes, so report the task id and move on rather than polling. "
-    "devin_jobs is the dispatch ledger — call it for any 'summarize my dispatched "
-    "tasks' or 'did job X fail' question and report statuses exactly as stored "
-    "(done/failed/running/awaiting-user); never guess a job's outcome. "
-    "devin_pending lists jobs blocked waiting for the user's answer — when the "
-    "user asks what needs their attention, or says a job is waiting, call it and "
-    "read each job's question back with its short detail. To build a new tool, "
-    "use playbook='build-tool' with params.spec_key naming the reviewed spec "
-    "doc; when it refuses because no passing spec exists, offer to run "
-    "ada_devteam_review first instead of dispatching without a spec. "
+    "devin_read action='jobs' is the dispatch ledger — call it for any "
+    "'summarize my dispatched tasks' or 'did job X fail' question and report "
+    "statuses exactly as stored (done/failed/running/awaiting-user); never guess "
+    "a job's outcome. "
+    "devin_read action='pending' lists jobs blocked waiting for the user's "
+    "answer — when the user asks what needs their attention, or says a job is "
+    "waiting, call it and read each job's question back with its short detail. "
     "To deliver an answer: refine the user's reply into a self-contained "
-    "instruction (the job sees "
-    "only the text, not this conversation), read the refined text back, get an "
-    "explicit yes, then call devin_answer with confirmed=true. "
+    "instruction (the job sees only the text, not this conversation), read the "
+    "refined text back, get an explicit yes, then call devin action='answer' "
+    "with confirmed=true. "
     "When discussing an implementation task the user wants built later, offer to "
     "save the spec into the devin-handoff memory bank so a dispatched session can "
-    "be told to 'check the ada handoff'. "
+    "be told to 'check the ada handoff' — devin_read action='review' runs the "
+    "dev-team expert panel on a proposed tool and files the spec there too. "
     "When the user asks about Devin job status or wants the devin-job-report "
-    "page refreshed, call devin_job_report — it puts failed jobs (including "
-    "spawn failures the ledger still marks running) in their own 'Failed jobs' "
-    "section; never list failed jobs among the active ones."
+    "page refreshed, call devin_read action='report' — it puts failed jobs "
+    "(including spawn failures the ledger still marks running) in their own "
+    "'Failed jobs' section; never list failed jobs among the active ones."
 )
 
 # Summary rollup tools — tools-merge-calendar-plan (2026-10-05) folded
@@ -3971,27 +3974,33 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "devin_dispatch",
+                    "name": "devin",
                     "description": (
-                        "Starts an unattended Devin coding session on tony-dell in a dedicated "
-                        "git worktree. The session runs to completion by itself; the user is "
-                        "notified on their phone when it finishes. Use when the user asks to "
-                        "have a code task done later or autonomously. Requires confirmed=true "
-                        "after restating the repo and task. Optional playbook= names a "
-                        "registered playbook: 'build-tool' builds a new Ada tool from a "
-                        "devteam-reviewed spec (requires params.spec_key — it refuses when the "
-                        "spec doc is missing or not status=pass; offer ada_devteam_review "
-                        "instead), 'fix-scenario' repairs a named live scenario, 'investigate' "
-                        "researches a subject and reports back."
+                        "Devin session control — also handles what used to be devin_dispatch, "
+                        "devin_followup, and devin_answer. action='dispatch' starts an "
+                        "unattended Devin coding session on tony-dell in a dedicated git "
+                        "worktree (the user is notified on their phone when it finishes — "
+                        "report the task id and move on). 'followup' sends a message into a "
+                        "dispatched session, steering a running one or resuming a finished "
+                        "one. 'answer' delivers the user's refined answer to a blocked job — "
+                        "refine the reply into a self-contained instruction first (the job "
+                        "sees only the text, not this conversation). Every action requires "
+                        "confirmed=true after restating the repo/task/message and getting "
+                        "an explicit yes."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["dispatch", "followup", "answer"],
+                                "description": "Session operation.",
+                            },
                             "repo": {
                                 "type": "string",
                                 "enum": ["chaba", "ada-pi", "sunsynk-card"],
                                 "description": (
-                                    "Repository the session works in. 'chaba' = web apps under "
+                                    "dispatch: repository the session works in. 'chaba' = web apps under "
                                     "/apps/* (incl. the vcast virtual-display receiver page), the "
                                     "input-bridge relay, Caddy stack, HA dashboard cards, SSOT docs. "
                                     "'ada-pi' = Ada's own backend tools, pwa_server, auth, scenarios. "
@@ -4001,79 +4010,15 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "task": {
                                 "type": "string",
-                                "description": "The task prompt for the Devin session. With playbook= this becomes extra request context appended to the rendered template.",
+                                "description": "dispatch: the task prompt for the Devin session.",
                             },
-                            "playbook": {
-                                "type": "string",
-                                "enum": ["build-tool", "fix-scenario", "investigate"],
-                                "description": (
-                                    "Optional playbook from backend/playbooks/. The task is "
-                                    "rendered from the playbook's template and its gate is "
-                                    "enforced server-side before anything is dispatched."
-                                ),
-                            },
-                            "params": {
-                                "type": "object",
-                                "description": (
-                                    "Playbook params keyed by name. build-tool: spec_key "
-                                    "(required — spec/<ts>-<slug> doc key in the devin-handoff "
-                                    "bank) and tool_name; fix-scenario: scenario (required) "
-                                    "and symptom; investigate: subject (required) and context."
-                                ),
-                                "properties": {
-                                    "spec_key": {"type": "string"},
-                                    "tool_name": {"type": "string"},
-                                    "scenario": {"type": "string"},
-                                    "symptom": {"type": "string"},
-                                    "subject": {"type": "string"},
-                                    "context": {"type": "string"},
-                                },
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["repo", "task"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "devin_status",
-                    "description": (
-                        "Lists dispatched Devin tasks and their state, or shows one task's "
-                        "unit state and latest transcript info when task_id is given."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
                             "task_id": {
                                 "type": "string",
-                                "description": "Optional task id, e.g. '20260922-194454-...'. Omit to list all.",
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "devin_followup",
-                    "description": (
-                        "Sends a follow-up message into a dispatched Devin session — either "
-                        "steering a running one or resuming a finished one with more work. "
-                        "Requires confirmed=true after restating what the message asks."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "task_id": {
-                                "type": "string",
-                                "description": "Task id returned by devin_dispatch or devin_status.",
+                                "description": "followup/answer: task id from devin_read action='status' or 'pending'.",
                             },
                             "message": {
                                 "type": "string",
-                                "description": "The follow-up instruction to send.",
+                                "description": "followup/answer: the instruction or refined self-contained answer to send.",
                             },
                             "confirmed": {
                                 "type": "boolean",
@@ -4084,98 +4029,67 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
-                        "required": ["task_id", "message"],
+                        "required": ["action"],
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "devin_job_report",
+                    "name": "devin_read",
                     "description": (
-                        "Composes the Devin job report from the job ledger and the live "
-                        "dispatch status: active jobs, a dedicated 'Failed jobs' section "
-                        "(spawn failures, dead units, no transcript), done, and stale. "
-                        "Returns ready-to-publish markdown; pass publish=true with "
-                        "confirmed=true to write the 'devin-job-report' CMS page directly."
+                        "Devin job ledger reads — also handles what used to be devin_status, "
+                        "devin_jobs, devin_pending, devin_job_report, and ada_devteam_review. "
+                        "action='status' lists dispatched tasks and unit liveness (task_id "
+                        "drills into one); 'jobs' is the dispatch ledger — call it for "
+                        "'summarize my dispatched tasks' or 'did job X fail' and report "
+                        "statuses exactly as stored; 'pending' lists jobs blocked waiting "
+                        "for the user's answer, with each job's question and short detail; "
+                        "'report' composes the Devin job report page (publish=true with "
+                        "confirmed=true writes the 'devin-job-report' CMS page); 'review' "
+                        "runs the dev-team expert panel on a proposed new tool spec and "
+                        "files it into the devin handoff bank (owner-only)."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
-                            "publish": {
-                                "type": "boolean",
-                                "description": "Write the composed report to the 'devin-job-report' CMS page.",
+                            "action": {
+                                "type": "string",
+                                "enum": ["status", "jobs", "pending", "report", "review"],
+                                "description": "Read/report operation.",
                             },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required with publish=true; set only after explicit user confirmation.",
+                            "task_id": {
+                                "type": "string",
+                                "description": "status: optional task id, e.g. '20260922-194454-...'. Omit to list all.",
                             },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Max job-ledger docs to include (default 60).",
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "devin_pending",
-                    "description": (
-                        "Lists dispatched jobs that are blocked waiting for the user's "
-                        "answer (needs-input), with each job's question and short detail. "
-                        "Use when the user asks what needs their attention, says a job is "
-                        "waiting for them, or a needs-input notification arrived."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "devin_jobs",
-                    "description": (
-                        "Dispatch ledger summary: ALL job docs with their real status "
-                        "(running/done/failed/awaiting-user), host, timestamp, and "
-                        "pending question. Use for 'summarize my dispatched tasks', "
-                        "'did job X fail', or any status-of-dispatches question — "
-                        "devin_pending only shows awaiting-user, devin_status only "
-                        "shows unit liveness."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
                             "status": {
                                 "type": "string",
                                 "enum": ["running", "done", "failed", "awaiting-user"],
-                                "description": "Optional filter; omit for all.",
+                                "description": "jobs: optional ledger-status filter; omit for all.",
                             },
-                            "limit": {"type": "integer", "default": 30},
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "devin_answer",
-                    "description": (
-                        "Delivers the user's answer to a blocked dispatched job. For "
-                        "Devin sessions it resumes the session with the message directly; "
-                        "for other dispatched jobs it records the answer for the "
-                        "dispatcher. First refine the user's reply into a self-contained "
-                        "instruction, read it back, then call with confirmed=true only "
-                        "after an explicit yes."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "task_id": {
-                                "type": "string",
-                                "description": "Task id from devin_pending or devin_status.",
+                            "limit": {
+                                "type": "integer",
+                                "description": "jobs/report: max job-ledger docs to include (default 30/60).",
                             },
-                            "message": {
+                            "publish": {
+                                "type": "boolean",
+                                "description": "report: write the composed report to the 'devin-job-report' CMS page.",
+                            },
+                            "request": {
                                 "type": "string",
-                                "description": "The refined, self-contained answer/instruction.",
+                                "description": "review: plain-language description of the tool Ada wants.",
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "review: optional short slug for the spec doc key.",
                             },
                             "confirmed": {
                                 "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
+                                "description": "report publish=true only; set after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
-                        "required": ["task_id", "message"],
+                        "required": ["action"],
                         "additionalProperties": False,
                     },
                 }, {

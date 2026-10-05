@@ -97,6 +97,13 @@ families:
     absorbed:
       - ada_daily_summary          # -> period='digest' (alias-internal)
       - ada_weekly_comparison      # -> period='week', end->day via shim
+  # devin group 8 -> 2 (tools-merge-devin-mcp, landed 2026-10-05): the
+  # card split the original single-canonical design into two action=
+  # tools — devin (action=dispatch|followup|answer, the
+  # DEVIN_CONFIRMED_TOOLS seat; every action is a session write) and
+  # devin_read (action=status|jobs|pending|report|review — 'report'
+  # keeps its internal publish confirmation; 'review' is the absorbed
+  # ada_devteam_review tools.d drop-in, still owner-gated).
   # gev group 2 -> 1 (tools-merge-gev, landed 2026-10-05): gev_command
   # stays the canonical — its tour= param absorbed gev_tour (same arg
   # name, pass-through; no _ALIAS_ARG_DEFAULTS or _alias_call_args shim).
@@ -110,16 +117,23 @@ families:
       - gev_tour                   # -> gev_command {tour: <id>}
   devin:
     merge_card: tools-merge-devin-mcp
-    canonical: devin               # devin_* dispatch/status/followup/report/pending/jobs/answer -> action=
+    canonical: devin               # dispatch/followup/answer -> action=
     scenario: tool_merge_devin
     absorbed:
       - devin_dispatch
-      - devin_status
       - devin_followup
-      - devin_job_report
-      - devin_pending
-      - devin_jobs
       - devin_answer
+  devin_read:
+    merge_card: tools-merge-devin-mcp
+    canonical: devin_read          # status/jobs/pending/report/review -> action=
+    scenario: tool_merge_devin
+    absorbed:
+      - devin_status
+      - devin_jobs
+      - devin_pending
+      - devin_job_report
+      - ada_devteam_review         # tools.d drop-in -> action='review' (owner_only)
+  display:
   # display group 8 -> 2 (tools-merge-display, landed 2026-10-05): the
   # card spec split the family into two canonical seats — cast_to_screen
   # keeps its name and absorbs the vcast_* narrator/readers into action=
@@ -336,8 +350,26 @@ families:
 coverage_debt:
   - ada_resolve_action
   - chat_send
+  - control_cover
   - devin_followup
   - devin_job_report
+  - drive_update
+  - get_battery_detail
+  - get_battery_status
+  - get_dashboard_tab
+  - get_entity_events
+  - get_habit_status
+  - get_inverter_status
+  - get_pool_status
+  - get_power_summary
+  - get_sensor_history
+  - gev_tour
+  - guest_register
+  - photos_pick
+  - photos_picked
+  - press_button
+  - tasks_move
+  - yt_cast_status
 
 # Tools that legitimately never get a live scenario (pure meta/report
 # surfaces). Empty at census — prefer coverage_debt over listing here.

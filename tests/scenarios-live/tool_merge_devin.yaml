@@ -1,0 +1,34 @@
+# tools-merge-devin-mcp regression (2026-10-05): the devin group went
+# 8 -> 2 — devin absorbs devin_dispatch/devin_followup/devin_answer
+# (action=dispatch|followup|answer, confirm-gated), and devin_read
+# absorbs devin_status/devin_jobs/devin_pending/devin_job_report/
+# ada_devteam_review (action=status|jobs|pending|report|review). The
+# eight absorbed names survive as tool_runner._ALIASES rows, hidden from
+# the declared surface. Live-side this scenario checks the canonical
+# calls still fire for the absorbed intents — reads only; the gated
+# answer path is regression-covered by devin_answer_gate and the publish
+# path by devin_status_accuracy's report flows:
+#   task status / ledger / blocked jobs / job report — devin_read
+#   dispatch offer (no confirm => no actual dispatch) — devin
+name: tool_merge_devin
+turns:
+  - user: >-
+      What Devin tasks are running right now — anything finished or
+      failed?
+    expect:
+      calls_any: [devin_read]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Is any dispatched job blocked waiting for my answer?
+    expect:
+      calls_any: [devin_read]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Refresh the Devin job report — don't publish it, just tell me the
+      counts.
+    expect:
+      calls_any: [devin_read]
+      timeout_s: 120
+      settle_s: 10

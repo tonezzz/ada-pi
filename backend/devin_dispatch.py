@@ -77,7 +77,7 @@ def _dedup_result(task_id: str, repo: str) -> dict:
         "note": (
             "A matching task was already dispatched recently; reusing "
             "that session instead of starting a duplicate. Use "
-            "devin_status to check progress."
+            "devin_read action='status' to check progress."
         ),
     }
 
@@ -477,7 +477,7 @@ async def dispatch(repo: str, task: str | None = None, *,
         "repo": repo,
         "note": (
             "Session is running unattended on tony-dell in a dedicated "
-            "worktree. Use devin_status to check progress; a completion "
+            "worktree. Use devin_read action='status' to check progress; a completion "
             "notification is sent automatically when it finishes."
         ),
     }

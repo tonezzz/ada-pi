@@ -9,13 +9,9 @@
 # timeout_s: hard cap on run() (default 20)
 tools:
   # tools-merge-meta-voice (2026-10-05): ada_mddb_health folded into the
-  # builtin ada_ops action='health' — the absorbed name stays callable as a
-  # tool_runner._ALIASES row; the drop-in module is retired.
-  ada_devteam_review:
-    module: ada_devteam_review
-    policy: owner_only
-    secondary_allowed: false
-    timeout_s: 300
+  # builtin ada_ops action='health'; tools-merge-devin-mcp folded
+  # ada_devteam_review into devin_read action='review'. Both names stay
+  # callable as tool_runner._ALIASES rows; the drop-in modules are retired.
   ada_board_write:
     module: ada_board_write
     policy: read

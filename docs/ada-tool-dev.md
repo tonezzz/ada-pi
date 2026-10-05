@@ -59,7 +59,7 @@ async def run(runner, **args):           # MUST be async
    the runner. Subprocess/ssh work needs `BatchMode=yes` and its own
    timeout inside that budget.
 4. **Voice-sized output.** Results stay in the Gemini session — cap at
-   ~8 lines of substance (see `devin_status`). Never dump raw API JSON.
+   ~8 lines of substance (see `devin_read` action='status'). Never dump raw API JSON.
 5. **Honesty.** Describe only what actually happened. If a dependency is
    down, say "I couldn't reach X" — never narrate success on failure
    (see `ada_camera_snapshot` for the pattern).
@@ -116,10 +116,8 @@ is `pass`, and steers the caller to `ada_devteam_review` otherwise),
 
 ## Ship flow
 
-1. Spec drafted into the `devin-handoff` bank (`spec/<slug>`) —
-   `ada_devteam_review` writes it with `status=pass|warn|block`.
-2. `devin_dispatch` with the `build-tool` playbook and
-   `params.spec_key` — refused unless the spec's status is `pass`.
+1. Spec drafted into the `devin-handoff` bank (`spec/<slug>`).
+2. `devin` action='dispatch' with the `build-tool` playbook — or hand-write it.
 3. Session adds `tools.d/<name>.py` + manifest entry + tests; CI/tests pass.
 4. Merge to main (auto-merge to staging while the pipeline is new);
    ada-ha-tony picks it up on next deploy/restart.

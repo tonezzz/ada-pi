@@ -41,7 +41,7 @@ turns:
       settle_s: 10
   - user: How many devin jobs are running and waiting for me?
     expect:
-      calls_any: [devin_jobs, devin_pending, devin_status]
+      calls_any: [devin_read]
       timeout_s: 90
       settle_s: 10
   - user: Write a short page to CMS titled "Tool Check" saying hello, then publish it.

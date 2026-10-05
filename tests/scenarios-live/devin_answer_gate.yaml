@@ -9,13 +9,13 @@ turns:
       Job test-ans-4419 is blocked — send it this answer: zeta-answer-4419,
       use the chaba repo.
     expect:
-      calls_any: [devin_answer]
+      calls_any: [devin]
       result_contains: ["requires confirmation"]
       timeout_s: 120
       settle_s: 10
   - user: "Yes, approved — send it."
     expect:
-      calls_any: [devin_answer]
+      calls_any: [devin]
       response_nonempty: true
       timeout_s: 120
       settle_s: 10
