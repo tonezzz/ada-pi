@@ -243,7 +243,11 @@ def main() -> int:
     ap.add_argument("--url", default=os.environ.get("ADA_LIVE_URL")
                     or "ws://127.0.0.1:8002/ws")
     ap.add_argument("--api-key", default=os.environ.get("ADA_API_KEY") or "")
-    ap.add_argument("--mddb", default=os.environ.get("MDDB_BASE_URL")
+    # Benchmark summary docs also live in ada-ha-scenario-reports (ops
+    # collection) — prefer the ops store; the leader's /add embeds inline
+    # and times out under embedding rate limits (see scenario-report.py).
+    ap.add_argument("--mddb", default=os.environ.get("MDDB_OPS_URL")
+                    or os.environ.get("MDDB_BASE_URL")
                     or "http://127.0.0.1:11023/v1")
     ap.add_argument("--keys-file", default=os.environ.get("ADA_KEYS_FILE")
                     or "")

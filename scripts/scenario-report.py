@@ -177,7 +177,14 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tier", default="smoke", choices=["smoke", "full"])
     ap.add_argument("--url", default=os.environ.get("ADA_LIVE_URL") or "ws://127.0.0.1:8002/ws")
-    ap.add_argument("--mddb", default=os.environ.get("MDDB_BASE_URL") or "http://127.0.0.1:11023/v1")
+    # Report docs live in ada-ha-scenario-reports — an ops collection.
+    # Write straight to the ops store: it has no embedding provider, so
+    # /add is fast; posting to the leader embeds inline and dies under
+    # embedding-provider rate limits (2026-10-05: a full day of hourly
+    # run reports lost to 'report write failed: timed out').
+    ap.add_argument("--mddb", default=os.environ.get("MDDB_OPS_URL")
+                    or os.environ.get("MDDB_BASE_URL")
+                    or "http://127.0.0.1:11023/v1")
     ap.add_argument("--keys-file", default=os.environ.get("ADA_KEYS_FILE") or "")
     ap.add_argument("--api-key", default=os.environ.get("ADA_API_KEY") or "")
     ap.add_argument("--scenarios-dir", default=os.path.join(REPO, "tests", "scenarios-live"))
