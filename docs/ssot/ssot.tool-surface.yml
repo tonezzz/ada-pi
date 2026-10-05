@@ -41,13 +41,11 @@ families:
     absorbed:
       - cctv_snapshot             # -> ada_camera_snapshot {source: vms, target: tv}
       - traffic_camera            # -> ada_camera_snapshot {source: traffic}
-      # GEV remote command — retires into vcast_snapshot's display
-      # self-capture (it already fires capture_frame internally), which
-      # keeps its own name until the display-family merge card runs.
-      - capture_frame             # -> vcast_snapshot
+      # capture_frame moved to the vcast_snapshot family — the display
+      # merge card (tools-merge-display, 2026-10-05) ran and made
+      # vcast_snapshot its canonical seat there.
     # cctv_wall deliberately NOT absorbed: a wall is a live grid, not a
-    # single frame (card spec 2026-10-05). vcast_snapshot stays the
-    # second survivor of the 5->2 merge.
+    # single frame (card spec 2026-10-05).
   # cms group 7 -> 3 (tools-merge-cms, landed 2026-10-05): the card split
   # the original single-canonical design into two action= tools —
   # cms_publish_page stays declared unchanged (the big writer), the three
@@ -122,19 +120,32 @@ families:
       - devin_pending
       - devin_jobs
       - devin_answer
-  display:
+  # display group 8 -> 2 (tools-merge-display, landed 2026-10-05): the
+  # card spec split the family into two canonical seats — cast_to_screen
+  # keeps its name and absorbs the vcast_* narrator/readers into action=
+  # (say|list|status|shortcut, plus content-routed 'cast'), while
+  # vcast_snapshot stays declared as its own tool (the verify-after-act
+  # loop needs a separate name) and absorbs the GEV remote command
+  # capture_frame. vcast_gesture survives unchanged — a distinct
+  # subsystem, not a cast seat. vcast_status/vcast_shortcut were
+  # census-only journal names (2 and 1 calls in 7d) with no committed
+  # implementation; they alias into the matching action= seats so a
+  # stale call still lands somewhere sane.
+  cast_to_screen:
     merge_card: tools-merge-display
-    canonical: ada_display         # cast_to_screen + vcast_* + yt_cast* -> action=
+    canonical: cast_to_screen      # say/list/status/shortcut/cast + nav/play/... -> action=
     scenario: tool_merge_display
     absorbed:
-      - cast_to_screen
-      - vcast_list
-      - vcast_say
-      - vcast_snapshot
-      - vcast_gesture
-      - yt_cast
-      - yt_cast_status
-      - yt_cast_stop
+      - vcast_say                 # -> action='say'
+      - vcast_list                # -> action='list'
+      - vcast_status              # census-only name -> action='status'
+      - vcast_shortcut            # census-only name -> action='shortcut'
+  vcast_snapshot:
+    merge_card: tools-merge-display
+    canonical: vcast_snapshot      # stays separate — verification loop seat
+    scenario: tool_merge_display
+    absorbed:
+      - capture_frame             # GEV remote command — vcast_snapshot fires it internally
   # ha group 21 -> 6 (tools-merge-ha, landed 2026-10-05): the card split
   # the original single-ada_ha design into five canonical tools +
   # tv_action kept separate (the cmd/text/selector param surface doesn't

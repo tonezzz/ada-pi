@@ -1478,6 +1478,190 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
             await self.runner.execute(
                 "ha_confidence",
                 {"entity_id": "light.office", "safety": "safe"})
+class DisplayMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-display (8 -> 2 canonical seats): vcast_say/vcast_list/
+    vcast_status/vcast_shortcut are absorbed into cast_to_screen's action=
+    seats (say|list|status|shortcut, plus content-routed 'cast') and stay
+    callable via _ALIASES; capture_frame folds into vcast_snapshot, which
+    keeps its own name for the verify-after-act loop; vcast_gesture is a
+    distinct subsystem and is NOT absorbed."""
+
+    async def asyncSetUp(self):
+        self.runner = ToolRunner(AsyncMock(), instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.pubbed = []
+        self.display_state = "idle"
+        self.display_detail = ""
+
+        def fake_vcast(path, payload=None):
+            if path == "/pub":
+                self.pubbed.append(payload)
+                return {"ok": True, "delivered": 1}
+            if path == "/displays":
+                return {"screens": [
+                    {"screen": 1, "name": "lab", "connected": True,
+                     "state": self.display_state,
+                     "state_detail": self.display_detail,
+                     "panes": 1},
+                    {"screen": 2, "name": "ipad", "connected": False,
+                     "state": "idle", "state_detail": "", "panes": 1}]}
+            if path == "/camwall":
+                return {"zones": {}}
+            return {"captures": {}}
+
+        patcher = patch.object(
+            ToolRunner, "_vcast_api", staticmethod(fake_vcast))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_alias_resolution(self):
+        from backend.tool_runner import _resolve_alias
+        for legacy, action in (("vcast_say", "say"), ("vcast_list", "list"),
+                               ("vcast_status", "status"),
+                               ("vcast_shortcut", "shortcut")):
+            name, implied = _resolve_alias(legacy)
+            self.assertEqual(name, "cast_to_screen", legacy)
+            self.assertEqual(implied, {"action": action}, legacy)
+        # capture_frame folds into vcast_snapshot — the name that stays
+        # declared for the verify-after-act loop.
+        name, implied = _resolve_alias("capture_frame")
+        self.assertEqual(name, "vcast_snapshot")
+        # vcast_gesture is a distinct subsystem — it must NOT be absorbed.
+        name, implied = _resolve_alias("vcast_gesture")
+        self.assertEqual(name, "vcast_gesture")
+        self.assertEqual(implied, {})
+
+    async def test_vcast_list_alias_routes(self):
+        out = await self.runner.execute("vcast_list", {})
+        self.assertIn("screens", out)
+        self.assertEqual(out["screens"][0]["screen"], 1)
+        self.assertEqual(out["screens"][1]["online"], False)
+
+    async def test_vcast_say_alias_routes(self):
+        out = await self.runner.execute(
+            "vcast_say", {"screen": 1, "text": "hello there"})
+        self.assertTrue(out["ok"])
+        self.assertEqual(self.pubbed[-1]["msg"]["type"], "speak")
+        self.assertEqual(self.pubbed[-1]["msg"]["text"], "hello there")
+
+    async def test_vcast_status_alias_routes(self):
+        self.display_state = "nav"
+        self.display_detail = "p0:nav https://x.test/page"
+        out = await self.runner.execute("vcast_status", {"screen": 1})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["screen"], 1)
+        self.assertEqual(out["state"], "nav")
+        out = await self.runner.execute("vcast_status", {"screen": 9})
+        self.assertFalse(out["ok"])
+        self.assertIn("not a registered display", out["error"])
+
+    async def test_vcast_shortcut_alias_maps_name_to_url(self):
+        # The census-only name's arg spellings (name/app/shortcut) funnel
+        # into url — an app short name resolves to its /apps/<name>/ page.
+        out = await self.runner.execute(
+            "vcast_shortcut", {"screen": 1, "name": "gev"})
+        self.assertTrue(out["ok"])
+        self.assertEqual(self.pubbed[-1]["msg"]["type"], "nav")
+        self.assertEqual(self.pubbed[-1]["msg"]["url"], "/apps/gev/")
+
+    async def test_canonical_merged_actions(self):
+        out = await self.runner.execute(
+            "cast_to_screen", {"action": "list"})
+        self.assertIn("screens", out)
+        out = await self.runner.execute(
+            "cast_to_screen", {"action": "status", "screen": 1})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["screen"], 1)
+        out = await self.runner.execute(
+            "cast_to_screen",
+            {"action": "say", "screen": 1, "text": "check one"})
+        self.assertEqual(self.pubbed[-1]["msg"]["type"], "speak")
+        out = await self.runner.execute(
+            "cast_to_screen",
+            {"action": "shortcut", "screen": 1, "shortcut": "camwall"})
+        self.assertEqual(self.pubbed[-1]["msg"]["url"], "/apps/camwall/")
+
+    async def test_cast_action_routes_by_content(self):
+        cases = [({"content_type": "image/png"}, "image"),
+                 ({"content_type": "video/mp4"}, "play"),
+                 ({"content_type": "audio/mpeg"}, "audio"),
+                 ({"content_type": "application/vnd.apple.mpegurl"},
+                  "play"),
+                 ({"content_type": "text/html"}, "nav")]
+        for probe, want in cases:
+            with self.subTest(probe=probe), patch.object(
+                    ToolRunner, "_frame_check",
+                    staticmethod(lambda url, p=probe: p)):
+                out = await self.runner.cast_to_screen(
+                    1, "cast", url="https://x.test/a")
+            self.assertEqual(self.pubbed[-1]["msg"]["type"], want)
+            self.assertIn("action_routed", out)
+
+    async def test_cast_action_routes_video_url_spellings(self):
+        # YouTube watch pages and .mp4/.m3u8 paths route to 'play' even
+        # when the probe reports a generic content type.
+        for url in ("https://youtube.com/watch?v=abc",
+                    "https://x.test/stream.m3u8"):
+            with self.subTest(url=url), patch.object(
+                    ToolRunner, "_frame_check",
+                    staticmethod(lambda u: {})):
+                await self.runner.cast_to_screen(1, "cast", url=url)
+            self.assertEqual(self.pubbed[-1]["msg"]["type"], "play")
+
+    async def test_cast_action_requires_url(self):
+        with self.assertRaises(ValueError):
+            await self.runner.cast_to_screen(1, "cast")
+
+    async def test_cast_action_keeps_interrupt_gate(self):
+        # A 'cast' onto a busy screen must confirm like any content cast —
+        # the auto-route happens after the busy check.
+        self.display_state = "playing"
+        self.display_detail = "p0:video-live"
+        with patch.object(ToolRunner, "_frame_check",
+                          staticmethod(lambda url: {})):
+            out = await self.runner.cast_to_screen(
+                1, "cast", url="https://x.test/v.mp4")
+        self.assertFalse(out["ok"])
+        self.assertIn("needs_confirm", out)
+        self.assertEqual(self.pubbed, [])
+
+    async def test_absorbed_seats_keep_prior_access(self):
+        # vcast_say/vcast_list were never secondary-blocked or
+        # control-gated — merged into the CONTROL_TOOLS member
+        # cast_to_screen they must keep exactly that access on a
+        # secondary (guest) turn, while a real cast stays blocked.
+        with patch.object(ToolRunner, "_is_secondary_turn",
+                          return_value=True):
+            out = await self.runner.execute("vcast_list", {})
+            self.assertIn("screens", out)
+            out = await self.runner.execute(
+                "vcast_say", {"screen": 1, "text": "hi"})
+            self.assertTrue(out["ok"])
+            with self.assertRaises(PermissionError):
+                await self.runner.execute(
+                    "cast_to_screen",
+                    {"action": "nav", "screen": 1,
+                     "url": "https://x.test/"})
+
+    async def test_uplink_still_capture_gated_on_secondary(self):
+        # The merged tool's camera-capture seat keeps the
+        # CAPTURE_CONFIRMED_TOOLS gate for a guest voice.
+        with patch.object(ToolRunner, "_is_secondary_turn",
+                          return_value=True):
+            # secondary block fires first — cast_to_screen is a control
+            # tool and 'uplink' is not an ungated seat.
+            with self.assertRaises(PermissionError):
+                await self.runner.execute(
+                    "cast_to_screen",
+                    {"action": "uplink", "screen": 1})
+
+    def test_devin_confirmed_tools_unchanged(self):
+        # Card rule: confirm gating keys off the resolved canonical name;
+        # the DEVIN_CONFIRMED_TOOLS set itself is untouched.
+        from backend.tool_runner import DEVIN_CONFIRMED_TOOLS
+        self.assertEqual(DEVIN_CONFIRMED_TOOLS,
+                         {"devin_dispatch", "devin_followup",
+                          "devin_answer"})
 
 
 class GevTourTests(unittest.IsolatedAsyncioTestCase):
