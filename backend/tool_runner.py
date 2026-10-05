@@ -1596,13 +1596,25 @@ class ToolRunner:
     # -- Devin dispatch tools (headless sessions on tony-dell; job SSOT:
     #    docs/ssot/jobs/ada/2026-09-22-ada-devin-dispatch.yml) --
 
-    async def devin_dispatch(self, repo: str, task: str) -> dict[str, Any]:
+    async def devin_dispatch(
+        self, repo: str, task: str | None = None,
+        playbook: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Start an unattended Devin session on tony-dell for a task.
 
         Runs in a dedicated git worktree as a systemd unit; completion is
-        reported back via chaba-admin event + iPhone notification.
+        reported back via chaba-admin event + iPhone notification. With
+        playbook=<name> (registry in backend/playbooks/) the task renders
+        from the playbook's template and its gate is enforced — e.g.
+        build-tool refuses unless params.spec_key names a spec-review doc
+        whose status is pass.
         """
-        return await devin_dispatch_mod.dispatch(repo, task)
+        caller = self.policy_identity()
+        return await devin_dispatch_mod.dispatch(
+            repo, task, playbook=playbook, params=params,
+            mddb=self.mddb, caller=caller,
+            is_owner=self._persona_admin(caller))
 
     async def devin_status(self, task_id: str | None = None) -> str:
         """List dispatched tasks, or show one task's unit state."""

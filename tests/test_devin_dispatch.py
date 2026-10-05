@@ -124,6 +124,248 @@ class DispatchDedupTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("deduplicated", res)
 
 
+class _FakeMddb:
+    """Key->doc map for get_document + a record of add_document calls."""
+
+    def __init__(self, docs: dict | None = None, add_ok: bool = True):
+        self._docs = dict(docs or {})
+        self._add_ok = add_ok
+        self.gets: list[tuple[str, str]] = []
+        self.added: list[dict] = []
+
+    async def get_document(self, collection, key, lang="en"):
+        self.gets.append((collection, key))
+        return self._docs.get(key)
+
+    async def add_document(self, collection, key, lang, content_md,
+                           meta=None, **kw):
+        self.added.append({"collection": collection, "key": key,
+                           "content_md": content_md, "meta": meta or {}})
+        return {"ok": True} if self._add_ok else None
+
+
+def _spec_doc(status: str, kind: str = "spec-review") -> dict:
+    return {"key": "spec/20260930-125800-a-tool",
+            "contentMd": "# Dev-team review\n",
+            "meta": {"kind": [kind], "status": [status],
+                     "bank": ["devin-handoff"]}}
+
+
+_SPEC_KEY = "spec/20260930-125800-a-tool"
+
+
+class PlaybookRegistryTests(unittest.TestCase):
+    def test_all_playbooks_load_and_validate(self):
+        names = dd.list_playbooks()
+        self.assertEqual(names, ["build-tool", "fix-scenario", "investigate"])
+        for name in names:
+            pb = dd.load_playbook(name)
+            for field in ("params", "task_template", "memory_domains",
+                          "gate", "verify", "report_to", "max_runtime_min"):
+                self.assertIn(field, pb, f"{name} missing {field}")
+            self.assertIn("confirm", pb["gate"])
+            self.assertIn("identity", pb["gate"])
+            self.assertIsInstance(pb["verify"], list)
+            self.assertGreater(pb["max_runtime_min"], 0)
+
+    def test_build_tool_requires_pass_status(self):
+        pb = dd.load_playbook("build-tool")
+        self.assertEqual((pb.get("requires") or {}).get("spec_status"),
+                         "pass")
+
+    def test_unknown_playbook_lists_available(self):
+        with self.assertRaises(dd.PlaybookError) as ctx:
+            dd.load_playbook("no-such-playbook")
+        self.assertIn("build-tool", str(ctx.exception))
+
+    def test_bad_playbook_name_rejected(self):
+        for bad in ("../x", "a/b", "", ".."):
+            with self.assertRaises(dd.PlaybookError):
+                dd.load_playbook(bad)
+
+
+class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        dd._recent_dispatches.clear()
+
+    async def test_build_tool_refuses_missing_spec(self):
+        mddb = _FakeMddb()
+        with _patch_exec([], stdout=b"should-not-run\n") as _:
+            res = await dd.dispatch(
+                "ada-pi", "build the daily-status tool",
+                playbook="build-tool",
+                params={"spec_key": _SPEC_KEY},
+                mddb=mddb, caller="person.tony", is_owner=True)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["gate"], "spec_status")
+        self.assertEqual(res["offer"], "ada_devteam_review")
+        self.assertIn(_SPEC_KEY, res["error"])
+        self.assertEqual(mddb.added, [])
+
+    async def test_build_tool_refuses_blocked_spec(self):
+        mddb = _FakeMddb({_SPEC_KEY: _spec_doc("block")})
+        res = await dd.dispatch(
+            "ada-pi", "build it", playbook="build-tool",
+            params={"spec_key": _SPEC_KEY},
+            mddb=mddb, caller="person.tony", is_owner=True)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["spec_status"], "block")
+        self.assertIn("block", res["error"])
+        self.assertIn("ada_devteam_review", res["error"])
+
+    async def test_build_tool_refuses_wrong_kind(self):
+        mddb = _FakeMddb({_SPEC_KEY: _spec_doc("pass", kind="note")})
+        res = await dd.dispatch(
+            "ada-pi", "build it", playbook="build-tool",
+            params={"spec_key": _SPEC_KEY},
+            mddb=mddb, caller="person.tony", is_owner=True)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["gate"], "spec_status")
+
+    async def test_build_tool_refuses_without_mddb(self):
+        # Fail closed: the gate cannot be verified without the bank.
+        res = await dd.dispatch(
+            "ada-pi", "build it", playbook="build-tool",
+            params={"spec_key": _SPEC_KEY},
+            mddb=None, caller="person.tony", is_owner=True)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["gate"], "spec_status")
+
+    async def test_build_tool_owner_gate(self):
+        mddb = _FakeMddb({_SPEC_KEY: _spec_doc("pass")})
+        res = await dd.dispatch(
+            "ada-pi", "build it", playbook="build-tool",
+            params={"spec_key": _SPEC_KEY},
+            mddb=mddb, caller="person.kk", is_owner=False)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["gate"], "identity")
+        self.assertEqual(mddb.gets, [])  # refused before touching the bank
+
+    async def test_build_tool_pass_dispatches_and_stamps(self):
+        mddb = _FakeMddb({_SPEC_KEY: _spec_doc("pass")})
+        captured: list = []
+        with _patch_exec(captured, stdout=b"20261005-180000-build-a-tool\n"):
+            res = await dd.dispatch(
+                "ada-pi", "the daily status thing Tony asked for",
+                playbook="build-tool",
+                params={"spec_key": _SPEC_KEY, "tool_name": "ada_x"},
+                mddb=mddb, caller="person.tony", is_owner=True)
+        self.assertEqual(res["task_id"], "20261005-180000-build-a-tool")
+        self.assertEqual(res["playbook"], "build-tool")
+        self.assertEqual(res["report_to"], "ada-ha-bank-devin-handoff")
+        self.assertTrue(res["verify"])
+        self.assertEqual(res["job_contract"],
+                         "job/20261005-180000-build-a-tool/contract")
+        # Rendered task carries the spec ref, the override line, the
+        # contract trailer, and the request context. (captured[0] is the
+        # dedup 'status' probe; find the 'start' call.)
+        task_text = next(c[-1] for c in captured if " start " in c[-1])
+        self.assertIn(_SPEC_KEY, task_text)
+        self.assertIn("Tool name override: ada_x", task_text)
+        self.assertIn("python3 scripts/tool-lint.py", task_text)
+        self.assertIn("Request context:", task_text)
+        # Ledger stamp: job/<id>/contract with playbook + verify meta.
+        stamp = mddb.added[0]
+        self.assertEqual(stamp["collection"], "ada-ha-bank-devin-handoff")
+        self.assertEqual(stamp["key"],
+                         "job/20261005-180000-build-a-tool/contract")
+        self.assertEqual(stamp["meta"]["kind"], ["job-contract"])
+        self.assertEqual(stamp["meta"]["playbook"], ["build-tool"])
+        self.assertIn("python3 scripts/tool-lint.py",
+                      stamp["meta"]["verify"])
+        self.assertEqual(stamp["meta"]["spec_key"], [_SPEC_KEY])
+
+    async def test_build_tool_bare_slug_resolves(self):
+        mddb = _FakeMddb({_SPEC_KEY: _spec_doc("pass")})
+        with _patch_exec([], stdout=b"t-1\n"):
+            res = await dd.dispatch(
+                "ada-pi", "build it", playbook="build-tool",
+                params={"spec_key": "20260930-125800-a-tool"},
+                mddb=mddb, caller="person.tony", is_owner=True)
+        self.assertEqual(res["task_id"], "t-1")
+        # First lookup misses the bare slug, second hits spec/<slug>.
+        self.assertEqual(mddb.gets[0][1], "20260930-125800-a-tool")
+        self.assertEqual(mddb.gets[1][1], _SPEC_KEY)
+        self.assertEqual(mddb.added[0]["meta"]["spec_key"], [_SPEC_KEY])
+
+    async def test_missing_required_param_refused(self):
+        res = await dd.dispatch(
+            "ada-pi", "build it", playbook="build-tool",
+            params={}, mddb=_FakeMddb(), caller="person.tony",
+            is_owner=True)
+        self.assertFalse(res["ok"])
+        self.assertIn("spec_key", res["error"])
+
+    async def test_unknown_param_refused(self):
+        res = await dd.dispatch(
+            "ada-pi", "build it", playbook="build-tool",
+            params={"spec_key": _SPEC_KEY, "bogus": "x"},
+            mddb=_FakeMddb(), caller="person.tony", is_owner=True)
+        self.assertFalse(res["ok"])
+        self.assertIn("bogus", res["error"])
+
+    async def test_stamp_failure_is_nonfatal(self):
+        mddb = _FakeMddb({_SPEC_KEY: _spec_doc("pass")}, add_ok=False)
+        with _patch_exec([], stdout=b"t-2\n"):
+            res = await dd.dispatch(
+                "ada-pi", "build it", playbook="build-tool",
+                params={"spec_key": _SPEC_KEY},
+                mddb=mddb, caller="person.tony", is_owner=True)
+        self.assertEqual(res["task_id"], "t-2")
+        self.assertNotIn("job_contract", res)
+        self.assertIn("stamp skipped", res["note"])
+
+    async def test_playbook_dedup_on_rendered_task(self):
+        mddb = _FakeMddb({_SPEC_KEY: _spec_doc("pass")})
+        with _patch_exec([], stdout=b"t-3\n"):
+            first = await dd.dispatch(
+                "ada-pi", "build the tool", playbook="build-tool",
+                params={"spec_key": _SPEC_KEY},
+                mddb=mddb, caller="person.tony", is_owner=True)
+        with patch.object(dd, "_run", new=AsyncMock()) as run_mock:
+            second = await dd.dispatch(
+                "ada-pi", "build the tool", playbook="build-tool",
+                params={"spec_key": _SPEC_KEY},
+                mddb=mddb, caller="person.tony", is_owner=True)
+        self.assertEqual(second["task_id"], first["task_id"])
+        self.assertTrue(second["deduplicated"])
+        run_mock.assert_not_called()
+
+    async def test_investigate_identity_gate(self):
+        # identity=identified: anonymous caller refused, identified passes.
+        res = await dd.dispatch(
+            "chaba", "why is it stuck", playbook="investigate",
+            params={"subject": "the nobito pm2.5 sensor"},
+            mddb=_FakeMddb(), caller=None, is_owner=False)
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["gate"], "identity")
+        with _patch_exec([], stdout=b"t-4\n"):
+            res = await dd.dispatch(
+                "chaba", "why is it stuck", playbook="investigate",
+                params={"subject": "the nobito pm2.5 sensor"},
+                mddb=_FakeMddb(), caller="person.kk", is_owner=False)
+        self.assertEqual(res["task_id"], "t-4")
+
+    async def test_fix_scenario_renders_params(self):
+        captured: list = []
+        with _patch_exec(captured, stdout=b"t-5\n"):
+            res = await dd.dispatch(
+                "ada-pi", playbook="fix-scenario",
+                params={"scenario": "devin_answer_gate",
+                        "symptom": "times out on turn 2"},
+                mddb=_FakeMddb(), caller="person.tony", is_owner=True)
+        self.assertEqual(res["task_id"], "t-5")
+        task_text = next(c[-1] for c in captured if " start " in c[-1])
+        self.assertIn("devin_answer_gate", task_text)
+        self.assertIn("Reported symptom: times out on turn 2", task_text)
+
+    async def test_plain_dispatch_unchanged(self):
+        with _patch_exec([], stdout=b"t-6\n"):
+            res = await dd.dispatch("chaba", "Check the weather station.")
+        self.assertEqual(res["task_id"], "t-6")
+        self.assertNotIn("playbook", res)
+
+
 class StatusTrimTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_caps_to_latest(self):
         lines = "\n".join(f"2026092{i}-000000-task-{i} inactive success repo=chaba"

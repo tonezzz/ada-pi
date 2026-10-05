@@ -92,10 +92,34 @@ async def run(runner, **args):           # MUST be async
   write ONE file; a spec that produces two near-identical tools gets
   deduplicated badly.
 
+## Playbooks — `backend/playbooks/*.yml`
+
+`devin_dispatch(repo, task, playbook=<name>, params={...})` renders the
+session's task from the playbook's `task_template` instead of free-form
+text, enforces its `gate` server-side, and stamps
+`job/<task_id>/contract` in the devin-handoff ledger (kind=job-contract)
+with the playbook + verify list for devin-dispatch-watch.
+
+Each playbook declares: `params` (required/optional + `line:` sub-template
+for optional text), `task_template` (`{param}` / `{param_line}`
+placeholders), `memory_domains` (banks the session may consult via the
+mddb MCP), `gate` (`confirm` — the devin_dispatch confirm gate still
+applies to every dispatch; `identity` — `owner|identified|any`),
+`requires` (bank-side preconditions), `verify` (commands the session runs
+before finishing), `report_to`, `max_runtime_min`.
+
+Registry: **build-tool** (owner; `requires.spec_status: pass` — refuses
+unless `params.spec_key` names a kind=spec-review doc whose meta status
+is `pass`, and steers the caller to `ada_devteam_review` otherwise),
+**fix-scenario** (owner; repairs a named live scenario), **investigate**
+(identified; read-only report job).
+
 ## Ship flow
 
-1. Spec drafted into the `devin-handoff` bank (`spec/<slug>`).
-2. `devin_dispatch` with the `build-tool` playbook — or hand-write it.
+1. Spec drafted into the `devin-handoff` bank (`spec/<slug>`) —
+   `ada_devteam_review` writes it with `status=pass|warn|block`.
+2. `devin_dispatch` with the `build-tool` playbook and
+   `params.spec_key` — refused unless the spec's status is `pass`.
 3. Session adds `tools.d/<name>.py` + manifest entry + tests; CI/tests pass.
 4. Merge to main (auto-merge to staging while the pipeline is new);
    ada-ha-tony picks it up on next deploy/restart.

@@ -1,91 +1,96 @@
-# Dispatch outcome — tools-merge-calendar-plan (20261005-122438)
+# Dispatch outcome — playbook registry (ada-devteam-pipeline)
 
-Merged the calendar+plan tool group 9 → 3 per the card's self-contained
-spec. Eight names absorbed into canonical tools via
-`tool_runner._ALIASES` — the repo's established hidden-alias mechanism
-(registered in the runner, absent from declarations; there is no
-literal `x-legacy` field — this IS the x-legacy semantics).
-
-## Alias map (all verified by tests)
-
-| absorbed name              | resolves to                              |
-|----------------------------|------------------------------------------|
-| `calendar_list_events`     | `calendar_read` action=`events`          |
-| `calendar_list_calendars`  | `calendar_read` action=`calendars`       |
-| `calendar_freebusy`        | `calendar_read` action=`freebusy`        |
-| `calendar_create_event`    | `calendar_write` action=`create`         |
-| `calendar_delete_event`    | `calendar_write` action=`delete`         |
-| `calendar_shift_overdue`   | `calendar_write` action=`shift`          |
-| `ada_daily_summary`        | `plan_day` period=`digest` (alias-only)  |
-| `ada_weekly_comparison`    | `plan_day` period=`week`, `end`→`day`    |
+Task: close Ada's self-development loop — `devin_dispatch` gains
+`playbook` + `params`; a YAML registry gates which playbooks may run,
+and `build-tool` refuses unless a devteam-reviewed spec doc is
+`status=pass` in the `ada-ha-bank-devin-handoff` bank.
 
 ## What changed
 
-- `backend/tool_runner.py`
-  - `_ALIASES` + `_ALIAS_ARG_DEFAULTS`: the eight rows above.
-  - `_alias_call_args`: `ada_weekly_comparison(end=…)` maps `end`→`day`
-    (the window end); `days`/`refresh` pass through.
-  - `calendar_read(action=events|calendars|freebusy, day, days, query,
-    calendar)` and `calendar_write(action=create|delete|shift, title,
-    start, end, notes, location, calendar, event_id, to)` — per-action
-    dispatch onto the unchanged absorbed methods; unknown action raises.
-  - `plan_day(period=today|tomorrow|week, day, days, refresh)`:
-    today/tomorrow return the merged events+tasks view with the day's
-    session digest folded in under `digest`; `week` returns the weekly
-    digest comparison; `day=` overrides the target. Works without a
-    configured calendar (digest-only, tagged `calendar: not
-    configured`). `period='digest'` is the alias-only seat that
-    preserves ada_daily_summary's bare-digest contract.
-  - `CALENDAR_WRITE_TOOLS` = {`calendar_write`, `tasks_add`,
-    `tasks_complete`, `tasks_move`} — the canonical holds the seat so
-    every create/delete/shift (direct or aliased) stays
-    confirm-gated. `DEVIN_CONFIRMED_TOOLS` / `confirm_strip` untouched —
-    gates key off the resolved name.
+- `backend/playbooks/build-tool.yml`, `fix-scenario.yml`,
+  `investigate.yml` — registry. Each declares `description`, `params`
+  (required + optional `line:` sub-templates for clean optional text),
+  `task_template` (`{param}` / `{param_line}` placeholders), `gate
+  {confirm, identity}`, `memory_domains`, `verify` commands,
+  `report_to`, `max_runtime_min`. `build-tool` adds
+  `requires.spec_status: pass`.
+- `backend/devin_dispatch.py` — playbook section: `list_playbooks`,
+  `load_playbook` (full schema validation, template fields checked
+  against declared params at load), `_resolve_params`, `_render_task`
+  (template + contract trailer: playbook name, verify list, report_to,
+  memory_domains, timebox, plus the caller's `task` as Request context),
+  `_enforce_gate` (identity gate + spec-status lookup; **fails closed**
+  when mddb is unavailable), `_stamp_contract` (writes
+  `job/<task_id>/contract`, kind=job-contract, carrying playbook +
+  verify for devin-dispatch-watch). `dispatch()` gained `playbook`,
+  `params`, `mddb`, `caller`, `is_owner` kwargs — plain
+  `dispatch(repo, task)` behavior unchanged; rendered tasks still run
+  through the existing in-process + remote dedup.
+- `backend/tool_runner.py` — `devin_dispatch()` signature gained
+  `playbook`/`params` and passes `policy_identity()` +
+  `_persona_admin()` through as `caller`/`is_owner`. Confirm-gate
+  internals untouched (`DEVIN_CONFIRMED_TOOLS`, `_check_devin_confirmed`
+  unchanged — `gate.confirm` stays declarative).
+- `backend/realtime_provider.py` — `devin_dispatch` declaration gained
+  the `playbook` enum + `params` object; `DEVIN_INSTRUCTIONS` tells the
+  model to offer `ada_devteam_review` when the gate refuses.
+- `tests/test_devin_dispatch.py` — +19 tests (`PlaybookRegistryTests`,
+  `PlaybookDispatchTests`): registry loading/validation, all three
+  playbooks, template rendering, owner/identified gates, spec missing /
+  wrong kind / blocked / pass, bare-slug `spec/` prefix resolution,
+  fail-closed without mddb, contract stamp meta, dedup on the rendered
+  task, nonfatal stamp failure, unknown playbook/param/missing required
+  refusals. `_FakeMddb` + mocked `_run` — no ssh, no network.
+- `tests/scenarios-live/devin_build_tool_gate.yaml` — tier:full, two
+  turns (confirm gate, then confirmed call hitting the playbook gate)
+  exercising the real blocked spec `spec/20260930-125800-a-tool-that
+  -reports-how`. Asserts `devin_dispatch` is called, the refusal surfaces,
+  and the response steers to review.
+- `docs/ada-tool-dev.md` — new "Playbooks" section + updated ship flow.
+- `docs/ssot/jobs/ada/2026-10-05-playbook-registry.yml` — job trail.
+- Chaba SSOT: `docs/ssot/apps/ssot.apps.ada_pi.yml` playbook-registry
+  line delivered as **tonezzz/chaba PR #35** (branch
+  `dispatch/playbook-registry-ssot`) — the worktree has no chaba
+  checkout, so the SSOT line went through the GitHub API as a PR for
+  review/merge.
 
-- `backend/realtime_provider.py`
-  - Eight declarations removed; `calendar_read` + `calendar_write`
-    declared with explicit `action` enums, `plan_day` with a `period`
-    enum; descriptions name the absorbed tools for legacy phrasing.
-  - `CALENDAR_TOOLS` / actuation sets updated to canonical names;
-    `CALENDAR_INSTRUCTIONS` rewritten and `SUMMARY_INSTRUCTIONS`
-    folded in; `SUMMARY_TOOLS` removed. `ADA_EXCLUDED_TOOLS` filtering
-    unchanged.
+## Design decisions
 
-- `docs/ssot/ssot.tool-surface.yml` — calendar/plan families rewritten
-  as calendar_read / calendar_write / plan_day sub-families; absorbed
-  names pruned from coverage_debt.
-- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — the group
-  row updated to the landed design.
-- `tests/benchmark.yml` — `write_tools` three absorbed writers →
-  `calendar_write`; `tool_merge_calendar_plan` joins `write_allowed_in`.
-- `tests/scenarios-live/tool_merge_calendar_plan.yaml` — family
-  regression scenario (lint requires it once the merge starts);
-  `shift_overdue.yaml` + `chaba_memory_review.yaml` repointed to
-  canonical names.
-- `tests/test_tool_runner.py` — `CalendarPlanMergeAliasTests` (11
-  tests): every absorbed name routes to its parent, write aliases keep
-  the confirmation gate, unknown action/period rejected, digest-only
-  fallback when the calendar is unconfigured.
-- `docs/ssot/jobs/ada/2026-10-05-tools-merge-calendar-plan.yml` — this
-  job's SSOT trail.
-- `.teststubs/` (gitignored, local only) — google.genai import stub for
-  this SDK-less host so the suite can run.
+- Gate results return `{ok: false, gate, offer: "ada_devteam_review"}`
+  so the model steers to the review pipeline instead of dispatching raw
+  — that is the documented refusal contract, not a crash.
+- The job stamp is a companion doc `job/<task_id>/contract`
+  (kind=job-contract), not meta on `job/<id>`: devin-dispatch-watch's
+  `mddb_job` rewrites the job doc's meta wholesale on every transition,
+  which would drop the verify list exactly when needed. The `job/`
+  prefix keeps it out of the handoff inbox; `kind != job` keeps it out
+  of job-report feeds.
 
-## Verify
+## Verification
 
-- `python3 scripts/tool-lint.py` → clean: 88 declared (94 → 88), 23
-  aliases, 0 violations (12 pre-existing warnings).
-- `PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest
-  tests.test_tool_runner.CalendarPlanMergeAliasTests` → 11/11.
-- Full suite: 489 tests, 2F/3E — identical failure set to HEAD
-  (verified via stash): memory-lifecycle + michael-technician
-  scenarios need a live mddb; detection/pose/hailo errors are
-  `ai_edge_litert` absent on this host. No merge regressions.
+```
+PYTHONPATH=.teststubs python3 -m unittest tests.test_devin_dispatch   # 26 ok
+PYTHONPATH=.teststubs python3 -m unittest tests.test_devin_dispatch tests.test_devteam tests.test_tools_loader tests.test_tool_lint  # 116 ok
+python3 scripts/tool-lint.py                                        # clean, 12 pre-existing warnings
+python3 -m unittest discover -s tests                               # 528 tests: 2F + 3E
+```
 
-## Notes
+Full-suite remainder is **baseline, not regression** (verified by
+stashing and rerunning on clean HEAD):
 
-- `tools-merge-gate.py` needs a passing `tool_merge_calendar_plan` run
-  in `ada-ha-scenario-reports` before the card can close — scenario
-  file ships here; the live run is idc02's lane.
-- Not committed to the default branch, not pushed, not deployed
-  (dispatch rules).
+- `test_detection`, `test_hailo_vision`, `test_pose` — `ai_edge_litert`
+  not installed on this host.
+- `test_memory_lifecycle`, `test_michael_technician` — FakeMddb search
+  returns no `count`/hits on clean HEAD too (environment/baseline).
+
+`.teststubs/` provides the `google.genai` shim for this SDK-less host
+(already gitignored; recreated this session — dynamic stub types plus
+`Part.from_bytes`/`from_text`).
+
+## Not done / followups
+
+- chaba `devin-dispatch-watch` does not yet consume the contract doc —
+  follow-up card noted in the job SSOT.
+- chaba PR #35 awaits review/merge.
+- No deploy (per card rails); branch is
+  `dispatch/20261005-173154-build-the-playbook-registry-th`, not pushed.
