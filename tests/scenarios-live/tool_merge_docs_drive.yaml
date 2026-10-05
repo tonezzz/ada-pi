@@ -1,0 +1,36 @@
+# tools-merge-docs-drive regression (2026-10-05): the docs+drive group
+# went 8 -> 2 — docs absorbs ada_doc_search/ada_doc_get/ada_doc_print/
+# ada_doc_archive (action=search|get|print|archive) and drive absorbs
+# drive_search/drive_show/drive_get/drive_update (action=search|show|get|
+# update). The eight absorbed names survive as tool_runner._ALIASES rows,
+# hidden from the declared surface. Live-side this scenario checks the
+# canonical calls still fire for the absorbed intents:
+#   archive search   — docs action='search' (read-only)
+#   drive search     — drive action='search' (read-only)
+#   drive get        — drive action='get' (read-only)
+# Writes (archive/print/update) stay confirm-gated behind resolved-name
+# seats and are covered by unit tests in tests/test_tool_runner.py
+# (DocsDriveMergeAliasTests) — live writes would mutate the real archive.
+name: tool_merge_docs_drive
+turns:
+  - user: >-
+      Search my document archive for the A-68 deed — I just want the
+      archive slug, nothing else.
+    expect:
+      calls_any: [docs]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Search my Google Drive for a file about the condo — any hit is
+      fine, just tell me the names.
+    expect:
+      calls_any: [drive]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Read the first file that search found — just summarize what's in
+      it, don't change anything.
+    expect:
+      calls_any: [drive]
+      timeout_s: 90
+      settle_s: 10

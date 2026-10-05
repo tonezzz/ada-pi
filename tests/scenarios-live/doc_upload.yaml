@@ -26,9 +26,12 @@ turns:
   - user: "no thanks — nothing to save, just wanted to check it worked"
     expect:
       response_nonempty: true
+      # tools-merge-docs-drive: tool_call events carry the canonical
+      # name — any docs call here (search included) means Ada acted on a
+      # declined upload; the old per-name archive/print check can't
+      # distinguish actions at this level.
       events_not_contain:
-        - {type: tool_call, name: ada_doc_archive}
-        - {type: tool_call, name: ada_doc_print}
+        - {type: tool_call, name: docs}
       timeout_s: 90
 
 # Ada sometimes ada_remember's the upload itself — drop any bank note that

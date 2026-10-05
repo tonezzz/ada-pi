@@ -1,0 +1,110 @@
+# SSOT Job: docs+drive tool-group merge (8 -> 2)
+# Card: tools-merge-docs-drive (chaba kanban). Dispatch 20261005-180155.
+
+title: Docs+drive merge — docs / drive absorb eight names
+subtitle: Fifth tools-merge-* card landed — _ALIASES now carries 31 retirees
+
+planning:
+  goal: |
+    Cut the docs+drive group to its canonical two per the card spec:
+    docs(action=search|get|print|archive) absorbs ada_doc_search,
+    ada_doc_get, ada_doc_print, ada_doc_archive; drive(action=
+    search|show|get|update) absorbs drive_search, drive_show, drive_get,
+    drive_update. Absorbed names stay callable but hidden — soft aliases
+    via tool_runner._ALIASES, removed from the declared surface (the
+    repo's x-legacy mechanism; no literal x-legacy field).
+  decisions: |
+    - Arg maps are 1:1 — every absorbed tool's parameters already match
+      the canonical schema, so _alias_call_args needs no new branches;
+      only _ALIAS_ARG_DEFAULTS carries the implied action=.
+    - Gate keys off the resolved name: docs takes both the DOC_TOOLS and
+      DOC_CONFIRMED_TOOLS seats; drive takes DRIVE_TOOLS +
+      DRIVE_CONFIRMED_TOOLS. Per-action splits live inside
+      _check_doc_confirmed (search/get free — the absorbed readers were
+      never gated) and the new _check_drive_confirmed (search/get/show
+      free — only drive_update was ever gated). Unknown actions fall
+      through to confirmation on both, matching the cms_edit precedent.
+    - _check_drive_confirmed adds an ADA_READ_ONLY denial the bare
+      drive_update gate never had — the kill-switch should cover a Drive
+      rewrite; noted as a deliberate tightening, not a merge requirement.
+    - _CHANGE_LOG_TOOLS: ada_doc_archive -> docs with an action=='archive'
+      filter in _log_change_request — only the archive action is a change
+      worth logging, not the reads (drive_update was never logged).
+    - ACTUATING_TOOLS (provider): ada_doc_archive/ada_doc_print removed;
+      the per-turn actuation budget keys docs off action in
+      {archive, print} at the call site, same pattern as the
+      ada_camera_snapshot display-push probe. drive stays out — none of
+      the absorbed drive names were actuation-counted.
+    - _CONFIRM_GATED_TOOLS picks up 'docs' via DOC_CONFIRMED_TOOLS, so
+      the Jev advisory probe now fires on every docs call (incl. reads);
+      DEVIN_CONFIRMED_TOOLS / confirm_strip unchanged per the card.
+    - scenario-live LEGACY_TOOL_ALIASES: added the 8 new rows AND the 8
+      calendar+plan rows that tools-merge-calendar-plan missed — the
+      comment says keep in sync with _ALIASES and absorbed names in
+      scenario expectations (calls_any/no_calls_except) must expand to
+      the canonical or they go silently stale.
+    - benchmark.yml write_tools: ada_doc_archive/ada_doc_print -> docs.
+      Name-level policy can't split actions, so doc_recall,
+      chaba_memory_review and tool_merge_docs_drive join
+      write_allowed_in (they legitimately call docs reads; the write
+      path inside docs is what the seat guards).
+    - doc_upload.yaml events_not_contain: tool_call events carry the
+      resolved name, so {name: ada_doc_archive} could never match — now
+      {name: docs}; stricter (any docs call on the declined-upload turn
+      fails) but the absorbed-name form was already vacuous.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tool_runner alias tables"
+      status: done
+      notes: "8 _ALIASES rows + _ALIAS_ARG_DEFAULTS (action= search/get/
+        print/archive, search/show/get/update); no _alias_call_args
+        branch — arg shapes are 1:1."
+    - id: 2
+      label: "canonical methods + gates"
+      status: done
+      notes: "docs() and drive() dispatch per-action onto the unchanged
+        absorbed methods; DOC/DRIVE gate sets hold the canonical seats;
+        _check_drive_confirmed added; _CHANGE_LOG_TOOLS filtered to
+        docs action=archive."
+    - id: 3
+      label: "provider surface"
+      status: done
+      notes: "8 declarations removed; docs + drive declared with explicit
+        action enums and absorbed-name callouts in descriptions;
+        DOC_TOOLS/DRIVE_TOOLS sets and *_INSTRUCTIONS rewritten;
+        ACTUATING_TOOLS keyed per-action."
+    - id: 4
+      label: "SSOT + spec + scenario + tests"
+      status: done
+      notes: "ssot.tool-surface.yml docs/drive families (scenario
+        tool_merge_docs_drive); spec table row added; coverage_debt
+        pruned of the three retired names; scenario-live
+        LEGACY_TOOL_ALIASES synced (incl. calendar backfill);
+        benchmark.yml write_tools -> docs + write_allowed_in;
+        DocsDriveMergeAliasTests (8 tests)."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # 82 declared, 31 aliases, clean"
+    - "PYTHONPATH=.teststubs python3 -m unittest tests.test_tool_runner.DocsDriveMergeAliasTests tests.test_doc_archive_tool"
+    - "PYTHONPATH=.teststubs python3 -m unittest discover -s tests -p 'test_*.py'"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0 — 82 declared (85->79 builtin), 31 aliases"
+  - "alias smoke: _resolve_alias maps all 8 absorbed names to docs/drive "
+    "with the right action=; execute() routes each to the same client call "
+    "(asserted in DocsDriveMergeAliasTests)"
+  - "gates: docs archive/print + drive update denied unconfirmed "
+    "(PermissionError), pass with confirmed=true; docs/drive search/get "
+    "free; all denied outright when the documents bank policy excludes "
+    "the identity; secondary-blocked unchanged via DOC/DRIVE_TOOLS seats"
+  - "full suite: 519 tests — failures identical to HEAD (2 memory-backend "
+    "scenario fails) + 4 environmental errors (ai_edge_litert absent, one "
+    "genai-stub fidelity quirk); no docs/drive regressions"
+  - "note: worktree has no real google.genai — tests ran against a "
+    "recreated .teststubs stub (gitignored, machine-local)"

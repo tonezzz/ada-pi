@@ -772,6 +772,141 @@ class CalendarPlanMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["calendar"], "not configured")
 
 
+class DocsDriveMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-docs-drive (8 -> 2): the eight absorbed names stay
+    callable via _ALIASES and route to their canonical parent — docs for
+    ada_doc_* (search/get free reads; archive/print confirm-gated), drive
+    for drive_* (search/get/show free; update confirm-gated)."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        # doc/drive tools are documents-bank scoped — allow it by default;
+        # the denial test overrides.
+        self._allow = patch.object(
+            self.runner.banks, "bank_allowed", return_value=True)
+        self._allow.start()
+        self.addCleanup(self._allow.stop)
+
+    async def test_doc_search_alias_routes_and_logs(self):
+        self.runner.doc_log = []
+        with patch("backend.tool_runner.doc_archive_client.doc_search",
+                   new=AsyncMock(return_value=[{"slug": "A-68"}])) as m:
+            out = await self.runner.execute(
+                "ada_doc_search", {"query": "deed"})
+        self.assertEqual(out, [{"slug": "A-68"}])
+        m.assert_awaited_once_with("deed", limit=5)
+        self.assertEqual(self.runner.doc_log[0]["action"], "search")
+
+    async def test_doc_get_alias_routes(self):
+        with patch("backend.tool_runner.doc_archive_client.doc_get",
+                   new=AsyncMock(return_value={"slug": "A-68"})) as m:
+            out = await self.runner.execute("ada_doc_get", {"slug": "A-68"})
+        self.assertEqual(out["slug"], "A-68")
+        m.assert_awaited_once_with("A-68")
+
+    async def test_doc_archive_alias_keeps_confirm_gate(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "ada_doc_archive", {"slug": "x", "source_dir": "/tmp/d"})
+        with patch("backend.tool_runner.doc_archive_client.doc_archive",
+                   new=AsyncMock(return_value={"archive_id": "x"})), \
+             patch("os.path.isdir", return_value=True), \
+             patch("os.listdir", return_value=["p1.jpg"]), \
+             patch("builtins.open",
+                   unittest.mock.mock_open(read_data=b"\xff\xd8jpeg")):
+            out = await self.runner.execute(
+                "ada_doc_archive",
+                {"slug": "x", "source_dir": "/tmp/d", "confirmed": True})
+        self.assertEqual(out["archive_id"], "x")
+
+    async def test_doc_print_alias_keeps_confirm_gate(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "ada_doc_print", {"slug": "A-68", "pages": "1"})
+        with patch("backend.tool_runner.doc_archive_client.doc_print_pdf",
+                   new=AsyncMock(return_value={"queue": "ok"})) as m:
+            out = await self.runner.execute(
+                "ada_doc_print",
+                {"slug": "A-68", "pages": "1", "confirmed": True})
+        self.assertEqual(out["queue"], "ok")
+        m.assert_awaited_once_with("A-68", "1", None)
+
+    async def test_drive_search_and_get_aliases_route(self):
+        with patch("backend.tool_runner.doc_archive_client.drive_search",
+                   new=AsyncMock(return_value=[{"id": "f1"}])) as m:
+            out = await self.runner.execute(
+                "drive_search", {"query": "condo", "mime": "image/"})
+        self.assertEqual(out["count"], 1)
+        m.assert_awaited_once_with("condo", mime="image/", limit=10)
+        with patch("backend.tool_runner.doc_archive_client.drive_get",
+                   new=AsyncMock(return_value={"id": "f1"})) as m:
+            out = await self.runner.execute("drive_get", {"file_id": "f1"})
+        self.assertEqual(out["id"], "f1")
+        m.assert_awaited_once_with("f1")
+
+    async def test_drive_update_alias_keeps_confirm_gate(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "drive_update", {"file_id": "f1", "content": "x"})
+        with patch("backend.tool_runner.doc_archive_client.drive_update",
+                   new=AsyncMock(return_value={"updated": True})) as m:
+            out = await self.runner.execute(
+                "drive_update",
+                {"file_id": "f1", "content": "x", "confirmed": True})
+        self.assertTrue(out["updated"])
+        m.assert_awaited_once_with("f1", "x")
+
+    async def test_drive_show_alias_casts_to_screen(self):
+        self.runner.cast_to_screen = AsyncMock(return_value={"ok": True})
+        with patch("backend.tool_runner.doc_archive_client.drive_get",
+                   new=AsyncMock(return_value={
+                       "mimeType": "image/jpeg", "media_url": "/m/f1"})), \
+             patch("backend.tool_runner.doc_archive_client.drive_media_url",
+                   new=AsyncMock(return_value="http://x/f1")):
+            out = await self.runner.execute(
+                "drive_show", {"file_id": "f1"})
+        self.assertTrue(out["ok"])
+        self.runner.cast_to_screen.assert_awaited_once()
+        self.assertEqual(
+            self.runner.cast_to_screen.await_args.kwargs["action"], "image")
+
+    async def test_canonical_dispatch_and_invalid_actions(self):
+        with patch("backend.tool_runner.doc_archive_client.doc_search",
+                   new=AsyncMock(return_value=[])):
+            out = await self.runner.execute(
+                "docs", {"action": "search", "query": "deed"})
+        self.assertEqual(out, [])
+        # docs/drive hold the confirm-gated seats — the gate runs before
+        # action validation for anything that isn't a known free read.
+        with self.assertRaises(PermissionError):
+            await self.runner.execute("docs", {"action": "bogus"})
+        with self.assertRaises(PermissionError):
+            await self.runner.execute("drive", {"action": "bogus"})
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "docs", {"action": "bogus", "confirmed": True})
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "drive", {"action": "bogus", "confirmed": True})
+
+    async def test_docs_and_drive_denied_when_bank_not_allowed(self):
+        self._allow.stop()
+        with patch.object(
+                self.runner.banks, "bank_allowed", return_value=False):
+            for tool, args in (
+                    ("ada_doc_search", {"query": "x"}),
+                    ("drive_search", {"query": "x"}),
+                    ("drive_update",
+                     {"file_id": "f", "content": "x", "confirmed": True})):
+                with self.assertRaises(PermissionError, msg=tool):
+                    await self.runner.execute(tool, dict(args))
+        self._allow.start()
+
+
 class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):
     """The flexible-but-bound confirmation gate: truthy spellings pass,
     denials mint single-use tokens bound to the exact call, and the
