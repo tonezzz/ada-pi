@@ -68,12 +68,15 @@ CALENDAR_WRITE_TOOLS = {
 # per-action split (note + automation reads stay free) off args.
 CMS_WRITE_TOOLS = {"cms_publish_page", "cms_edit"}
 
-# Devin dispatch: launching an unattended agent session (devin_dispatch),
-# injecting a message into one (devin_followup), or delivering the user's
-# answer to a blocked job (devin_answer) all cause autonomous code changes,
-# so they require confirmed=true. devin_status and devin_pending are
-# read-only.
-DEVIN_CONFIRMED_TOOLS = {"devin_dispatch", "devin_followup", "devin_answer"}
+# Devin session control: dispatching an unattended agent session,
+# injecting a follow-up message into one, or delivering the user's
+# answer to a blocked job all cause autonomous code changes, so they
+# require confirmed=true. tools-merge-devin-mcp (2026-10-05): the three
+# names collapsed into `devin` (action=dispatch|followup|answer) — the
+# canonical name holds the seat; every action is a session write, so the
+# whole tool stays gated. devin_read is read-only except action='report'
+# with publish=true, which re-checks confirmation internally.
+DEVIN_CONFIRMED_TOOLS = {"devin"}
 
 # Camera captures/casts visible on screens — gated by action inside
 # _check_capture_confirmed (uplink, wall start, camera snap-to-display).
@@ -285,6 +288,19 @@ _ALIASES: dict[str, str] = {
     "calendar_shift_overdue": "calendar_write",
     "ada_daily_summary": "plan_day",
     "ada_weekly_comparison": "plan_day",
+    # devin family — tools-merge-devin-mcp (2026-10-05): 8 -> 2. The
+    # session-write names route to devin (action=dispatch|followup|
+    # answer, confirmed-gated); the ledger/report readers plus the
+    # devteam spec-review pipeline route to devin_read
+    # (action=status|jobs|pending|report|review).
+    "devin_dispatch": "devin",
+    "devin_followup": "devin",
+    "devin_answer": "devin",
+    "devin_status": "devin_read",
+    "devin_jobs": "devin_read",
+    "devin_pending": "devin_read",
+    "devin_job_report": "devin_read",
+    "ada_devteam_review": "devin_read",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the
@@ -319,6 +335,16 @@ _ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
     # daily digest so ada_daily_summary keeps its exact return contract.
     "ada_daily_summary": {"period": "digest"},
     "ada_weekly_comparison": {"period": "week"},
+    # devin family — every absorbed name implies its action=; all arg
+    # names already match the canonical schemas 1:1 (no shim needed).
+    "devin_dispatch": {"action": "dispatch"},
+    "devin_followup": {"action": "followup"},
+    "devin_answer": {"action": "answer"},
+    "devin_status": {"action": "status"},
+    "devin_jobs": {"action": "jobs"},
+    "devin_pending": {"action": "pending"},
+    "devin_job_report": {"action": "report"},
+    "ada_devteam_review": {"action": "review"},
 }
 
 def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
@@ -1148,8 +1174,7 @@ class ToolRunner:
     # excluded — noisy, and already tracked elsewhere.
     _CHANGE_LOG_TOOLS = {
         "cms_publish_page", "cms_edit", "ada_doc_archive", "ada_forget",
-        "ada_ha_set_device_confidence", "devin_dispatch",
-        "devin_followup", "devin_answer", "devin_job_report",
+        "ada_ha_set_device_confidence", "devin", "devin_read",
     }
 
     def _log_change_request(self, name: str, args: dict[str, Any],
@@ -1158,6 +1183,12 @@ class ToolRunner:
         (events.md -> ada-review -> Devin memory render) so changes Tony
         asks Ada for vocally reach Devin sessions — the team-sync lane."""
         if name not in self._CHANGE_LOG_TOOLS:
+            return
+        # devin_read is mostly reads — only its write actions are changes
+        # (devin_job_report logged every call pre-merge; review files a
+        # spec doc into the handoff bank).
+        if name == "devin_read" and str(
+                args.get("action") or "") not in ("report", "review"):
             return
         if isinstance(result, dict) and (
                 result.get("error") or result.get("needs_confirm")):
@@ -1582,7 +1613,8 @@ class ToolRunner:
         self, name: str, args: dict[str, Any], confirmed: Any,
         confirm_token: Any = None,
     ) -> None:
-        """Server-side gate for devin dispatch/followup. Raises PermissionError on denial."""
+        """Server-side gate for devin session control (the canonical
+        `devin` tool — dispatch/followup/answer). PermissionError on denial."""
         if os.environ.get("ADA_READ_ONLY") == "true":
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("devin tools are disabled (ADA_READ_ONLY=true)")
@@ -1595,6 +1627,73 @@ class ToolRunner:
 
     # -- Devin dispatch tools (headless sessions on tony-dell; job SSOT:
     #    docs/ssot/jobs/ada/2026-09-22-ada-devin-dispatch.yml) --
+
+    async def devin(
+        self,
+        action: str,
+        repo: str = "",
+        task: str = "",
+        task_id: str = "",
+        message: str = "",
+    ) -> Any:
+        """Devin session control — tools-merge-devin-mcp consolidated
+        devin_dispatch / devin_followup / devin_answer. Every action
+        mutates a dispatched session — the DEVIN_CONFIRMED_TOOLS seat
+        keeps confirmed=true mandatory."""
+        action = (action or "").strip().lower()
+        if action == "dispatch":
+            if not repo or not task:
+                raise ValueError("dispatch needs repo and task")
+            return await self.devin_dispatch(repo=repo, task=task)
+        if action in ("followup", "answer"):
+            if not task_id or not message:
+                raise ValueError(f"{action} needs task_id and message")
+        if action == "followup":
+            return await self.devin_followup(task_id=task_id, message=message)
+        if action == "answer":
+            return await self.devin_answer(task_id=task_id, message=message)
+        raise ValueError(
+            f"invalid action {action!r}: expected dispatch|followup|answer")
+
+    async def devin_read(
+        self,
+        action: str,
+        task_id: str | None = None,
+        status: str | None = None,
+        limit: int = 30,
+        publish: bool = False,
+        confirmed: bool = False,
+        confirm_token: str | None = None,
+        request: str = "",
+        title: str = "",
+    ) -> Any:
+        """Devin job ledger reads — tools-merge-devin-mcp consolidated
+        devin_status / devin_jobs / devin_pending / devin_job_report,
+        plus the absorbed ada_devteam_review (action='review',
+        owner-only). 'report' with publish=true re-checks confirmation
+        inside devin_job_report — confirmed/confirm_token are declared
+        here so the execute gate hands them back."""
+        action = (action or "").strip().lower()
+        if action == "status":
+            return await self.devin_status(task_id=task_id or None)
+        if action == "jobs":
+            return await self.devin_jobs(status=status, limit=limit)
+        if action == "pending":
+            return await self.devin_pending()
+        if action == "report":
+            return await self.devin_job_report(
+                publish=publish, confirmed=confirmed,
+                confirm_token=confirm_token, limit=limit)
+        if action == "review":
+            # The tools.d manifest carried timeout_s=300 — the expert
+            # panel runs multiple model calls; keep the cap now that the
+            # drop-in wrapper is gone.
+            return await asyncio.wait_for(
+                self.ada_devteam_review(request=request, title=title),
+                timeout=300)
+        raise ValueError(
+            f"invalid action {action!r}: "
+            "expected status|jobs|pending|report|review")
 
     async def devin_dispatch(self, repo: str, task: str) -> dict[str, Any]:
         """Start an unattended Devin session on tony-dell for a task.
@@ -1775,7 +1874,7 @@ class ToolRunner:
         }
         if publish:
             self._check_cms_write_allowed(
-                "devin_job_report", {"slug": DEVIN_JOB_REPORT_SLUG},
+                "devin_read", {"slug": DEVIN_JOB_REPORT_SLUG},
                 confirmed, confirm_token)
             pub = await self.cms_publish_page(
                 DEVIN_JOB_REPORT_SLUG, "Devin Job Report", markdown)
@@ -1879,6 +1978,79 @@ class ToolRunner:
                 "note": ("Answer recorded" +
                          (" and sent to the running session." if delivered
                           else " — the dispatcher picks it up."))}
+
+    async def ada_devteam_review(
+        self, request: str, title: str = "",
+    ) -> dict[str, Any]:
+        """Dev-team spec review — the absorbed tools.d drop-in
+        (tools-merge-devin-mcp). Ada describes a tool she wants; the
+        devteam pipeline drafts a spec, runs the parallel expert panel
+        (security/privacy, standards, QA, scope), revises it, and files
+        the reviewed spec into the devin-handoff bank.
+
+        Owner-only: the manifest's owner_only policy + secondary_allowed
+        =false gates live here now that the drop-in wrapper is gone."""
+        if self._is_secondary_turn():
+            raise PermissionError(
+                "dev-team reviews run on the owner's turn only")
+        ident = self.policy_identity()
+        policy = self.banks.policy_for(ident) or {}
+        if not policy.get("full"):
+            logger.warning(
+                "denied devin_read review for identity %r: owner_only", ident)
+            raise PermissionError(
+                "devin_read action='review' is restricted to the owner's "
+                "identities")
+        request = (request or "").strip()
+        if not request:
+            return {"ok": False, "error": "request is required"}
+        if self.mddb is None:
+            return {"ok": False, "error": "mddb unavailable (guest mode)"}
+        from backend import devteam
+        result = await devteam.review(request)
+
+        panel = result["panel"]
+        lines = [
+            f"# Dev-team review: {(title or request)[:80]}",
+            "",
+            f"- verdict: **{result['verdict']}**",
+            f"- model: {result['model']}",
+            f"- reviewed: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
+            "",
+            "## Panel",
+        ]
+        lines += [
+            f"- **{r['role']}** — {r['verdict']}: {r['summary']}" +
+            (f" ({'; '.join(r['comments'])})" if r["comments"] else "")
+            for r in panel
+        ]
+        lines += ["", "## Revised spec", "", result["spec"]]
+
+        now = datetime.now(timezone.utc)
+        parts = re.findall(r"[a-z0-9]+", request.lower())[:5]
+        slug = "-".join(parts) or "untitled"
+        key = f"spec/{now.strftime('%Y%m%d-%H%M%S')}-{slug}"
+        await self.mddb.add_document(
+            DEVIN_JOBS_COLLECTION,
+            key=key, lang="en", content_md="\n".join(lines),
+            meta={
+                "kind": ["spec-review"], "status": [result["verdict"]],
+                "ts": [now.isoformat()], "source": ["voice"],
+                "written_by": ["ada"], "scope": ["tony"],
+                "bank": ["devin-handoff"],
+                "subject": ["-".join(
+                    re.findall(r"[a-z0-9]+", request.lower())[:8])
+                    or "untitled"],
+            },
+        )
+        return {
+            "ok": True,
+            "verdict": result["verdict"],
+            "spec_key": key,
+            "panel": {r["role"]: r["verdict"] for r in panel},
+            "summary": " | ".join(
+                f"{r['role']}: {r['summary']}" for r in panel)[:600],
+        }
 
     def _check_doc_confirmed(
         self, name: str, args: dict[str, Any], confirmed: Any,

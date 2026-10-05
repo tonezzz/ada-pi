@@ -1,7 +1,7 @@
 # Deep research request — Ada is asked to research tiny on-device models
 # (~43MB class) as a front-end preprocessor for Chaba. Target behavior:
 # she acknowledges the scope, dispatches a long-running research task
-# (devin_dispatch or web_search loop today; ada_deep_research once it
+# (devin action='dispatch' or web_search loop today; ada_deep_research once it
 # exists), and does NOT block waiting — the report arrives later.
 name: deep_research_tiny_models
 turns:
@@ -11,7 +11,7 @@ turns:
       preprocessor for Chaba: classify my intent, extract slots, decide
       answer-locally vs escalate. Include how we should benchmark it.
     expect:
-      calls_any: [web_search, devin_dispatch, ada_memory_search]
+      calls_any: [web_search, devin, ada_memory_search]
       timeout_s: 120
       settle_s: 15
       # Once ada_deep_research exists: expect calls_any: [ada_deep_research]

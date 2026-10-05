@@ -31,12 +31,12 @@ SSOT disagree.
 | camera  | tools-merge-camera    | `ada_camera_snapshot` (`source=`) | cctv_snapshot, traffic_camera, capture_frame (→ `vcast_snapshot`). cctv_wall stays — a wall is a live grid, not a frame |
 | cms     | tools-merge-cms       | `cms_publish_page` (unchanged), `cms_read` (`action=get\|list\|verify`), `cms_edit` (`action=note\|delete\|automate`, `op=` carries the registry op) | cms_list_pages, cms_get_page, cms_verify_page → `cms_read`; cms_note_update, cms_delete_page, cms_automation → `cms_edit`. Landed 7→3 instead of the original single-`cms_page` design |
 | calendar+plan | tools-merge-calendar-plan | `calendar_read` (`action=events\|calendars\|freebusy`), `calendar_write` (`action=create\|delete\|shift`, confirmed-gated), `plan_day` (`period=today\|tomorrow\|week`, `day=` overrides the target) | calendar_list_events, calendar_list_calendars, calendar_freebusy → `calendar_read`; calendar_create_event, calendar_delete_event, calendar_shift_overdue → `calendar_write`; ada_daily_summary → `plan_day` (alias-internal `period=digest`); ada_weekly_comparison → `plan_day` (`period=week`, `end`→`day`) |
-| devin   | tools-merge-devin-mcp | `devin`       | devin_dispatch, devin_status, devin_followup, devin_job_report, devin_pending, devin_jobs, devin_answer |
+| devin   | tools-merge-devin-mcp | `devin` (`action=dispatch\|followup\|answer`, confirmed-gated), `devin_read` (`action=status\|jobs\|pending\|report\|review`) | devin_dispatch, devin_followup, devin_answer → `devin`; devin_status, devin_jobs, devin_pending, devin_job_report, ada_devteam_review (tools.d drop-in, owner-only) → `devin_read`. Landed 8→2 instead of the original single-`devin` design |
 | display | tools-merge-display   | `ada_display` | cast_to_screen, vcast_list, vcast_say, vcast_snapshot, vcast_gesture, yt_cast, yt_cast_status, yt_cast_stop |
 | ha      | tools-merge-ha        | `ada_ha`      | control_entity, control_cover, press_button, control_media_player, list_home_devices, search_home_devices, get_home_state, list_sensors, search_sensors, get_logbook, get_recent_events, get_entity_events, ada_ha_* (7 — ada_ha_recall moved to the memory family) |
 | memory  | tools-merge-memory    | `ada_memory_search`, `ada_remember`, `ada_session_recall` (+ `ada_forget` unchanged) | guest_recall, vocab_note, report_habit_observation, guest_remember, guest_remember_private, ada_ha_recall (→ `scope=`/`kind=`) |
 
-Roughly 56 absorbed names retire into 6 canonical tools; with the
+Roughly 57 absorbed names retire into 7 canonical tools; with the
 un-merged remainder the surface lands near the ~38 target.
 
 ## `action=` param pattern

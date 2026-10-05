@@ -10,7 +10,7 @@ name: devin_pending_list
 turns:
   - user: "Is anything waiting for my attention — any blocked jobs?"
     expect:
-      calls_any: [devin_pending]
+      calls_any: [devin_read]
       response_contains_any: ["test-pending-9917", "which repo", "zeta-pending", "blocked", "waiting"]
       timeout_s: 120
       settle_s: 10

@@ -1,7 +1,8 @@
 name: devteam-review
-# The devteam pipeline: Ada describes a tool she wants; ada_devteam_review
-# drafts a spec, runs the parallel expert panel (security, standards, QA,
-# scope), revises, and files the reviewed spec to the devin-handoff bank.
+# The devteam pipeline: Ada describes a tool she wants; devin_read
+# action='review' (absorbed ada_devteam_review) drafts a spec, runs the
+# parallel expert panel (security, standards, QA, scope), revises, and
+# files the reviewed spec to the devin-handoff bank.
 # This is the "bar" for self-designed tools — the scenario verifies the
 # pipeline fires end to end and Ada can narrate the verdict.
 #
@@ -15,7 +16,7 @@ turns:
       and whether any are still waiting for answers. Have the dev team
       review the design first — don't build it yet.
     expect:
-      calls: [ada_devteam_review]
+      calls: [devin_read]
       result_contains_any: ["verdict", "spec"]
       response_nonempty: true
       timeout_s: 300

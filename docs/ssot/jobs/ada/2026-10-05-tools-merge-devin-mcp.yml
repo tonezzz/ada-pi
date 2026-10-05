@@ -1,0 +1,125 @@
+# SSOT Job: devin tool-group merge (8 -> 2)
+# Card: tools-merge-devin-mcp (chaba kanban). Dispatch 20261005-143702.
+
+title: Devin merge — devin / devin_read absorb eight names
+subtitle: Fifth tools-merge-* card landed — _ALIASES now carries 31 retirees
+
+planning:
+  goal: |
+    Cut the devin group to its canonical two per the card spec:
+    devin (action=dispatch|followup|answer — session writes,
+    confirm-gated) and devin_read (action=status|jobs|pending|report|
+    review — ledger reads, the report composer, and the absorbed
+    ada_devteam_review spec pipeline). Absorbed names stay callable but
+    hidden — soft aliases via tool_runner._ALIASES, removed from the
+    declared surface (the repo's x-legacy mechanism; no literal
+    x-legacy field).
+  decisions: |
+    - Two canonical devin tools, not one: the card's 8->2 split maps
+      the three session writers onto `devin` and the four ledger
+      readers + ada_devteam_review onto `devin_read`, so the
+      DEVIN_CONFIRMED_TOOLS boundary stays a clean tool-name boundary —
+      every `devin` action mutates a dispatched session, so the whole
+      tool keeps the confirm-gate seat (same convention as
+      calendar_write).
+    - 'review' action: the card listed read actions
+      status|jobs|pending|report for devin_read but also assigned
+      ada_devteam_review to it — 'review' is the fifth enum value and
+      the devteam pipeline's honest verb (it runs an LLM panel and
+      writes a spec doc; none of the four read actions describe it).
+    - ada_devteam_review was a tools.d drop-in (manifest owner_only,
+      secondary_allowed=false, timeout_s=300). The manifest entry is
+      gone; the logic moved verbatim onto ToolRunner.ada_devteam_review
+      with the owner gate re-implemented inline (secondary turn OR
+      missing person_policies full:true -> PermissionError) and the
+      300s cap kept via asyncio.wait_for in the devin_read branch.
+      devin_read itself stays ungated/unblocked like the four absorbed
+      readers.
+    - Gate keys off the resolved name: `devin` replaces the three
+      absorbed names in DEVIN_CONFIRMED_TOOLS, so confirm_strip /
+      token binding / secondary-speaker rules all cover it unchanged.
+      devin_job_report's internal publish re-check now fingerprints
+      under 'devin_read'.
+    - Arg shims: none needed — every absorbed name's args already map
+      1:1 onto the canonical params; _ALIAS_ARG_DEFAULTS supplies only
+      the action=.
+    - benchmark.yml write_tools: devin_dispatch -> devin (the name the
+      model emits now). devin_read stays out — its report publish path
+      was never in write_tools.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tool_runner alias tables"
+      status: done
+      notes: "8 _ALIASES rows + _ALIAS_ARG_DEFAULTS (action= dispatch/
+        followup/answer -> devin; status/jobs/pending/report/review ->
+        devin_read); no _alias_call_args entries needed."
+    - id: 2
+      label: "canonical methods"
+      status: done
+      notes: "devin(action, repo, task, task_id, message) dispatches
+        per-action onto the unchanged absorbed methods with required-arg
+        guards; devin_read(action, task_id, status, limit, publish,
+        confirmed, confirm_token, request, title) routes reads plus the
+        ported ada_devteam_review (owner gate + 300s cap preserved).
+        _CHANGE_LOG_TOOLS: devin_* quartet -> devin/devin_read with a
+        report|review filter so read actions don't spam the feed."
+    - id: 3
+      label: "provider surface"
+      status: done
+      notes: "7 declarations removed; devin + devin_read declared with
+        explicit action enums; DEVIN_TOOLS -> {devin, devin_read};
+        ACTUATING_TOOLS devin_dispatch -> devin; DEVIN_INSTRUCTIONS
+        rewritten for action= phrasing; ada_devteam_review manifest
+        entry removed + module deleted."
+    - id: 4
+      label: "SSOT + spec + scenarios + tests"
+      status: done
+      notes: "ssot.tool-surface.yml devin family split into devin +
+        devin_read sub-families, devin_followup/devin_job_report pruned
+        from coverage_debt; spec table row updated to the landed design;
+        tests/scenarios-live/tool_merge_devin.yaml; devin_status_accuracy
+        /devin_pending_list/devin_answer_gate/shared_memory_audit/
+        tool_selection_accuracy/deep_research_tiny_models/devteam_review
+        repointed to canonical names; DevinMergeAliasTests (9 tests)."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # 82 declared, 31 aliases, clean"
+    - "ADA_INSTANCE_ID=test .venv-test/bin/python -m unittest tests.test_tool_runner.DevinMergeAliasTests"
+    - "ADA_INSTANCE_ID=test .venv-test/bin/python -m unittest tests.test_tool_runner tests.test_tool_audit tests.test_devteam tests.test_devin_dispatch tests.test_tools_loader"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0 — 82 declared (88->82),
+    31 aliases (23->31), 0 violations (12 pre-existing warnings)"
+  - "alias smoke: execute(devin_dispatch) -> devin action=dispatch;
+    devin_followup -> followup; devin_answer -> answer (all
+    confirm-gated); devin_status -> devin_read status; devin_jobs ->
+    jobs; devin_pending -> pending; devin_job_report -> report;
+    ada_devteam_review -> review (owner-gated)"
+  - "DevinMergeAliasTests: 9/9 — every absorbed name routes to its
+    parent, write aliases keep the confirmation gate, report's publish
+    path re-checks confirmation on the canonical name, review refuses
+    without a full person_policy and runs for person.tony with
+    full:true"
+  - "suite: 126 tests across test_tool_runner + test_tool_audit +
+    test_devteam + test_devin_dispatch + test_tools_loader — all OK
+    (fresh .venv-test venv with google-genai only; ADA_INSTANCE_ID=test)"
+
+notes:
+  - "Deploy caveat: ADA_EXCLUDED_TOOLS env configs listing the old
+    devin_* names no longer strip anything — use devin,devin_read to
+    exclude the group (env files live outside this repo)."
+  - "Chaba-side half of the card (MCP-server audit: mcp-health vs
+    mcp-debug overlap, ha/michael-ha/michael-dev dups) is NOT done here —
+    it reads chaba/Devin config an ada-pi worktree cannot reach. Raised
+    as a board request on the card."
+  - "tools-merge-gate.py needs a passing tool_merge_devin run in
+    ada-ha-scenario-reports before the card can close — scenario file
+    ships here; the live run is idc02's lane."
+  - "Not committed to the default branch, not pushed, not deployed
+    (dispatch rules)."

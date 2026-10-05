@@ -99,18 +99,31 @@ families:
     absorbed:
       - ada_daily_summary          # -> period='digest' (alias-internal)
       - ada_weekly_comparison      # -> period='week', end->day via shim
+  # devin group 8 -> 2 (tools-merge-devin-mcp, landed 2026-10-05): the
+  # card split the original single-canonical design into two action=
+  # tools — devin (action=dispatch|followup|answer, the
+  # DEVIN_CONFIRMED_TOOLS seat; every action is a session write) and
+  # devin_read (action=status|jobs|pending|report|review — 'report'
+  # keeps its internal publish confirmation; 'review' is the absorbed
+  # ada_devteam_review tools.d drop-in, still owner-gated).
   devin:
     merge_card: tools-merge-devin-mcp
-    canonical: devin               # devin_* dispatch/status/followup/report/pending/jobs/answer -> action=
+    canonical: devin               # dispatch/followup/answer -> action=
     scenario: tool_merge_devin
     absorbed:
       - devin_dispatch
-      - devin_status
       - devin_followup
-      - devin_job_report
-      - devin_pending
-      - devin_jobs
       - devin_answer
+  devin_read:
+    merge_card: tools-merge-devin-mcp
+    canonical: devin_read          # status/jobs/pending/report/review -> action=
+    scenario: tool_merge_devin
+    absorbed:
+      - devin_status
+      - devin_jobs
+      - devin_pending
+      - devin_job_report
+      - ada_devteam_review         # tools.d drop-in -> action='review' (owner_only)
   display:
     merge_card: tools-merge-display
     canonical: ada_display         # cast_to_screen + vcast_* + yt_cast* -> action=
@@ -193,8 +206,6 @@ coverage_debt:
   - ada_usage_summary
   - chat_send
   - control_cover
-  - devin_followup
-  - devin_job_report
   - drive_update
   - get_battery_detail
   - get_battery_status
