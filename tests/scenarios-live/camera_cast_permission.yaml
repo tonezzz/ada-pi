@@ -26,7 +26,7 @@ turns:
   - user: "Ada, put the guardhouse CCTV camera wall on screen {real_screen}."
     expect:
       # explicit ask -> direct start; she should still SAY what's running
-      calls_any: [cctv_wall, cctv_snapshot, cast_to_screen]
+      calls_any: [cctv_wall, ada_camera_snapshot, cast_to_screen]
       response_nonempty: true
       timeout_s: 120
       settle_s: 8
@@ -59,7 +59,7 @@ turns:
   # teardown — exercises the stop path too
   - user: "Now stop the camera on screen {real_screen} and clear the screen."
     expect:
-      calls_any: [cast_to_screen, cctv_snapshot, ada_camera_snapshot, cctv_wall]
+      calls_any: [cast_to_screen, ada_camera_snapshot, cctv_wall]
       response_nonempty: true
       timeout_s: 60
       settle_s: 5

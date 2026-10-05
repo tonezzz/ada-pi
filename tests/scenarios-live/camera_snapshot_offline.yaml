@@ -7,7 +7,7 @@ tier: full
 turns:
   - user: "Ada, show me the camera snapshot from the guardhouse camera — if it's offline just tell me, don't keep retrying."
     expect:
-      calls_any: [ada_camera_snapshot, cctv_snapshot, vcast_snapshot]
+      calls_any: [ada_camera_snapshot, vcast_snapshot]
       max_calls: 4
       response_nonempty: true
       timeout_s: 220

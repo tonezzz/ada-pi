@@ -7,6 +7,6 @@ turns:
       Quick check — can you show me what the c201 camera sees right now?
       Put it on the TV.
     expect:
-      calls_any: [cctv_snapshot]
+      calls_any: [ada_camera_snapshot]
       timeout_s: 180
       settle_s: 15

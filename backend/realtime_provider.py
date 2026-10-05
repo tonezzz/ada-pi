@@ -34,6 +34,7 @@ from backend.tool_runner import (
     DEVIN_CONFIRMED_TOOLS,
     DOC_CONFIRMED_TOOLS,
     MEMORY_WRITE_TOOLS,
+    _resolve_alias,
 )
 
 # Tools whose call requires an explicit user confirmation. The Jev advisory
@@ -194,7 +195,7 @@ def _phantom_claim(text: str) -> bool:
 ACTUATING_TOOLS = frozenset({
     "control_entity", "control_cover", "control_media_player",
     "press_button", "tv_action", "yt_cast", "yt_cast_stop",
-    "cast_to_screen", "vcast_say", "cctv_snapshot",
+    "cast_to_screen", "vcast_say",
     "ada_doc_archive", "ada_doc_print", "ada_set_voice",
     "devin_dispatch",
     "calendar_create_event", "calendar_delete_event",
@@ -326,11 +327,18 @@ DRIVE_INSTRUCTIONS = (
 )
 
 
-# XMEye VMS camera snapshots — env-gated by ADA_VMS_SNAP_URL (not via
-# ADA_EXCLUDED_TOOLS): the declaration and paragraph only exist when the
-# instance is configured to reach the vms-snap shim on the VMS host.
+# XMEye VMS camera snapshots — the VMS_INSTRUCTIONS paragraph is gated by
+# ADA_VMS_SNAP_URL (not via ADA_EXCLUDED_TOOLS): property-camera guidance
+# only exists when the instance can reach the vms-snap shim on the VMS
+# host. The declaration itself is now unconditional — source='traffic'
+# keeps public traffic cams working on instances without the shim.
 VMS_TOOLS = {"ada_camera_snapshot"}
 
+# tools-merge-camera: ada_camera_snapshot is the single camera stills
+# tool — source='vms' property CCTV (+ go2rtc home cams), 'traffic'
+# public Thailand cams, screen=/target= to push the frame to a display.
+# It absorbed cctv_snapshot and traffic_camera; those names survive as
+# tool_runner._ALIASES rows, not declarations.
 VMS_INSTRUCTIONS = (
     " You can pull a still frame from the property CCTV cameras with "
     "ada_camera_snapshot — pass the view the user means (e.g. 'swimming pool', "
@@ -370,35 +378,67 @@ def _as_num(v) -> float | None:
 
 
 TRAFFIC_INSTRUCTIONS = (
-    " For public traffic cameras use traffic_camera — it searches ~190 "
-    "Thailand traffic cams (expressways, Bangkok, Chonburi) by area keyword "
-    "or user position+heading, snaps the current frame, and attaches it for "
-    "you to describe. Prefer it over ada_camera_snapshot whenever the user "
-    "asks about roads/traffic outside the property."
+    " For public traffic cameras call ada_camera_snapshot with "
+    "source='traffic' — it searches ~190 Thailand traffic cams "
+    "(expressways, Bangkok, Chonburi) by area keyword or user "
+    "position+heading, snaps the current frame, and attaches it for you "
+    "to describe. Prefer source='traffic' over the default source "
+    "whenever the user asks about roads/traffic outside the property."
 )
 
-TRAFFIC_DECLARATION = {
-    "name": "traffic_camera",
+CAMERA_DECLARATION = {
+    "name": "ada_camera_snapshot",
     "description": (
-        "Find and look at a public Thailand traffic camera (Longdo/iTIC feed — "
-        "~190 cams on expressways, Bangkok roads, Chonburi corridor). Use when "
-        "the user asks about traffic, road conditions, or a camera near an "
-        "area or on their route — 'check traffic near Bang Na', 'is there a "
-        "cam ahead on Burapha', 'camera in the direction I'm heading'. "
-        "The matched camera's current frame is attached to the result — "
-        "describe what it shows honestly (it is one still, not live video). "
-        "query matches road/area names (Thai or English); lat/lon+heading pick "
-        "the nearest cam roughly ahead of the user. cast_url is provided to "
-        "show the frame on a vcast screen via cast_to_screen."
+        "Take a still snapshot from a camera — property CCTV (XMEye VMS), "
+        "home cams, or public Thailand traffic cams. Use when the user asks "
+        "to see, check, or look at a camera view — 'is it flooding at the "
+        "pool', 'show me the front road', 'check traffic on Rama 4'. "
+        "source='vms' for property cameras, source='traffic' for public "
+        "traffic cams, 'auto' (default) picks by the args given. The image "
+        "is attached to the tool result for you to describe — one still "
+        "frame per call, not a live stream. Pass screen=N (or target='tv'/"
+        "'screen') to also show the frame on a display — this handles what "
+        "used to be cctv_snapshot (snap + show on a screen/TV) and "
+        "traffic_camera (public Thailand traffic cams). mode='cached' "
+        "skips the live pull and returns the wall's stored frame instantly "
+        "(with its age) — use it as the fast first answer, then call "
+        "again live for the refreshed frame."
     ),
     "parameters_json_schema": {
         "type": "object",
         "properties": {
+            "view": {
+                "type": "string",
+                "description": (
+                    "What to look at: a property camera name ('swimming "
+                    "pool', 'tennis court', 'front road left', 'walkway', "
+                    "'guard view', 'mini mart', 'coffee corner', 'c201', "
+                    "'c100') or — with source='traffic' — an area/road "
+                    "keyword ('bangna', 'burapha', 'สุขุมวิท'). Fuzzy — "
+                    "the service returns the available list on a miss."),
+            },
+            "source": {
+                "type": "string",
+                "enum": ["auto", "vms", "traffic"],
+                "description": (
+                    "'auto' (default): a property cam unless traffic-style "
+                    "args arrive. 'vms': property CCTV / home cams. "
+                    "'traffic': public Thailand traffic cams "
+                    "(Longdo/iTIC feed)."),
+            },
+            "channel": {
+                "type": "string",
+                "description": "Legacy alias for view.",
+            },
+            "camera": {
+                "type": "string",
+                "description": "Legacy alias for view.",
+            },
             "query": {
                 "type": "string",
                 "description": (
-                    "Area or road keyword — e.g. 'bangna', 'burapha', "
-                    "'สุขุมวิท', 'pattaya', a Thai road name."),
+                    "Traffic area/road keyword — same role as view when "
+                    "source='traffic'."),
             },
             "lat": {"type": "number",
                     "description": "User latitude (with lon) — nearest cams win."},
@@ -406,33 +446,6 @@ TRAFFIC_DECLARATION = {
                     "description": "User longitude (with lat)."},
             "heading": {"type": "number",
                         "description": "User heading in degrees (0=N) — prefers cams ahead."},
-        },
-        "additionalProperties": False,
-    },
-}
-
-VMS_DECLARATION = {
-    "name": "ada_camera_snapshot",
-    "description": (
-        "Take a still snapshot from one of the property CCTV cameras "
-        "(XMEye VMS). Use when the user asks to see, check, or look at a "
-        "camera view — 'is it flooding at the pool', 'show me the front "
-        "road'. The image is attached to the tool result for you to "
-        "describe. One still frame per call — not a live stream. "
-        "mode='cached' skips the live pull and returns the wall's stored "
-        "frame instantly (with its age) — use it as the fast first answer, "
-        "then call again live for the refreshed frame."
-    ),
-    "parameters_json_schema": {
-        "type": "object",
-        "properties": {
-            "channel": {
-                "type": "string",
-                "description": (
-                    "Camera/view name, e.g. 'swimming pool', 'tennis court', "
-                    "'front road left', 'walkway', 'guard view'. Fuzzy — "
-                    "the service returns the available list on a miss."),
-            },
             "mode": {
                 "type": "string",
                 "enum": ["live", "cached"],
@@ -442,8 +455,27 @@ VMS_DECLARATION = {
                     "with its age — the stored-first answer before a live "
                     "refresh."),
             },
+            "screen": {
+                "type": "integer",
+                "description": (
+                    "Also show the captured frame on this vcast display "
+                    "number."),
+            },
+            "target": {
+                "type": "string",
+                "enum": ["tv", "screen"],
+                "description": (
+                    "Where to show the frame: 'tv' for the living-room TV, "
+                    "'screen' for the vcast display in 'screen' (default "
+                    "1). Omit both for describe-only."),
+            },
+            "confirmed": {
+                "type": "boolean",
+                "description": (
+                    "Required when pushing the frame to a display after "
+                    "the user explicitly said yes."),
+            },
         },
-        "required": ["channel"],
         "additionalProperties": False,
     },
 }
@@ -774,7 +806,8 @@ class GeminiLiveProvider(RealtimeProvider):
             "claim a cast, publish, or device action succeeded from the call alone — only from "
             "the result. If a publish is pending user confirmation, ask the user first and do "
             "not cast or link the page until the publish result shows status=published. "
-            "CAMERA-CAPTURE CONTRACT: starting a camera capture or cast (uplink, cctv_snapshot, "
+            "CAMERA-CAPTURE CONTRACT: starting a camera capture or cast (uplink, "
+            "ada_camera_snapshot with a screen=/target= display push, "
             "cctv_wall, casting a camera view to a screen) requires asking the user first — "
             "never start capture in the same turn as the request without an explicit yes. "
             "While a capture is active (tool results list it in active_captures), if the user "
@@ -1378,14 +1411,45 @@ class GeminiLiveProvider(RealtimeProvider):
                 "live video.")
 
     async def _camera_snapshot(self, args: dict) -> tuple[dict, tuple[str, bytes] | None]:
-        """ada_camera_snapshot — pull one still frame through the vms-snap
-        shim. Returns (tool_result, (channel, png)); the caller delivers the
-        frame as a follow-up client-content turn — send_tool_response can't
-        carry binary parts (its json.dumps path can't serialize bytes)."""
-        channel = str(args.get("channel") or "").strip()
+        """ada_camera_snapshot — merged camera surface (tools-merge-camera):
+        source='vms' pulls one still through the vms-snap shim (go2rtc home
+        cams fall through to the runner's grab chain — the absorbed
+        cctv_snapshot path), 'traffic' routes to _traffic_camera (absorbed
+        traffic_camera), and screen=/target= pushes the frame to a display
+        (absorbed cctv_snapshot's cast). Returns (tool_result, (channel,
+        png, mime)); the caller delivers the frame as a follow-up
+        client-content turn — send_tool_response can't carry binary parts
+        (its json.dumps path can't serialize bytes)."""
+        source = str(args.get("source") or "auto").strip().lower()
+        if source not in ("auto", "vms", "traffic"):
+            return ({"error": f"unknown source '{source}' — use auto, "
+                              "vms, or traffic."}, None)
+        traffic_args = (str(args.get("query") or "").strip()
+                        or args.get("lat") is not None
+                        or args.get("lon") is not None
+                        or args.get("heading") is not None)
+        if source == "traffic" or (source == "auto" and traffic_args):
+            result, frame = await self._traffic_camera(args)
+            return (await self._snap_display(
+                args, result, result.get("cast_url")), frame)
+        if not self.vms_snap_url:
+            # No property cameras on this instance — auto still serves
+            # traffic cams; an explicit vms ask gets an honest answer.
+            if source == "vms":
+                return ({"error": "property cameras are not configured on "
+                                  "this instance — public traffic cams "
+                                  "work with source='traffic'."}, None)
+            result, frame = await self._traffic_camera(args)
+            return (await self._snap_display(
+                args, result, result.get("cast_url")), frame)
+        channel = str(args.get("view") or args.get("channel")
+                      or args.get("camera") or args.get("query")
+                      or "").strip()
         if not channel:
-            return ({"error": "channel is required — e.g. 'swimming pool', "
-                              "'tennis court', 'front road'."}, None)
+            return ({"error": "view is required — a property camera name "
+                              "('swimming pool', 'c201', 'coffee corner') "
+                              "or, for public cams, source='traffic' with "
+                              "an area/road."}, None)
         mode = str(args.get("mode") or "live").strip().lower()
         if mode == "cached":
             # Stored-first: the wall's last-good thumb, marked with age —
@@ -1412,6 +1476,14 @@ class GeminiLiveProvider(RealtimeProvider):
                 png, resolved = await asyncio.wait_for(
                     vms_camera.snapshot(channel), timeout=45)
             except LookupError as exc:
+                # absorbed cctv_snapshot coverage: 'coffee corner', 'c201',
+                # 'c100' are go2rtc home cams the VMS shim doesn't know —
+                # the runner's grab chain covers them (and YT "cameras").
+                shot = (await asyncio.to_thread(
+                    self.tool_runner._cctv_grab, channel)
+                    if self.tool_runner is not None else None)
+                if shot and shot.get("ok"):
+                    return await self._grabbed_result(args, shot)
                 return ({"error": str(exc)}, None)
             except Exception as exc:
                 # wait_for cancels the shim call; TimeoutError() is empty —
@@ -1513,24 +1585,101 @@ class GeminiLiveProvider(RealtimeProvider):
         except Exception as exc:
             logger.warning("session=%s snap publish failed: %s",
                            self.session_id, exc)
-        if result.get("cast_url"):
+        if result.get("cast_url") and not (
+                args.get("screen") or args.get("target")):
             result["output"] += (
                 " To show this frame on a vcast display, call "
                 f"cast_to_screen(action='image', "
-                f"url='{result['cast_url']}') — copy that url value "
-                "character-for-character; never guess or invent a URL.")
+                f"url='{result['cast_url']}') or call me again with "
+                "screen=N — copy that url value character-for-character; "
+                "never guess or invent a URL.")
         mime = "image/png"
         if stale_meta:
             mime = "image/jpeg"
             resolved = (f"{resolved} (STALE — last known frame, "
                         f"{age // 60}m old; camera offline)")
+        result = await self._snap_display(
+            args, result, result.get("cast_url"))
         return result, (resolved, png, mime)
+
+    async def _snap_display(self, args: dict, result: dict,
+                            url: str | None) -> dict:
+        """Absorbed cctv_snapshot behavior: screen=N / target='tv'|'screen'
+        pushes the captured frame to a display through the runner's gated
+        tools — screen-owner, busy-interrupt and rate-limit checks all
+        live in cast_to_screen/tv_action, not duplicated here."""
+        try:
+            n = int(args.get("screen") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        t = str(args.get("target") or "").strip().lower()
+        if not (n or t in ("tv", "screen") or t.startswith("vcast")):
+            return result
+        if self.tool_runner is None:
+            result["output"] += (" No display bridge on this instance — "
+                                 "the cast_url is in the result.")
+            return result
+        if not url:
+            result["output"] += " No frame URL to show."
+            return result
+        owner = self.session_owner
+        kw = dict(identity=(owner or self.current_speaker_ha_person),
+                  speaker=self.current_speaker_ha_person,
+                  speaker_session=self.speaker_session, owner=owner)
+        try:
+            if t == "tv":
+                out = await self.tool_runner.execute(
+                    "tv_action", {"cmd": "nav", "text": url}, **kw)
+                result["display"] = out
+                result["output"] += " Shown on the TV."
+            else:
+                n = n or 1
+                out = await self.tool_runner.execute(
+                    "cast_to_screen",
+                    {"screen": n, "action": "image", "url": url}, **kw)
+                result["display"] = out
+                result["output"] += (
+                    f" Shown on screen {n}."
+                    if isinstance(out, dict) and out.get("delivered")
+                    else f" Screen cast did not confirm delivery: {out}")
+        except Exception as exc:
+            result["display_error"] = str(exc)
+            result["output"] += f" (display push failed: {exc})"
+        return result
+
+    async def _grabbed_result(self, args: dict,
+                              shot: dict) -> tuple[dict, tuple[str, bytes, str] | None]:
+        """go2rtc/YT grab succeeded via the runner's chain (the absorbed
+        cctv_snapshot home-cam path): fetch the published frame bytes so
+        the describe contract still attaches an image, then honor
+        screen=/target= like the VMS path."""
+        url = shot["url"]
+        frame = None
+        try:
+            data = await asyncio.to_thread(
+                lambda: urllib.request.urlopen(
+                    urllib.request.Request(url), timeout=10).read())
+            if len(data) > 500:
+                frame = (str(shot["camera"]), data, "image/jpeg")
+        except Exception as exc:
+            logger.warning("session=%s grabbed frame fetch failed: %s",
+                           self.session_id, exc)
+        result = {
+            "output": (f"Still frame captured from camera "
+                       f"'{shot['camera']}'. "
+                       + self._frame_followup_note()),
+            "channel": shot["camera"], "cast_url": url,
+            "inspect_url": url,
+        }
+        return (await self._snap_display(args, result, url), frame)
 
     async def _traffic_camera(self, args: dict) -> tuple[dict, tuple[str, bytes, str] | None]:
         """traffic_camera — search the Longdo/iTIC feed, snap the best match,
         attach the JPEG, publish a same-origin cast asset."""
         from backend import traffic_camera as tc
-        query = str(args.get("query") or "").strip()
+        query = str(args.get("query") or args.get("view")
+                    or args.get("camera") or args.get("channel")
+                    or "").strip()
         lat = _as_num(args.get("lat")); lon = _as_num(args.get("lon"))
         heading = _as_num(args.get("heading"))
         if not query and lat is None:
@@ -2105,42 +2254,6 @@ class GeminiLiveProvider(RealtimeProvider):
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "cctv_snapshot",
-                    "description": (
-                        "Grabs ONE snapshot frame from a CCTV camera AND shows it on a screen in a single "
-                        "call — use this whenever the user asks to put/show/cast a camera on a screen or TV. "
-                        "Home cameras: 'coffee corner', 'c201', 'c100'. Estate/VMS cameras: 'swimming pool', "
-                        "'tennis court', 'front rd. left/right', 'walkway', 'guard view', 'mini mart', "
-                        "'play ground', 'road in', 'road corner', 'washing machines', 'stairway room', 'cam01'. "
-                        "target='tv' for the living-room TV; target='screen' + screen=N for a vcast display. "
-                        "The tool handles snapshot + publish + cast itself — never invent an image URL."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "camera": {
-                                "type": "string",
-                                "description": "Camera name: 'coffee corner', 'c201', 'c100'.",
-                            },
-                            "target": {
-                                "type": "string",
-                                "enum": ["tv", "screen"],
-                                "description": "'tv' (default) or 'screen' for a vcast display.",
-                            },
-                            "screen": {
-                                "type": "integer",
-                                "description": "vcast screen number when target='screen'.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required — camera captures start only after the user explicitly says yes.",
-                            },
-                        },
-                        "required": ["camera"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -4744,10 +4857,11 @@ class GeminiLiveProvider(RealtimeProvider):
                 config["system_instruction"] = config["system_instruction"].replace(
                     SUMMARY_INSTRUCTIONS, ""
                 )
-        if self.vms_snap_url and not (VMS_TOOLS <= excluded):
-            config["tools"][0]["function_declarations"].append(dict(VMS_DECLARATION))
-        if "traffic_camera" not in excluded:
-            config["tools"][0]["function_declarations"].append(dict(TRAFFIC_DECLARATION))
+        # The merged camera tool is declared on every instance — its
+        # source='traffic' path needs no VMS shim (tools-merge-camera).
+        # The vms source just answers honestly when the shim is absent.
+        if not (VMS_TOOLS <= excluded):
+            config["tools"][0]["function_declarations"].append(dict(CAMERA_DECLARATION))
         # Drop-in tools (backend/tools.d) — manifest-declared, excluded-aware.
         try:
             config["tools"][0]["function_declarations"].extend(
@@ -5010,6 +5124,23 @@ class GeminiLiveProvider(RealtimeProvider):
                             "session=%s function_call received id=%s name=%s args=%r",
                             self.session_id, call.id, call.name, call.args,
                         )
+                        # Consolidated tool surface: absorbed names
+                        # (tool_runner._ALIASES) resolve to their canonical
+                        # tool BEFORE dispatch — provider-dispatched tools
+                        # share the runner's alias contract so stale
+                        # phrasing still lands (tools-merge-camera).
+                        _rname, _rimplied = _resolve_alias(
+                            str(call.name or ""))
+                        if _rname != str(call.name) or _rimplied:
+                            try:
+                                call = call.model_copy(update={
+                                    "name": _rname,
+                                    "args": {**_rimplied,
+                                             **dict(call.args or {})}})
+                            except Exception:
+                                logger.warning(
+                                    "session=%s alias copy failed for %s",
+                                    self.session_id, call.name)
                         yield ProviderEvent("tool_call", {
                             "name": str(call.name),
                             "args": _safe_args(call.args),
@@ -5018,7 +5149,16 @@ class GeminiLiveProvider(RealtimeProvider):
                         tool_calls_this_turn += 1
                         self._tools_in_flight += 1
                         tool_t0 = time.monotonic()
-                        if call.name in ACTUATING_TOOLS:
+                        # cctv_snapshot's old seat: a snap-to-display push
+                        # is actuation even though a bare describe is not.
+                        _cargs_probe = call.args or {}
+                        _display_push = (
+                            _cargs_probe.get("screen")
+                            or str(_cargs_probe.get("target") or "")
+                            .strip().lower() in ("tv", "screen"))
+                        if call.name in ACTUATING_TOOLS or (
+                                call.name == "ada_camera_snapshot"
+                                and _display_push):
                             actuations_this_turn += 1
                         if tool_calls_this_turn > tool_budget:
                             if not budget_hit:
@@ -5221,18 +5361,46 @@ class GeminiLiveProvider(RealtimeProvider):
                                 result = {"output": recall_status}
                         elif call.name == "ada_set_voice":
                             result = {"output": self._set_voice(dict(call.args or {}))}
-                        elif call.name == "ada_camera_snapshot" and self.vms_snap_url:
-                            result, frame = await self._camera_snapshot(
-                                dict(call.args or {}))
-                            if frame:
-                                camera_frames.append(frame)
+                        elif call.name == "ada_camera_snapshot":
+                            _cargs = dict(call.args or {})
+                            # cctv_snapshot's absorbed behavior was
+                            # capture-gated for secondary voices — the
+                            # gate keys off the RESOLVED name and runs
+                            # only when the call pushes to a display.
+                            _wants_display = (
+                                _cargs.get("screen")
+                                or str(_cargs.get("target") or "")
+                                .strip().lower() in ("tv", "screen"))
+                            if _wants_display and self.tool_runner is not None:
+                                if _cargs.get("confirmed") and not \
+                                        self._user_confirmed(input_transcript):
+                                    logger.warning(
+                                        "session=%s ada_camera_snapshot "
+                                        "self-asserted confirmed=true "
+                                        "without user affirmation — "
+                                        "stripping", self.session_id)
+                                    _cargs.pop("confirmed", None)
+                                    self._emit_ops_event(
+                                        "confirm_strip",
+                                        "Stripped model-asserted "
+                                        "confirmed=true on "
+                                        "ada_camera_snapshot — no user "
+                                        "affirmation found.",
+                                        tool="ada_camera_snapshot")
+                                try:
+                                    self.tool_runner._check_capture_confirmed(
+                                        "ada_camera_snapshot", _cargs,
+                                        _cargs.get("confirmed"))
+                                except PermissionError as exc:
+                                    result = {"error": str(exc)}
+                                    _cargs = None
+                            if _cargs is not None:
+                                result, frame = await self._camera_snapshot(
+                                    _cargs)
+                                if frame:
+                                    camera_frames.append(frame)
                         elif call.name == "vcast_snapshot":
                             result, frame = await self._vcast_snapshot(
-                                dict(call.args or {}))
-                            if frame:
-                                camera_frames.append(frame)
-                        elif call.name == "traffic_camera":
-                            result, frame = await self._traffic_camera(
                                 dict(call.args or {}))
                             if frame:
                                 camera_frames.append(frame)

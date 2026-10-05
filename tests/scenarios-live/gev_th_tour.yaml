@@ -46,7 +46,7 @@ turns:
   expect:
     calls_any:
     - gev_command
-    - traffic_camera
+    - ada_camera_snapshot
     - cast_to_screen
     result_not_contains:
     - gev command relay

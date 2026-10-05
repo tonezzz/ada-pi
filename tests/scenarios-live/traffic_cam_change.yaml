@@ -32,7 +32,7 @@ turns:
   # path.
   - user: "Show me a traffic camera — any Bangkok one that's actually live — on screen {real_screen}."
     expect:
-      calls_any: [traffic_camera, cctv_wall, cast_to_screen]
+      calls_any: [ada_camera_snapshot, cctv_wall, cast_to_screen]
       result_not_contains: ["denied"]
       response_nonempty: true
       max_calls: 10
@@ -55,7 +55,7 @@ turns:
   # must produce a real cast (delivered) — a silent no-op is the bug.
   - user: "Now change it — pick a different Bangkok traffic camera that has a live feed and show it on screen {real_screen}."
     expect:
-      calls_any: [traffic_camera, cast_to_screen, cctv_wall]
+      calls_any: [ada_camera_snapshot, cast_to_screen, cctv_wall]
       result_contains: ["'delivered': 1"]
       result_not_contains: ["denied"]
       response_nonempty: true

@@ -26,9 +26,9 @@ retired ("absorbed") names are declared in
 half of this spec; `scripts/tool-lint.py` fails when the code and the
 SSOT disagree.
 
-| family  | merge card            | canonical    | absorbed (→ `action=`) |
+| family  | merge card            | canonical    | absorbed (→ `action=`/`source=`) |
 |---------|-----------------------|--------------|------------------------|
-| camera  | tools-merge-camera    | `ada_camera`  | cctv_snapshot, cctv_wall, traffic_camera, ada_camera_snapshot |
+| camera  | tools-merge-camera    | `ada_camera_snapshot` (`source=`) | cctv_snapshot, traffic_camera, capture_frame (→ `vcast_snapshot`). cctv_wall stays — a wall is a live grid, not a frame |
 | cms     | tools-merge-cms       | `cms_page`    | cms_list_pages, cms_get_page, cms_verify_page, cms_publish_page, cms_note_update, cms_delete_page, cms_automation |
 | devin   | tools-merge-devin-mcp | `devin`       | devin_dispatch, devin_status, devin_followup, devin_job_report, devin_pending, devin_jobs, devin_answer |
 | display | tools-merge-display   | `ada_display` | cast_to_screen, vcast_list, vcast_say, vcast_snapshot, vcast_gesture, yt_cast, yt_cast_status, yt_cast_stop |

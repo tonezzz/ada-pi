@@ -1,68 +1,82 @@
-# Dispatch outcome — tools-ci-audit (20261004-180803)
+# Dispatch outcome — tools-merge-camera (20261005-004926)
 
-Made the tool-consolidation program self-auditing. Branch
-`dispatch/20261004-180803-make-the-tool-consolidation-wo`, ada-pi.
+Merged the camera tool group 5 → 2 per the consolidation spec. Branch
+`dispatch/20261005-004926-merge-the-camera-tool-group-5-`, ada-pi
+worktree. No commit, no push, no deploy.
 
 ## What changed
 
-- `docs/ssot/ssot.tool-surface.yml` — **new**: the machine-readable
-  contract. `count_cap: 106` (= today's census, ratchet — growth needs a
-  deliberate bump), `target_count: 38`, six merge families bound to
-  `tools-merge-*` cards + their regression scenarios + absorbed-name
-  lists, and `coverage_debt` (43 census-day tools with no scenario
-  reference — grandfathered; new uncovered tools fail).
-- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — **new**:
-  the spec the design card referenced but never committed; reconstructed
-  from card notes (merge groups, `action=` pattern, alias plan, gates
-  preserved, audit machinery).
-- `backend/tool_runner.py` — `_ALIASES` + `_ALIAS_ARG_DEFAULTS` tables
-  and `execute()` resolution: retired names route to the canonical tool
-  with implied `action=` args; alias hits logged for the census.
-- `scripts/tool-lint.py` — **new**: static audit (AST+yaml, no backend
-  import). Fails on: surface > cap, dup declarations, alias violations
-  (key still declared / target undeclared / chain / stray), absorbed
-  name retired without an alias row, gate-set or benchmark `write_tools`
-  member resolving to nothing, declared tool with no scenario reference
-  and no debt entry, started-merge family without its scenario file.
-- `scripts/tool-usage-report.py` — **new**: journal scan of
-  `tool X args=` / `tool alias` / `denied` / phonetic-normalize lines →
-  markdown census → CMS page `report/tool-usage` (ada-cms-pages); falls
-  back to static census when `/api/tools` is unreachable.
-- `scripts/ada-tool-usage.{service,timer}` — **new**: systemd user units
-  (daily 06:20, idc01 `~/CascadeProjects/ada-pi` layout).
-- `scripts/tools-merge-gate.py` — **new**: a `tools-merge-*` card in
-  done/closed without a pass|flaky latest report for its family scenario
-  is a violation; `--card-id` is the close-time check; MDDB-unreachable
-  is distinguished from absent evidence (gate can't be satisfied by a
-  dead report store).
-- `tests/test_tool_audit.py` — **new**: 19 tests — real-repo lint is the
-  in-suite audit stage; fixture repos pin every violation class; gate
-  logic covered for done/review/backlog/single-card paths.
-- `tests/benchmark.yml` — removed phantom `ada_remove_speaker` from
-  `write_tools` (the lint's first real catch: a policy entry guarding a
-  tool that doesn't exist).
-- `docs/ada-tool-dev.md` — checklist rule 8: surface budget + lint.
+**Canonical surface (2 tools):** `ada_camera_snapshot` (all single
+frames — `source=auto|vms|traffic`, `view=`, `screen=`/`target=`) and
+`vcast_snapshot` (display self-capture). `cctv_wall` deliberately
+unchanged — a wall is a live grid, not a frame.
 
-## Result
+**3 absorbed names → `_ALIASES` rows** (callable, hidden from the
+declared surface):
 
-`tool-lint` baseline is clean (106 declared = cap, 63 scenario-covered,
-43 acknowledged debt, 11 drift warnings). The gate correctly blocks all
-six merge cards today — none has a family scenario yet. The usage report
-renders and publishes; the timer needs install on idc01.
+- `cctv_snapshot` → `ada_camera_snapshot` `{source: vms, target: tv}`
+- `traffic_camera` → `ada_camera_snapshot` `{source: traffic}`
+- `capture_frame` → `vcast_snapshot` (the GEV remote command it already
+  fires internally — it was never a standalone model declaration)
 
-## Follow-ups (out of repo scope — declared in the SSOT job)
+## Files
 
-- chaba `ssot-validate-all.mjs` / board-api `/action close`: call
-  `tools-merge-gate.py --card-id <id>` for tools-merge-* cards
-  (enforcement point lives in the chaba repo — unreachable from this
-  worktree).
-- idc01: `systemctl --user enable --now ada-tool-usage.timer` after
-  copying units to `~/.config/systemd/user/`.
+- `backend/tool_runner.py` — alias tables populated; runner
+  `ada_camera_snapshot` (VMS/go2rtc/traffic + display push) and
+  `vcast_snapshot` (snap-request + internal `capture_frame` + frame
+  poll) methods; `cctv_snapshot` method retired; `CAPTURE_CONFIRMED_TOOLS`
+  seat moved to the canonical name, gated only when `screen=`/`target=`
+  pushes to a display — a describe-only snapshot stays open.
+- `backend/realtime_provider.py` — merged `CAMERA_DECLARATION`
+  (view/source/mode/screen/target + legacy channel/camera + traffic
+  query/lat/lon/heading + confirmed) declared unconditionally —
+  `source=traffic` needs no VMS shim; `cctv_snapshot` declaration
+  removed; dispatch resolves `_resolve_alias` at loop top so legacy
+  names land canonical; actuation/capture-gate/`confirm_strip` all key
+  off the resolved name; `_camera_snapshot` routes `source`, falls back
+  to the runner's `_cctv_grab` chain for home cams/YT the shim doesn't
+  know; `_snap_display` pushes via `cast_to_screen`/`tv_action`;
+  `_grabbed_result` attaches grabbed frames to the describe contract.
+- `docs/ssot/ssot.tool-surface.yml` — camera family: canonical
+  `ada_camera_snapshot`, absorbed list per above.
+- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — family row
+  synced to the shipped shape.
+- `tests/scenarios-live/tool_merge_camera.yaml` — **new** family
+  regression (tier: full): VMS describe, traffic source, snap-to-screen
+  push, `vcast_snapshot` self-capture, teardown.
+- `tests/scenarios-live/*.yaml` — 15 files re-pointed at canonical
+  names; `tests/benchmark.yml` write_tools canonical swap.
+- `docs/ssot/jobs/ada/2026-10-05-tools-merge-camera.yml` — job trail.
 
-## Verify
+## Freshness behavior (gate requirement) — unchanged
 
-    python3 scripts/tool-lint.py                        # exit 0
-    python3 -m unittest tests.test_tool_audit -v        # 19 tests
-    python3 scripts/tools-merge-gate.py                 # 0 violations (all backlog)
-    python3 scripts/tools-merge-gate.py --card-id tools-merge-camera  # exit 1
-    python3 scripts/tool-usage-report.py --dry-run --journal-file <f>
+`mode='cached'` returns the wall's stored frame instantly with age;
+`mode='live'` pulls through the vms-snap shim; live failure falls back
+to the stale frame marked `STALE — camera offline`; the frame still
+attaches to the result for description. Same code path, same semantics.
+
+## Verification
+
+- `python3 scripts/tool-lint.py` → **clean**: 104 declared (101 builtin
+  + 3 tools.d), cap 106, **3 aliases**, 12 warnings (pre-existing
+  coverage debt + the intentional `capture_frame`→`vcast_snapshot`
+  cross-family note).
+- `python3 -m pytest tests/ -q` (throwaway venv with google-genai —
+  system python lacks the SDK): **469 passed, 8 failures all
+  pre-existing/environmental** — `ai_edge_litert` not installed
+  (detection/pose/hailo), live mddb refused (scenario memory tests),
+  and 3 CMS tests asserting `add_document.call_args` is the page write
+  when HEAD's publish flow already ends with the `reports-index` regen
+  (my diff never touches `cms_publish_page`).
+- `tests/test_tool_audit.py` + `test_traffic_camera.py` → **20/20 pass**.
+- Alias routing verified end-to-end through `ToolRunner.execute`:
+  `cctv_snapshot` → VMS path, `traffic_camera` → Longdo/iTIC search,
+  `capture_frame` → vcast snap-request flow.
+
+## Open item (expected)
+
+`tools-merge-gate.py --card-id tools-merge-camera` exits 1:
+`tool_merge_camera` exists but has no pass/flaky report — MDDB was
+unreachable from this box anyway. The scenario is `tier: full` and
+needs a real VMS shim + Longdo/iTIC + a real vcast display, i.e. an
+idc02 staging run before the card can move past review.
