@@ -62,6 +62,13 @@ ADA_DRAFT_MAX_AGE_DAYS = int(os.environ.get("ADA_DRAFT_MAX_AGE_DAYS", "7"))
 ADA_DEGRADED_KB_MIN_SCORE = float(
     os.environ.get("ADA_DEGRADED_KB_MIN_SCORE", "0.5"))
 
+# Ops-routed banks are degraded BY DESIGN (no embedding provider — they
+# will never vector-search), and their candidate set is already bounded
+# by the recency window, so a much lower keyword bar is safe — the 0.5
+# bar made scenario-report recall unreachable (2026-10-05).
+ADA_OPS_LISTING_MIN_SCORE = float(
+    os.environ.get("ADA_OPS_LISTING_MIN_SCORE", "0.15"))
+
 # Max chars of a surfaced doc injected into a live turn. Raw session dumps
 # and KB pages are much bigger; Ada gets an excerpt + key, not the blob.
 ADA_HIT_MAX_CHARS = int(os.environ.get("ADA_HIT_MAX_CHARS", "2000"))
@@ -406,8 +413,13 @@ async def _bank_docs(
             )
             ranked = _keyword_rank(listed, q)
             if not bank.writable:
+                min_score = (
+                    ADA_OPS_LISTING_MIN_SCORE
+                    if mddb.is_ops_routed(bank.mddb_collection)
+                    else ADA_DEGRADED_KB_MIN_SCORE
+                )
                 ranked = [d for d in ranked
-                          if (d.get("score") or 0.0) >= ADA_DEGRADED_KB_MIN_SCORE]
+                          if (d.get("score") or 0.0) >= min_score]
             return ranked[: int(limit) * 3], True
         return docs or [], False
     return (
