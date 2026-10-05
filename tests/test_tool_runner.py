@@ -772,7 +772,6 @@ class CalendarPlanMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["calendar"], "not configured")
 
 
-<<<<<<< HEAD
 class DocsDriveMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     """tools-merge-docs-drive (8 -> 2): the eight absorbed names stay
     callable via _ALIASES and route to their canonical parent — docs for
@@ -912,12 +911,6 @@ class MetaVoiceMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     callable via _ALIASES and route to their canonical parent —
     ada_persona for the voice actions, ada_ops for the five meta tools,
     ada_enroll_speaker for chaba's guest_register."""
-=======
-class YtMergeAliasTests(unittest.IsolatedAsyncioTestCase):
-    """tools-merge-yt (4 -> 1): the four absorbed names stay callable via
-    _ALIASES and route to yt(action=cast|status|stop|transcript)."""
-
->>>>>>> dispatch/20261005-190356-merge-the-yt-group-4-1-per-the
     async def asyncSetUp(self):
         self.ha_client = AsyncMock()
         self.ha_client.base_url = "http://test:8123"
@@ -925,7 +918,6 @@ class YtMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.ha_client.sensors.return_value = []
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _hermetic_registry()
-<<<<<<< HEAD
         self.runner.mddb = AsyncMock()
         self.runner.mddb.search_documents.return_value = []
         self.runner.memory.mddb = self.runner.mddb
@@ -1303,7 +1295,19 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
             await self.runner.execute("chat_send", {"photo": "bogus"})
         with self.assertRaises(ValueError):
             await self.runner.execute("chat_send", {"doc": "bogus"})
-=======
+
+
+class YtMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-yt (4 -> 1): the four absorbed names stay callable via
+    _ALIASES and route to yt(action=cast|status|stop|transcript)."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
         # _capture_reminder probes the vcast relay on every dict result —
         # stub it so the tests stay hermetic.
         self.runner._vcast_api = lambda *a, **k: {"captures": {}}
@@ -1353,7 +1357,7 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     async def test_canonical_rejects_unknown_action(self):
         with self.assertRaises(ValueError):
             await self.runner.execute("yt", {"action": "bogus"})
->>>>>>> dispatch/20261005-190356-merge-the-yt-group-4-1-per-the
+
 
 
 class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):
