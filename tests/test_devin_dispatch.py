@@ -157,7 +157,8 @@ _SPEC_KEY = "spec/20260930-125800-a-tool"
 class PlaybookRegistryTests(unittest.TestCase):
     def test_all_playbooks_load_and_validate(self):
         names = dd.list_playbooks()
-        self.assertEqual(names, ["build-tool", "fix-scenario", "investigate"])
+        self.assertEqual(names, ["build-tool", "cms-regen",
+                                 "fix-scenario", "investigate"])
         for name in names:
             pb = dd.load_playbook(name)
             for field in ("params", "task_template", "memory_domains",

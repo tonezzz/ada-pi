@@ -1,0 +1,133 @@
+# SSOT Job: cms-regen auto-fix playbook — close the detect→fix loop on
+# CMS automations.
+# Card: cms-regen-autofix (chaba kanban). Dispatch 20261005-225638.
+
+title: cms-regen auto-fix playbook — cms-auto-* cards self-heal
+subtitle: >-
+  backend/playbooks/cms-regen.yml + scripts/ada/cms_regen.py executor +
+  scripts/ada/kanban_autofix.py auto_fix rule; phantom registries get
+  interval_min=0 + managed_by instead of re-flagging
+
+planning:
+  goal: |
+    cms-auto-health (chaba repo) cards stale ada-cms-automation registry
+    docs as cms-auto-<slug> and auto-closes them on recovery — but the
+    recovery step still needed a human pressing regenerate. This job ships
+    the act step: a playbook + executor that POSTs the regenerate
+    endpoint, polls the registry doc until last_run advances (bounded),
+    re-checks health, and — for phantom registries where a bulk timer
+    really owns the page — writes interval_min=0 + managed_by=<owner> so
+    the health check stops re-flagging (the camwall-noble-a manual fix of
+    2026-10-04, automated).
+  decisions: |
+    - Playbook registry existed (backend/playbooks/*.yml since
+      2026-10-05) so the contract is a playbook, not a tools.d tool.
+      The playbook's task runs the deterministic executor
+      scripts/ada/cms_regen.py — a session should never hand-roll curl.
+    - gate.confirm=false is deliberate per the card: a regen is
+      idempotent/recoverable; the voice path stays confirm-gated at the
+      `devin` tool seat anyway (DEVIN_CONFIRMED_TOOLS). gate.identity=
+      owner per the card's 'owner-only' gate.
+    - run_now 'consumed' is only counted after being observed SET —
+      phantom docs never carry run_now, so 'absent' is not 'cleared'
+      (a first-pass bug, caught by tests).
+    - Phantom marking writes exactly interval_min=0 + managed_by +
+      run_now=false. Nothing else in the registry doc is touched — any
+      config/schema change beyond those keys needs a spoken confirm
+      (card contract).
+    - auto_fix lives in scripts/ada/kanban_autofix.py: prefix→playbook
+      rule table (cms-auto-* -> cms-regen), fires on column=review only,
+      dedups on a recent playbook comms line (default 30min), never acts
+      on non-matching cards. mode=dispatch goes through
+      backend.devin_dispatch (caller=kanban-autofix, is_owner=True —
+      kanban-dispatch is the owner's automation); mode=run executes
+      cms_regen in-process.
+    - The kanban-dispatch wiring (calling the hook on column transitions)
+      is a chaba-repo change — ada-pi can't reach it from a worktree;
+      tracked under followups + flagged on the card.
+  success_criteria:
+    - 'POST regenerate -> poll last_run -> health re-check, all bounded'
+    - 'phantom: unconsumed queue + fresh page -> interval_min=0 + managed_by'
+    - 'stale page + unconsumed queue -> stalled (escalate, no write)'
+    - 'non-cms-auto cards are a hard no-op'
+    - 'outcome lands on card comms + job/ ledger doc'
+  risks:
+    - 'board-api actor whitelist is ada/chaba/devin/tony — comms post as
+       devin with a "cms-regen <slug>:" text prefix'
+    - 'managed_by default derives from page meta generated_by/written_by;
+       a page with neither falls back to "external-timer"'
+    - 'MDDB/CMS endpoints down -> honest *_unreachable outcomes, never a
+       phantom write'
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "executor"
+      status: done
+      notes: >-
+        scripts/ada/cms_regen.py — stdlib-only CLI + importable run():
+        POST /api/cms/pages/<slug>/regenerate (x-api-key), poll
+        ada-cms-automation until last_run advances / run_now consumed /
+        timeout; command-generator results handled inline; phantom
+        detection = queue unconsumed AND page `updated` fresh (window =
+        max(26h, 2*interval_min)) or advanced mid-wait; marks
+        interval_min=0 + managed_by (+run_now cleared); re-checks health
+        via registry re-read + /api/cms/pages/<slug>/verify; posts card
+        comms (--card) + writes job/cms-regen-<slug>-<ts> kind=job in
+        ada-ha-bank-devin-handoff. --dry-run classifies with zero writes.
+    - id: 2
+      label: "playbook"
+      status: done
+      notes: >-
+        backend/playbooks/cms-regen.yml — params slug/card/managed_by/
+        timeout_s; gate {confirm: false, identity: owner}; verify runs
+        tests.test_cms_regen; report_to ada-ha-bank-devin-handoff;
+        max_runtime_min 15.
+    - id: 3
+      label: "auto_fix rule"
+      status: done
+      notes: >-
+        scripts/ada/kanban_autofix.py — handle_card(card_id, column):
+        prefix rules (auto_fix: [cms-auto-*] => {cms-auto-: cms-regen}),
+        review-column trigger, 30min comms dedup, dispatch/run modes,
+        comms + failure reporting. Non-matching cards return skipped.
+    - id: 4
+      label: "tests"
+      status: done
+      notes: >-
+        tests/test_cms_regen.py — 25 tests, Wire fakes MDDB /get /add +
+        CMS API + board /comment; injected clock. Covers regen/consumed/
+        error, phantom mark + managed_by precedence + dry-run +
+        stale-page stalled, generator done/error/422, unreachable mddb,
+        rule match/skip/dedup/dispatch/run. test_devin_dispatch registry
+        list updated for the new playbook.
+
+invoke:
+  commands:
+    - "python3 scripts/ada/cms_regen.py <slug> --card cms-auto-<slug> --timeout 300"
+    - "python3 scripts/ada/kanban_autofix.py --card-id cms-auto-<slug> --column review [--mode run|dispatch] [--dry-run]"
+  env:
+    ADA_CMS_API_URL: "CMS API base for /api/cms/pages/*/regenerate (default http://127.0.0.1:8080)"
+    ADA_API_KEY: "x-api-key for the CMS API (optional if auth off)"
+    MDDB_BASE_URL: "registry + job-ledger store (default http://127.0.0.1:11023/v1)"
+    ADA_BOARD_API_URL: "card comms (default http://127.0.0.1:8787)"
+    KANBAN_AUTOFIX_REPO: "dispatch repo for mode=dispatch (default ada-pi)"
+
+verification:
+  - "python3 -m unittest tests.test_cms_regen tests.test_devin_dispatch  # 51 tests OK"
+  - "python3 scripts/tool-lint.py  # clean, 53 pre-existing warnings"
+  - "python3 scripts/ada/cms_regen.py flood-report --timeout 3 --poll 1 --no-ledger  # honest mddb_unreachable on a host without mddb"
+  - "full suite: 254 tests ran, 28 errors — all google.genai import
+    failures, the known missing dep on this host (same as HEAD baseline)"
+
+followups:
+  - "chaba: wire kanban-dispatch (or cms-auto-health) to call
+    scripts/ada/kanban_autofix.py --card-id <id> --column review on
+    column-enter-review — that is the `auto_fix: [cms-auto-*]` rule's
+    trigger point. The rule/engine/executor ship in ada-pi; the call
+    site is a chaba-repo change this worktree can't reach."
+  - "chaba ssot.kanban.yml: document auto_fix + the cms-auto-* convention
+    next to the card lifecycle semantics."
