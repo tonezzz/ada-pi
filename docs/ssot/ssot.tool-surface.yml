@@ -99,6 +99,17 @@ families:
     absorbed:
       - ada_daily_summary          # -> period='digest' (alias-internal)
       - ada_weekly_comparison      # -> period='week', end->day via shim
+  # gev group 2 -> 1 (tools-merge-gev, landed 2026-10-05): gev_command
+  # stays the canonical — its tour= param absorbed gev_tour (same arg
+  # name, pass-through; no _ALIAS_ARG_DEFAULTS or _alias_call_args shim).
+  # The CONTROL_TOOLS seat is unchanged: the gate keys off the resolved
+  # name, so aliased tour lookups count against the control rate limit.
+  gev:
+    merge_card: tools-merge-gev
+    canonical: gev_command         # command args OR tour=<id|alias>
+    scenario: tool_merge_gev
+    absorbed:
+      - gev_tour                   # -> gev_command {tour: <id>}
   devin:
     merge_card: tools-merge-devin-mcp
     canonical: devin               # devin_* dispatch/status/followup/report/pending/jobs/answer -> action=
@@ -227,7 +238,6 @@ coverage_debt:
   - get_pool_status
   - get_power_summary
   - get_sensor_history
-  - gev_tour
   - guest_register
   - photos_pick
   - photos_picked

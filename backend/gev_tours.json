@@ -1,5 +1,5 @@
 {
- "comment": "Named God's Eye View tours — served by the gev_tour tool so 'play the X tour' is resolvable. Each stop: fly_to_location (or fly_route for drawn routes) → annotate_map BY COORDINATES ({latitude,longitude,label} — name-based 'target' resolution is unreliable, never use it) → vcast_say narration → optional PiP frame via cast_to_screen(action='image', pane=1). frame_url should point at the NEAREST camera to the stop — a camwall thumb URL (<zone>/<key>.jpg, durable last-good) or its <key>-status.jpg card while the cam is down. Mirrors tests/scenarios-live/gev_*_tour*.yaml.",
+ "comment": "Named God's Eye View tours — served by gev_command's tour= param (absorbed gev_tour, tools-merge-gev) so 'play the X tour' is resolvable. Each stop: fly_to_location (or fly_route for drawn routes) → annotate_map BY COORDINATES ({latitude,longitude,label} — name-based 'target' resolution is unreliable, never use it) → vcast_say narration → optional PiP frame via cast_to_screen(action='image', pane=1). frame_url should point at the NEAREST camera to the stop — a camwall thumb URL (<zone>/<key>.jpg, durable last-good) or its <key>-status.jpg card while the cam is down. Mirrors tests/scenarios-live/gev_*_tour*.yaml.",
  "tours": {
   "za": {
    "title": "Johannesburg city tour",

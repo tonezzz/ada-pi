@@ -2819,7 +2819,20 @@ class GeminiLiveProvider(RealtimeProvider):
                         "Control God's Eye View (the Cesium map app on /apps/gev/) on whatever screen is showing "
                         "it — the call reaches every connected GEV client including a casted one. "
                         "To 'watch the show': cast_to_screen(action='nav', url='https://tony-dell.taila0626a.ts.net/apps/gev/') "
-                        "then drive it with gev_command. args is ONLY the tool's arg object — never put "
+                        "then drive it with gev_command. This tool also handles what used to be gev_tour — "
+                        "named flyover tours: when the user asks for 'the X tour', 'the South Africa tour', "
+                        "'ทัวร์...', or to list available tours, pass tour='<id, alias, or place name>' "
+                        "('za', 'bangkok', 'แอฟริกาใต้') to get the executable card — ordered stops with "
+                        "lat/lon, narration lines, and optional PiP camera frame URLs — or tour='' to list. "
+                        "The card is a script, not self-running — execute it: per stop call "
+                        "gev_command fly_to_location {latitude, longitude}, annotate_map to mark it, "
+                        "vcast_say the 'say' line, and cast_to_screen(action='image', url=frame_url, pane=1) "
+                        "when the stop carries one. Tours with route_points use annotate_map type='route' "
+                        "then fly_route. Cameras during a tour: NEVER cctv_wall/cast_to_screen a whole "
+                        "screen already running GEV — that kills the map session. Split first: "
+                        "cast_to_screen(action='layout', panes=2), then "
+                        "cast_to_screen(action='image'|'play', url=cam, pane=1). "
+                        "args is ONLY the tool's arg object — never put "
                         "'name' inside args and never wrap name+args together; name is the sibling field. "
                         "IMPORTANT — args must match the GEV schema exactly "
                         "(additionalProperties are rejected, the call fails silently if names are wrong). "
@@ -2855,38 +2868,12 @@ class GeminiLiveProvider(RealtimeProvider):
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
-                            "name": {"type": "string", "description": "GEV tool name."},
+                            "name": {"type": "string", "description": "GEV tool name — required for a command; omit for a tour lookup."},
                             "args": {"type": "object", "description": "Tool arguments (per GEV tools.json)."},
                             "screen": {"type": "integer", "description": "Limit to this vcast screen (omit = all GEV pages)."},
                             "pane": {"type": "integer", "description": "Limit to this split-screen pane (0-based; omit = all panes)."},
                             "wait": {"type": "number", "description": "Seconds to wait for client responses (0 = fire-and-forget). Default 3."},
-                        },
-                        "required": ["name"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "gev_tour",
-                    "description": (
-                        "Named God's Eye View flyover tours — when the user asks for 'the X tour', "
-                        "'the South Africa tour', 'ทัวร์...', or to list available tours. Call with no "
-                        "tour to list; with a name/alias (Thai or English) to get the executable card: "
-                        "ordered stops with lat/lon, narration lines, and optional PiP camera frame URLs. "
-                        "The card is a script, not self-running — execute it: per stop call "
-                        "gev_command fly_to_location {latitude, longitude}, annotate_map to mark it, "
-                        "vcast_say the 'say' line, and cast_to_screen(action='image', url=frame_url, pane=1) "
-                        "when the stop carries one. Tours with route_points use annotate_map type='route' "
-                        "then fly_route. Make sure GEV is on the screen first "
-                        "(cast_to_screen nav .../apps/gev/). Cameras during a tour: "
-                        "NEVER cctv_wall/cast_to_screen a whole screen already running "
-                        "GEV — that kills the map session. Split first: "
-                        "cast_to_screen(action='layout', panes=2), then "
-                        "cast_to_screen(action='image'|'play', url=cam, pane=1)."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "tour": {"type": "string", "description": "Tour id, alias, or place name — 'za', 'bangkok', 'แอฟริกาใต้'. Omit to list."},
+                            "tour": {"type": "string", "description": "Tour id, alias, or place name — 'za', 'bangkok', 'แอฟริกาใต้'. Pass '' to list tours. When set, name/args are ignored."},
                         },
                         "additionalProperties": False,
                     },

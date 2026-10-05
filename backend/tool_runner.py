@@ -301,6 +301,10 @@ _ALIASES: dict[str, str] = {
     "drive_show": "drive",
     "drive_get": "drive",
     "drive_update": "drive",
+    # gev family — tools-merge-gev (2026-10-05): 2 -> 1. gev_tour retires
+    # into gev_command's tour= param — same arg name, so no
+    # _ALIAS_ARG_DEFAULTS/_alias_call_args shim is needed.
+    "gev_tour": "gev_command",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the
@@ -4971,18 +4975,27 @@ class ToolRunner:
             pass
         return res
 
-    async def gev_command(self, name: str, args: dict[str, Any] | None = None,
+    _TOURS_PATH = Path(__file__).resolve().parent / "gev_tours.json"
+
+    async def gev_command(self, name: str | None = None,
+                          args: dict[str, Any] | None = None,
                           screen: int | None = None,
                           pane: int | None = None,
-                          wait: float = 3.0) -> dict[str, Any]:
+                          wait: float = 3.0,
+                          tour: str | None = None) -> dict[str, Any]:
         """Send a command to God's Eye View clients — forwards a
         function_call frame through the gev-gemini bridge to connected GEV
         browsers (including casted ones). screen=N targets that display;
         pane=N narrows to that split-screen pane; wait (seconds,
         0=fire-and-forget) collects the clients' tool_response so queries
-        like get_current_view_state can answer."""
+        like get_current_view_state can answer. tools-merge-gev
+        (2026-10-05): also handles what used to be gev_tour — pass
+        tour='<id or alias>' for a tour's executable card; a bare call
+        (no name) lists tours."""
         import asyncio
         import urllib.request
+        if tour is not None or not name:
+            return self._gev_tour_card(tour)
         # The model intermittently wraps the call envelope inside args:
         #   args={'args': {'query': '...'}, 'name': 'fly_to_location'}
         # — GEV then sees no query/coords and errors cryptically
@@ -5039,13 +5052,12 @@ class ToolRunner:
             out["error"] = errs[0].get("error") or "all GEV clients failed"
         return out
 
-    _TOURS_PATH = Path(__file__).resolve().parent / "gev_tours.json"
-
-    async def gev_tour(self, tour: str | None = None) -> dict[str, Any]:
-        """Named GEV flyover tours — list them (tour=None) or return the
-        executable card for one. A tour card is NOT self-running: drive
-        each stop with gev_command/vcast_say/cast_to_screen per the card's
-        per_stop recipe."""
+    def _gev_tour_card(self, tour: str | None) -> dict[str, Any]:
+        """Named GEV flyover tours — the absorbed gev_tour body
+        (tools-merge-gev). tour=None lists them; an id/alias returns the
+        executable card. A tour card is NOT self-running: drive each stop
+        with gev_command/vcast_say/cast_to_screen per the card's per_stop
+        recipe."""
         try:
             data = json.loads(self._TOURS_PATH.read_text())
         except Exception as exc:
@@ -5056,7 +5068,7 @@ class ToolRunner:
                                   "stops": len(v.get("stops") or []),
                                   "aliases": v.get("aliases")}
                               for k, v in tours.items()},
-                    "hint": "gev_tour(tour='<id or alias>') returns the "
+                    "hint": "gev_command(tour='<id or alias>') returns the "
                             "stop list to execute"}
         q = tour.strip().lower()
         hit = next((k for k, v in tours.items()

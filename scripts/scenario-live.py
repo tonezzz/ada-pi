@@ -183,6 +183,7 @@ LEGACY_TOOL_ALIASES: dict[str, str] = {
     "drive_show": "drive",
     "drive_get": "drive",
     "drive_update": "drive",
+    "gev_tour": "gev_command",
 }
 
 _VCAST_API = os.environ.get(
