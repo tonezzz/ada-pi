@@ -50,8 +50,12 @@ def main() -> int:
                     help="audit every doc, not just kind page|report")
     args = ap.parse_args()
 
-    res = _post(f"{args.mddb.rstrip('/')}/search",
-                {"collection": args.collection, "limit": 400})
+    try:
+        res = _post(f"{args.mddb.rstrip('/')}/search",
+                    {"collection": args.collection, "limit": 400})
+    except Exception as exc:
+        print(f"mddb unreachable at {args.mddb}: {exc}", file=sys.stderr)
+        return 2
     docs = res if isinstance(res, list) else (res.get("documents")
                                               or res.get("results") or [])
     n_ok = n_warn = n_bad = 0

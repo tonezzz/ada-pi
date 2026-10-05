@@ -99,3 +99,27 @@ currently FAILED — it posts to idc01 (`100.74.146.0:11023`) which times
 out; the tony-dell MDDB is a read-only follower on `100.68.142.13:11023`
 (no loopback, no embedding provider). Worth an SSOT note in
 `ssot.values.yml`: `mddb.primary` vs `mddb.local_follower`.
+
+## 7. `ssot.apps.ada-cms-reports.yml` — meta_contract is now enforced
+
+Card ada-report-quality (dispatch 20261005-222628) turned the SHOULD into
+enforcement in ada-pi. Suggested doc edits:
+
+- In `meta_contract`, mark `summary`, `domain`, `fresh_for`,
+  `confidence`, `timeline`, `updated` as REQUIRED for `cms_publish_page`
+  writes (the confirm-gate rejects before the handshake is registered);
+  `links`/`supersedes` stay optional.
+- Add `medium` to the confidence vocabulary (`high|low|unverified`) —
+  derived aggregates (report-distill digests, tool-usage census) are
+  neither measured-direct nor unverified.
+
+Implementation (ada-pi repo):
+`backend/report_meta.py` is the shared validator
+(`validate_report_meta` / `missing_publish_fields` / `fresh_for_seconds`).
+Reject layer: `ToolRunner._check_cms_write_allowed`. Warn layer:
+`cms_publish_page`/`cms_note_update` return `meta_contract` on gaps and
+`cms_verify_page` reports it on reads. `reports-index` reuses
+`fresh_for_seconds`. Script publishers (ops-health-report,
+tool-usage-report, report-distill, ada/lab-results, scenario-benchmark)
+validate before `/add` and refuse to publish on missing fields.
+`scripts/report-meta-check.py` audits ada-cms-pages (exit 1 on missing).

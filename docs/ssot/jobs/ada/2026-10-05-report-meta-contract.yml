@@ -1,0 +1,103 @@
+# SSOT Job: Enforce the report meta contract on Ada-generated reports
+# Card: ada-report-quality (chaba kanban). Dispatch 20261005-222628.
+
+title: Report meta contract — enforced at write time on every CMS report page
+subtitle: summary/domain/fresh_for/confidence/timeline/updated required; reject on missing model args, warn on residual gaps
+
+planning:
+  goal: |
+    Every report page in ada-cms-pages must carry the meta_contract
+    (ssot.apps.ada-cms-reports.yml): summary (~240 chars, the
+    reports-index brief), domain, fresh_for, confidence, timeline,
+    updated. Before this job all four model-supplied fields were optional
+    params on cms_publish_page and several generator scripts wrote pages
+    missing most of them (lab-results, benchmark-*, auto-report carried
+    none; ops-health/tool-usage/digests lacked confidence).
+  scope: |
+    In scope:
+      - backend/report_meta.py (new) — shared stdlib-only validator:
+        validate_report_meta(meta) -> {ok, missing, warnings},
+        missing_publish_fields(args), fresh_for_seconds(hint).
+      - backend/tool_runner.py — _check_cms_write_allowed rejects
+        cms_publish_page calls missing summary/domain/fresh_for/
+        confidence (ValueError BEFORE the pending-confirm registers, so
+        the model fixes the call instead of burning a user confirm);
+        fresh_for must parse ('30m'/'1h'/'6h'/'1d'). Post-merge warn:
+        cms_publish_page validates the merged meta and returns
+        meta_contract on gaps (covers internal republish paths like
+        _cms_edit_sections on legacy pages). cms_note_update surfaces
+        gaps without failing (merge-only). cms_verify_page returns a
+        meta_contract block. _cms_reports_index reuses
+        fresh_for_seconds and now emits confidence+timeline itself.
+        devin_job_report passes contract args on publish.
+      - backend/realtime_provider.py — cms_publish_page schema marks the
+        four fields required; CMS_INSTRUCTIONS states the contract.
+        backend/tool_guide.yml cms_publish_page entry updated.
+      - Script publishers validate before /add and refuse on missing:
+        ops-health-report, tool-usage-report, report-distill (per-domain
+        digest, exit 1 if any skipped), ada/lab-results,
+        scenario-benchmark (benchmark-<suite> + auto-report pages).
+        All gained the missing fields (confidence=high for measured
+        probes, medium for derived aggregates).
+      - scripts/report-meta-check.py (new) — audits every kind
+        page|report doc in ada-cms-pages; exit 1 on missing fields.
+      - tests/test_tool_runner.py — publish tests carry _PAGE_META;
+        new tests: missing-meta reject (no pending armed), unparseable
+        fresh_for reject, contract fields land in stored meta, verify
+        meta_contract block, note-update gap surface.
+    Out of scope:
+      - ada-ha-scenario-reports ops docs (14d TTL; not CMS pages).
+      - The flood-news worker + other generators living in the chaba
+        repo — its writes should adopt backend/report_meta.py or an
+        equivalent check; flagged in PATCHES.md delta #7.
+      - Deploy to idc01 (deploy-only checkout; needs approval).
+  success_criteria:
+    - 'cms_publish_page without summary/domain/fresh_for/confidence → ValueError, no write'
+    - 'unparseable fresh_for → ValueError'
+    - 'conformant publish stores all six contract fields'
+    - 'cms_verify_page / cms_note_update expose meta_contract gaps'
+    - 'report-meta-check.py exits nonzero on a missing-meta page'
+  risks:
+    - 'confidence vocabulary: SSOT declares high|low|unverified; the
+      validator also accepts medium (derived aggregates). PATCHES.md #7
+      proposes adding it to the doc.'
+    - 'kind=page docs predating the contract will FAIL the audit until
+      republished with the fields — expected; the audit lists them.'
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "Shared validator"
+      status: done
+      notes: "backend/report_meta.py — REQUIRED_FIELDS (summary, domain, fresh_for, confidence, timeline, updated); warnings for >240-char summary, unparseable fresh_for/updated, out-of-vocab confidence."
+    - id: 2
+      label: "Write-time enforcement"
+      status: done
+      notes: "gate-level reject in _check_cms_write_allowed (before pending registration); post-merge warn in cms_publish_page/cms_note_update; meta_contract block in cms_verify_page; reports-index + devin_job_report emit full meta."
+    - id: 3
+      label: "Prompts"
+      status: done
+      notes: "cms_publish_page schema requires the four fields; CMS_INSTRUCTIONS contract clause; tool_guide.yml updated."
+    - id: 4
+      label: "Script publishers"
+      status: done
+      notes: "ops-health, tool-usage, report-distill, lab-results, scenario-benchmark emit complete meta and refuse to publish on missing fields."
+    - id: 5
+      label: "Verify"
+      status: done
+      notes: "CmsToolTests 26 tests green incl. 4 new contract tests; suite 629 tests — only 3 pre-existing ai_edge_litert env errors; tool-lint clean."
+
+invoke:
+  voice:
+    - '"publish a page about X" -> cms_publish_page WITH summary/domain/fresh_for/confidence or the call is rejected'
+  env:
+    ADA_CMS_COLLECTION: "ada-cms-pages (default)"
+
+verification:
+  - ".venv/bin/python -m unittest discover -s tests  # 629 tests; 3 pre-existing ai_edge_litert env errors"
+  - "python3 scripts/report-meta-check.py --mddb http://100.68.142.13:11023/v1  # audit live pages (read-only follower ok)"
+  - "python3 scripts/tool-lint.py  # clean"
