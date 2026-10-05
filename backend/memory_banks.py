@@ -87,6 +87,11 @@ class MemoryBank:
     person_scope: str | None = None  # "default" for instance owner, "person.<id>" for person-scoped
     key_scope: list[str] = field(default_factory=list)  # issued-key names that also route to this person bank
     prompt_hidden: bool = False  # excluded from {writable_banks} in tool schemas — callable but never suggested
+    # True when doc meta.status holds a *run outcome* (pass/fail/flaky)
+    # rather than a memory lifecycle — recall must not gate on it.
+    # (ops-scenarios reports: every doc was dropped as non-'active',
+    # 2026-10-05.)
+    status_outcome: bool = False
 
     def notebook(self, notebook_ids: dict[str, str]) -> str | None:
         """Resolve the deep-tier notebook id: literal id wins, else group."""
@@ -197,6 +202,7 @@ class MemoryBankRegistry:
             person_scope=spec.get("person_scope") or None,
             key_scope=list(spec.get("key_scope") or []),
             prompt_hidden=bool(spec.get("prompt_hidden")),
+            status_outcome=bool(spec.get("status_outcome")),
         )
 
     @property

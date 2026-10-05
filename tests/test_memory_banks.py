@@ -64,6 +64,8 @@ REGISTRY = {
             "writable": False,
             "write_policy": "confirmed",
             "allowed_tools": [],
+            # report docs' meta.status is the run outcome, not lifecycle
+            "status_outcome": True,
             "status": "active",
         },
         "broken": {
@@ -552,6 +554,8 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.runner.mddb.search_documents.return_value = [
             {"key": "report/doc-recall-live-20261004-1200",
              "contentMd": "# doc-recall-live — pass", "meta": {
+                 # run outcome — must not be lifecycle-filtered
+                 "status": ["fail"],
                  "last_verified": ["2026-10-04"]}},
         ]
         out = await self.runner.execute(

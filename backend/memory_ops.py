@@ -268,7 +268,11 @@ def _doc_to_hit(
     """Shape one doc into a search hit, or None when filtered out."""
     status = doc_effective_status(doc)
     is_draft = False
-    if status != "active":
+    if bank.status_outcome:
+        # meta.status is a run outcome (pass/fail/flaky), not a lifecycle
+        # state — pass it through to the hit, never gate on it.
+        pass
+    elif status != "active":
         if include_inactive:
             pass
         elif status == "draft" and _draft_visible(bank, doc, instance):
