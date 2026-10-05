@@ -4,13 +4,19 @@ tier: smoke
 # needs a REAL display on screen 9 showing the marker page — a headless
 # protocol display can't render frames for vcast_snapshot
 preflight:
-  - {check: vcast_online, screens: [9]}
+  # screen 9 was retired — the lab display is {real_screen} (vcast-real-6)
+  - {check: vcast_online, screens: ["{real_screen}"]}
 
 turns:
-  - user: "Look at vcast screen 9 — capture a snapshot and tell me exactly what text or picture is on it."
+  # Purpose: verify the snapshot path works and she reports what's actually
+  # on the lab screen. Content varies (idle/browser page), so assert the
+  # tool call + a grounded screen-related answer, not a pinned image.
+  - user: "Look at vcast screen {real_screen} — capture a snapshot and tell me exactly what's on it."
     expect:
       calls_any: [vcast_snapshot]
       response_nonempty: true
-      response_contains_any: ["VCAST", "SNAP TEST", "ADA SEES", "test", "screen"]
+      response_contains_any: ["screen", "page", "idle", "blank",
+                              "หน้าจอ", "ว่าง", "VCAST", "SNAP TEST",
+                              "ADA SEES", "test"]
       timeout_s: 120
       settle_s: 8
