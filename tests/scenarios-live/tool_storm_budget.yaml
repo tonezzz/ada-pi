@@ -1,0 +1,29 @@
+# Tool-storm budget — the memory-recall misrouting + tool-call storm
+# regression (focus item). Simple writes/reads should fire ≤3 calls;
+# storms are when recall fans out into 5+ chained searches.
+name: tool_storm_budget
+tier: gate
+turns:
+  - user: "Remember that my wifi password hint is the street name."
+    expect:
+      calls: [ada_remember]
+      max_calls: 3
+      timeout_s: 90
+      settle_s: 8
+  - user: "What time is it?"
+    expect:
+      no_calls_except: [set_facial_expression]
+      max_calls: 2
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 5
+  - user: "What did I just ask you to remember?"
+    expect:
+      calls_any: [ada_memory_search, ada_session_recall]
+      max_calls: 3
+      timeout_s: 90
+      settle_s: 8
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-general, contains: "wifi password hint"}
+    - {collection: ada-ha-bank-personal, contains: "wifi password hint"}
