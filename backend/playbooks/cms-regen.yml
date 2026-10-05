@@ -1,0 +1,83 @@
+# cms-regen — the act step for cms-auto-* kanban cards.
+#
+# cms-auto-health (chaba) cards stale ada-cms-automation docs as
+# cms-auto-<slug>; this playbook regenerates the page, verifies the
+# registry write-back, and marks phantom registries (bulk-timer-managed
+# pages) so the health check stops re-flagging them. The executor is
+# scripts/ada/cms_regen.py — the session runs it, never hand-rolls curl.
+#
+# Gate: owner-only per the card contract. confirm=false is honest here —
+# the regen act is idempotent and recoverable (the voice path is already
+# confirm-gated at the `devin` tool seat regardless).
+name: cms-regen
+description: >-
+  Regenerate a flagged CMS automation page: POST the regenerate
+  endpoint, poll the ada-cms-automation registry doc until last_run
+  advances or a bounded timeout, re-check page health, and mark phantom
+  registries (interval_min=0 + managed_by) instead of re-flagging.
+params:
+  slug:
+    required: true
+    description: >-
+      ada-cms-automation page slug — for a cms-auto-<slug> card, the
+      card id minus the 'cms-auto-' prefix.
+  card:
+    required: false
+    description: >-
+      Originating kanban card id — the run posts its outcome line to the
+      card's comms when given.
+    line: " --card {value}"
+  managed_by:
+    required: false
+    description: >-
+      Override for the phantom-registry owner tag. Default: the page's
+      generated_by/written_by meta.
+    line: " --managed-by {value}"
+  timeout_s:
+    required: false
+    default: "300"
+    description: Max seconds to wait for the registry last_run to advance.
+gate:
+  confirm: false        # regen is idempotent; no spoken yes needed
+  identity: owner       # card contract: owner-only
+task_template: |
+  Auto-fix the CMS automation `{slug}` — a cms-auto-health sweep flagged
+  its ada-cms-automation registry doc stale (kanban card
+  cms-auto-{slug}).
+
+  Run the executor from the repo root — do NOT hand-roll curl:
+
+      python3 scripts/ada/cms_regen.py {slug} --timeout {timeout_s}{card_line}{managed_by_line}
+
+  It POSTs /api/cms/pages/{slug}/regenerate, polls the registry doc
+  until last_run advances or the timeout hits, then re-checks page
+  health (registry last_status + page `updated` + the /verify parse
+  check). Env knobs: ADA_CMS_API_URL + ADA_API_KEY for the CMS API,
+  MDDB_BASE_URL for the registry, ADA_BOARD_API_URL for card comms. If
+  one is unset on this host, check the service env or docs/ssot — do
+  not guess URLs.
+
+  Outcomes:
+  - regenerated — last_run advanced and last_status is ok. Done.
+  - phantom_marked — nothing consumes run_now but the page updates via
+    a bulk timer; the script already wrote interval_min=0 + managed_by
+    so the health check stops re-flagging. Done.
+  - generator_error / generator_timeout — the command generator ran
+    and failed; put the output tail in the card comms and escalate.
+  - stalled — nothing consumed the regen AND the page is stale.
+    Escalate: read the registry doc's generator block, check that
+    unit's logs/timer on the owning host, report findings to the card
+    comms. Do NOT edit registry config beyond managed_by/interval_min
+    without owner approval — that change class needs a spoken confirm.
+  - no_registry — the flagged doc is gone; report and stop.
+
+  When --card was passed the script posts the outcome line itself; for
+  stalled/generator_* outcomes add the escalation detail as a follow-up
+  comment (POST $ADA_BOARD_API_URL/comment). Write needs-input.txt only
+  if a human decision is required.
+memory_domains:
+  - devin-handoff       # job ledger + prior handoff notes
+verify:
+  - "python3 -m unittest tests.test_cms_regen"
+report_to: ada-ha-bank-devin-handoff
+max_runtime_min: 15
