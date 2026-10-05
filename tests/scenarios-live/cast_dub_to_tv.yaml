@@ -30,9 +30,11 @@ turns:
   # fine (the interrupt gate applies to numbered vcast screens, not TV).
   - user: "Play the Noel Gallagher interview dub on the TV — the Graham Norton one."
     expect:
-      calls_any: [yt_cast, tv_action]
-      no_calls_except: [yt_cast, tv_action, cms_read, cms_get_page,
-                        ada_ha_get_state, cast_to_screen]
+      calls_any: [yt_cast]
+      # the 2026-10-05 regression was yt_cast("Noel interview") -> YouTube
+      # search -> subtitle pipeline. The direct-mp4 path echoes the local
+      # file URL back in its result — require it.
+      result_contains_any: ["/apps/yt-live/", ".mp4"]
       response_nonempty: true
       timeout_s: 90
       settle_s: 8
