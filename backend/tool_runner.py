@@ -545,6 +545,31 @@ def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
     return name, {}
 
 
+# Per-tool recovery/usage guidance (card ada-tools-desc-slim,
+# 2026-10-05). The shipped schema description is a <=2-line routing
+# blurb — the detailed contract lives in backend/tool_guide.yml and is
+# attached to failed/denied results as a "usage" key (same pattern as
+# needs_confirm/verify_warn), so it costs session context only when a
+# call goes wrong.
+_GUIDE_PATH = Path(__file__).resolve().parent / "tool_guide.yml"
+_TOOL_GUIDE: dict[str, str] | None = None
+
+
+def _tool_guide() -> dict[str, str]:
+    global _TOOL_GUIDE
+    if _TOOL_GUIDE is None:
+        try:
+            import yaml
+            data = yaml.safe_load(
+                _GUIDE_PATH.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+        _TOOL_GUIDE = {
+            str(k): str(v) for k, v in data.items()
+            if isinstance(v, str) and v.strip()}
+    return _TOOL_GUIDE
+
+
 def _alias_call_args(alias: str, args: dict[str, Any]) -> dict[str, Any]:
     """Surrogate-arg mapping for absorbed names whose parameters don't
     match the canonical tool 1:1 — the spec keeps this explicit per
@@ -1239,6 +1264,14 @@ class ToolRunner:
         try:
             return await self._execute_gated(name, call_args, ident,
                                              method=method, dyn_spec=dyn_spec)
+        except Exception as exc:
+            # Gate denials and arg errors raise instead of returning a
+            # dict — append the error-path guide to the exception text so
+            # the provider's {"error": ...} wrapper still carries it.
+            hint = _tool_guide().get(str(name))
+            if hint:
+                exc.args = (f"{exc}\nusage: {hint}",)
+            raise
         finally:
             _CALLER_IDENTITY.reset(_ident_token)
             _CALLER_VERIFIED_AFFIRM.set(False)
@@ -1443,7 +1476,23 @@ class ToolRunner:
         result = await method(**call_args)
         self._log_change_request(name, call_args, result, ident)
         result = self._denial_breaker(name, call_args, result)
+        result = self._usage_hint(name, result)
         return await self._capture_reminder(name, result)
+
+    def _usage_hint(self, name: str, result: Any) -> Any:
+        """Attach the tool's error-path guide (backend/tool_guide.yml) to
+        a failed or denied call — the slim schema description carries
+        only routing, so on error the model gets the detailed contract
+        here (same shape as the needs_confirm/verify_warn payloads)."""
+        if not isinstance(result, dict) or "usage" in result:
+            return result
+        if not (result.get("error") or result.get("needs_confirm")
+                or result.get("ok") is False):
+            return result
+        hint = _tool_guide().get(name)
+        if hint:
+            result["usage"] = hint
+        return result
 
     # User-visible state changes Ada applies herself. Transient home
     # controls (lights, media) and memory-bank writes are deliberately

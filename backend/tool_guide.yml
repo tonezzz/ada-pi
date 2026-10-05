@@ -1,0 +1,386 @@
+# Error-path tool guidance — card ada-tools-desc-slim (2026-10-05).
+#
+# ToolRunner attaches a tool's entry here to failed/denied results
+# (error / needs_confirm / ok:false) as a `usage` key, and appends it to
+# raised exceptions, so the detailed contract costs session context only
+# when a call goes wrong — same pattern as needs_confirm/verify_warn.
+# The shipped schema description is a <=2-line routing blurb
+# (scripts/tool-lint.py enforces desc_max_lines/desc_max_chars from
+# docs/ssot/ssot.tool-surface.yml).
+#
+# Keep entries terse and recovery-focused: the common mistake plus the
+# exact fix. Distilled from the prose that used to live in
+# realtime_provider.py declarations.
+
+ada_camera_snapshot: >-
+  source='vms' property cams, 'traffic' public Thailand cams, 'auto'
+  picks by args. mode='cached' returns the wall-stored frame instantly —
+  the fast first answer, then call again live to refresh. screen=N or
+  target='tv'/'screen' also shows the frame on a display (absorbs
+  cctv_snapshot/traffic_camera). On a channel miss the result lists the
+  available names — retry immediately with the closest listed name; do
+  not ask the user to pick. For a zone-wide question snap ONE
+  representative channel (cold VMS streams take up to a minute) and
+  offer more; describe the frame yourself instead of offering to cast it
+  unless the user asked to see it on a display.
+
+get_home_state: >-
+  entity_id= reads one entity live; domain= lists entities under one HA
+  domain; domain='memory' returns the stored home snapshot (device and
+  sensor counts, person entity, confidence summary). Absorbs
+  ada_ha_get_state.
+
+control_entity: >-
+  The entity's domain picks the path: on=true/false or action='on'/'off'
+  for light/switch/fan/input_boolean; action='open'/'close'/'stop' for
+  cover.* (gates, shutters); action='press' or none for button.*;
+  media_player verbs turn_on/turn_off/media_play/media_pause/
+  media_stop/volume_up/volume_down/volume_mute/select_source (with
+  source=). Only media_player.tony_tv and media_player.tony_tv_cast are
+  ours — other media_player entities are devices we do not own and must
+  not be targeted. Find the exact entity_id with home_search first.
+  Absorbs control_cover, press_button, control_media_player.
+
+home_search: >-
+  kind='device' searches controllable devices by name/entity_id — the
+  way to get an exact entity_id for control_entity; blank query lists
+  devices. kind='sensor' searches sensors with state+unit; blank lists.
+  kind='event' searches recorded home events (door/gate history) with
+  hours= for the window. Absorbs list_home_devices, search_home_devices,
+  search_devices, list_sensors, search_sensors, ada_ha_search_devices,
+  ada_ha_search_sensors, ada_ha_search_events.
+
+yt: >-
+  action='cast' plays a YouTube video on the TV with the original
+  subtitle on top and a translated line below (English auto-added for
+  non-English sources) — takes ~1-3 min the first time (download +
+  translate + transcode); acknowledge in one short sentence and never
+  claim it is playing until the system note arrives. It is for VIDEO on
+  the TV only — not fact lookups (answer those yourself), and a numbered
+  vcast screen means cast_to_screen(action='play', url=...) instead.
+  'status' reports cast progress; 'stop' stops it; 'transcript' fetches
+  spoken content as text (title, language, ~6k chars; does NOT play
+  anything). Absorbs yt_cast, yt_cast_status, yt_cast_stop,
+  yt_transcript.
+
+tv_action: >-
+  LG TV only — vcast panes zoom/scroll via cast_to_screen pane=N, not
+  here. cmd='nav' text='<URL>' shows a page in the TV browser;
+  text='screenlive:workspace:N[:pad|crop]' casts this host's live
+  workspace; text='tony-omen:workspace:N' casts Tony's desktop (also
+  switches his live workspace). On a nav'd page: scroll text='up|down'
+  (+dx/dy/factor), click text='<visible text>'/role=/selector=, type
+  text=, press text='<key>', back, shot text='<name>', viewport
+  text='WxH'. A streamed desktop is one-way video — for interaction nav
+  the page itself. Never use to answer questions — web_search instead.
+  Personal screens are owner-locked; the TV is shared.
+
+cast_to_screen: >-
+  Numbered vcast displays — not the physical TV (tv_action / yt cast for
+  that). READS: action='list' enumerates displays plus relay ground
+  truth (active_captures, camwall_zones — a camwall_zones flag is NOT
+  proof a wall is visible when state_mismatch says otherwise);
+  action='status' screen=N for one screen. Call 'list' first when unsure
+  — an offline screen or stale capture explains a silent failure.
+  CASTS: nav=web page, play=video/m3u8/YouTube-Vimeo (auto-embeds),
+  image=still, audio, cast=auto-route by content type,
+  shortcut='<app name>' opens /apps/<name>/, stop returns to idle,
+  uplink/uplink-stop for the display's camera. NARRATE: action='say'
+  speaks one short line on the display in the user's language — narrate
+  what you did/are doing on that screen; speak-blocked means the display
+  needs one tap on 'audio', then retry once. SPLIT: action='layout'
+  panes=2-5 splits; cast to pane=0..N-1; zoom/unzoom pane=N; stop
+  pane=N clears one pane. INTERRUPT: casting onto a busy screen
+  (capture/camwall/playing) returns needs_confirm with would_interrupt —
+  tell the user what's running, get a yes, retry confirmed=true; a
+  result 'replaced' field must be acknowledged aloud. Camera captures
+  are permission-gated: the user's explicit request IS consent
+  (confirmed=true directly); a capture you propose needs asking first,
+  and a running capture is never stopped silently. Absorbs vcast_say,
+  vcast_list, vcast_status, vcast_shortcut.
+
+vcast_snapshot: >-
+  The display draws its current frame; the image arrives attached —
+  verify what a screen actually shows instead of trusting the reported
+  state flag. uncapturable-iframe means a framed web page the browser
+  cannot capture — except /apps/gev/, whose iframe grabs its own Cesium
+  canvas, so GEV pages do return real pixels.
+
+chat_send: >-
+  Returns 'queued' immediately; the real send (incl. a slow camera
+  snapshot) finishes in a background job whose result arrives as a
+  system note — say it's being sent, relay the outcome when the note
+  lands. camera='<VMS channel>' attaches a fresh snapshot;
+  image_url='<url>' reuses a camwall thumb or cast_url you already
+  produced — never arbitrary web URLs. 'to' overrides the default owner
+  chat. photo='pick' starts a Google Photos picker (texts picker_uri);
+  photo='picked' polls session_id and sends/casts the choice (screen=,
+  show=). doc='show' texts a held upload's summary (key= intake key);
+  'process' returns its intake assessment; 'card' + op='archive' files
+  it into the document archive (confirmation-gated).
+
+vcast_gesture: >-
+  mode='room' = wake-on-motion, 'hand' = MediaPipe hand tracking on
+  capable displays, 'off' stops. The display reports real capability in
+  its state — a denied camera or unbuilt mode answers honestly.
+
+cctv_wall: >-
+  Periodic-thumbnail grid for a camera zone on a vcast display — stills
+  refreshed in the background, not live video. Zones: 'zone-a' (estate
+  perimeter), 'noble-park' (pool/tennis/playground/mini mart),
+  'tony-house' (c100/c201/coffee), 'vms-noble-club', 'vms-noble-a',
+  'rama9', 'traffic', 'burapha', 'chonburi'. Warm thumbnails persist
+  while off — for an AREA question prefer the wall over a slow single
+  snap; OFFER it for a zone focus ('want the Zone A wall on screen 1?')
+  rather than unprompted for a one-off look (that's
+  ada_camera_snapshot). action='start' casts + enables refresh; 'stop';
+  'settings'/'status' are NOT confirmation-gated — apply immediately.
+  settings knobs: interval, jpeg_q 1-8, thumb_w, cams_skip, cams_extra,
+  effects ['timestamp','grid','yolo:person,car@0.35']; display knobs:
+  cycle_s=N rotates cams fullscreen, zones=[...]+zone_s rotates whole
+  walls, random=true shuffles.
+
+gev_command: >-
+  Reaches every connected GEV client incl. casted ones; screen=/pane=
+  narrows. To show the map first cast
+  cast_to_screen(action='nav', url='.../apps/gev/'), wait ~10s, then
+  drive it — 'no GEV clients' means nothing is showing the app: cast it,
+  wait, RETRY. name is a sibling field of args — never put 'name' inside
+  args or wrap them together; args must match the GEV schema exactly
+  (additionalProperties rejected). Names/args: fly_to_location
+  {locationId} for preset cities (austin, sf, nyc, tokyo, london, paris,
+  dubai, dc) — ANY other place needs {query:'<place>'} (OSM Nominatim)
+  or latitude/longitude; a non-preset locationId errors out.
+  zoom_to_globe {}, adjust_camera_zoom {direction:'in'|'out', factor?} —
+  factor alone is invalid, set_layer_visibility {layerId, enabled},
+  select_nearest_aircraft {layerId:'flights', locationId:<preset>}
+  ('track a flight near X'), frame_overhead {target:'flights'|
+  'satellites'|'vessels'}, track_entity {query:<callsign/name>,
+  layerId} — a real callsign, not 'aircraft', stop_tracking {},
+  move_camera {motion:'orbit'|'pan'|'tilt'|'rotate'|'stop', direction?},
+  analyst_query {layers, scope, filters}, annotate_map
+  {annotations:[{type:'route', points:[{latitude,longitude,label?}]}]}
+  then fly_route {label?} — route first, fly second; clear_annotations
+  {}, get_current_view_state {}, capture_frame {token}. tour='<id|alias|
+  place>' returns the executable card ('' lists) — NOT self-running: per
+  stop fly_to_location {latitude,longitude}, annotate_map a pin with
+  coordinates (never by place name), cast_to_screen(action='say') the
+  'say' line, and cast_to_screen(action='image', url=frame_url, pane=1)
+  for its frame_url; route_points tours use annotate_map type='route'
+  then fly_route. NEVER cast a whole screen already running GEV — that
+  kills the map; split with action='layout' first. Never narrate a
+  flight/zoom that failed or was skipped — say it didn't work and
+  recover.
+
+home_status: >-
+  what='battery' (battery_index 1-3 for one battery's detail), 'power'
+  (hours= history window, default 24), 'inverter', 'pool', 'dashboard'
+  (tab= e.g. 'TPL', 'V1'), 'habit'.
+
+get_rk600_weather: >-
+  Explicit current-weather/wind/rain asks only — NOT UPS/battery/power
+  (home_status), not forecasts or sensors (home_search kind='sensor'
+  query='weather'), not travel/flood (web_search).
+
+home_history: >-
+  kind='logbook' friendly entries (entity_id narrows); 'events' recent
+  state changes home-wide (query= keyword); 'timeline' one entity's
+  changes with durations (needs entity_id); 'series' a sensor's numeric
+  history (needs entity_id); 'snapshots' persisted home snapshots from
+  memory. Absorbs get_logbook, get_sensor_history, get_entity_events,
+  get_recent_events, ada_ha_history.
+
+ha_confidence: >-
+  No args = devices grouped by confidence (trusted_working,
+  trusted_broken, learning, needs_integration) each with a safety level
+  (safe/caution/dangerous). entity_id alone reads one; entity_id +
+  status and/or safety writes. Absorbs ada_ha_get/set_device_confidence.
+
+ada_session_recall: >-
+  scope='sessions' (default) deep-recalls past conversations — runs in
+  the background up to ~20s, result is spoken when ready; only for
+  'what did we talk about' — NOT facts or test/benchmark/report results
+  (ada_memory_search). scope='history' answers inline from stored HA
+  device/sensor memory (absorbs ada_ha_recall); limit= applies there.
+  group= picks the notebook (memory/infra/apps/kb/ops); bank= searches
+  curated banks instead ('all' = every bank, fast tier first).
+  force=true only when the user pushes for a deeper search after a
+  recent confident hit.
+
+ada_memory_search: >-
+  First tool for factual lookup — stored facts, preferences, people,
+  procedures, notes, and test/scenario/benchmark/report results; unsure
+  which bank -> bank='all'. scope='banks' restricts to bank=;
+  'sessions' searches session summaries; 'guest' public guest memories
+  (absorbs guest_recall). Returns document keys for ada_remember
+  (correct) or ada_forget (retract).
+
+web_search: >-
+  Current public facts — news, prices, forecasts. FALLBACK not first
+  read: a CMS page may already cover it — check reports-index /
+  ada_memory_search bank='cms' BEFORE searching, and after answering
+  write the finding back (cms_edit action='note' on the matching page,
+  or offer cms_publish_page). Answer yourself in 2-3 lines citing the
+  source — never cast results to a screen instead. provider='auto'
+  (default, billed grounding with free fallback) | 'gemini' | 'duckduckgo'
+  (free, no quota).
+
+ada_remember: >-
+  'remember that…' or a fact worth keeping. Curated kinds
+  (fact/preference/person/procedure/note) need bank=; find-then-update —
+  a matching key or subject+attribute corrects in place, otherwise
+  creates; supersedes=<key> replaces a misattributed fact;
+  confirmed-policy banks need confirmed=true after a spoken yes.
+  kind='vocab' logs a speaker's misused term into their glossary (text
+  'term → correction', optional note=) — append-only, no confirmation.
+  kind='guest' saves a public guest memory (private=true for a promoted
+  user). kind='habit' reports a camera habit observation — only with a
+  backend-supplied challenge_id plus habit_key/observed/confidence/
+  reason (junk_food adds item_identified, consumption_visible,
+  classified_unhealthy). prime=true only for durable facts worth
+  injecting every session. Absorbs vocab_note, guest_remember,
+  guest_remember_private, report_habit_observation.
+
+ada_forget: >-
+  Retract when the user says a memory is no longer true — bank+key from
+  ada_memory_search; marked retracted, stays in archive for audit.
+
+ada_ops: >-
+  action='outcome' records how a stored memory/purchase check turned out
+  (good|bad|partial|skipped|worked|failed|bought_good|bought_bad, +note)
+  — updates the doc's confidence; get key= from ada_memory_search or a
+  check result first; bank-gated write. 'usage' token/cost report
+  (source=all|live|posture|clutter; reset=true zeroes counters — only
+  when asked). 'health' memory-db health (collection= narrows). 'check'
+  verifies a product/listing against stored criteria + live web
+  (product=, url=, mode=quick|deep) — background ~30-60s. 'research'
+  multi-round web research (topic=, depth=standard|deep) — background
+  1-3 min; check reports-index first. Absorbs ada_outcome,
+  ada_usage_summary, ada_mddb_health, ada_decision_check,
+  ada_deep_research.
+
+ada_persona: >-
+  action=set|show|reset manage the speaker's style prefs (knob=
+  tone/verbosity/formality/language/address_name/emoji/proactiveness +
+  value=) — persist to their memory, apply immediately. person= manages
+  ANOTHER member's profile (full access; action='list' shows known HA
+  people). *_voice actions manage the speaking voice (absorbs
+  ada_set_voice): show_voice/list_voices report, set_voice voice=<name>
+  persists + applies after a brief reconnect pause.
+
+ada_enroll_speaker: >-
+  who='speaker' enrolls the current voice from already-buffered audio —
+  no separate recording. Pass the speaker's real name, never 'Guest'; if
+  it matches an HA person ('KK' -> 'person.kk') pass ha_person so
+  identity and memory banks follow. who='guest' registers a visitor
+  name for later admin promotion.
+
+calendar_read: >-
+  action='events' day/days range across all providers (query= text
+  filter, calendar='provider:calendar_id' narrows) — FIRST call for
+  schedule/free questions; 'calendars' lists providers incl. the default
+  write target; 'freebusy' busy slots for 'am I free X to Y'. Absorbs
+  calendar_list_events, calendar_list_calendars, calendar_freebusy.
+
+plan_day: >-
+  period='today'/'tomorrow' = merged events + open tasks + session
+  digest; 'week' = the weekly comparison (days= window, default 7).
+  day= overrides the target ('yesterday', 'YYYY-MM-DD') — also the way
+  to recap a past day; refresh=true regenerates. Read-only — speak the
+  plan, never create events without approval; offer cms_publish_page
+  (confirmed) when the user wants the comparison kept. Absorbs
+  ada_daily_summary (period='digest' internally), ada_weekly_comparison.
+
+calendar_write: >-
+  'create' on the default write provider (or calendar=
+  'provider:calendar_id') — title/start/end ISO, notes=, location=.
+  'delete' by provider-qualified event_id from calendar_read
+  action='events'. 'shift' moves overdue tasks + ended events to=
+  ('tomorrow' default) — restate the target date and report the moved
+  list. Always restate details, get an explicit yes, then confirmed=true
+  (or replay with the denial's confirm_token). Absorbs
+  calendar_create_event, calendar_delete_event, calendar_shift_overdue.
+
+tasks: >-
+  action='list' is a free read of open tasks; 'add' (title=, due=,
+  notes=, task_list='provider:list_id'), 'done' and 'move' take
+  task_id= from a list result ('google:@default/abc123'). Writes are
+  confirmed-gated — restate task + resolved date, get a yes, then call.
+  Absorbs tasks_list, tasks_add, tasks_complete, tasks_move.
+
+cms_read: >-
+  'list' every page's slug/title/format/updated (limit= default 50);
+  'get' one page's content by key=slug (+lang=en|th) — read before
+  updating; 'verify' re-reads and checks the content parses for its
+  format — call after publishing since you cannot see the rendered site.
+  Absorbs cms_list_pages, cms_get_page, cms_verify_page.
+
+cms_publish_page: >-
+  Call FIRST to register the pending request, then tell the user
+  slug+title and get an explicit yes, then re-call confirmed=true — do
+  not ask verbally before registering. An existing slug is overwritten.
+  summary= is the one-line reports-index gist (max ~240); domain= a
+  grouping tag; fresh_for='1h'/'6h'/'1d' marks staleness; links=
+  comma-separated related slugs; supersedes= the replaced slug;
+  confidence= high|low|unverified.
+
+cms_edit: >-
+  'note' appends a one-line timeline note to a page (note=, optional
+  summary=/lang=) — merges into Timeline, no confirmation; use it after
+  tool calls that return newer info for a report. 'delete' removes a
+  page — restate which, get a yes, confirmed=true. 'automate' manages a
+  generated page's automation registry: op='list'/'get' free reads;
+  'set'/'enable'/'disable'/'run' change knobs (enabled, interval_min,
+  max_items, since_hours, require relevance regex, feeds [[name,url]],
+  langs, parent, children, run_now) — confirmed writes. Get real slugs
+  from cms_read action='list' or reports-index; never guess. Absorbs
+  cms_note_update, cms_delete_page, cms_automation.
+
+ada_resolve_action: >-
+  key= from the pending-suggestions list; resolution=applied|dismissed
+  after the user accepts/declines.
+
+devin: >-
+  'dispatch' starts an unattended session on tony-dell in a dedicated
+  worktree — repo= chaba|ada-pi|sunsynk-card (pick where the CODE lives:
+  chaba = /apps/* web apps + relay + dashboards + SSOT; ada-pi = Ada
+  backend/pwa/auth/scenarios; sunsynk-card = the power-flow card). The
+  user is phone-notified on finish — report the task id, move on.
+  'followup' steers/resumes a session by task_id+message; 'answer'
+  delivers a refined self-contained reply to a blocked job (the job sees
+  only the text). All actions confirmed-gated — restate repo/task/
+  message and get a yes. Absorbs devin_dispatch, devin_followup,
+  devin_answer.
+
+devin_read: >-
+  'status' dispatched tasks + unit liveness (task_id drills in); 'jobs'
+  the dispatch ledger (status= filter) — report statuses exactly as
+  stored; 'pending' jobs awaiting the user's answer; 'report' composes
+  the Devin job report (publish=true + confirmed=true writes the CMS
+  page); 'review' dev-team panel on a proposed tool spec — owner-only,
+  request= (+title=). Absorbs devin_status, devin_jobs, devin_pending,
+  devin_job_report, ada_devteam_review.
+
+docs: >-
+  Archived scans (deeds, ID cards, passports, house registrations,
+  receipts) — never home devices. 'search' archive slugs by name/content
+  (query=, limit= default 5); 'get' one set's manifest by slug=;
+  'archive' a held upload set into gdrive:ada-documents
+  (intake_key/intake_keys from /api/documents/intake, or source_dir=,
+  doc_type=); 'print' on the DeskJet (pages='all'|'1-3'|'2,4';
+  true_size_mm='85.6x54' for ID-1, else fit-to-A4). archive/print
+  confirmed-gated. Absorbs ada_doc_search/get/archive/print.
+
+drive: >-
+  'search' files by name/content (query=; mime= narrows e.g. 'image/') —
+  for archived deed/ID sets use docs action='search' instead. 'get'
+  reads a file_id — text inline, binary returns a castable media_url.
+  'show' puts a file on a vcast screen= or target='tv'. 'update'
+  replaces a regular text/md/json/csv file's whole content in place —
+  Google-native docs can't be media-updated; confirmed-gated. Absorbs
+  drive_search, drive_get, drive_show, drive_update.
+
+ada_board_write: >-
+  'comment' posts text= on a card id=; 'respond' answers a card's open
+  request (id= + request_id= + answer=); 'read' compact board state
+  (column=, limit= filters) for finding card ids and open requests.

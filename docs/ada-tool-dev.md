@@ -24,7 +24,9 @@ dispatches it with the manifest's policy enforced.
 ```python
 DECLARATION = {
     "name": "ada_myservice_thing",       # must match the manifest key
-    "description": "...",                # what it does + when to call it
+    "description": "...",                # <=2-line routing blurb ONLY —
+                                         # operational detail goes in
+                                         # backend/tool_guide.yml (below)
     "parameters": {"type": "object",     # JSON Schema; keep args few
                    "properties": {...},
                    "additionalProperties": False},
@@ -77,6 +79,15 @@ async def run(runner, **args):           # MUST be async
    consolidation program prefer an `action=` on an existing canonical
    tool over a new name — see
    `docs/assessments/tool-consolidation-spec-2026-10-04.md`.
+9. **Slim description, fat error path.** The `description` ships to the
+   model in every session — keep it a ≤2-line routing blurb (what the
+   tool is, which action= values exist, what it absorbed). Parameter
+   enums carry the legal values; prose beyond that goes in
+   `backend/tool_guide.yml` keyed by tool name — ToolRunner attaches it
+   to failed/denied results as `usage` (same shape as
+   `needs_confirm`/`verify_warn`), so it costs context only when a call
+   goes wrong. `tool-lint.py` enforces `desc_max_lines`/`desc_max_chars`
+   from `docs/ssot/ssot.tool-surface.yml`.
 
 ## Anti-patterns (seen in production)
 

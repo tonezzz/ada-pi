@@ -13,6 +13,9 @@ YAML only, so it runs in any CI/validate environment):
 
 Checks (each FAIL exits 1):
   count     declared surface must not exceed ssot count_cap
+  descsize  declaration description exceeds ssot desc_max_lines /
+            desc_max_chars — prose belongs in backend/tool_guide.yml
+            (the error path), not the shipped schema
   dup       a name declared both builtin and in tools.d
   alias     alias key still declared / target undeclared / chain /
             stray alias not in a family's absorbed list /
@@ -60,15 +63,14 @@ def _str_const(node: ast.AST) -> str | None:
         node.value, str) else None
 
 
-def declared_builtin(provider_path: Path) -> dict[str, int]:
-    """function_declaration names in realtime_provider.py -> lineno.
-
-    A declaration dict always carries "name" plus a description and/or a
-    parameters schema; parameter sub-dicts keyed "name" (e.g. {"name":
-    {"type": "string"}}) have a non-string value and are skipped.
-    """
-    out: dict[str, int] = {}
-    tree = ast.parse(provider_path.read_text(encoding="utf-8"))
+def decl_details(path: Path) -> list[dict]:
+    """Every declaration dict in a file -> {name, lineno, desc_lines,
+    desc_chars}. A declaration dict always carries "name" plus a
+    description and/or a parameters schema; parameter sub-dicts keyed
+    "name" (e.g. {"name": {"type": "string"}}) have a non-string value
+    and are skipped."""
+    out: list[dict] = []
+    tree = ast.parse(path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Dict):
             continue
@@ -82,7 +84,25 @@ def declared_builtin(provider_path: Path) -> dict[str, int]:
         if not ({"description", "parameters", "parameters_json_schema"}
                 & keys.keys()):
             continue
-        out.setdefault(name, node.lineno)
+        desc_node = keys.get("description")
+        desc_lines = desc_chars = 0
+        if desc_node is not None:
+            desc_lines = (desc_node.end_lineno or desc_node.lineno) \
+                - desc_node.lineno + 1
+            try:
+                desc_chars = len(ast.literal_eval(desc_node))
+            except (ValueError, TypeError, SyntaxError):
+                desc_chars = -1  # non-literal — can't measure, skip
+        out.append({"name": name, "lineno": node.lineno,
+                    "desc_lines": desc_lines, "desc_chars": desc_chars})
+    return out
+
+
+def declared_builtin(provider_path: Path) -> dict[str, int]:
+    """function_declaration names in realtime_provider.py -> lineno."""
+    out: dict[str, int] = {}
+    for d in decl_details(provider_path):
+        out.setdefault(d["name"], d["lineno"])
     return out
 
 
@@ -280,6 +300,37 @@ def lint(repo: Path) -> dict:
             f"count: {len(declared)} declared tools exceed cap {cap} — "
             "consolidate or bump docs/ssot/ssot.tool-surface.yml:count_cap "
             "in the same commit")
+
+    # -- description size — prose lives in tool_guide.yml, not the schema --
+    # The contract (card ada-tools-desc-slim): a declaration description is
+    # a <=2-line routing blurb; operational detail moves to the error path
+    # (a "usage" key on failed/denied results). Lines are AST content lines
+    # of the description value (paren wrapper excluded).
+    max_lines = int(ssot.get("desc_max_lines") or 4)
+    max_chars = int(ssot.get("desc_max_chars") or 300)
+    desc_files = [(repo / "backend/realtime_provider.py", None)]
+    for module in sorted(set(surf["dynamic"].values())):
+        mod_path = repo / "backend/tools.d" / f"{module}.py"
+        if mod_path.is_file():
+            # Only dicts whose name is a manifest-declared tool count —
+            # unrelated {"name": ..., "description": ...} dicts in the
+            # module are not schema declarations.
+            desc_files.append((mod_path, set(surf["dynamic"])))
+    for path, names in desc_files:
+        for d in decl_details(path):
+            if names is not None and d["name"] not in names:
+                continue
+            over = []
+            if d["desc_lines"] > max_lines:
+                over.append(f"{d['desc_lines']} lines > {max_lines}")
+            if d["desc_chars"] > max_chars:
+                over.append(f"{d['desc_chars']} chars > {max_chars}")
+            if over:
+                errors.append(
+                    f"descsize: {d['name']} description is "
+                    f"{' and '.join(over)} ({path.name}:{d['lineno']}) — "
+                    "the schema ships a <=2-line routing blurb; move prose "
+                    "to backend/tool_guide.yml (the error path)")
 
     # -- duplicate declarations across builtin and tools.d --
     for name in sorted(set(surf["builtin"]) & set(surf["dynamic"])):

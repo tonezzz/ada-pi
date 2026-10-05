@@ -471,20 +471,10 @@ TRAFFIC_INSTRUCTIONS = (
 CAMERA_DECLARATION = {
     "name": "ada_camera_snapshot",
     "description": (
-        "Take a still snapshot from a camera — property CCTV (XMEye VMS), "
-        "home cams, or public Thailand traffic cams. Use when the user asks "
-        "to see, check, or look at a camera view — 'is it flooding at the "
-        "pool', 'show me the front road', 'check traffic on Rama 4'. "
-        "source='vms' for property cameras, source='traffic' for public "
-        "traffic cams, 'auto' (default) picks by the args given. The image "
-        "is attached to the tool result for you to describe — one still "
-        "frame per call, not a live stream. Pass screen=N (or target='tv'/"
-        "'screen') to also show the frame on a display — this handles what "
-        "used to be cctv_snapshot (snap + show on a screen/TV) and "
-        "traffic_camera (public Thailand traffic cams). mode='cached' "
-        "skips the live pull and returns the wall's stored frame instantly "
-        "(with its age) — use it as the fast first answer, then call "
-        "again live for the refreshed frame."
+        "Take a still camera snapshot — property CCTV (source='vms'), home cams, "
+        "or Thailand traffic cams (source='traffic'; 'auto' picks by args). "
+        "The frame attaches to the result for you to describe; screen=/target= "
+        "also shows it on a display. Absorbs cctv_snapshot and traffic_camera."
     ),
     "parameters_json_schema": {
         "type": "object",
@@ -609,10 +599,9 @@ CHABA_DECLARATIONS = [
     {
         "name": "ada_remember",
         "description": (
-            "Save a guest memory under the visitor's declared name — always "
-            "call with kind='guest'. Disclose first that guest memories are "
-            "visible to the household. private=true is only for "
-            "admin-promoted users; it fails for guests."
+            "Save a public guest memory under the visitor's name — always "
+            "kind='guest'; disclose first that guest memories are visible to "
+            "the household."
         ),
         "parameters_json_schema": {
             "type": "object",
@@ -631,10 +620,7 @@ CHABA_DECLARATIONS = [
     },
     {
         "name": "ada_memory_search",
-        "description": (
-            "Search public guest memories by keyword — always call with "
-            "scope='guest'."
-        ),
+        "description": "Search public guest memories by keyword — always scope='guest'.",
         "parameters_json_schema": {
             "type": "object",
             "properties": {
@@ -652,9 +638,8 @@ CHABA_DECLARATIONS = [
         # 'guest' so the visitor surface can't reach voice enrollment.
         "name": "ada_enroll_speaker",
         "description": (
-            "Register the visitor's name so an admin can promote them to a "
-            "named user with a private memory namespace — always call with "
-            "who='guest'. Ask their name first."
+            "Register the visitor's name for later admin promotion — always "
+            "who='guest'; ask their name first."
         ),
         "parameters_json_schema": {
             "type": "object",
@@ -2314,15 +2299,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "get_home_state",
                     "description": (
-                        "Returns current read-only Home Assistant home-plug state, "
-                        "whether the user is home, recent local home occupancy, and any "
-                        "active five-minute or latched habit condition — also handles "
-                        "what used to be ada_ha_get_state. Use this when asked "
-                        "about home plugs, occupancy, or whether plugs were left on. "
-                        "entity_id reads one entity live; domain lists the entities "
-                        "under one HA domain; domain='memory' returns the stored home "
-                        "snapshot (counts of controllable devices and sensors, person "
-                        "entity, and a confidence summary)."
+                        "Read-only home state — plugs, occupancy, habit conditions "
+                        "(absorbs ada_ha_get_state). entity_id= reads one entity live; "
+                        "domain= lists a domain; domain='memory' returns the stored snapshot."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2342,18 +2321,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "control_entity",
                     "description": (
-                        "Actuate one Home Assistant entity — also handles what used to be "
-                        "control_cover, press_button, and control_media_player. The entity's "
-                        "domain picks the path: pass on=true/false or action='on'/'off' for "
-                        "lights, switches, fans, and input_booleans; action='open'/'close'/'stop' "
-                        "for cover.* entities like gates and shutters; action='press' (or no "
-                        "action) for button.* entities; and the media_player actions "
-                        "turn_on, turn_off, media_play, media_pause, media_stop, volume_up, "
-                        "volume_down, volume_mute, select_source (with source=) for "
-                        "media_player.* entities. Only Tony's own TV entities "
-                        "(media_player.tony_tv, media_player.tony_tv_cast) are valid media "
-                        "players — other media_player entities discovered on the network "
-                        "belong to devices we do not own and must not be targeted."
+                        "Actuate one Home Assistant entity (absorbs control_cover, "
+                        "press_button, control_media_player) — on=/action= picked by the "
+                        "entity's domain. Only media_player.tony_tv/tony_tv_cast are ours."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2394,18 +2364,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "home_search",
                     "description": (
-                        "Find Home Assistant devices, sensors, or recorded events — also "
-                        "handles what used to be list_home_devices, search_home_devices, "
-                        "list_sensors, search_sensors, ada_ha_search_devices, "
-                        "ada_ha_search_sensors, and ada_ha_search_events. kind='device' "
-                        "searches controllable devices (lights, switches, fans, covers, "
-                        "buttons, media players) by name or entity_id — use this to find "
-                        "the exact entity_id before control_entity; a blank query lists "
-                        "all controllable devices (bounded). kind='sensor' searches sensor "
-                        "entities with current state and unit; a blank query lists sensors. "
-                        "kind='event' searches recorded home events from memory — transitions "
-                        "captured by the event recorder plus persisted event batches, for "
-                        "'when did the gate open earlier' or 'any door events this week'."
+                        "Find HA devices, sensors, or recorded events — kind='device'|"
+                        "'sensor'|'event' (absorbs the list/search/ada_ha_search_* tools); "
+                        "blank query lists the kind. Use it to get the exact entity_id "
+                        "before control_entity."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2439,34 +2401,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "yt",
                     "description": (
-                        "YouTube on the living-room TV — also handles what used to be "
-                        "yt_cast, yt_cast_status, yt_cast_stop, and yt_transcript. "
-                        "action='cast' casts a YouTube video to the TV with subtitles burned in — "
-                        "ONLY when the user wants a VIDEO playing on the TV — NOT for looking up "
-                        "news, facts or information (answer those yourself via web search). "
-                        "This is THE tool for any 'play/watch/cast a YouTube video on the TV' request "
-                        "AND for any subtitle/caption request — it always renders the video's "
-                        "original-language subtitle on top with a translated line below "
-                        "(English is added automatically for non-English sources). "
-                        "Do NOT search for a different video that already has subtitles or try "
-                        "generic media playback — this tool generates subtitles for any video. "
-                        "Pass a YouTube URL or a search phrase (video title + channel name works best). "
-                        "If the user names a numbered vcast screen instead of the TV, do NOT cast — "
-                        "use cast_to_screen(action='play', url=<YouTube URL>); vcast displays auto-embed it. "
-                        "action='cast' returns as soon as preparation starts — the video itself takes ~1-3 min "
-                        "(download + subtitle translation + transcode; replays are much faster). "
-                        "Acknowledge immediately in one short sentence, e.g. 'getting it ready, about a "
-                        "minute, I'll let you know when it's on' — never claim it is already playing. "
-                        "The system will notify you when playback actually starts. "
-                        "action='status' returns the current cast progress (transcode state, segment "
-                        "count, whether subtitles were generated). "
-                        "action='stop' stops the video currently casting to the TV. "
-                        "action='transcript' fetches a YouTube video's spoken content as plain text "
-                        "(auto-captions via yt-dlp on the transcript host — no video download): "
-                        "returns title, language, and up to ~6k chars — use it when the user wants "
-                        "news/content from a YouTube video summarized or transcribed (Thai news sites "
-                        "block scrapers, so YouTube is the open source). Transcript reads text only; "
-                        "it does NOT play or cast anything."
+                        "YouTube on the living-room TV — action='cast' plays a video with "
+                        "generated subtitles (absorbs yt_cast*/yt_transcript); 'status'|'stop'|"
+                        "'transcript' (text only, no playback). For video on the TV only — "
+                        "NOT fact/news lookups; a numbered vcast screen means cast_to_screen."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2500,22 +2438,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "tv_action",
                     "description": (
-                        "Send a command to the TV casting controller (cast-browser) through the Home Assistant rest_command.tv_action service. "
-                        "This is for the LG TV only — vcast display panes (screen 1/2/3/4) zoom/scroll via "
-                        "cast_to_screen action='zoom'/'unzoom' pane=N, NOT tv_action. "
-                        "ONLY when the user wants something shown on a screen — never use this to answer "
-                        "questions or display search results unprompted (answer via web_search instead). "
-                        "Cast targets via cmd='nav': text='<URL>' shows a page in the TV's browser (fully controllable afterwards), "
-                        "text='screenlive:workspace:N[:pad|crop]' casts this host's live desktop workspace N, "
-                        "text='tony-omen:workspace:N' casts Tony's desktop workspace N (switches his live workspace too). "
-                        "While a nav'd page is on the TV you can control it: cmd='scroll' text='up|down' (optionally dx/dy/factor), "
-                        "cmd='click' text='<visible text>' or role='<role>' or selector='<css>', cmd='type' text='<text>', "
-                        "cmd='press' text='<key e.g. Enter|Escape|Backspace>', cmd='back' to go back, "
-                        "cmd='shot' text='<name>' for a screenshot, cmd='viewport' text='WxH'. "
-                        "A streamed desktop (screenlive/tony-omen) is one-way video — control is limited to switching workspaces; "
-                        "for interactive control prefer nav'ing the page itself. "
-                        "Personal screens are owner-locked: 'cast my screen' only works for the screen's owner — "
-                        "the living-room TV is shared and available to everyone."
+                        "Send a command to the LG TV's cast-browser via HA "
+                        "rest_command.tv_action — cmd=nav|scroll|click|type|press|back|shot|"
+                        "viewport|power, payload in text=. vcast display panes use "
+                        "cast_to_screen instead; never for answering questions."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2542,50 +2468,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "cast_to_screen",
                     "description": (
-                        "One tool for the numbered vcast virtual displays (browser/PWA screens — NOT the "
-                        "physical TV; for the TV use tv_action or yt action='cast'). Also handles what used to be "
-                        "vcast_list, vcast_say, vcast_status, and vcast_shortcut — those are now the "
-                        "action='list', 'say', 'status', and 'shortcut' actions here. "
-                        "READS first: action='list' enumerates the displays (screen number, device, "
-                        "online/offline, what is playing) plus the relay's ground truth — active_captures "
-                        "(camera-capture leases per screen) and camwall_zones (enabled periodic walls); a "
-                        "camwall_zones entry is NOT proof a wall is visible — when state_mismatch flags it, "
-                        "the wall is down, never claim it is up from the registry flag alone. action='status' "
-                        "screen=N reports one screen's live state the same way. Call 'list' before casting "
-                        "if unsure which screen to pick — an offline screen or a stale capture explains a "
-                        "silent failure. "
-                        "CASTS: action='nav' url='<URL>' shows a web page, 'play' url='<m3u8, video, or "
-                        "YouTube/Vimeo page URL>' plays video (HLS supported, YouTube/Vimeo links auto-embed "
-                        "on the display), 'image' url='<png/jpg>' shows a snapshot, 'audio' url plays sound "
-                        "or TTS, 'cast' url='<URL>' auto-routes by what the URL actually serves (use it when "
-                        "the content type is uncertain), 'shortcut' url='<app name>' opens a named app "
-                        "('/apps/<name>/' — e.g. 'gev', 'camwall') on the screen, 'stop' returns it to idle, "
-                        "'uplink' starts the display's camera uplink (frames available via "
-                        "GET /frame?screen=N&token=cam), 'uplink-stop' stops it. "
-                        "NARRATE: action='say' screen=N text='...' speaks a short narration line out loud on "
-                        "that display (the screen's own speaker) — narrate what you are doing on that screen: "
-                        "right after a cast say what you loaded, before gev_command say what the map is about "
-                        "to do, on long waits say what is in progress. Keep it to one short sentence in the "
-                        "SAME language the user is speaking (Thai user -> Thai text; the display's voice "
-                        "mirrors the session language). If the result reports speak-blocked, the display "
-                        "hasn't been tapped for audio yet — tell the user to tap 'audio' once, then retry once. "
-                        "SPLIT-SCREEN: action='layout' panes=N (2-5) splits the screen into sub-panes — "
-                        "then cast each thing to its own pane (pane=0..N-1, 0=left/top) with nav/play/image. "
-                        "action='zoom' pane=N makes one pane fullscreen; 'unzoom' returns to the grid. "
-                        "stop with pane=N clears just that pane; stop alone resets to single-pane idle. "
-                        "Some screens are private to their owner — casting to another person's screen is denied. "
-                        "INTERRUPT RULE: a cast onto a screen that is busy (a running camera capture/uplink, "
-                        "an enabled camera wall, or media playing) returns needs_confirm with would_interrupt "
-                        "details and does NOT happen — tell the user what is running on that screen, ask if "
-                        "they want it replaced, then retry with confirmed=true only after they say yes. When "
-                        "a successful cast result carries a 'replaced' field, acknowledge aloud what was "
-                        "interrupted. Camera captures (uplink, cctv walls) are permission-gated: ask the user BEFORE "
-                        "starting one, and if the result's active_captures shows a running capture, "
-                        "acknowledge it and ask before stopping — never silently stop or leave it unmentioned "
-                        "when the user changes the subject. When the user EXPLICITLY asked for the camera "
-                        "(e.g. 'show me the pool cam'), that request IS the consent — call it directly with "
-                        "confirmed=true, do NOT re-ask. Confirmation only applies when YOU propose a capture "
-                        "the user didn't ask for, or when a guest voice requests one."
+                        "Drive the numbered vcast displays (browser/PWA screens — NOT the TV; "
+                        "absorbs vcast_say/list/status/shortcut). Interrupting a busy screen "
+                        "or starting a camera capture needs confirmed=true after asking the user."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2634,15 +2519,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "vcast_snapshot",
                     "description": (
-                        "Capture what a numbered vcast virtual display is actually showing right now — "
-                        "the display draws its current frame and the image arrives attached to this "
-                        "tool's result. Use to LOOK at a screen and verify what it shows (after a cast, "
-                        "to check an overlay, or when the user asks what's on a screen) — do not rely on "
-                        "the reported state flag alone. One still frame per call, a few seconds old. "
-                        "If the result reports uncapturable-iframe, the screen is showing a framed web "
-                        "page the browser cannot capture — EXCEPT God's Eye View (/apps/gev/), whose "
-                        "iframe grabs its own Cesium canvas automatically — you DO get real pixels there. "
-                        "Not for the TV."
+                        "Capture what a vcast display is actually showing — verify after a "
+                        "cast instead of trusting the reported state flag. One still frame "
+                        "per call, a few seconds old. Not for the TV."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2659,21 +2538,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "chat_send",
                     "description": (
-                        "Send a message to the user's chat apps in the BACKGROUND — LINE, "
-                        "Telegram, or both ('line,telegram'). Returns 'queued' immediately; "
-                        "the actual send (including a slow camera snapshot) happens in a "
-                        "background job and its result arrives later as a system note — "
-                        "tell the user it's being sent, then relay the outcome when the note "
-                        "lands. Attach one image via 'camera' (VMS channel name — a fresh "
-                        "snapshot is taken) or 'image_url' (a camwall thumb or a cast_url you "
-                        "already produced — do NOT pass arbitrary web URLs). 'text' is the "
-                        "message/caption. Omit 'to' to send to the default owner chat. "
-                        "photo='pick' starts a Google Photos picker and texts the picker_uri "
-                        "to the channel; photo='picked' polls a picker session (session_id) "
-                        "and sends/casts what was chosen. doc='show' posts a held document "
-                        "upload's summary (key= intake key, default newest); 'process' "
-                        "returns its intake assessment; 'card' with op='archive' files the "
-                        "held upload into the document archive (confirmation-gated)."
+                        "Send a LINE/Telegram message in the background — 'queued' returns "
+                        "first, the outcome lands later as a system note. camera=/image_url= "
+                        "attach an image; photo=/doc= run the picker/upload flows."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
@@ -2735,12 +2602,8 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "vcast_gesture",
                     "description": (
-                        "Enable/disable gesture control on a numbered vcast display — the screen's own "
-                        "camera watches for motion. mode='room' = wake-on-motion (a wave or movement "
-                        "in front of the screen wakes it and sends a gesture-wake event), "
-                        "mode='hand' = hand tracking (MediaPipe, on capable displays), "
-                        "'off' stops it. The display reports its actual capability — if the camera is "
-                        "denied or the mode isn't built it answers honestly via its state."
+                        "Enable/disable gesture control on a vcast display — mode='room' "
+                        "(wake-on-motion), 'hand' (hand tracking), 'off'."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2761,30 +2624,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "cctv_wall",
                     "description": (
-                        "Show the live camera wall on a vcast display — a grid of periodic thumbnails "
-                        "for a camera zone. Zones: 'zone-a' (estate perimeter: roads, walkway, guard), "
-                        "'noble-park' (pool, tennis, playground, mini mart), 'tony-house' (home cams "
-                        "c100/c201/coffee), 'vms-noble-club' (every noble-club DVR channel), "
-                        "'vms-noble-a' (every noble-a DVR channel), 'rama9' (Rama 9 demo traffic wall), "
-                        "'traffic' (DOH Bangkok cams), 'burapha' (Bangna–Burapha expressway), "
-                        "'chonburi' (Chonburi corridor). Walls keep warm thumbnails even while off — "
-                        "for an AREA question prefer the matching wall over a slow single snap; it loads "
-                        "instantly and refreshes in the background. action='settings' tunes a zone without "
-                        "casting (interval seconds, jpeg_q 1-8, thumb_w px, cams_skip keys, effects like "
-                        "'yolo:person,car@0.35' — yolo overlays detections and records them while on). "
-                        "DISPLAY knobs (page-side, work on start too): settings={'cycle_s': N} rotates "
-                        "the wall's live cams FULLSCREEN one-at-a-time every N seconds — 'cycle through "
-                        "the cameras', 'show each cam fullscreen'; settings={'zones': ['zone-a','noble-park'], "
-                        "'zone_s': 45} rotates the WHOLE wall through the listed zones — 'switch between "
-                        "walls', 'cycle the walls'. settings={'random': true} picks the next cam/zone at "
-                        "random instead of in order — 'random cams'. Combine for per-cam cycling across zones. "
-                        "settings and status are NOT confirmation-gated — apply them immediately when asked. "
-                        "Use when the user's focus shifts to a camera zone — "
-                        "e.g. they ask to check the pool or the front road — OFFER to put the wall up "
-                        "('want the Zone A wall on screen 1?') rather than doing it unprompted for a "
-                        "single one-off look; a single look is ada_camera_snapshot. action='start' "
-                        "enables background refresh + casts the grid; 'stop' disables it. Thumbs are "
-                        "still frames updated in the background — not live video."
+                        "Show a live camera wall (periodic thumbnail grid) for a zone on a "
+                        "vcast display — action='start'|'stop'|'settings'|'status'. For a "
+                        "one-off look use ada_camera_snapshot instead; offer the wall when a "
+                        "camera zone becomes the focus."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2821,53 +2664,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "gev_command",
                     "description": (
-                        "Control God's Eye View (the Cesium map app on /apps/gev/) on whatever screen is showing "
-                        "it — the call reaches every connected GEV client including a casted one. "
-                        "To 'watch the show': cast_to_screen(action='nav', url='https://tony-dell.taila0626a.ts.net/apps/gev/') "
-                        "then drive it with gev_command. This tool also handles what used to be gev_tour — "
-                        "named flyover tours: when the user asks for 'the X tour', 'the South Africa tour', "
-                        "'ทัวร์...', or to list available tours, pass tour='<id, alias, or place name>' "
-                        "('za', 'bangkok', 'แอฟริกาใต้') to get the executable card — ordered stops with "
-                        "lat/lon, narration lines, and optional PiP camera frame URLs — or tour='' to list. "
-                        "The card is a script, not self-running — execute it: per stop call "
-                        "gev_command fly_to_location {latitude, longitude}, annotate_map to mark it, "
-                        "vcast_say the 'say' line, and cast_to_screen(action='image', url=frame_url, pane=1) "
-                        "when the stop carries one. Tours with route_points use annotate_map type='route' "
-                        "then fly_route. Cameras during a tour: NEVER cctv_wall/cast_to_screen a whole "
-                        "screen already running GEV — that kills the map session. Split first: "
-                        "cast_to_screen(action='layout', panes=2), then "
-                        "cast_to_screen(action='image'|'play', url=cam, pane=1). "
-                        "args is ONLY the tool's arg object — never put "
-                        "'name' inside args and never wrap name+args together; name is the sibling field. "
-                        "IMPORTANT — args must match the GEV schema exactly "
-                        "(additionalProperties are rejected, the call fails silently if names are wrong). "
-                        "Useful names + real arg names: fly_to_location {locationId} — one of the "
-                        "preset cities (austin, sf, nyc, tokyo, london, paris, dubai, dc). For ANY other place "
-                        "pass {query:'<place>'} — NOT locationId (a non-preset locationId value errors out); "
-                        "free-text geocodes via OSM Nominatim, or use latitude/longitude args, zoom_to_globe {}, "
-                        "adjust_camera_zoom {factor}, set_layer_visibility {layerId, enabled}, "
-                        "select_nearest_aircraft {layerId:'flights', locationId:<preset>} — finds AND starts "
-                        "tracking the nearest plane near a preset city (this is how to 'track a flight near X'), "
-                        "frame_overhead {target:'flights'|'satellites'|'vessels'} pulls the camera to whatever "
-                        "is overhead, track_entity {query:<callsign/name>, layerId} — needs an actual callsign/"
-                        "name, NOT a generic word like 'aircraft', stop_tracking {}, "
-                        "move_camera {motion:'orbit'|'pan'|'tilt'|'rotate'|'stop', direction?} — 'orbit' is "
-                        "the slow cinematic circle, adjust_camera_zoom {direction:'in'|'out', factor?} "
-                        "(factor alone is INVALID without direction), analyst_query {layers, scope, filters}, "
-                        "annotate_map {annotations:[{type:'route', points:[{latitude,longitude,label?},...], "
-                        "label?}]} — a 'route' annotation RESOLVES each waypoint and draws a flyable path "
-                        "(NOT 'polyline'/'positions' — those aren't real types); then fly_route {label?} "
-                        "flies that drawn route smoothly — route first, fly second, "
-                        "clear_annotations {}, get_current_view_state {}, capture_frame {token} (grabs the map "
-                        "canvas to the input-bridge frame store — vcast_snapshot does this automatically for "
-                        "GEV pages). Optional 'screen' targets one vcast display and 'pane' narrows to one "
-                        "split-screen pane (omit to hit every page showing GEV); the client replies are "
-                        "collected and returned in 'responses' — get_current_view_state actually answers. "
-                        "On error 'no GEV clients': nothing is showing the app — cast "
-                        "cast_to_screen(action='nav', url='.../apps/gev/', screen=N) first, wait ~10s for the "
-                        "page to register, then RETRY the gev_command. NEVER narrate that a flight/zoom "
-                        "happened after a failed or skipped gev_command — say it didn't work and recover "
-                        "instead (narrating a move that didn't run is a false claim)."
+                        "Drive God's Eye View (the Cesium map at /apps/gev/) on connected "
+                        "screens — name+args per the GEV schema. tour='<id|alias|place>' "
+                        "returns an executable tour card (absorbs gev_tour; '' lists tours)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2885,16 +2684,8 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "home_status",
                     "description": (
-                        "Home status reads — one tool for the merged status getters "
-                        "(tools-merge-tasks-status). what='battery' returns battery SOC, "
-                        "voltage, power, temperature, and health (add battery_index 1-3 "
-                        "for one battery's detail); 'power' returns the G3 power summary "
-                        "for solar, grid, load, battery, and inverter (hours= history "
-                        "window, default 24); 'inverter' returns PV/load/grid/battery "
-                        "power and operating mode; 'pool' returns pool sensor and switch "
-                        "states; 'dashboard' reads one michael-ha dashboard tab (tab= "
-                        "e.g. 'TPL', 'V1'); 'habit' returns tracked habits, lifecycle "
-                        "status, and monitor progress."
+                        "Merged home-status reads — what='battery'|'power'|'inverter'|"
+                        "'pool'|'dashboard'|'habit' (absorbs the get_*_status getters)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2929,9 +2720,8 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "get_rk600_weather",
                     "description": (
-                        "Returns the local RK600 weather station readings: wind speed, wind direction, temperature, humidity, pressure, rainfall, and device status. "
-                        "Use this ONLY when the user explicitly asks about current weather, wind, rain, or the weather station/RK600 card. "
-                        "Do NOT use it for anything else — not UPS/battery/power questions, not forecasts (use home_search kind='sensor' query='weather'), not travel or flood questions (use web_search)."
+                        "Local RK600 weather station readings — wind, temperature, humidity, "
+                        "pressure, rainfall. Only for explicit current-weather questions."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2942,17 +2732,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "home_history",
                     "description": (
-                        "Home Assistant history and event reads — also handles what used to be "
-                        "get_logbook, get_sensor_history, get_entity_events, get_recent_events, "
-                        "and ada_ha_history. kind='logbook' returns friendly event entries like "
-                        "'Front door was opened' or automation runs (entity_id narrows it to one "
-                        "entity); kind='events' returns recent state changes across the whole "
-                        "home — 'what opened or closed', 'did anything happen while I was away'; "
-                        "kind='timeline' returns one entity's state-change timeline with durations "
-                        "('when was the door last opened', 'how long was the gate open'); "
-                        "kind='series' returns a sensor's numeric history over the window; "
-                        "kind='snapshots' lists persisted home snapshots from memory — what the "
-                        "state was earlier or how it changed."
+                        "HA history/event reads — kind='logbook'|'events'|'timeline'|'series'|"
+                        "'snapshots' (absorbs get_logbook, get_sensor_history, "
+                        "get_entity_events, get_recent_events, ada_ha_history)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -2993,16 +2775,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 },  {
                     "name": "ha_confidence",
                     "description": (
-                        "Device trust and safety registry — also handles what used to be "
-                        "ada_ha_get_device_confidence and ada_ha_set_device_confidence. "
-                        "With no args it returns controllable devices grouped by confidence "
-                        "(trusted_working, trusted_broken, learning, needs_integration) — "
-                        "each device also carries a safety level: safe, caution, or dangerous. "
-                        "Use it when the user asks what is broken, what needs setup, what is "
-                        "new, what is trusted, or what is dangerous — and before acting on a "
-                        "device. entity_id alone returns one device's entry; entity_id with "
-                        "status and/or safety writes new levels — use it when the user says a "
-                        "device is broken, new, trusted, dangerous, safe, or needs caution."
+                        "Device trust/safety registry (absorbs ada_ha_*_device_confidence) — "
+                        "no args lists devices by confidence+safety; entity_id reads one; "
+                        "entity_id + status/safety writes."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3028,21 +2803,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_session_recall",
                     "description": (
-                        "Recall previous voice conversations or stored home history "
-                        "(also handles what used to be ada_ha_recall). "
-                        "Default scope='sessions': use ONLY when the user asks "
-                        "'what did we talk about', 'do you remember', or wants something "
-                        "from an earlier conversation — not for fact lookup (use "
-                        "ada_memory_search bank='all' for that). NOT for test, scenario, "
-                        "benchmark, or report results — those are stored documents, "
-                        "use ada_memory_search. "
-                        "scope='history' answers instantly from the stored Home "
-                        "Assistant memory of devices, sensors and recorded events — "
-                        "use it for broad questions like 'what sensors are about "
-                        "power' or 'pool devices'. "
-                        "Pick the group or bank that best matches the topic. "
-                        "The sessions recall runs in the background and can take up "
-                        "to ~20 seconds; the result will be spoken when ready."
+                        "Recall past voice conversations (scope='sessions', background ~20s) "
+                        "or stored HA memory (scope='history', absorbs ada_ha_recall). "
+                        "For facts and stored documents use ada_memory_search instead."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3104,17 +2867,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_memory_search",
                     "description": (
-                        "Search memory: curated banks, session summaries, and guest "
-                        "notes (also handles what used to be guest_recall). "
-                        "Stored facts, preferences, people, procedures, notes, and "
-                        "test/scenario/benchmark/report results — "
-                        "the FIRST tool for any factual lookup including 'which tests ran' "
-                        "or 'what did the last report say'; "
-                        "pass bank='all' (default) when unsure which bank holds the fact. "
-                        "Returns document keys you can pass to "
-                        "ada_remember (to correct) or ada_forget (to retract). "
-                        "Use this before updating a memory and when the user asks what you "
-                        "know about a topic."
+                        "Search memory — curated banks, session summaries, guest notes "
+                        "(absorbs guest_recall); scope=/bank= pick the store, 'all' default. "
+                        "First tool for factual lookups; returns keys for ada_remember/ada_forget."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3157,17 +2912,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "web_search",
                     "description": (
-                        "Search the public internet for current facts — news, events, prices, "
-                        "forecasts, anything needing up-to-date information outside this home. "
-                        "FALLBACK, not first read — when a page or report may already cover the "
-                        "topic, check reports-index / ada_memory_search bank='cms' BEFORE this. "
-                        "Save-back: after answering from a result, write the finding to CMS "
-                        "(cms_edit action='note' on the matching page, or offer cms_publish_page when "
-                        "none exists) so repeat questions are answered from your pages, not a "
-                        "re-search. "
-                        "Returns a grounded answer plus source links. Use this when the user asks "
-                        "about news or to 'check online'; answer the question yourself in 2-3 "
-                        "lines and cite the source — never cast the search to a screen instead."
+                        "Search the public internet for current facts — news, prices, "
+                        "forecasts. Fallback: check reports-index / ada_memory_search "
+                        "bank='cms' first for already-covered topics."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3193,22 +2940,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_remember",
                     "description": (
-                        "Store or update a memory (also handles what used to be "
-                        "vocab_note, guest_remember, guest_remember_private and "
-                        "report_habit_observation). For curated memory banks, call it "
-                        "when the user says 'remember that…' or states a fact worth "
-                        "keeping — bank is required for those kinds. "
-                        "Find-then-update: if you pass a key or a subject+attribute pair that "
-                        "matches an existing memory, it is corrected in place; otherwise a new "
-                        "memory is created. Pass supersedes=<key> to replace a misattributed "
-                        "fact with a new one. Some banks require confirmed=true — only set it "
-                        "after the user has explicitly confirmed the write. "
-                        "kind='vocab' quietly logs a term the speaker misused into their "
-                        "own personal glossary (text as 'term → correction', optional note) — "
-                        "append-only, no confirmation. kind='guest' saves a public guest "
-                        "memory on guest instances (private=true for a promoted user's "
-                        "private namespace). kind='habit' reports a camera habit "
-                        "observation — only when a backend prompt supplies a challenge_id."
+                        "Store or update a memory (absorbs vocab_note, guest_remember*, "
+                        "report_habit_observation) — bank= + kind=; a matching "
+                        "key/subject+attribute updates in place. Some banks need "
+                        "confirmed=true after a spoken yes."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3320,9 +3055,8 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_forget",
                     "description": (
-                        "Retract a memory when the user says it is no longer true or asks you "
-                        "to forget it. The memory is marked retracted and stops surfacing in "
-                        "recall, but stays in the archive for audit."
+                        "Retract a memory (bank= + key=) — it stops surfacing in recall "
+                        "but stays in the archive for audit."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3360,23 +3094,10 @@ class GeminiLiveProvider(RealtimeProvider):
                     # research run in the background and speak their results.
                     "name": "ada_ops",
                     "description": (
-                        "Ops and meta actions — also handles what used to be ada_outcome, "
-                        "ada_usage_summary, ada_mddb_health, ada_decision_check and "
-                        "ada_deep_research. action='outcome' records the real-world outcome "
-                        "of a stored memory or purchase check when the user reports back "
-                        "(e.g. 'that shop was fine', 'the fix worked', 'I skipped it') — it "
-                        "updates the document's confidence so future recall trusts knowledge "
-                        "with a good track record; get the key from ada_memory_search or a "
-                        "check result first. action='usage' returns cumulative token usage "
-                        "and cost — call it when the user asks about API usage or what a "
-                        "session costs. action='health' reports memory-database health "
-                        "(collections, missing vector embeddings). action='check' verifies "
-                        "a product or purchase against stored criteria plus the live web "
-                        "('should I buy this', a shared listing) — background, ~30-60s. "
-                        "action='research' runs multi-round web research on a topic "
-                        "('deep dive', 'look into', 'write a report on') — background, "
-                        "1-3 minutes; check reports-index first so you only research what "
-                        "pages don't already cover."
+                        "Ops/meta — action='outcome' (record a result on a memory), 'usage' "
+                        "(token/cost report), 'health' (memory-db), 'check' (purchase check, "
+                        "background), 'research' (deep web research, background). Absorbs "
+                        "ada_outcome/usage_summary/mddb_health/decision_check/deep_research."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3457,21 +3178,9 @@ class GeminiLiveProvider(RealtimeProvider):
                     # set_voice persists and applies after a brief reconnect.
                     "name": "ada_persona",
                     "description": (
-                        "Read or adjust a speaker's stored style preferences "
-                        "(how you should talk to them: tone, verbosity, formality, "
-                        "language, what to call them, emoji use, proactiveness) — "
-                        "also handles what used to be ada_set_voice. "
-                        "Use when the user asks you to change how you speak — "
-                        "'call me T', 'be more concise', 'answer in Thai', 'be formal'. "
-                        "set persists to their personal memory and applies immediately; "
-                        "show returns the active settings; reset restores defaults. "
-                        "Pass person to view or manage ANOTHER household member's "
-                        "profile (needs full access), and use action 'list' to see "
-                        "the Home Assistant people Ada knows. The *_voice actions "
-                        "manage your actual speaking voice — a different preference "
-                        "from style: 'show_voice'/'list_voices' report the active "
-                        "voice and options; 'set_voice' persists the choice and "
-                        "applies it after a brief reconnect with a short pause."
+                        "Read/adjust a speaker's style preferences — action=set|show|reset|"
+                        "list, person= targets another member. The *_voice actions manage "
+                        "the speaking voice (absorbs ada_set_voice)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3518,14 +3227,9 @@ class GeminiLiveProvider(RealtimeProvider):
                     # who='speaker' (default) is the voice enrollment.
                     "name": "ada_enroll_speaker",
                     "description": (
-                        "Enroll the current speaker's voice so Ada can recognize them "
-                        "by name in future sessions. Uses the audio already buffered "
-                        "from their speech — no separate recording needed. Call this "
-                        "when the user asks to enroll their voice or when Ada offers "
-                        "enrollment and they agree. Pass the speaker's real name — "
-                        "never a placeholder like 'Guest'. If their name matches a "
-                        "Home Assistant person entity (e.g. name 'KK' -> 'person.kk'), "
-                        "pass it as ha_person so their identity and memory banks follow."
+                        "Enroll the current speaker's voice from buffered audio "
+                        "(who='speaker') or register a visitor name (who='guest'). "
+                        "Pass the real name and ha_person when it matches an HA person."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3559,16 +3263,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "calendar_read",
                     "description": (
-                        "Calendar reads — also handles what used to be "
-                        "calendar_list_events, calendar_list_calendars, and "
-                        "calendar_freebusy. action='events' lists calendar events "
-                        "for a day or range across all configured providers, "
-                        "sorted by start time — use this FIRST whenever the user "
-                        "asks about their schedule, what's next, or whether "
-                        "they're free; 'calendars' lists every calendar with "
-                        "provider, id, and which provider receives new events by "
-                        "default; 'freebusy' returns busy time slots for 'am I "
-                        "free between X and Y' or finding an open slot."
+                        "Calendar reads — action='events'|'calendars'|'freebusy' "
+                        "(absorbs calendar_list_*/calendar_freebusy); first call for "
+                        "schedule and free-time questions."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3604,20 +3301,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "plan_day",
                     "description": (
-                        "One 'how does the period look' view — also handles what "
-                        "used to be ada_daily_summary and ada_weekly_comparison. "
-                        "period='today'/'tomorrow' returns that day's merged "
-                        "calendar events plus all open tasks and the day's "
-                        "session digest (a recap of what was discussed); "
-                        "period='week' compares the last days of daily digests "
-                        "into a weekly trend view — use it when the user asks how "
-                        "the week went or to compare days. day= overrides the "
-                        "target ('yesterday' or a YYYY-MM-DD date — also the way "
-                        "to recap a specific past day). Read-only; speak the "
-                        "proposed plan but never create events without approval. "
-                        "When the user wants the weekly comparison kept, offer to "
-                        "publish it to the miniapp with cms_publish_page "
-                        "(confirmed=true)."
+                        "Merged day view or weekly digest — period='today'|'tomorrow'|"
+                        "'week', day= overrides the target (absorbs ada_daily_summary/"
+                        "ada_weekly_comparison). Read-only; never create events here."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3649,19 +3335,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "calendar_write",
                     "description": (
-                        "Calendar writes — also handles what used to be "
-                        "calendar_create_event, calendar_delete_event, and "
-                        "calendar_shift_overdue. action='create' makes an event "
-                        "on the default write provider (or a named "
-                        "'provider:calendar_id'); 'delete' removes an event by "
-                        "its provider-qualified id (e.g. 'google:primary/abc123', "
-                        "from calendar_read action='events'); 'shift' moves every "
-                        "overdue item to a new day in one call — open tasks whose "
-                        "due date is in the past plus calendar events that "
-                        "already ended (to='tomorrow' default). Always restate "
-                        "the details to the user, get an explicit yes, then call "
-                        "with confirmed=true. For 'shift', restate the target "
-                        "date and report the moved list back."
+                        "Calendar writes — action='create'|'delete'|'shift' (move overdue "
+                        "items to a new day; absorbs calendar_create/delete/shift_*). "
+                        "Confirmed-gated: restate details, get a yes, then confirmed=true."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
@@ -3718,14 +3394,8 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "tasks",
                     "description": (
-                        "Manage the task list across task-capable providers "
-                        "(tools-merge-tasks-status: absorbed tasks_list / tasks_add / "
-                        "tasks_complete / tasks_move). action='list' reads open tasks; "
-                        "'add' creates one (title, optional due/notes/task_list); 'done' "
-                        "marks a task complete by task_id; 'move' reschedules a task's "
-                        "due date by task_id. Writes need confirmed=true: restate the "
-                        "task and resolved date, get an explicit yes, then call — "
-                        "enforced server-side."
+                        "Task list ops — action='add'|'list'|'done'|'move' (absorbs "
+                        "tasks_*). 'list' is a free read; writes are confirmed-gated."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3771,15 +3441,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "cms_read",
                     "description": (
-                        "Read the user's miniapp pages — also handles what used to be "
-                        "cms_list_pages, cms_get_page, and cms_verify_page. "
-                        "action='list' returns every page's slug, title, format, and "
-                        "last-updated timestamp; 'get' reads one page's full content by "
-                        "key (its page slug) and lang — use before updating a page; "
-                        "'verify' re-reads a page and checks the content parses for its "
-                        "declared format, returning a structural summary (title, "
-                        "sections/items, headings, slide count) — call it after "
-                        "publishing or updating, since you cannot see the rendered site."
+                        "Read miniapp pages — action='list'|'get'|'verify' (absorbs "
+                        "cms_list_pages/get_page/verify_page). 'verify' re-checks a page "
+                        "after publishing since you cannot see the rendered site."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3810,13 +3474,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "cms_publish_page",
                     "description": (
-                        "Create or fully replace a page in the user's miniapp. The slug "
-                        "is the page's URL-friendly id; publishing an existing slug "
-                        "overwrites it. CALL THIS FIRST to register the pending request, "
-                        "then tell the user the slug + title and ask for an explicit yes; "
-                        "after they say yes, call again with confirmed=true. Do not ask "
-                        "verbally without calling — the ask-step only exists once the "
-                        "request is registered."
+                        "Create or fully replace a miniapp page (slug is its id; an "
+                        "existing slug overwrites). Call FIRST to register the pending "
+                        "request, then ask the user and re-call with confirmed=true."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3883,22 +3543,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "cms_edit",
                     "description": (
-                        "Edit-side miniapp ops — also handles what used to be "
-                        "cms_note_update, cms_delete_page, and cms_automation. "
-                        "action='note' appends a one-line timeline note to an existing "
-                        "page — merges into the page's Timeline section, refreshes "
-                        "updated, and re-summarizes; never replaces content and needs "
-                        "no confirmation. Use it after tool calls that return newer "
-                        "info for a report (flood status, benchmarks). 'delete' removes "
-                        "a page — restate which page will be removed, get an explicit "
-                        "yes, then call with confirmed=true. 'automate' inspects and "
-                        "adjusts a generated page's automation registry (the switches "
-                        "the scheduled news worker honors) — op='list'/'get' are free "
-                        "reads; op='set'/'enable'/'disable'/'run' change knobs "
-                        "(interval_min, max_items, since_hours, feeds, require "
-                        "relevance regex, langs, parent/children) or queue a one-shot "
-                        "regeneration — writes need confirmed=true after restating "
-                        "what will change."
+                        "Miniapp edits — action='note' (append a timeline note, free) | "
+                        "'delete' (confirmed) | 'automate' (registry ops: op=list/get "
+                        "free, set/enable/disable/run confirmed). Absorbs cms_note_update/"
+                        "delete_page/automation."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3994,9 +3642,8 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "ada_resolve_action",
                     "description": (
-                        "Marks a pending action proposal as applied or dismissed. Call with the "
-                        "proposal key shown in the pending-suggestions list after the user "
-                        "accepts or declines the suggestion."
+                        "Mark a pending action proposal applied or dismissed — key= from "
+                        "the pending-suggestions list after the user decides."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
@@ -4016,17 +3663,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "devin",
                     "description": (
-                        "Devin session control — also handles what used to be devin_dispatch, "
-                        "devin_followup, and devin_answer. action='dispatch' starts an "
-                        "unattended Devin coding session on tony-dell in a dedicated git "
-                        "worktree (the user is notified on their phone when it finishes — "
-                        "report the task id and move on). 'followup' sends a message into a "
-                        "dispatched session, steering a running one or resuming a finished "
-                        "one. 'answer' delivers the user's refined answer to a blocked job — "
-                        "refine the reply into a self-contained instruction first (the job "
-                        "sees only the text, not this conversation). Every action requires "
-                        "confirmed=true after restating the repo/task/message and getting "
-                        "an explicit yes."
+                        "Devin session control — action='dispatch' (new unattended session) | "
+                        "'followup' (message a session) | 'answer' (reply to a blocked job). "
+                        "Absorbs devin_dispatch/followup/answer; all actions confirmed-gated."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
@@ -4075,17 +3714,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "devin_read",
                     "description": (
-                        "Devin job ledger reads — also handles what used to be devin_status, "
-                        "devin_jobs, devin_pending, devin_job_report, and ada_devteam_review. "
-                        "action='status' lists dispatched tasks and unit liveness (task_id "
-                        "drills into one); 'jobs' is the dispatch ledger — call it for "
-                        "'summarize my dispatched tasks' or 'did job X fail' and report "
-                        "statuses exactly as stored; 'pending' lists jobs blocked waiting "
-                        "for the user's answer, with each job's question and short detail; "
-                        "'report' composes the Devin job report page (publish=true with "
-                        "confirmed=true writes the 'devin-job-report' CMS page); 'review' "
-                        "runs the dev-team expert panel on a proposed new tool spec and "
-                        "files it into the devin handoff bank (owner-only)."
+                        "Devin job ledger — action='status'|'jobs'|'pending'|'report'|"
+                        "'review' (absorbs devin_status/jobs/pending/job_report and "
+                        "ada_devteam_review; review is owner-only)."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
@@ -4138,18 +3769,9 @@ class GeminiLiveProvider(RealtimeProvider):
                     # names stay callable via tool_runner._ALIASES.
                     "name": "docs",
                     "description": (
-                        "Personal document archive — scans of deeds, ID cards, "
-                        "passports, house registrations, receipts (เอกสาร). "
-                        "action='search' finds archive slugs by name/content "
-                        "(absorbs ada_doc_search — use for ANY question about "
-                        "stored/scanned documents, never home devices); 'get' "
-                        "returns one set's manifest: page names, drive path, "
-                        "hashes (absorbs ada_doc_get); 'archive' saves a "
-                        "just-uploaded document set into gdrive:ada-documents "
-                        "from intake_key/intake_keys or a host directory "
-                        "(absorbs ada_doc_archive); 'print' prints archived "
-                        "pages on the DeskJet (absorbs ada_doc_print). "
-                        "archive and print require confirmed=true."
+                        "Personal document archive (deeds, IDs, passports, receipts — "
+                        "absorbs ada_doc_*) — action='search'|'get'|'print'|'archive'; "
+                        "archive and print are confirmed-gated."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
@@ -4214,17 +3836,9 @@ class GeminiLiveProvider(RealtimeProvider):
                     # names stay callable via tool_runner._ALIASES.
                     "name": "drive",
                     "description": (
-                        "The operator's Google Drive. action='search' finds "
-                        "files by name or content (absorbs drive_search — "
-                        "narrow with mime like 'image/'; for archived deed/ID "
-                        "sets use docs action=search instead); 'get' reads a "
-                        "file — text inline, binary gets a castable media_url "
-                        "(absorbs drive_get); 'show' puts a file/photo/video "
-                        "on a vcast screen or the TV (absorbs drive_show); "
-                        "'update' replaces a regular text/md/json/csv file's "
-                        "content in place — Google-native docs can't be "
-                        "media-updated (absorbs drive_update). update requires "
-                        "confirmed=true."
+                        "The operator's Google Drive — action='search'|'show'|'get'|"
+                        "'update' (absorbs drive_*; for archived deed/ID sets use docs "
+                        "action='search'). update is confirmed-gated."
                     ),
                     "parameters_json_schema": {
                         "type": "object",

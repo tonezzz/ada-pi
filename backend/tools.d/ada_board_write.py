@@ -26,11 +26,8 @@ import httpx
 DECLARATION = {
     "name": "ada_board_write",
     "description": (
-        "Post to the kanban board's comms loop as 'ada' — comment on a "
-        "card, answer an open request on a card, or read compact board "
-        "state to find card ids, columns, and open requests. Use when "
-        "asked to note progress, findings, or a question on a board "
-        "card, or to check what is on the board."
+        "Post to the kanban board's comms loop as 'ada' — action='comment'|"
+        "'respond'|'read'."
     ),
     "parameters": {
         "type": "object",

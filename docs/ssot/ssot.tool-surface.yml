@@ -21,6 +21,14 @@
 
 count_cap: 106          # 103 builtin + 3 tools.d at census 2026-10-04
 target_count: 38        # spec: docs/assessments/tool-consolidation-spec-2026-10-04.md
+# Description-size contract (card ada-tools-desc-slim, 2026-10-05): the
+# shipped schema description is a <=2-line routing blurb — operational
+# guidance lives in backend/tool_guide.yml and reaches the model only on
+# a failed/denied call (the "usage" key). Lint fails when a declaration
+# description exceeds these caps; bump them deliberately in the same
+# commit that needs the room, never silently.
+desc_max_lines: 4       # AST content lines of the description value
+desc_max_chars: 300     # ~2 short lines of prose
 spec: docs/assessments/tool-consolidation-spec-2026-10-04.md
 alias_table: backend/tool_runner.py::_ALIASES
 scenario_dir: tests/scenarios-live

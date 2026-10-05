@@ -1,0 +1,101 @@
+# SSOT Job: slim tool declarations — prose moves to the error path
+# Card: ada-tools-desc-slim (chaba kanban). Dispatch 20261005-215023.
+
+title: Tool declaration slimming — schema ships routing blurbs, the
+  detailed contract reaches the model only on failure
+subtitle: Description text cut to ~22% of baseline; tool_guide.yml is
+  the error-path knowledge channel
+
+planning:
+  goal: |
+    Cut the model-facing schema cost: 38 declarations shipped ~33k chars
+    of prose every session while most turns call 2-3 tools. Keep each
+    declaration description a <=2-line routing blurb; move operational
+    guidance into payloads the model sees only when a call fails.
+  decisions: |
+    - New channel: backend/tool_guide.yml, one terse recovery-focused
+      entry per tool (37 entries), distilled from the prose removed
+      from realtime_provider.py descriptions. A YAML file — not inline
+      code — keeps the guidance reviewable in one place.
+    - Delivery follows the proven needs_confirm/verify_warn pattern:
+      ToolRunner._usage_hint() attaches a `usage` key to results that
+      carry error/needs_confirm/ok:false; raised exceptions (gate
+      denials, arg errors) get `\nusage: <hint>` appended to the
+      exception text so the provider's {"error": ...} wrapper carries
+      it. On success, the model never sees it — zero session cost.
+    - Lint ratchet: scripts/tool-lint.py gained a `descsize` check —
+      every declaration (builtin + tools.d) must stay under
+      desc_max_lines/desc_max_chars in ssot.tool-surface.yml (4 AST
+      content lines / 300 chars). Bump requires editing the SSOT in
+      the same commit — the budget can't creep silently.
+    - Descriptions keep routing-critical content only: what the tool
+      is, its action= values, absorbed legacy names (needed for the
+      model to pick the canonical tool from old habits), and gate
+      flags (confirmed=true requirements).
+    - Parameter schemas byte-identical (verified via AST dump
+      comparison old vs new — all 37 schemas unchanged; the 38th,
+      ada_board_write, trimmed likewise). Only `description` strings
+      changed in realtime_provider.py.
+    - tools.d modules are covered: manifest-declared names get the
+      same descsize check; guide entries keyed by canonical name so
+      aliases resolve to the same hint.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tool_guide.yml"
+      status: done
+      notes: "backend/tool_guide.yml — 37 entries distilled verbatim
+        from removed description prose; terse recovery-focused style."
+    - id: 2
+      label: "tool_runner error path"
+      status: done
+      notes: "_tool_guide() lazy loader; usage key on failed/denied
+        dict results via _usage_hint() in the result pipeline (after
+        _denial_breaker, before _capture_reminder); exception path
+        appends usage text to exc.args before re-raise."
+    - id: 3
+      label: "declaration slimming"
+      status: done
+      notes: "37 realtime_provider decls + ada_board_write DECLARATION
+        rewritten to <=4-line/<=300-char blurbs. gev_command 47 lines/
+        3,622 chars -> 3 lines/196 chars; cast_to_screen 44->3,
+        yt 28->4, cctv_wall 24->4. Total desc text 32,887->7,092 chars
+        (21.6% — under the card's <30% metric)."
+    - id: 4
+      label: "lint + ssot + docs"
+      status: done
+      notes: "tool-lint descsize check (builtin + manifest-declared
+        tools.d names); ssot.tool-surface.yml desc_max_lines:4 /
+        desc_max_chars:300; ada-tool-dev.md gained rule 9 'Slim
+        description, fat error path'; fixture tests
+        test_fat_description_fails / test_slim_description_passes."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # descsize + all existing checks"
+    - "PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest tests.test_tool_audit tests.test_tool_runner tests.test_scenarios"
+    - "PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest discover -s tests"
+
+verification:
+  - "python3 scripts/tool-lint.py — clean: 38 declared, 90 aliases,
+    53 pre-existing warnings"
+  - "gev_command spot-check: description 47 source lines -> 3
+    (3,622 -> 196 chars); parameters_json_schema byte-identical to
+    HEAD (AST-verified for all 37 decls)"
+  - "tests.test_tool_audit: 21/21 — incl. 2 new descsize fixture tests"
+  - "tests.test_tool_runner: 155/155 — incl. gates, aliases, denial
+    breaker (usage text observed appended to raised errors)"
+  - "tests.test_scenarios: 7/7 — offline ToolRunner scenarios route
+    canonical + aliased tools (ada_outcome/ada_usage_summary/
+    ada_doc_search exercise the alias table end-to-end)"
+  - "full discover suite: 610 tests, 2F/21E — identical to HEAD
+    baseline (608, same 2F/21E): test_document_check intake asserts
+    and test_provider_events google.genai-stub AttributeErrors are
+    pre-existing environment gaps, not regressions"
+  - "live scenarios (tests/scenarios-live/*.yaml) need a running
+    Gemini session — not exercisable headless; offline engine covers
+    the routing path they assert"

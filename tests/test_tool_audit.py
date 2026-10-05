@@ -36,10 +36,11 @@ gate_mod = _load("tools_merge_gate", GATE)
 
 def _mini_repo(root: Path, *, tools: list[str], aliases=None,
                absorbed=None, covered=None, debt=None, cap=None,
-               canonical="ada_camera", scenario=None):
+               desc=None, canonical="ada_camera", scenario=None):
     """Build a minimal fake repo for lint()."""
     prov = "\n".join(
-        '{"name": "%s", "description": "d", "parameters": {}},' % t
+        '{"name": "%s", "description": %r, "parameters": {}},'
+        % (t, desc if desc is not None else "d")
         for t in tools)
     (root / "backend").mkdir(parents=True, exist_ok=True)
     (root / "backend/realtime_provider.py").write_text(
@@ -149,6 +150,16 @@ class LintFixtureTests(unittest.TestCase):
 
     def test_coverage_debt_grandfathers(self):
         rep = self._run(tools=["a"], debt=["a"])
+        self.assertTrue(rep["ok"], rep["errors"])
+
+    def test_fat_description_fails(self):
+        rep = self._run(tools=["a"], debt=["a"], desc="x " * 400)
+        self.assertFalse(rep["ok"])
+        self.assertTrue(any("descsize" in e for e in rep["errors"]))
+
+    def test_slim_description_passes(self):
+        rep = self._run(tools=["a"], debt=["a"],
+                        desc="one short routing blurb")
         self.assertTrue(rep["ok"], rep["errors"])
 
     def test_merge_started_requires_scenario_file(self):
