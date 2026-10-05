@@ -73,7 +73,10 @@ tv_action: >-
   text=, press text='<key>', back, shot text='<name>', viewport
   text='WxH'. A streamed desktop is one-way video — for interaction nav
   the page itself. Never use to answer questions — web_search instead.
-  Personal screens are owner-locked; the TV is shared.
+  Personal screens are owner-locked; the TV is shared. After nav the
+  result carries tv_input (the TV's foreground app via HA) — input_warn
+  means the page loaded but the TV is on another input and it is NOT
+  visible; never claim it is showing then.
 
 cast_to_screen: >-
   Numbered vcast displays — not the physical TV (tv_action / yt cast for
@@ -96,8 +99,12 @@ cast_to_screen: >-
   result 'replaced' field must be acknowledged aloud. Camera captures
   are permission-gated: the user's explicit request IS consent
   (confirmed=true directly); a capture you propose needs asking first,
-  and a running capture is never stopped silently. Absorbs vcast_say,
-  vcast_list, vcast_status, vcast_shortcut.
+  and a running capture is never stopped silently. Screens hosted on
+  the TV's browser (marked on_tv in 'list', tv block in
+  cast-screens.json) get a tv_input check after the cast lands —
+  tv_input_mismatch means the TV is on another input; the result reports
+  the tv_browser_nav remediation and whether the cast became visible.
+  Absorbs vcast_say, vcast_list, vcast_status, vcast_shortcut.
 
 vcast_snapshot: >-
   The display draws its current frame; the image arrives attached —
@@ -138,7 +145,11 @@ cctv_wall: >-
   settings knobs: interval, jpeg_q 1-8, thumb_w, cams_skip, cams_extra,
   effects ['timestamp','grid','yolo:person,car@0.35']; display knobs:
   cycle_s=N rotates cams fullscreen, zones=[...]+zone_s rotates whole
-  walls, random=true shuffles.
+  walls, random=true shuffles. On a TV-hosted screen the result carries
+  tv_input — tv_input_mismatch means the wall delivered but the TV is on
+  another input; tv_remediation/tv_note report the browser-nav fix and
+  whether it became visible. Never claim the wall is showing when
+  tv_note warns otherwise.
 
 gev_command: >-
   Reaches every connected GEV client incl. casted ones; screen=/pane=

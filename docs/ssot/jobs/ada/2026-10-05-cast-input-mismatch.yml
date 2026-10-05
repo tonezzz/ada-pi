@@ -1,0 +1,90 @@
+# SSOT Job: cast input-mismatch detect + remediate
+# Card: cast-input-mismatch (vcast program, ada-pi lane).
+# Dispatch 20261005-225636-cast-input-mismatch-detect-rem.
+
+title: Cast input-mismatch — verify TV foreground app after cast, remediate via TV browser push
+subtitle: >
+  2026-10-04 incident: cctv_wall 'delivered' while the TV sat on the True
+  STB app (com.truedmp.idtv) for 3min — the wall loaded in the backgrounded
+  webOS browser and was never visible.
+
+planning:
+  goal: |
+    After a cast lands on a TV-hosted vcast screen, verify the TV's
+    input/source state via HA (media_player.tony_tv app_id). On mismatch,
+    run the proven remediation — push the URL straight at the TV browser
+    via tv_action nav, which foregrounds the browser app — and report the
+    outcome honestly in the tool result instead of claiming success.
+  decisions: |
+    - Detection lives in ToolRunner so every surface benefits:
+      _tv_cfg() reads a 'tv' block from the cast-screens.json registry
+      ({"entity","screens","ok_apps"}) with env overrides
+      ADA_TV_ENTITY / ADA_TV_SCREENS / ADA_TV_OK_APPS; _tv_input_state()
+      reads the media_player's app_id/app_name/source and returns
+      on_cast_app True/False/None (None = HA can't say — never blocks).
+    - Wired in at: cctv_wall start, cast_to_screen content actions
+      (nav/play/image/audio), ada_camera_snapshot's direct screen pub —
+      all only when the target screen is in the tv.screens mapping.
+      runner.tv_action cmd=nav gets its own post-check (the nav IS the
+      remediation path — it reports input_warn instead of re-navving).
+    - Remediation resolves root-relative vcast paths against the public
+      relay origin before pushing (the TV browser needs an absolute URL).
+    - vcast_list (cast_to_screen action=list/status) now surfaces
+      tv_input and marks TV-hosted screens with on_tv — the card's
+      'surface input/source if detectable' note.
+    - yt_cast (media_player.tony_tv_cast Chromecast lane) is deliberately
+      out of scope: wrong-input detection there needs HDMI/source
+      switching, not a browser push — separate card if wanted.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tv_input verify + remediation helpers"
+      status: done
+      notes: "backend/tool_runner.py: _tv_cfg/_tv_input_state/
+        _tv_input_verify/_tv_abs_url; wired into tv_action (post-nav
+        input_warn), cctv_wall, cast_to_screen, ada_camera_snapshot,
+        vcast_list (tv_input block + on_tv flags)."
+    - id: 2
+      label: "scenario engine fixtures + scenario"
+      status: done
+      notes: "tests/scenario_engine.py gains env:, cast_screens:,
+        ha_states:/ha_states_seq:, ha_tv_action:, vcast: stub blocks.
+        tests/scenarios/cast_input_mismatch.yaml replays the incident:
+        STB->browser (remediated, 'now showing'), STB->STB ('NOT
+        visible'), vcast_list surfaces the app, non-TV screen skips HA."
+    - id: 3
+      label: "unit tests + docs"
+      status: done
+      notes: "tests/test_tool_runner.py TvInputMismatchTests — 9 tests.
+        tool_guide.yml documents tv_input/input_warn on tv_action,
+        cast_to_screen, cctv_wall."
+    - id: 4
+      label: "live config (operator step)"
+      status: pending
+      notes: "The check engages per-screen via the 'tv' block in
+        cast-screens.json on idc01 (~/.local/share/ada-pi/) — add
+        {\"tv\": {\"entity\": \"media_player.tony_tv\", \"screens\":
+        [<TV screen nums>], \"ok_apps\": [\"browser\"]}} or set
+        ADA_TV_SCREENS in the service env. Which vcast screen the TV's
+        browser hosts needs a live /displays look when it's connected —
+        none of the current labels say TV. tv_action nav + vcast_list
+        surfacing work immediately without it."
+
+invoke:
+  commands:
+    - "python3 -m pytest tests/test_tool_runner.py::TvInputMismatchTests -q"
+    - "python3 -m pytest tests/test_scenarios.py::ScenarioTests::test_cast_input_mismatch -q"
+
+verification:
+  - "pytest TvInputMismatchTests — 9 tests: mismatch+remediate, still-wrong
+    honesty, right-input no-op, non-TV screen skips HA, tv_action nav
+    warn/clean, vcast_list surfacing, HA-down non-blocking"
+  - "scenario cast_input_mismatch — wrong input reports/remediates instead
+    of claiming success"
+  - "manual (per card): cast with TV on the STB input — cctv_wall result
+    carries tv_input_mismatch + tv_remediation and the TV switches to the
+    browser"

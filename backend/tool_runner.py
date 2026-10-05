@@ -3128,11 +3128,30 @@ class ToolRunner:
         # and pass the speaker so cast-browser enforces as backstop too.
         target = text or " ".join(str(cmd).split()[1:])
         self._check_tv_source_owner(target, self._memory_identity())
-        return await self.context.ha_client.tv_action(
+        out = await self.context.ha_client.tv_action(
             cmd, text, selector=selector or None, role=role or None,
             key=key or None, dx=dx, dy=dy, factor=factor,
             speaker=self._memory_identity() or "",
         )
+        # Post-nav ground truth: cast-browser acking the nav only means
+        # the browser took the URL — if the TV's foreground app is the
+        # STB or another input, the page loaded but is invisible
+        # (2026-10-04: 'casting' for 3min while the TV showed True STB).
+        if isinstance(out, dict) and str(cmd).lower() == "nav" and text:
+            try:
+                await asyncio.sleep(1.0)  # let webOS foreground the app
+                inp = await self._tv_input_state()
+                if inp.get("on_cast_app") is not None:
+                    out["tv_input"] = inp
+                    if inp["on_cast_app"] is False:
+                        out["input_warn"] = (
+                            f"the TV is on '{inp.get('app') or inp.get('state')}' — "
+                            "the page loaded in the TV browser but is NOT "
+                            "visible; do not claim it is showing. Push the "
+                            "URL again or switch the TV input.")
+            except Exception:
+                pass
+        return out
 
     async def home_status(
         self,
@@ -5318,6 +5337,12 @@ class ToolRunner:
                 self._vcast_api, "/pub",
                 {"screen": n, "msg": {"type": "image", "url": url}})
             out.update({"url": url, "camera": shot["camera"], "screen": n})
+            if (n in self._tv_cfg()["screens"]
+                    and out.get("delivered", 1)):
+                tv = await self._tv_input_verify(url)
+                out.update(tv)
+                if tv.get("tv_note"):
+                    out["note"] = tv["tv_note"]
             return out
         if t == "tv":
             out = await self.tv_action(cmd="nav", text=url)
@@ -5869,6 +5894,15 @@ class ToolRunner:
                             "acknowledge that to the user.")
         if settings:
             out["applied"] = settings
+        # TV-hosted screen: 'delivered' only means the relay acked — if
+        # the TV's foreground app is another input the wall is invisible.
+        # Verify via HA and push the wall URL at the TV browser on
+        # mismatch (the proven workaround) instead of claiming success.
+        if n in self._tv_cfg()["screens"]:
+            tv = await self._tv_input_verify(url)
+            out.update(tv)
+            if tv.get("tv_note"):
+                out["note"] += " " + tv["tv_note"]
         return out
 
     async def vcast_list(self) -> dict[str, Any]:
@@ -5922,6 +5956,25 @@ class ToolRunner:
                         "cctv_wall if they want it.")
             if mismatches:
                 out["state_mismatch"] = mismatches
+        except Exception:
+            pass
+        # TV input visibility: screens rendered by the TV's browser are
+        # only visible while the TV's foreground app IS the browser —
+        # surface it so Ada doesn't claim a wall/cast is showing while
+        # the TV sits on the STB input (2026-10-04 incident).
+        try:
+            tvcfg = self._tv_cfg()
+            for s in out.get("screens") or []:
+                if s.get("screen") in tvcfg["screens"]:
+                    s["on_tv"] = True
+            ti = await self._tv_input_state()
+            if ti.get("on_cast_app") is not None:
+                out["tv_input"] = ti
+                if ti["on_cast_app"] is False:
+                    out["tv_input"]["warning"] = (
+                        f"the TV is on '{ti.get('app') or ti.get('state')}' — "
+                        "casts to TV-hosted screens are NOT visible right "
+                        "now; say so or push the URL via tv_action nav.")
         except Exception:
             pass
         return out
@@ -6239,6 +6292,130 @@ class ToolRunner:
         if owner == "shared" or owner == person:
             return
         raise self._private_screen_denial(source, owner, person)
+
+    _TV_DEFAULT_ENTITY = "media_player.tony_tv"
+    _TV_DEFAULT_OK_APPS = ("browser", "com.webos.app.browser")
+
+    def _tv_cfg(self) -> dict[str, Any]:
+        """TV input-visibility config. A vcast screen rendered in the
+        TV's webOS browser is only VISIBLE when the TV's foreground app
+        is the browser — a delivered cast on another input looks like a
+        no-op to the viewer (2026-10-04: cctv_wall 'delivered' while the
+        TV sat on the True STB app for 3min). Registry 'tv' block in
+        cast-screens.json: {"entity": "media_player.tony_tv",
+        "screens": [5], "ok_apps": ["browser"]} — ok_apps match the
+        media_player's app_id/source as substrings (case-insensitive).
+        Env overrides: ADA_TV_ENTITY, ADA_TV_SCREENS (csv),
+        ADA_TV_OK_APPS (csv)."""
+        raw = self._cast_screens_cfg()
+        tv = raw.get("tv") if isinstance(raw.get("tv"), dict) else {}
+        entity = (os.environ.get("ADA_TV_ENTITY") or tv.get("entity")
+                  or self._TV_DEFAULT_ENTITY)
+        env_screens = os.environ.get("ADA_TV_SCREENS")
+        if env_screens is not None:
+            screens = {int(s) for s in env_screens.split(",")
+                       if s.strip().isdigit()}
+        else:
+            screens = {int(s) for s in (tv.get("screens") or [])
+                       if str(s).strip().isdigit()}
+        env_apps = os.environ.get("ADA_TV_OK_APPS")
+        if env_apps is not None:
+            ok_apps = [a.strip().lower() for a in env_apps.split(",")
+                       if a.strip()]
+        else:
+            ok_apps = [str(a).lower() for a in
+                       (tv.get("ok_apps") or self._TV_DEFAULT_OK_APPS)]
+        return {"entity": entity, "screens": screens, "ok_apps": ok_apps}
+
+    async def _tv_input_state(self) -> dict[str, Any]:
+        """Read the TV's foreground app via its HA media_player entity.
+        Returns {entity, state, app, on_cast_app} — on_cast_app is True
+        when the TV shows the cast surface (browser), False on a foreign
+        input/app or when the TV is off, and None when HA cannot say
+        (unreachable, entity missing, no app attribute). Never raises."""
+        cfg = self._tv_cfg()
+        out: dict[str, Any] = {"entity": cfg["entity"],
+                               "on_cast_app": None}
+        try:
+            st = await self.context.ha_client.get_state(cfg["entity"])
+        except Exception:
+            return out
+        if not isinstance(st, dict):
+            return out
+        out["state"] = str(st.get("state") or "unknown")
+        attrs = st.get("attributes")
+        attrs = attrs if isinstance(attrs, dict) else {}
+        app = str(attrs.get("app_id") or attrs.get("app_name")
+                  or attrs.get("source") or "")
+        out["app"] = app
+        if out["state"] in ("off", "standby", "unavailable", "unknown"):
+            out["on_cast_app"] = False
+        elif app:
+            out["on_cast_app"] = any(
+                pat in app.lower() for pat in cfg["ok_apps"])
+        return out
+
+    def _tv_abs_url(self, url: str) -> str:
+        """Root-relative vcast paths can't be pushed at the TV browser —
+        resolve them against the public relay origin (same base the
+        camwall fallback uses; every tony-dell origin serves /apps)."""
+        url = str(url or "")
+        if url.startswith(("http://", "https://")) or not url:
+            return url
+        import urllib.parse
+        parts = urllib.parse.urlsplit(os.environ.get(
+            "VCAST_PUBLIC_API",
+            "https://tony-dell.taila0626a.ts.net/api/input-bridge"))
+        return f"{parts.scheme}://{parts.netloc}{url}"
+
+    async def _tv_input_verify(self, url: str) -> dict[str, Any]:
+        """Post-cast truth check for a TV-hosted screen. Reads the TV's
+        foreground app via HA; a foreign app means the delivered cast is
+        invisible. Remediation is the proven 2026-10-04 workaround: push
+        the URL straight at the TV browser (tv_action nav), which
+        foregrounds the browser app and shows the page. The result block
+        always reports what actually happened — a still-wrong input is a
+        visible failure, not a silent 'ok'."""
+        first = await self._tv_input_state()
+        if first.get("on_cast_app") is not False:
+            return {"tv_input": first}
+        full_url = self._tv_abs_url(url)
+        rem: dict[str, Any] = {"action": "tv_browser_nav",
+                               "url": full_url}
+        try:
+            nav = await self.tv_action(cmd="nav", text=full_url)
+            rem["ok"] = not (isinstance(nav, dict)
+                             and nav.get("ok") is False)
+        except Exception as exc:
+            rem["ok"] = False
+            rem["error"] = str(exc)
+            nav = None
+        # The nav's own post-check (runner.tv_action appends tv_input on
+        # cmd=nav) doubles as the re-read; fall back to a direct read.
+        after = nav.get("tv_input") if isinstance(nav, dict) else None
+        if not isinstance(after, dict) or after.get("on_cast_app") is None:
+            after = await self._tv_input_state()
+        if isinstance(after, dict) and after.get("app"):
+            rem["after_app"] = after["app"]
+        visible = after.get("on_cast_app")
+        if visible is True:
+            note = ("the TV was on a different input — the URL was pushed "
+                    "to the TV browser and is now showing; tell the user "
+                    "the TV input was switched to it.")
+        elif visible is False:
+            note = ("WARNING: the TV is still on "
+                    f"{after.get('app') or after.get('state')} — the cast "
+                    "is NOT visible. Do not claim it is showing; tell the "
+                    "user plainly and suggest switching the TV "
+                    "input/source manually.")
+        else:
+            note = ("the TV was on a different input — pushed the URL to "
+                    "the TV browser, but the TV's input state could not "
+                    "be re-verified; do not claim it is showing until "
+                    "checked.")
+        return {"tv_input_mismatch": True, "tv_input": first,
+                "tv_remediation": rem, "tv_input_after": after,
+                "tv_note": note}
 
     async def _screen_busy(self, screen: int,
                            pane: int | None = None) -> dict[str, Any] | None:
@@ -6613,6 +6790,17 @@ class ToolRunner:
                         "changed.")
         except Exception:
             pass
+        # TV-hosted screen: the display page can ack the nav while the TV
+        # is on another input — verify and remediate via the TV browser
+        # rather than claiming the cast is visible.
+        if (action in {"nav", "play", "image", "audio"} and url
+                and screen in self._tv_cfg()["screens"]
+                and out.get("delivered", 1)):
+            tv = await self._tv_input_verify(str(url))
+            out.update(tv)
+            if tv.get("tv_note"):
+                out["note"] = (str(out.get("note") or "") + " "
+                               + tv["tv_note"]).strip()
         return out
 
     async def _vcast_display_status(

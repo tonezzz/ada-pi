@@ -1,0 +1,70 @@
+name: cast-input-mismatch
+instance: tony
+# 2026-10-04 incident: cctv_wall reported 'delivered' while the TV sat on
+# the True STB app for 3min — the wall loaded in the backgrounded webOS
+# browser but was never visible. Fix under test: after the cast lands,
+# the runner reads media_player.tony_tv's foreground app via HA; a
+# non-browser app = invisible cast -> push the wall URL at the TV
+# browser (the proven workaround) and say so honestly.
+#
+# Fixtures: screen 1 is TV-hosted (cast_screens.tv.screens); ha_states_seq
+# plays the TV's app_id in order — step 1 remediates (STB -> browser),
+# step 2 cannot (STB -> STB) and must report 'not visible' instead of
+# claiming success.
+env:
+  ADA_CAMWALL_BASE: "http://127.0.0.1:9/"   # dead — manifest read fails fast
+cast_screens:
+  screens: {"1": "shared"}
+  tv:
+    entity: media_player.tony_tv
+    screens: [1]
+    ok_apps: ["browser"]
+vcast:
+  /camwall: {ok: true, zones: {}}
+  /capture: {captures: {}}
+  /pub: {ok: true, delivered: 1}
+  /displays:
+    screens:
+      - {screen: 1, name: screen-1, label: TONY-TV, connected: true,
+         state: nav, state_detail: "camwall ?zone=noble-park", panes: 1}
+ha_states_seq:
+  media_player.tony_tv:
+    # step 1: STB on first read -> browser after the remediation nav
+    - {state: "on", attributes: {app_id: "com.truedmp.idtv", app_name: "com.truedmp.idtv", friendly_name: TONY-TV}}
+    - {state: "on", attributes: {app_id: "com.webos.app.browser", app_name: "com.webos.app.browser", friendly_name: TONY-TV}}
+    # step 2: still STB on both reads — remediation did not fix the input
+    - {state: "on", attributes: {app_id: "com.truedmp.idtv", app_name: "com.truedmp.idtv", friendly_name: TONY-TV}}
+    - {state: "on", attributes: {app_id: "com.truedmp.idtv", app_name: "com.truedmp.idtv", friendly_name: TONY-TV}}
+ha_tv_action: {ok: true, cast: nav}
+steps:
+  # Mismatch detected, remediation succeeds: the result must carry the
+  # detected app, the browser-nav remediation, and the recovered state.
+  - tool: cctv_wall
+    args: {action: start, zone: noble-park, screen: 1}
+    expect:
+      output_contains:
+        - "tv_input_mismatch"
+        - "com.truedmp.idtv"
+        - "tv_browser_nav"
+        - "com.webos.app.browser"
+      output_not_contains: ["NOT visible"]
+  # Mismatch detected, remediation lands but the TV stays on the STB —
+  # the result must say NOT visible instead of claiming success.
+  - tool: cctv_wall
+    args: {action: start, zone: noble-park, screen: 1}
+    expect:
+      output_contains:
+        - "tv_input_mismatch"
+        - "com.truedmp.idtv"
+        - "NOT visible"
+  # vcast_list surfaces the TV input state for TV-hosted screens.
+  - tool: cast_to_screen
+    args: {action: list}
+    expect:
+      output_contains: ["on_cast_app", "com.truedmp.idtv", "NOT visible"]
+  # A screen that is NOT TV-hosted skips the HA check entirely.
+  - tool: cast_to_screen
+    args: {action: nav, screen: 2, url: "/apps/gev/"}
+    expect:
+      output_contains: ["delivered"]
+      output_not_contains: ["tv_input", "tv_input_mismatch"]
