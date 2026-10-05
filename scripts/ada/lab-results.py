@@ -12,6 +12,10 @@ import re
 import sys
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from backend.report_meta import validate_report_meta  # noqa: E402
 
 MDDB = os.environ.get("MDDB_BASE_URL", "http://127.0.0.1:11023/v1")
 
@@ -72,13 +76,31 @@ Latest per scenario · pass {counts.get('pass',0)} · flaky {counts.get('flaky',
 
 *Source collection: `ada-ha-scenario-reports` (14-day TTL).*
 """
+    now = datetime.now(timezone.utc)
+    # Report meta contract (ssot.apps.ada-cms-reports.yml) — summary/domain/
+    # fresh_for/confidence/timeline/updated are required on every report page.
+    meta = {"kind": ["page"], "slug": ["lab-results"],
+            "title": ["Lab results — scenario suite"],
+            "format": ["markdown"],
+            "domain": ["bench"],
+            "summary": [f"Scenario suite: pass {counts.get('pass', 0)} · "
+                        f"flaky {counts.get('flaky', 0)} · "
+                        f"fail {counts.get('fail', 0)} of {len(latest)}"],
+            "fresh_for": ["25h"],
+            "confidence": ["high"],
+            "updated": [now.isoformat()],
+            "timeline": [f"{now.isoformat(timespec='minutes')}: rendered "
+                         f"{len(latest)} scenarios"],
+            "instance": ["ada"]}
+    check = validate_report_meta(meta)
+    if not check["ok"]:
+        print(f"meta contract violation, not publishing: {check['missing']}",
+              file=sys.stderr)
+        return 1
+    for w in check["warnings"]:
+        print(f"meta warning: {w}", file=sys.stderr)
     payload = {"collection": "ada-cms-pages", "key": "lab-results", "lang": "en",
-               "contentMd": body,
-               "meta": {"kind": ["page"], "slug": ["lab-results"],
-                        "title": ["Lab results — scenario suite"],
-                        "format": ["markdown"],
-                        "updated": [datetime.now(timezone.utc).isoformat()],
-                        "instance": ["ada"]}}
+               "contentMd": body, "meta": meta}
     print("cms:", post("add", payload).get("key"))
     return 0
 

@@ -11,6 +11,12 @@ from backend.memory_banks import MemoryBankRegistry
 from backend.tool_runner import AdaMemoryStore, ToolRunner
 
 
+# Report meta contract fields every cms_publish_page call must carry
+# (ssot.apps.ada-cms-reports.yml; enforced since ada-report-quality).
+_PAGE_META = {"summary": "Pool status brief", "domain": "home",
+              "fresh_for": "6h", "confidence": "high"}
+
+
 def _page_call(runner, slug):
     """Return (args, kwargs) of the add_document call that wrote `slug`.
 
@@ -263,7 +269,8 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):
             await self.runner.execute(
                 "cms_publish_page",
-                {"slug": "pool-notes", "title": "Pool", "content": "# hi"},
+                {"slug": "pool-notes", "title": "Pool", "content": "# hi",
+                 **_PAGE_META},
             )
         self.runner.mddb.add_document.assert_not_awaited()
 
@@ -275,8 +282,37 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
             await self.runner.execute(
                 "cms_publish_page",
                 {"slug": "pool-notes", "title": "Pool",
-                 "content": "# hi", "confirmed": True},
+                 "content": "# hi", "confirmed": True, **_PAGE_META},
             )
+        self.runner.mddb.add_document.assert_not_awaited()
+
+    async def test_publish_rejects_missing_report_meta(self):
+        # meta_contract (ssot.apps.ada-cms-reports.yml): the gate refuses
+        # BEFORE the confirm handshake registers — the error names the
+        # missing fields so the model can fix and resubmit.
+        with self.assertRaises(ValueError) as ctx:
+            await self.runner.execute(
+                "cms_publish_page",
+                {"slug": "pool-notes", "title": "Pool", "content": "# hi"})
+        msg = str(ctx.exception)
+        for f in ("summary", "domain", "fresh_for", "confidence"):
+            self.assertIn(f, msg)
+        self.runner.mddb.add_document.assert_not_awaited()
+        # …and the rejected call never armed the pending-confirm slot.
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "cms_publish_page",
+                {"slug": "pool-notes", "title": "Pool", "content": "# hi",
+                 "confirmed": True, **_PAGE_META})
+
+    async def test_publish_rejects_unparseable_fresh_for(self):
+        with self.assertRaises(ValueError) as ctx:
+            await self.runner.execute(
+                "cms_publish_page",
+                {"slug": "pool-notes", "title": "Pool", "content": "# hi",
+                 "summary": "s", "domain": "home",
+                 "fresh_for": "soon-ish", "confidence": "high"})
+        self.assertIn("fresh_for", str(ctx.exception))
         self.runner.mddb.add_document.assert_not_awaited()
 
     async def test_publish_with_confirmed_writes_page_doc(self):
@@ -286,7 +322,7 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
             await self.runner.execute(
                 "cms_publish_page",
                 {"slug": "Pool Notes", "title": "Pool notes",
-                 "content": "# Pool\npH 7.4"},
+                 "content": "# Pool\npH 7.4", **_PAGE_META},
             )
         result = await self.runner.execute(
             "cms_publish_page",
@@ -295,32 +331,42 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
                 "title": "Pool notes",
                 "content": "# Pool\npH 7.4",
                 "confirmed": True,
+                **_PAGE_META,
             },
         )
         self.assertEqual(result["status"], "published")
         self.assertEqual(result["slug"], "pool-notes")
+        self.assertNotIn("meta_contract", result)  # clean write — no gaps
         args, kwargs = _page_call(self.runner, "pool-notes")
         self.assertEqual(args[:3], ("ada-cms-pages", "pool-notes", "en"))
         meta = kwargs["meta"]
         self.assertEqual(meta["kind"], ["page"])
         self.assertEqual(meta["slug"], ["pool-notes"])
         self.assertEqual(meta["format"], ["markdown"])
+        # contract fields landed: model args + tool-stamped updated/timeline
+        for f in ("summary", "domain", "fresh_for", "confidence"):
+            self.assertEqual(meta[f], [_PAGE_META[f]], f)
+        self.assertTrue(meta["updated"][0])
+        self.assertTrue(meta["timeline"][0].endswith("published: Pool notes"))
 
     async def test_publish_rejects_bad_slug_and_format(self):
         # Register pending first so the calls reach validation.
         for bad in ({"slug": "../evil", "title": "x", "content": "x"},
                     {"slug": "ok", "title": "x", "content": "x", "format": "exe"}):
             with self.assertRaises(PermissionError):
-                await self.runner.execute("cms_publish_page", bad)
+                await self.runner.execute(
+                    "cms_publish_page", {**bad, **_PAGE_META})
         with self.assertRaises(ValueError):
             await self.runner.execute(
                 "cms_publish_page",
-                {"slug": "../evil", "title": "x", "content": "x", "confirmed": True},
+                {"slug": "../evil", "title": "x", "content": "x",
+                 "confirmed": True, **_PAGE_META},
             )
         with self.assertRaises(ValueError):
             await self.runner.execute(
                 "cms_publish_page",
-                {"slug": "ok", "title": "x", "content": "x", "format": "exe", "confirmed": True},
+                {"slug": "ok", "title": "x", "content": "x", "format": "exe",
+                 "confirmed": True, **_PAGE_META},
             )
 
     async def test_list_and_get_are_not_gated(self):
@@ -383,6 +429,48 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report["ok"])
         self.assertEqual(report["summary"]["headings"], ["# Title", "## Sub"])
 
+    async def test_verify_page_reports_meta_contract(self):
+        # Legacy page missing the contract fields → meta_contract.ok False
+        # with the missing field names; content parse stays ok.
+        self.runner.mddb.get_document.return_value = {
+            "key": "legacy", "contentMd": "# T",
+            "meta": {"slug": ["legacy"], "title": ["L"],
+                     "format": ["markdown"]},
+        }
+        report = await self.runner.execute("cms_verify_page", {"slug": "legacy"})
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["meta_contract"]["ok"])
+        for f in ("summary", "domain", "fresh_for", "confidence",
+                  "timeline", "updated"):
+            self.assertIn(f, report["meta_contract"]["missing"])
+
+        # Conformant page → clean contract block.
+        self.runner.mddb.get_document.return_value = {
+            "key": "ok-page", "contentMd": "# T",
+            "meta": {"slug": ["ok-page"], "title": ["T"],
+                     "format": ["markdown"], "summary": ["brief"],
+                     "domain": ["home"], "fresh_for": ["1d"],
+                     "confidence": ["high"],
+                     "updated": ["2026-10-05T10:00:00+00:00"],
+                     "timeline": ["2026-10-05T10:00 published: T"]},
+        }
+        report = await self.runner.execute("cms_verify_page", {"slug": "ok-page"})
+        self.assertTrue(report["meta_contract"]["ok"])
+        self.assertEqual(report["meta_contract"]["warnings"], [])
+
+    async def test_note_update_surfaces_meta_contract_gap(self):
+        # note is merge-only/ungated — it must not fail on a legacy page,
+        # but the gap is reported so Ada can republish properly.
+        self.runner.mddb.get_document.return_value = {
+            "key": "legacy", "lang": "en", "contentMd": "# L",
+            "meta": {"slug": ["legacy"], "title": ["L"]},
+        }
+        out = await self.runner.execute(
+            "cms_note_update", {"slug": "legacy", "note": "ping"})
+        self.assertEqual(out["status"], "noted")
+        self.assertFalse(out["meta_contract"]["ok"])
+        self.assertIn("summary", out["meta_contract"]["missing"])
+
     async def test_read_only_blocks_publish(self):
         os.environ["ADA_READ_ONLY"] = "true"
         try:
@@ -407,12 +495,13 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):
             await self.runner.execute(
                 "cms_publish_page",
-                {"slug": "flood-report", "title": "Flood", "content": "# Flood\nnew"},
+                {"slug": "flood-report", "title": "Flood",
+                 "content": "# Flood\nnew", **_PAGE_META},
             )
         await self.runner.execute(
             "cms_publish_page",
             {"slug": "flood-report", "title": "Flood",
-             "content": "# Flood\nnew", "confirmed": True},
+             "content": "# Flood\nnew", "confirmed": True, **_PAGE_META},
         )
         meta = _page_call(self.runner, "flood-report")[1]["meta"]
         self.assertEqual(meta["generated_by"],

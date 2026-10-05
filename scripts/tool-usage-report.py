@@ -34,6 +34,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+from backend.report_meta import validate_report_meta  # noqa: E402
+
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 PAGE_KEY = "report/tool-usage"
 RE_CALL = re.compile(r"^tool ([a-z0-9_]+) args=")
@@ -183,12 +186,24 @@ def publish(mddb: str, content_md: str, stats: dict, now: datetime) -> bool:
         "format": ["markdown"], "instance": ["idc01"],
         "updated": [now.isoformat(timespec="seconds")],
         "fresh_for": ["25h"],
+        # journal-line census — direct counts, but only covers the units
+        # scanned, so not 'high'
+        "confidence": ["medium"],
         "summary": [f"{len(stats['calls'])} tools called, "
                     f"{len(stats['zero_use'])} zero-use, "
                     f"{len(stats['unknown'])} undeclared"],
         "timeline": [f"{now.isoformat(timespec='minutes')}: census "
                      f"{len(stats['calls'])}/{len(stats['calls']) + len(stats['zero_use'])} tools active"],
     }
+    # Report meta contract (ssot.apps.ada-cms-reports.yml) — refuse to
+    # publish a page missing required fields; warnings log but don't block.
+    check = validate_report_meta(meta)
+    if not check["ok"]:
+        print(f"meta contract violation, not publishing: {check['missing']}",
+              file=sys.stderr)
+        return False
+    for w in check["warnings"]:
+        print(f"meta warning: {w}", file=sys.stderr)
     req = urllib.request.Request(
         mddb.rstrip("/") + "/add",
         data=json.dumps({

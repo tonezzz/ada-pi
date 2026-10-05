@@ -27,6 +27,9 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, REPO)
+from backend.report_meta import validate_report_meta  # noqa: E402
+
 BENCH = os.path.join(REPO, "tests", "benchmark.yml")
 SCEN_DIR = os.path.join(REPO, "tests", "scenarios-live")
 COLLECTION = "ada-ha-scenario-reports"
@@ -356,14 +359,34 @@ def main() -> int:
                      "scenarios": [f"{n}:{s}" for n, s, *_ in rows]},
         })
         if args.report_cms:
-            _post(f"{args.mddb.rstrip('/')}/add", {
-                "collection": "ada-cms-pages", "key": f"benchmark-{args.suite}",
-                "lang": "en", "contentMd": md,
-                "meta": {"kind": ["page"], "slug": [f"benchmark-{args.suite}"],
-                         "title": [f"Benchmark {args.suite} — {now:%Y-%m-%d}"],
-                         "format": ["markdown"], "instance": ["tony"],
-                         "updated": [now.isoformat(timespec="seconds")]},
-            })
+            # Report meta contract (ssot.apps.ada-cms-reports.yml) —
+            # validate before the write; a missing field skips the publish.
+            bmeta = {"kind": ["page"], "slug": [f"benchmark-{args.suite}"],
+                     "title": [f"Benchmark {args.suite} — {now:%Y-%m-%d}"],
+                     "format": ["markdown"], "instance": ["tony"],
+                     "domain": ["bench"],
+                     "summary": [f"{args.suite} score {score} — "
+                                 f"{sum(1 for _, s, *_ in rows if s == 'pass')} pass, "
+                                 f"{sum(1 for _, s, *_ in rows if s == 'fail')} fail, "
+                                 f"{len(violations)} policy violations"
+                                 + (" (invalid run)" if not run_valid else "")],
+                     "fresh_for": ["1d"],
+                     "confidence": ["high" if run_valid else "low"],
+                     "timeline": [f"{now.isoformat(timespec='minutes')}: "
+                                  f"{args.suite} run, score {score}"],
+                     "updated": [now.isoformat(timespec="seconds")]}
+            bcheck = validate_report_meta(bmeta)
+            for w in bcheck["warnings"]:
+                print(f"  meta warning: {w}", file=sys.stderr)
+            if bcheck["ok"]:
+                _post(f"{args.mddb.rstrip('/')}/add", {
+                    "collection": "ada-cms-pages", "key": f"benchmark-{args.suite}",
+                    "lang": "en", "contentMd": md,
+                    "meta": bmeta,
+                })
+            else:
+                print(f"  benchmark cms page NOT published — meta contract "
+                      f"violation: {bcheck['missing']}", file=sys.stderr)
 
         # Auto-report judgment — deterministic; maintains the 'auto-report'
         # CMS page so report-worthy items are always visible, and appends an
@@ -387,15 +410,29 @@ def main() -> int:
             "suite, or a scenario stays flaky across runs. Ada reads this page "
             "for 'anything to report?' questions — do not hand-edit; fix the "
             "underlying failure instead.\n")
-        _post(f"{args.mddb.rstrip('/')}/add", {
-            "collection": "ada-cms-pages", "key": "auto-report", "lang": "en",
-            "contentMd": worthy_md,
-            "meta": {"kind": ["page"], "slug": ["auto-report"],
-                     "title": ["Auto Report"], "format": ["markdown"],
-                     "instance": ["tony"],
-                     "updated": [now.isoformat(timespec="seconds")],
-                     "worthy": [str(len(worthy))]},
-        })
+        wmeta = {"kind": ["page"], "slug": ["auto-report"],
+                 "title": ["Auto Report"], "format": ["markdown"],
+                 "instance": ["tony"], "domain": ["bench"],
+                 "summary": [f"{len(worthy)} report-worthy item(s) from the "
+                             f"latest {args.suite} run (score {score})"],
+                 "fresh_for": ["1d"],
+                 "confidence": ["high"],
+                 "timeline": [f"{now.isoformat(timespec='minutes')}: "
+                              f"{args.suite} run — {len(worthy)} worthy"],
+                 "updated": [now.isoformat(timespec="seconds")],
+                 "worthy": [str(len(worthy))]}
+        wcheck = validate_report_meta(wmeta)
+        for w in wcheck["warnings"]:
+            print(f"  meta warning: {w}", file=sys.stderr)
+        if wcheck["ok"]:
+            _post(f"{args.mddb.rstrip('/')}/add", {
+                "collection": "ada-cms-pages", "key": "auto-report", "lang": "en",
+                "contentMd": worthy_md,
+                "meta": wmeta,
+            })
+        else:
+            print(f"  auto-report page NOT published — meta contract "
+                  f"violation: {wcheck['missing']}", file=sys.stderr)
         if worthy:
             _post(f"{args.mddb.rstrip('/')}/add", {
                 "collection": COLLECTION,

@@ -319,10 +319,12 @@ cms_publish_page: >-
   Call FIRST to register the pending request, then tell the user
   slug+title and get an explicit yes, then re-call confirmed=true — do
   not ask verbally before registering. An existing slug is overwritten.
+  Report meta contract — REQUIRED, the call is rejected without them:
   summary= is the one-line reports-index gist (max ~240); domain= a
-  grouping tag; fresh_for='1h'/'6h'/'1d' marks staleness; links=
-  comma-separated related slugs; supersedes= the replaced slug;
-  confidence= high|low|unverified.
+  grouping tag; fresh_for='1h'/'6h'/'1d' marks staleness;
+  confidence= high|medium|low|unverified. updated/timeline are stamped
+  automatically. Optional: links= comma-separated related slugs;
+  supersedes= the replaced slug.
 
 cms_edit: >-
   'note' appends a one-line timeline note to a page (note=, optional

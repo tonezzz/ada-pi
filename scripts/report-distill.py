@@ -14,6 +14,11 @@ import json
 import sys
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from backend.report_meta import (  # noqa: E402
+    fresh_for_seconds, validate_report_meta)
 
 MDDB = "http://100.74.146.0:11023/v1"
 COLLECTION = "ada-cms-pages"
@@ -38,17 +43,6 @@ def _meta(doc: dict, name: str) -> str:
 def _meta_list(doc: dict, name: str) -> list[str]:
     v = (doc.get("meta") or {}).get(name)
     return [str(x) for x in v] if isinstance(v, list) else []
-
-
-def fresh_for_seconds(hint: str) -> int | None:
-    """'30m' '1h' '6h' '1d' '7d' '30d' → seconds."""
-    u = hint.strip().lower()
-    if not u:
-        return None
-    mult = {"m": 60, "h": 3600, "d": 86400}
-    if u[-1] in mult and u[:-1].isdigit():
-        return int(u[:-1]) * mult[u[-1]]
-    return None
 
 
 def is_stale(doc: dict) -> bool:
@@ -83,6 +77,7 @@ def main() -> int:
 
     # one digest page per domain
     n_domains = 0
+    n_bad = 0
     for dom, ds in sorted(by_domain.items()):
         ds.sort(key=lambda d: _meta(d, "updated"), reverse=True)
         stale = [d for d in ds if is_stale(d)]
@@ -113,6 +108,8 @@ def main() -> int:
                 "format": ["markdown"], "lang": ["en"],
                 "summary": [f"{len(ds)} {dom} reports, {len(stale)} stale"],
                 "fresh_for": ["1d"],
+                # derived aggregate over report metas — not a measurement
+                "confidence": ["medium"],
                 "bank": ["cms"], "scope": ["tony"], "status": ["active"],
                 "source": ["api"], "subject": [f"{dom}-digest"],
                 "written_by": ["report-distill"],
@@ -123,6 +120,17 @@ def main() -> int:
                 "generated_by": ["report-distill"],
                 "updated": [now.isoformat(timespec="seconds")],
                 "timeline": [f"{now.isoformat(timespec='seconds')[:16]} digest: {len(ds)} reports"]}
+        # Report meta contract (ssot.apps.ada-cms-reports.yml) — skip the
+        # write on missing fields so the gap surfaces instead of a
+        # non-conformant page landing silently.
+        check = validate_report_meta(meta)
+        if not check["ok"]:
+            print(f"{dom}-digest: meta contract violation, not publishing: "
+                  f"{check['missing']}", file=sys.stderr)
+            n_bad += 1
+            continue
+        for w in check["warnings"]:
+            print(f"{dom}-digest: meta warning: {w}", file=sys.stderr)
         _post("/add", {"collection": COLLECTION, "key": f"{dom}-digest",
                        "lang": "en",
                        "contentMd": "\n".join(lines), "meta": meta})
@@ -130,7 +138,7 @@ def main() -> int:
         print(f"{dom}: {len(ds)} reports ({len(stale)} stale) → {dom}-digest")
 
     print(f"done — {n_domains} domain digests")
-    return 0
+    return 1 if n_bad else 0
 
 
 if __name__ == "__main__":

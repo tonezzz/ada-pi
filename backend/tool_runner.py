@@ -36,6 +36,11 @@ from backend.memory_banks import (
     MemoryBankRegistry,
     get_registry,
 )
+from backend.report_meta import (
+    fresh_for_seconds,
+    missing_publish_fields,
+    validate_report_meta,
+)
 from backend.usage_tracker import usage_ledger
 
 logger = logging.getLogger("tools")
@@ -1894,6 +1899,19 @@ class ToolRunner:
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("CMS writes are disabled (ADA_READ_ONLY=true)")
         if name == "cms_publish_page":
+            # Report meta contract (ssot.apps.ada-cms-reports.yml): reject
+            # BEFORE the confirm handshake registers so the model fixes the
+            # call instead of asking the user to approve a write that would
+            # land without the fields reports-index/verify rely on.
+            missing = missing_publish_fields(args)
+            if missing:
+                raise ValueError(
+                    "cms_publish_page: report meta contract — missing or "
+                    f"invalid: {', '.join(missing)}. Pass summary (one-line "
+                    "brief, ~240 chars), domain (grouping tag), fresh_for "
+                    "('30m'/'1h'/'6h'/'1d'), and confidence "
+                    "(high|medium|low|unverified); updated and timeline are "
+                    "stamped automatically.")
             # Normalize the slug before keying — the model may resubmit the
             # confirm call with different casing/spacing than the register
             # call, and a raw-args key would miss the pending request.
@@ -2235,8 +2253,14 @@ class ToolRunner:
             self._check_cms_write_allowed(
                 "devin_read", {"slug": DEVIN_JOB_REPORT_SLUG},
                 confirmed, confirm_token)
+            counts = result["counts"]
             pub = await self.cms_publish_page(
-                DEVIN_JOB_REPORT_SLUG, "Devin Job Report", markdown)
+                DEVIN_JOB_REPORT_SLUG, "Devin Job Report", markdown,
+                summary=(f"{counts['active']} active, {counts['failed']} "
+                         f"failed, {counts['done']} done, "
+                         f"{counts['stale']} stale — Devin dispatch job "
+                         "ledger"),
+                domain="devin", fresh_for="1h", confidence="high")
             result["publish"] = pub
             result["status"] = pub.get("status", "error")
         return result
@@ -4345,6 +4369,13 @@ class ToolRunner:
         tl = [x for x in meta.get("timeline", []) if isinstance(x, str)]
         tl.append(f"{updated[:16]} published: {title.strip()[:80]}")
         meta["timeline"] = tl[-40:]
+        # Post-merge contract check — the gate already rejects missing
+        # model args, so gaps here mean an internal caller republished a
+        # legacy page; warn rather than break the merge path.
+        meta_check = validate_report_meta(meta)
+        if not meta_check["ok"] or meta_check["warnings"]:
+            logger.warning(
+                "cms_publish_page %s meta_contract gaps: %s", slug, meta_check)
         result = await self.mddb.add_document(
             CMS_COLLECTION,
             slug,
@@ -4387,7 +4418,7 @@ class ToolRunner:
         # Refresh the reports index in the background — cheap page Ada reads
         # instead of re-querying per report.
         asyncio.create_task(self._cms_reports_index())
-        return {
+        out = {
             "status": "published",
             "slug": slug,
             "title": title.strip(),
@@ -4400,6 +4431,9 @@ class ToolRunner:
                     "action='nav', url=<cast_url>) — only after this result "
                     "shows status=published.",
         }
+        if not meta_check["ok"] or meta_check["warnings"]:
+            out["meta_contract"] = meta_check
+        return out
 
     async def cms_delete_page(self, slug: str) -> dict[str, Any]:
         """Delete a miniapp page by slug."""
@@ -4451,6 +4485,12 @@ class ToolRunner:
         meta["written_by"] = ["cms_note_update"]
         if summary.strip():
             meta["summary"] = [summary.strip()[:240]]
+        # Contract check is warn-only here — note is a merge-only append;
+        # gaps mean the underlying page predates the contract.
+        meta_check = validate_report_meta(meta)
+        if not meta_check["ok"] or meta_check["warnings"]:
+            logger.warning(
+                "cms_note_update %s meta_contract gaps: %s", slug, meta_check)
         content = doc.get("contentMd") or ""
         marker = "## Timeline"
         line = f"- {entry}"
@@ -4478,9 +4518,12 @@ class ToolRunner:
         diff = {"note": entry}
         if summary.strip():
             diff["summary"] = summary.strip()[:240]
-        return {"status": "noted", "slug": slug,
-                "timeline_entries": len(meta["timeline"]),
-                "updated": now, "diff": diff}
+        out = {"status": "noted", "slug": slug,
+               "timeline_entries": len(meta["timeline"]),
+               "updated": now, "diff": diff}
+        if not meta_check["ok"] or meta_check["warnings"]:
+            out["meta_contract"] = meta_check
+        return out
 
     # -- cms_edit: the merged edit side (tools-merge-cms) -------------------
     # Absorbs cms_note_update/cms_delete_page/cms_automation — per-action
@@ -4697,11 +4740,10 @@ class ToolRunner:
         def stale(meta: dict) -> bool:
             ff = (meta.get("fresh_for") or [""])[0]
             upd = (meta.get("updated") or [""])[0]
-            if not ff or not upd:
+            secs = fresh_for_seconds(ff)
+            if secs is None or not upd:
                 return False
             try:
-                m = {"h": 3600, "d": 86400, "m": 60}
-                secs = int(float(ff[:-1]) * m[ff[-1]])
                 dt = datetime.fromisoformat(upd.replace("Z", "+00:00"))
                 return (now - dt).total_seconds() > secs
             except Exception:
@@ -4743,8 +4785,10 @@ class ToolRunner:
                   "format": ["markdown"], "domain": ["meta"],
                   "summary": ["Auto-generated index of report pages — "
                               "slug, domain, staleness, one-line brief."],
-                  "fresh_for": ["6h"],
+                  "fresh_for": ["6h"], "confidence": ["high"],
                   "updated": [now.isoformat(timespec="seconds")],
+                  "timeline": [f"{now.isoformat(timespec='seconds')[:16]} "
+                               "index regenerated"],
                   "instance": [self._instance_id or "ada"],
                   "written_by": ["_cms_reports_index"]})
 
@@ -4960,10 +5004,12 @@ class ToolRunner:
         loop after publish: returns a structural summary of what the viewer
         renders, or the parse error to fix.
         """
-        page = await self.cms_get_page(slug)
-        if page is None:
+        key = self._cms_slug(slug)
+        doc = await self.mddb.get_document(CMS_COLLECTION, key, "en")
+        if not isinstance(doc, dict):
             return {"ok": False, "status": "not_found", "slug": slug}
-        content = page["content"]
+        page = self._cms_page_summary(doc)
+        content = doc.get("contentMd") or doc.get("content") or ""
         fmt = page["format"]
         report: dict[str, Any] = {
             "ok": True,
@@ -4971,6 +5017,10 @@ class ToolRunner:
             "title": page["title"],
             "format": fmt,
             "chars": len(content),
+            # Report meta contract (ssot.apps.ada-cms-reports.yml) — ok
+            # stays about content parse; meta_contract reports the field
+            # check Ada can act on (republish with the missing fields).
+            "meta_contract": validate_report_meta(doc.get("meta") or {}),
         }
         if not content.strip():
             report.update(ok=False, error="page content is empty")

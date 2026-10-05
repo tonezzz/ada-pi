@@ -138,7 +138,13 @@ CMS_INSTRUCTIONS = (
     "cms_publish_page creates or fully replaces a page (slugs are lowercase, e.g. 'pool-notes'; "
     "en/th variants coexist — publish the user's language plus the other when asked), "
     "cms_edit action='note' appends a timeline note to an existing page without replacing content, and "
-    "cms_edit action='delete' removes one. Page content is written as markdown, html, yaml, or slides markdown. "
+    "cms_edit action='delete' removes one. "
+    "Every publish must carry the report meta contract — summary (a one-line brief of the gist, "
+    "~240 chars max; it is the reports-index row), domain (grouping tag like 'flood'/'health'/"
+    "'bench'/'news'), fresh_for (staleness hint '30m'/'1h'/'6h'/'1d'), and confidence "
+    "(high|medium|low|unverified) — cms_publish_page REJECTS calls missing them; updated and "
+    "timeline are stamped automatically. "
+    "Page content is written as markdown, html, yaml, or slides markdown. "
     "For 'what's new' or 'status' questions, read the 'reports-index' page first — it lists every "
     "report with a one-line summary and staleness flag; only cms_read action='get' the linked page when the "
     "summary isn't enough. "
@@ -3506,15 +3512,15 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "summary": {
                                 "type": "string",
-                                "description": "One-line brief for reports-index — the gist Ada can answer from without re-reading the page (max ~240 chars).",
+                                "description": "REQUIRED (report meta contract): one-line brief for reports-index — the gist Ada can answer from without re-reading the page (max ~240 chars).",
                             },
                             "domain": {
                                 "type": "string",
-                                "description": "Grouping tag for reports-index, e.g. 'flood', 'health', 'bench', 'news'.",
+                                "description": "REQUIRED (report meta contract): grouping tag for reports-index, e.g. 'flood', 'health', 'bench', 'news'.",
                             },
                             "fresh_for": {
                                 "type": "string",
-                                "description": "Staleness hint, e.g. '1h', '6h', '1d' — reports-index flags the page as STALE past this window.",
+                                "description": "REQUIRED (report meta contract): staleness hint, e.g. '30m', '1h', '6h', '1d' — reports-index flags the page as STALE past this window.",
                             },
                             "links": {
                                 "type": "string",
@@ -3526,7 +3532,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "confidence": {
                                 "type": "string",
-                                "description": "Trust level, e.g. 'high', 'low', 'unverified' — shown in the report so Ada knows how much weight to give it.",
+                                "description": "REQUIRED (report meta contract): trust level — 'high', 'medium', 'low', or 'unverified'; shown in the report so Ada knows how much weight to give it.",
                             },
                             "confirmed": {
                                 "type": "boolean",
@@ -3537,7 +3543,8 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
                             },
                         },
-                        "required": ["slug", "title", "content"],
+                        "required": ["slug", "title", "content", "summary",
+                                     "domain", "fresh_for", "confidence"],
                         "additionalProperties": False,
                     },
                 }, {

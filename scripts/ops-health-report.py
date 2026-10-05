@@ -6,8 +6,12 @@ Checks: mddb http+vector, ada-ha-tony ws, jev-student (8778), open-jev-4b on idc
 systemone, embed proxy. Counts systemd restart churn (restarts in 24h —
 the crash-loop signal a single is-active check misses).
 """
-import json, subprocess, time, urllib.request
+import json, subprocess, sys, time, urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from backend.report_meta import validate_report_meta  # noqa: E402
 
 MDDB = "http://100.74.146.0:11023/v1"
 NOW = datetime.now().astimezone()
@@ -111,16 +115,27 @@ meta = {"kind": ["report"], "domain": ["health"], "suite": ["ops-health"],
         "summary": [f"{verdict}: {len(bad)+len(bad_svc)} flagged of "
                     f"{len(checks)+len(svc_rows)} checks"],
         "fresh_for": ["1h"],
+        # probes + systemd reads are direct measurements
+        "confidence": ["high"],
         "ts": [NOW.isoformat(timespec="seconds")]}
+cms_meta = {**meta, "kind": ["report"], "slug": ["ops-health"],
+            "title": [f"Ops health — {NOW:%Y-%m-%d %H:%M}"],
+            "format": ["markdown"], "instance": ["idc01"],
+            "updated": [NOW.isoformat(timespec="seconds")],
+            "timeline": [f"{NOW.isoformat(timespec='minutes')}: {verdict} "
+                         f"({len(bad)+len(bad_svc)} flags)"]}
+# Report meta contract (ssot.apps.ada-cms-reports.yml) — refuse to publish
+# a page missing required fields; warnings log but don't block.
+check = validate_report_meta(cms_meta)
+if not check["ok"]:
+    print(f"meta contract violation, not publishing: {check['missing']}",
+          file=sys.stderr)
+    sys.exit(1)
+for w in check["warnings"]:
+    print(f"meta warning: {w}", file=sys.stderr)
 post("/add", {"collection": "ada-ha-scenario-reports",
               "key": f"report/health-{ts}", "lang": "en",
               "contentMd": md, "meta": meta})
 post("/add", {"collection": "ada-cms-pages", "key": "ops-health", "lang": "en",
-              "contentMd": md,
-              "meta": {**meta, "kind": ["report"], "slug": ["ops-health"],
-                       "title": [f"Ops health — {NOW:%Y-%m-%d %H:%M}"],
-                       "format": ["markdown"], "instance": ["idc01"],
-                       "updated": [NOW.isoformat(timespec="seconds")],
-                       "timeline": [f"{NOW.isoformat(timespec='minutes')}: {verdict} "
-                                    f"({len(bad)+len(bad_svc)} flags)"]}})
+              "contentMd": md, "meta": cms_meta})
 print(f"{verdict} — {len(bad)+len(bad_svc)} flagged, published report/health-{ts}")
