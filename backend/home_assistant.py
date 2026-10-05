@@ -709,7 +709,7 @@ class HomeAssistantClient:
                 "total_battery_entities": 0,
                 "batteries_tracked": ["battery_1", "battery_2", "battery_3"],
                 "note": (
-                    "Use get_battery_detail with battery_index=1, 2, or 3 for per-battery readings. "
+                    "Use home_status what='battery' with battery_index=1, 2, or 3 for per-battery readings. "
                     "battery_status gives a grouped overview."
                 ),
             },

@@ -167,6 +167,33 @@ LEGACY_TOOL_ALIASES: dict[str, str] = {
     "cms_note_update": "cms_edit",
     "cms_delete_page": "cms_edit",
     "cms_automation": "cms_edit",
+    # tools-merge-calendar-plan (missed by that card — resynced with
+    # tool_runner._ALIASES here)
+    "calendar_list_calendars": "calendar_read",
+    "calendar_list_events": "calendar_read",
+    "calendar_freebusy": "calendar_read",
+    "calendar_create_event": "calendar_write",
+    "calendar_delete_event": "calendar_write",
+    "calendar_shift_overdue": "calendar_write",
+    "ada_daily_summary": "plan_day",
+    "ada_weekly_comparison": "plan_day",
+    # tools-merge-tasks-status (2026-10-05)
+    "tasks_add": "tasks",
+    "tasks_list": "tasks",
+    "tasks_complete": "tasks",
+    "tasks_move": "tasks",
+    "get_battery_status": "home_status",
+    "get_battery_detail": "home_status",
+    "get_power_summary": "home_status",
+    "get_inverter_status": "home_status",
+    "get_pool_status": "home_status",
+    "get_dashboard_tab": "home_status",
+    "get_habit_status": "home_status",
+    "photos_pick": "chat_send",
+    "photos_picked": "chat_send",
+    "sys_show_uploaded_document": "chat_send",
+    "process_document_upload": "chat_send",
+    "doc_upload_card_action": "chat_send",
 }
 
 _VCAST_API = os.environ.get(

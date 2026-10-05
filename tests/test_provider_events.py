@@ -70,6 +70,29 @@ class HabitStatusToolSession(ExpressionToolSession):
         self.provider._closed=True
 
 
+class HomeStatusToolSession(ExpressionToolSession):
+    # Canonical form after tools-merge-tasks-status: home_status
+    # what='habit' must return the same snapshot the retired
+    # get_habit_status produced.
+    async def receive(self):
+        yield types.LiveServerMessage(tool_call=types.LiveServerToolCall(function_calls=[
+            types.FunctionCall(id="hs-1",name="home_status",args={"what":"habit"})
+        ]))
+        self.provider._closed=True
+
+
+class DocCardToolSession(ExpressionToolSession):
+    # doc_upload_card_action is a forward alias into chat_send(doc='card')
+    # whose own action=/intake_key= args need the surrogate remap
+    # (action->op, intake_key->key) BEFORE runner.execute — the provider
+    # resolves the name to canonical, so the runner never sees the alias.
+    async def receive(self):
+        yield types.LiveServerMessage(tool_call=types.LiveServerToolCall(function_calls=[
+            types.FunctionCall(id="doc-1",name="doc_upload_card_action",args={"action":"archive","intake_key":"doc-abc"})
+        ]))
+        self.provider._closed=True
+
+
 class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
     def test_live_config_guards_long_full_duplex_sessions(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "backend/realtime_provider.py").read_text()
@@ -133,6 +156,29 @@ class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([e.type for e in events],["tool_call","tool_result"])
         self.assertEqual(session.responses[0].name,"get_habit_status")
         self.assertEqual(session.responses[0].response,{"output":snapshot})
+
+    async def test_home_status_canonical_returns_habit_snapshot(self) -> None:
+        snapshot={"window_days":7,"habits":[{"habit_key":"posture","lifecycle_status":"possible"}]}
+        provider=GeminiLiveProvider(habit_state_getter=lambda:snapshot)
+        session=HomeStatusToolSession(provider); provider._session=session
+        events=[event async for event in provider.events()]
+        self.assertEqual([e.type for e in events],["tool_call","tool_result"])
+        self.assertEqual(session.responses[0].name,"home_status")
+        self.assertEqual(session.responses[0].response,{"output":snapshot})
+
+    async def test_doc_card_alias_remaps_args_before_dispatch(self) -> None:
+        provider=GeminiLiveProvider()
+        session=DocCardToolSession(provider); provider._session=session
+        events=[event async for event in provider.events()]
+        self.assertEqual(events[0].type,"tool_call")
+        self.assertEqual(events[0].data["name"],"chat_send")
+        args=events[0].data["args"]
+        self.assertEqual(args.get("doc"),"card")
+        self.assertEqual(args.get("op"),"archive")
+        self.assertEqual(args.get("key"),"doc-abc")
+        self.assertNotIn("action",args)
+        self.assertNotIn("intake_key",args)
+        self.assertEqual(session.responses[0].name,"doc_upload_card_action")
 
     async def test_video_frame_uses_live_video_input(self) -> None:
         class VideoSession:

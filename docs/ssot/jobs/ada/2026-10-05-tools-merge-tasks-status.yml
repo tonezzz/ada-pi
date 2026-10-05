@@ -1,0 +1,141 @@
+# SSOT Job: tasks+status tool-group merge (10 -> 3)
+# Card: tools-merge-tasks-status (chaba kanban). Dispatch 20261005-183350.
+
+title: Tasks+status merge — tasks / home_status / chat_send absorb sixteen names
+subtitle: Fifth tools-merge-* card landed — _ALIASES now carries 39 retirees
+
+planning:
+  goal: |
+    Cut the tasks+status group to its canonical three per the card spec:
+    tasks (action=add|list|done|move) absorbs the four tasks_* names,
+    home_status (what=battery|power|inverter|pool|dashboard|habit)
+    absorbs the seven status getters, and chat_send absorbs the photos
+    picker pair plus the three chaba-side doc-upload card names
+    (sys_show_uploaded_document / process_document_upload /
+    doc_upload_card_action — never declared in this repo, registered as
+    forward aliases). Absorbed names stay callable but hidden via
+    tool_runner._ALIASES (the repo's x-legacy mechanism; no literal
+    x-legacy field), removed from the declared surface.
+  decisions: |
+    - Canonical name is home_status, not 'status': the card's
+      "NEW home_status" wording follows the calendar card's "NEW X"
+      convention (cal(...) shorthand became calendar_read/write).
+    - tasks holds the CALENDAR_WRITE_TOOLS seat: unlike calendar_write
+      it has a free read action, so _check_calendar_write_allowed gained
+      a per-action early return — action='list' (absorbed tasks_list)
+      was never confirm-gated or READ_ONLY-blocked; add/done/move keep
+      confirmed=true. ACTUATING_TOOLS seat likewise moved to the
+      canonical name (a stray list call draws the shared budget — same
+      name-keyed convention as the other merged actuators).
+    - chat_send joined DRIVE_TOOLS with per-flow carve-outs: photo=/
+      doc= calls keep the owner-tier documents-bank + secondary-speaker
+      gates the absorbed photos_* names had; a plain text/image send
+      was never bank-scoped or secondary-blocked, so the gate keys off
+      args, not just the resolved name.
+    - Doc-upload forward aliases: ada-pi has no process_document_upload
+      pipeline — uploads enter via POST /api/documents/intake and are
+      held in RAM by document_check.engine(). chat_send doc='show'/
+      'process' resolve a held intake key (default: newest, via the new
+      engine.latest()) and post/return the summary; 'card' takes
+      op='archive' which re-dispatches ada_doc_archive through
+      execute() so the DOC confirm gate still applies (the denial
+      carries the bound confirm_token; replay on ada_doc_archive
+      directly). op='print' on a held doc declines honestly — printing
+      needs an archived slug.
+    - _alias_call_args moves the doc card's own action= to op= and
+      intake_key to key= (the implied doc= slot is the sub-action).
+      get_battery_detail keeps battery_index=1 default under
+      what='battery' so bare and indexed reads both work.
+    - Provider-path gap found + fixed: the provider resolves call.name
+      to canonical before runner.execute, so _alias_call_args keyed on
+      the as-called name never ran there — surrogate remaps (slug->key,
+      end->day, action->op) were silently skipped for live-routed stale
+      calls. The provider now applies _alias_call_args on the merged
+      args at resolve time; covered by
+      test_doc_card_alias_remaps_args_before_dispatch.
+    - Provider dispatch: the seven inline HA-client branches collapsed
+      into one home_status branch keyed on what=; what='habit' still
+      reads habit_state_getter. FunctionResponse echoes the as-called
+      name (alias included) — unchanged.
+    - Group sets: CALENDAR_TOOLS/HABIT_TOOLS/DRIVE_TOOLS/CHABA_ALLOW
+      carry canonical names (home_status takes get_habit_status's
+      habit-exclusion seat — excluding habit tools now also drops the
+      other status reads; noted in the comment, no live config uses
+      ADA_EXCLUDED_TOOLS for it). DRIVE_INSTRUCTIONS steer 'show my
+      photos' to chat_send photo='pick'. benchmark.yml unchanged —
+      tasks/chat_send are mixed-use (list/plain send are free) so
+      name-based write_tools would false-positive; server-side
+      confirm gates cover the writes.
+    - LEGACY_TOOL_ALIASES in scenario-live.py resynced with the full
+      _ALIASES table, including the eight calendar-plan rows that card
+      missed.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tool_runner alias tables + gates"
+      status: done
+      notes: "16 _ALIASES + _ALIAS_ARG_DEFAULTS rows (action=/what=/
+        photo=/doc=); _alias_call_args doc-card arg shim; tasks into
+        CALENDAR_WRITE_TOOLS with per-action 'list' carve-out;
+        chat_send into DRIVE_TOOLS with photo=/doc= carve-outs in the
+        bank gate and secondary-speaker block."
+    - id: 2
+      label: "canonical methods"
+      status: done
+      notes: "tasks dispatches per-action onto the unchanged tasks_*
+        methods; home_status does the same for the seven getters;
+        chat_send gained photo=/doc= sub-flows (_chat_send_photo,
+        _chat_send_doc) reusing photos_pick/photos_picked and the
+        document_check held-intake store; engine.latest() added for
+        key-less 'show the upload' calls."
+    - id: 3
+      label: "provider surface"
+      status: done
+      notes: "13 declarations removed (4 tasks + 7 status + 2 photos);
+        tasks and home_status declared with explicit action/what enums;
+        chat_send schema extended (photo/session_id/screen/show/doc/
+        key/op). Inline dispatch branches collapsed into one
+        home_status branch. Instructions + CALENDAR_TOOLS /
+        HABIT_TOOLS / DRIVE_TOOLS / CHABA_ALLOW / ACTUATING_TOOLS
+        updated; DEVIN_CONFIRMED_TOOLS untouched."
+    - id: 4
+      label: "SSOT + scenario + tests"
+      status: done
+      notes: "ssot.tool-surface.yml tasks/home_status/chat_send
+        families added, 11 retired names pruned from coverage_debt;
+        tests/scenarios-live/tool_merge_tasks_status.yaml;
+        scenario-live.py LEGACY_TOOL_ALIASES +16 (and the 8 missed
+        calendar rows); TasksStatusMergeAliasTests (13 tests) +
+        canonical home_status provider test; test_frontend_contract
+        assertion moved to home_status."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # 77 declared, 39 aliases, clean"
+    - "PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest tests.test_tool_runner.TasksStatusMergeAliasTests"
+    - "PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest discover -s tests"
+
+verification:
+  - "python3 scripts/tool-lint.py --verbose  # exit 0 — 77 declared
+    (88->77: -13 absorbed decls, +tasks, +home_status), 39 aliases,
+    56 covered, 21 debt, 12 pre-existing warnings, zero failures"
+  - "alias smoke: all 16 absorbed names route to canonical parents in
+    TasksStatusMergeAliasTests — tasks_add/list/complete/move ->
+    tasks(action=), the seven getters -> home_status(what=) with
+    battery_index/hours/tab preserved, photos_pick/picked ->
+    chat_send(photo=), the three doc names -> chat_send(doc=)"
+  - "gates: task writes PermissionError without confirmed, pass with it;
+    tasks(action='list') free; doc card archive re-dispatch still hits
+    ada_doc_archive's confirm gate; plain chat_send unaffected"
+  - "provider: home_status(what='habit') returns the habit snapshot;
+    get_habit_status alias call echoes the as-called name in the
+    FunctionResponse"
+  - "full suite: 541 tests, 2F/3E — identical signature to HEAD
+    (memory-lifecycle + michael-technician need a FakeMddb
+    is_ops_routed double; detection/pose/hailo errors are missing
+    ai_edge_litert on this host). No merge regressions — same failures
+    documented in 2026-10-05-tools-merge-calendar-plan.yml."

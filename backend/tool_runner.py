@@ -58,7 +58,11 @@ MEMORY_WRITE_TOOLS = {"ada_remember", "ada_forget", "ada_outcome"}
 # (create|delete|shift) is a write, so the whole tool stays gated.
 CALENDAR_WRITE_TOOLS = {
     "calendar_write",
-    "tasks_add", "tasks_complete", "tasks_move",
+    # tools-merge-tasks-status (2026-10-05): tasks_add/tasks_complete/
+    # tasks_move collapsed into tasks — the canonical name holds the seat;
+    # _check_calendar_write_allowed keys the per-action split
+    # (action='list' stays free, like the absorbed tasks_list) off args.
+    "tasks",
 }
 
 # Miniapp/CMS page writes: publishing or deleting a page changes what the
@@ -126,7 +130,11 @@ LIST_HOME_DEVICES_MAX = int(os.environ.get("ADA_LIST_HOME_DEVICES_MAX", "60"))
 DRIVE_CONFIRMED_TOOLS = {"drive_update"}
 DRIVE_TOOLS = DRIVE_CONFIRMED_TOOLS | {
     "drive_search", "drive_get", "drive_show",
-    "photos_pick", "photos_picked",
+    # chat_send absorbed photos_pick/photos_picked + the doc-upload card
+    # actions (tools-merge-tasks-status): the seat is per-flow — only
+    # photo=/doc= calls take the owner-tier bank gate, plain sends never
+    # had it (see the chat_send carve-outs in _execute_gated).
+    "chat_send",
 }
 # Sentinel: identity unset → fall back to runner-level _memory_identity();
 # None is a real identity (anonymous) and must be distinguishable.
@@ -285,6 +293,28 @@ _ALIASES: dict[str, str] = {
     "calendar_shift_overdue": "calendar_write",
     "ada_daily_summary": "plan_day",
     "ada_weekly_comparison": "plan_day",
+    # tasks+status family — tools-merge-tasks-status (2026-10-05): 13 -> 3
+    # on the declared surface (10 card-counted + chat_send's five absorbed
+    # comms names). tasks_* collapse into tasks(action=add|list|done|move),
+    # the seven home status getters into home_status(what=...), and the
+    # photos picker pair + the three chaba-side doc-upload card actions
+    # (never declared here — forward aliases) into chat_send.
+    "tasks_add": "tasks",
+    "tasks_list": "tasks",
+    "tasks_complete": "tasks",
+    "tasks_move": "tasks",
+    "get_battery_status": "home_status",
+    "get_battery_detail": "home_status",
+    "get_power_summary": "home_status",
+    "get_inverter_status": "home_status",
+    "get_pool_status": "home_status",
+    "get_dashboard_tab": "home_status",
+    "get_habit_status": "home_status",
+    "photos_pick": "chat_send",
+    "photos_picked": "chat_send",
+    "sys_show_uploaded_document": "chat_send",
+    "process_document_upload": "chat_send",
+    "doc_upload_card_action": "chat_send",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the
@@ -319,6 +349,26 @@ _ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
     # daily digest so ada_daily_summary keeps its exact return contract.
     "ada_daily_summary": {"period": "digest"},
     "ada_weekly_comparison": {"period": "week"},
+    # tasks+status family — absorbed names' args map 1:1 onto the merged
+    # schemas; only the implied action=/what=/photo=/doc= is needed.
+    # get_battery_detail keeps its battery_index=1 default so what=battery
+    # plus an index reads as the per-battery detail view.
+    "tasks_add": {"action": "add"},
+    "tasks_list": {"action": "list"},
+    "tasks_complete": {"action": "done"},
+    "tasks_move": {"action": "move"},
+    "get_battery_status": {"what": "battery"},
+    "get_battery_detail": {"what": "battery", "battery_index": 1},
+    "get_power_summary": {"what": "power"},
+    "get_inverter_status": {"what": "inverter"},
+    "get_pool_status": {"what": "pool"},
+    "get_dashboard_tab": {"what": "dashboard"},
+    "get_habit_status": {"what": "habit"},
+    "photos_pick": {"photo": "pick"},
+    "photos_picked": {"photo": "picked"},
+    "sys_show_uploaded_document": {"doc": "show"},
+    "process_document_upload": {"doc": "process"},
+    "doc_upload_card_action": {"doc": "card"},
 }
 
 def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
@@ -366,6 +416,16 @@ def _alias_call_args(alias: str, args: dict[str, Any]) -> dict[str, Any]:
         # day=<window end>, days) — 'end' isn't a plan_day param.
         if "day" not in args and "end" in args:
             args["day"] = args.pop("end")
+    elif alias in ("sys_show_uploaded_document", "process_document_upload",
+                   "doc_upload_card_action"):
+        # chaba-side doc-upload card actions -> chat_send(doc=..., key, op):
+        # the card's own action= (archive/print/discard) collides with the
+        # implied doc= value's slot differently — 'action' means the card
+        # button here, so it moves to op; intake_key -> key.
+        if "key" not in args and "intake_key" in args:
+            args["key"] = args.pop("intake_key")
+        if "op" not in args and "action" in args:
+            args["op"] = args.pop("action")
     return args
 
 
@@ -1046,6 +1106,13 @@ class ToolRunner:
             cms_note_edit = (
                 name == "cms_edit" and str(
                     call_args.get("action") or "").lower() == "note")
+            # tools-merge-tasks-status carve-outs: tasks action='list' is
+            # the absorbed tasks_list (a free read) and a plain chat_send
+            # (no photo=/doc= flow) was never secondary-blocked — only the
+            # absorbed photos picker / doc-upload flows are owner-tier.
+            tasks_list_read = name == "tasks" and action == "list"
+            chat_doc_flow = name == "chat_send" and (
+                call_args.get("photo") or call_args.get("doc"))
             # ada_enroll_speaker is exempt here — its own check is smarter:
             # the owner can re-enroll even while a secondary voice is
             # identified, as long as the buffer voice isn't the secondary's
@@ -1054,7 +1121,9 @@ class ToolRunner:
             if (name in blocked and name != "ada_enroll_speaker"
                     and not nonbank_remember
                     and not guest_scope_search
-                    and not cms_note_edit) or (
+                    and not cms_note_edit
+                    and not tasks_list_read
+                    and (name != "chat_send" or chat_doc_flow)) or (
                 name == "ada_persona" and action in ("set", "reset")
                 and "persona_write" in blocked
             ):
@@ -1107,19 +1176,26 @@ class ToolRunner:
                     self._check_doc_confirmed(name, call_args, *confirm)
             elif name in DRIVE_TOOLS:
                 # Whole-Drive + Photos access is owner-tier: same bank
-                # policy as the document tools.
-                if not self.banks.bank_allowed(DOC_BANK, policy_ident):
-                    logger.warning(
-                        "denied %s for identity %r: documents bank policy",
-                        name, ident)
-                    raise PermissionError(
-                        "drive/photos tools are outside this session's access policy")
-                if name in DRIVE_CONFIRMED_TOOLS:
-                    self._require_confirmation(
-                        name, call_args, *confirm,
-                        f"{name} modifies a Drive file. Restate the file "
-                        "and change, get an explicit yes, then call again "
-                        "with confirmed=true.")
+                # policy as the document tools. chat_send absorbed the
+                # photos picker + doc-upload card flow (tools-merge-
+                # tasks-status) — only photo=/doc= calls take this gate;
+                # a plain text/image send was never bank-scoped.
+                if name == "chat_send" and not (
+                        call_args.get("photo") or call_args.get("doc")):
+                    pass
+                else:
+                    if not self.banks.bank_allowed(DOC_BANK, policy_ident):
+                        logger.warning(
+                            "denied %s for identity %r: documents bank policy",
+                            name, ident)
+                        raise PermissionError(
+                            "drive/photos tools are outside this session's access policy")
+                    if name in DRIVE_CONFIRMED_TOOLS:
+                        self._require_confirmation(
+                            name, call_args, *confirm,
+                            f"{name} modifies a Drive file. Restate the file "
+                            "and change, get an explicit yes, then call again "
+                            "with confirmed=true.")
         except PermissionError as exc:
             # Phantom-save guard (2026-09-28): the model papered over refused
             # writes and claimed success aloud. Every gate denial now carries
@@ -1480,6 +1556,13 @@ class ToolRunner:
         confirm_token: Any = None,
     ) -> None:
         """Server-side gate for calendar/task writes. Raises PermissionError on denial."""
+        if name == "tasks":
+            # Per-action split after the tools-merge-tasks-status collapse
+            # — alias resolution ran before this gate, so name is
+            # canonical: action='list' absorbed tasks_list, a free read
+            # that was never confirm-gated (or READ_ONLY-blocked).
+            if str(args.get("action") or "").strip().lower() == "list":
+                return
         if os.environ.get("ADA_READ_ONLY") == "true":
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("calendar writes are disabled (ADA_READ_ONLY=true)")
@@ -2063,7 +2146,7 @@ class ToolRunner:
         out = await doc_archive_client.photos_picker_create()
         out["note"] = ("Send the user picker_uri — it must be opened where "
                        "their Google account is signed in (phone/laptop). "
-                       "Then call photos_picked with session_id.")
+                       "Then call chat_send photo='picked' with session_id.")
         return out
 
     async def photos_picked(self, session_id: str, screen: int = 0,
@@ -2232,6 +2315,33 @@ class ToolRunner:
     async def calendar_freebusy(self, day: str = "today", days: int = 1) -> dict[str, Any]:
         return await self._calendar_svc().freebusy(day=str(day), days=int(days))
 
+    async def tasks(
+        self,
+        action: str = "list",
+        title: str = "",
+        task_id: str = "",
+        due: str | None = None,
+        notes: str | None = None,
+        task_list: str | None = None,
+    ) -> Any:
+        """Task list management — tools-merge-tasks-status consolidated
+        tasks_list / tasks_add / tasks_complete / tasks_move into one
+        action= tool. 'list' is a free read; 'add'/'done'/'move' mutate —
+        the CALENDAR_WRITE_TOOLS seat keeps confirmed=true mandatory for
+        them (per-action split in _check_calendar_write_allowed)."""
+        action = (action or "list").strip().lower()
+        if action == "list":
+            return await self.tasks_list(task_list)
+        if action == "add":
+            return await self.tasks_add(
+                str(title), due=due, notes=notes, task_list=task_list)
+        if action == "done":
+            return await self.tasks_complete(str(task_id))
+        if action == "move":
+            return await self.tasks_move(str(task_id), str(due or ""))
+        raise ValueError(
+            f"invalid action {action!r}: expected add|list|done|move")
+
     async def tasks_list(self, task_list: str | None = None) -> dict[str, Any]:
         return await self._calendar_svc().list_tasks(
             task_list=str(task_list) if task_list else None
@@ -2391,6 +2501,37 @@ class ToolRunner:
             key=key or None, dx=dx, dy=dy, factor=factor,
             speaker=self._memory_identity() or "",
         )
+
+    async def home_status(
+        self,
+        what: str = "",
+        battery_index: int | None = None,
+        hours: int = 24,
+        tab: str = "",
+    ) -> Any:
+        """Home status reads — tools-merge-tasks-status consolidated
+        get_battery_status / get_battery_detail / get_power_summary /
+        get_inverter_status / get_pool_status / get_dashboard_tab /
+        get_habit_status into one what= tool. All free reads; what=
+        'battery' with battery_index reads one battery's detail."""
+        what = (what or "").strip().lower()
+        if what == "battery":
+            if battery_index in (None, ""):
+                return await self.get_battery_status()
+            return await self.get_battery_detail(int(battery_index))
+        if what == "power":
+            return await self.get_power_summary(hours=int(hours))
+        if what == "inverter":
+            return await self.get_inverter_status()
+        if what == "pool":
+            return await self.get_pool_status()
+        if what == "dashboard":
+            return await self.get_dashboard_tab(str(tab))
+        if what == "habit":
+            return await self.get_habit_status()
+        raise ValueError(
+            f"invalid what {what!r}: expected "
+            "battery|power|inverter|pool|dashboard|habit")
 
     async def get_battery_status(self) -> dict[str, Any]:
         return await self.context.ha_client.battery_status()
@@ -4322,11 +4463,48 @@ class ToolRunner:
 
     async def chat_send(self, channel: str = "line", text: str = "",
                         image_url: str = "", camera: str = "",
-                        to: str = "") -> dict[str, Any]:
+                        to: str = "", photo: str = "", doc: str = "",
+                        key: str = "", op: str = "",
+                        session_id: str = "", screen: int = 0,
+                        show: bool = True) -> dict[str, Any]:
         """Queue an outbound LINE/Telegram message in the background and
         return immediately. camera names a VMS channel (snapped on the
         shim); image_url is any fetchable image (camwall thumb, cast_url).
-        Completion arrives as a system note via /api/notify."""
+        Completion arrives as a system note via /api/notify.
+
+        tools-merge-tasks-status absorbed the photo-picker pair and the
+        doc-upload card actions: photo='pick' starts a Google Photos
+        picker and delivers the picker_uri to the channel (was
+        photos_pick), photo='picked' polls a picker session, casts the
+        first pick to a screen (show=true) and sends it to the channel
+        (was photos_picked, takes session_id/screen/show); doc='show' /
+        'process' / 'card' covers sys_show_uploaded_document /
+        process_document_upload / doc_upload_card_action — key= names a
+        held /api/documents/intake key (default: newest), op= carries a
+        card button ('archive'/'print' re-dispatch through execute() so
+        the ada_doc_* confirm gates still apply)."""
+        photo = str(photo or "").strip().lower()
+        doc = str(doc or "").strip().lower()
+        if doc.startswith("doc/"):
+            # A bare intake key in the doc slot means "show that one".
+            key = key or doc
+            doc = "show"
+        if photo:
+            return await self._chat_send_photo(
+                photo, channel=channel, text=text, to=to,
+                session_id=str(session_id or ""), screen=int(screen or 0),
+                show=bool(show))
+        if doc:
+            return await self._chat_send_doc(
+                doc, channel=channel, text=text, to=to,
+                key=str(key or ""), op=str(op or ""))
+        return await self._chat_send_queue(
+            channel=channel, text=text, image_url=image_url,
+            camera=camera, to=to)
+
+    async def _chat_send_queue(self, channel: str, text: str,
+                               image_url: str, camera: str,
+                               to: str) -> dict[str, Any]:
         import asyncio
         import secrets
         job_id = "chat-" + secrets.token_hex(4)
@@ -4337,6 +4515,97 @@ class ToolRunner:
                 "note": "Running in the background. Tell the user the "
                         "message is being sent — a system note will report "
                         "success or failure when it finishes."}
+
+    async def _chat_send_photo(self, action: str, *, channel: str,
+                               text: str, to: str, session_id: str,
+                               screen: int, show: bool) -> dict[str, Any]:
+        """photo= sub-flows — absorbed photos_pick / photos_picked keep
+        their picker semantics; chat_send additionally delivers results
+        to the named channel."""
+        if action == "pick":
+            out = await self.photos_pick()
+            uri = str(out.get("picker_uri") or "")
+            if uri and str(channel or "").strip():
+                send_text = (str(text).strip() + " " if str(
+                    text or "").strip() else "") + uri
+                out["send"] = await self._chat_send_queue(
+                    channel=channel, text=send_text,
+                    image_url="", camera="", to=to)
+            return out
+        if action == "picked":
+            if not session_id:
+                raise ValueError(
+                    "session_id is required for photo='picked'")
+            out = await self.photos_picked(
+                session_id, screen=int(screen or 0), show=bool(show))
+            items = out.get("items") or []
+            base = str(items[0].get("baseUrl") or "") if items else ""
+            if out.get("picked") and base and str(channel or "").strip():
+                mime = str(items[0].get("mimeType") or "")
+                url = base + ("=dv" if mime.startswith("video/")
+                              else "=w2048")
+                out["send"] = await self._chat_send_queue(
+                    channel=channel, text=text, image_url=url,
+                    camera="", to=to)
+            return out
+        raise ValueError(
+            f"invalid photo action {action!r}: expected pick|picked")
+
+    async def _chat_send_doc(self, action: str, *, channel: str,
+                             text: str, to: str, key: str,
+                             op: str) -> dict[str, Any]:
+        """doc= sub-flows — the doc-upload card actions absorbed from the
+        chaba side: 'show' posts the held upload's summary to the
+        channel, 'process' returns the held intake assessment, 'card'
+        takes op=<button> where archive/print re-dispatch through
+        execute() so the ada_doc_* confirmation gates still apply."""
+        from backend import document_check
+        engine = document_check.engine()
+        ref = str(key or "").strip()
+        held_key, held = ref, (engine.held(ref) if ref else None)
+        if held is None and not ref:
+            latest = engine.latest()
+            held_key, held = latest if latest else ("", None)
+        op_l = str(op or "").strip().lower()
+        if action == "card" and op_l == "archive":
+            if held is None:
+                raise RuntimeError(
+                    "no held document to act on — upload it again")
+            stem = re.sub(r"[^a-z0-9]+", "-", str(
+                (held.meta or {}).get("filename") or
+                "document").lower()).strip("-") or "document"
+            return await self.execute("ada_doc_archive", {
+                "slug": stem[:40], "intake_key": held_key})
+        if action == "card" and op_l == "print":
+            raise RuntimeError(
+                "print needs an archived doc slug — archive the held "
+                "intake first (op='archive'), then ada_doc_print")
+        if action not in ("show", "process", "card"):
+            raise ValueError(
+                f"invalid doc action {action!r}: expected "
+                "show|process|card")
+        if held is None:
+            raise RuntimeError(
+                f"no held document{f' for key {ref!r}' if ref else ''}"
+                " — intake results live in RAM only, upload again")
+        meta = held.meta or {}
+        summary = (
+            f"Document '{meta.get('filename') or held_key}' "
+            f"({meta.get('doc_type') or 'document'}) held as {held_key} "
+            f"— print-ready PDF and preview at "
+            f"/api/documents/{held_key}/pdf|preview")
+        out = {"doc": held_key, "doc_action": action,
+               "doc_type": meta.get("doc_type"),
+               "filename": meta.get("filename"),
+               "preview_url": f"/api/documents/{held_key}/preview",
+               "pdf_url": f"/api/documents/{held_key}/pdf"}
+        if op_l:
+            out["op"] = op_l
+        if str(channel or "").strip():
+            out["send"] = await self._chat_send_queue(
+                channel=channel, text=text or summary,
+                image_url="", camera="", to=to)
+        return out
 
     async def _chat_send_run(self, job_id: str, channel: str, text: str,
                              image_url: str, camera: str,

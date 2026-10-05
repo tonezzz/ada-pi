@@ -35,6 +35,7 @@ SSOT disagree.
 | display | tools-merge-display   | `ada_display` | cast_to_screen, vcast_list, vcast_say, vcast_snapshot, vcast_gesture, yt_cast, yt_cast_status, yt_cast_stop |
 | ha      | tools-merge-ha        | `ada_ha`      | control_entity, control_cover, press_button, control_media_player, list_home_devices, search_home_devices, get_home_state, list_sensors, search_sensors, get_logbook, get_recent_events, get_entity_events, ada_ha_* (7 — ada_ha_recall moved to the memory family) |
 | memory  | tools-merge-memory    | `ada_memory_search`, `ada_remember`, `ada_session_recall` (+ `ada_forget` unchanged) | guest_recall, vocab_note, report_habit_observation, guest_remember, guest_remember_private, ada_ha_recall (→ `scope=`/`kind=`) |
+| tasks+status | tools-merge-tasks-status | `tasks` (`action=add\|list\|done\|move` — writes confirmed-gated, `list` free), `home_status` (`what=battery\|power\|inverter\|pool\|dashboard\|habit`), `chat_send` (`photo=`/`doc=` bank-gated flows) | tasks_add, tasks_list, tasks_complete, tasks_move → `tasks`; get_battery_status, get_battery_detail (`battery_index=1` default), get_power_summary, get_inverter_status, get_pool_status, get_dashboard_tab, get_habit_status → `home_status`; photos_pick, photos_picked, sys_show_uploaded_document, process_document_upload, doc_upload_card_action (chaba-side names — forward aliases, `action`→`op`, `intake_key`→`key`) → `chat_send` |
 
 Roughly 56 absorbed names retire into 6 canonical tools; with the
 un-merged remainder the surface lands near the ~38 target.
