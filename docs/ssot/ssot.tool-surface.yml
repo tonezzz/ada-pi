@@ -113,7 +113,7 @@ families:
       - devin_answer
   display:
     merge_card: tools-merge-display
-    canonical: ada_display         # cast_to_screen + vcast_* + yt_cast* -> action=
+    canonical: ada_display         # cast_to_screen + vcast_* + yt -> action=
     scenario: tool_merge_display
     absorbed:
       - cast_to_screen
@@ -121,9 +121,11 @@ families:
       - vcast_say
       - vcast_snapshot
       - vcast_gesture
-      - yt_cast
-      - yt_cast_status
-      - yt_cast_stop
+      # tools-merge-yt (2026-10-05) already collapsed the four yt_* names
+      # into yt(action=cast|status|stop|transcript) — the display merge
+      # now absorbs yt itself (and must re-point the yt_* aliases off the
+      # chain).
+      - yt
   ha:
     merge_card: tools-merge-ha
     canonical: ada_ha              # ha control + sensor + logbook/event reads -> action=
@@ -173,6 +175,20 @@ families:
     scenario: tool_merge_memory
     absorbed:
       - ada_ha_recall
+  # yt group 4 -> 1 (tools-merge-yt, landed 2026-10-05): all four YouTube
+  # tools collapse into yt(action=cast|status|stop|transcript). None of
+  # them were confirm-gated; the actuation budget keeps parity per-action
+  # (cast/stop count, status/transcript don't). yt itself is on the
+  # display family's absorbed list for tools-merge-display.
+  yt:
+    merge_card: tools-merge-yt
+    canonical: yt                # yt_cast* + yt_transcript -> action=
+    scenario: tool_merge_yt
+    absorbed:
+      - yt_cast                  # -> yt {action: cast}
+      - yt_cast_status           # -> yt {action: status}
+      - yt_cast_stop             # -> yt {action: stop}
+      - yt_transcript            # -> yt {action: transcript}
 
 # Tools with no reference in any tests/scenarios-live/*.yaml tool field
 # (calls/calls_any/no_calls*/needs_tools/needs_any, @family-expanded) at
@@ -211,7 +227,6 @@ coverage_debt:
   - photos_picked
   - press_button
   - tasks_move
-  - yt_cast_status
 
 # Tools that legitimately never get a live scenario (pure meta/report
 # surfaces). Empty at census — prefer coverage_debt over listing here.

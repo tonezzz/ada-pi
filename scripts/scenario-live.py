@@ -167,6 +167,10 @@ LEGACY_TOOL_ALIASES: dict[str, str] = {
     "cms_note_update": "cms_edit",
     "cms_delete_page": "cms_edit",
     "cms_automation": "cms_edit",
+    "yt_cast": "yt",
+    "yt_cast_status": "yt",
+    "yt_cast_stop": "yt",
+    "yt_transcript": "yt",
 }
 
 _VCAST_API = os.environ.get(

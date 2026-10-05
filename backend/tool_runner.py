@@ -285,6 +285,13 @@ _ALIASES: dict[str, str] = {
     "calendar_shift_overdue": "calendar_write",
     "ada_daily_summary": "plan_day",
     "ada_weekly_comparison": "plan_day",
+    # yt family — tools-merge-yt (2026-10-05): 4 -> 1. All four YouTube
+    # tools retire into yt's action= param; the display card will fold
+    # yt itself into ada_display later.
+    "yt_cast": "yt",
+    "yt_cast_status": "yt",
+    "yt_cast_stop": "yt",
+    "yt_transcript": "yt",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the
@@ -319,6 +326,10 @@ _ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
     # daily digest so ada_daily_summary keeps its exact return contract.
     "ada_daily_summary": {"period": "digest"},
     "ada_weekly_comparison": {"period": "week"},
+    "yt_cast": {"action": "cast"},
+    "yt_cast_status": {"action": "status"},
+    "yt_cast_stop": {"action": "stop"},
+    "yt_transcript": {"action": "transcript"},
 }
 
 def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
@@ -4026,6 +4037,30 @@ class ToolRunner:
         with urllib.request.urlopen(req, timeout=15) as r:
             return json.load(r)
 
+    async def yt(
+        self,
+        action: str = "status",
+        query: str = "",
+        url: str = "",
+        language: str = "th",
+    ) -> dict[str, Any]:
+        """YouTube surface — tools-merge-yt (2026-10-05) consolidated
+        yt_cast / yt_cast_status / yt_cast_stop / yt_transcript into one
+        action= tool. Ungated: cast/stop actuate the TV but the old names
+        were never confirm-gated; status/transcript are reads."""
+        action = (action or "status").strip().lower()
+        if action == "cast":
+            return await self.yt_cast(query=query or url, language=language)
+        if action == "status":
+            return await self.yt_cast_status()
+        if action == "stop":
+            return await self.yt_cast_stop()
+        if action == "transcript":
+            return await self.yt_transcript(url=url or query,
+                                            language=language)
+        raise ValueError(
+            f"invalid action {action!r}: expected cast|status|stop|transcript")
+
     async def yt_cast(self, query: str, language: str = "th") -> dict[str, Any]:
         """Cast a YouTube video to the living-room TV with translated
         subtitles — or a direct media file URL (.mp4/.m4v/.webm/.mkv/.mp3/
@@ -5170,7 +5205,7 @@ class ToolRunner:
         Content routing: web pages -> 'nav'; video files/streams (mp4,
         m3u8) and YouTube/Vimeo watch URLs -> 'play' (the display
         auto-rewrites them to embed players — pass the URL as-is, do NOT
-        use yt_cast, which is the TV only); still images -> 'image';
+        use yt action='cast', which is the TV only); still images -> 'image';
         audio-only -> 'audio'.
 
         Split-screen: action='layout' + panes=2..5 splits the screen into

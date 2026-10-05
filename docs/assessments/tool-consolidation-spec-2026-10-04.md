@@ -32,11 +32,12 @@ SSOT disagree.
 | cms     | tools-merge-cms       | `cms_publish_page` (unchanged), `cms_read` (`action=get\|list\|verify`), `cms_edit` (`action=note\|delete\|automate`, `op=` carries the registry op) | cms_list_pages, cms_get_page, cms_verify_page → `cms_read`; cms_note_update, cms_delete_page, cms_automation → `cms_edit`. Landed 7→3 instead of the original single-`cms_page` design |
 | calendar+plan | tools-merge-calendar-plan | `calendar_read` (`action=events\|calendars\|freebusy`), `calendar_write` (`action=create\|delete\|shift`, confirmed-gated), `plan_day` (`period=today\|tomorrow\|week`, `day=` overrides the target) | calendar_list_events, calendar_list_calendars, calendar_freebusy → `calendar_read`; calendar_create_event, calendar_delete_event, calendar_shift_overdue → `calendar_write`; ada_daily_summary → `plan_day` (alias-internal `period=digest`); ada_weekly_comparison → `plan_day` (`period=week`, `end`→`day`) |
 | devin   | tools-merge-devin-mcp | `devin`       | devin_dispatch, devin_status, devin_followup, devin_job_report, devin_pending, devin_jobs, devin_answer |
-| display | tools-merge-display   | `ada_display` | cast_to_screen, vcast_list, vcast_say, vcast_snapshot, vcast_gesture, yt_cast, yt_cast_status, yt_cast_stop |
+| display | tools-merge-display   | `ada_display` | cast_to_screen, vcast_list, vcast_say, vcast_snapshot, vcast_gesture, yt |
+| yt      | tools-merge-yt        | `yt` (`action=cast\|status\|stop\|transcript`) | yt_cast, yt_cast_status, yt_cast_stop, yt_transcript — landed 2026-10-05 ahead of the display merge (which now absorbs `yt` itself) |
 | ha      | tools-merge-ha        | `ada_ha`      | control_entity, control_cover, press_button, control_media_player, list_home_devices, search_home_devices, get_home_state, list_sensors, search_sensors, get_logbook, get_recent_events, get_entity_events, ada_ha_* (7 — ada_ha_recall moved to the memory family) |
 | memory  | tools-merge-memory    | `ada_memory_search`, `ada_remember`, `ada_session_recall` (+ `ada_forget` unchanged) | guest_recall, vocab_note, report_habit_observation, guest_remember, guest_remember_private, ada_ha_recall (→ `scope=`/`kind=`) |
 
-Roughly 56 absorbed names retire into 6 canonical tools; with the
+Roughly 56 absorbed names retire into 7 canonical tools; with the
 un-merged remainder the surface lands near the ~38 target.
 
 ## `action=` param pattern
