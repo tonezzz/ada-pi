@@ -1,117 +1,87 @@
-# Dispatch outcome — tools-merge-memory (20261004-210440)
+# Dispatch outcome — tools-merge-cms (20261005-100603)
 
-Merged the memory tool group 8 → 4 per the card's self-contained spec.
-Six names absorbed into the three surviving canonical tools;
-`ada_forget` unchanged, `ada_resolve_action` untouched (workflow, not
-memory). All absorbed names stay callable via `tool_runner._ALIASES` and
-are off the declared surface — the repo's established hidden-alias
-mechanism (there is no literal `x-legacy` field in the codebase; this IS
-the x-legacy semantics: registered in the runner, absent from
-declarations).
+Merged the cms tool group 7 → 3 per the card's self-contained spec.
+`cms_publish_page` is unchanged (the big writer); six names absorbed
+into two new canonical tools via `tool_runner._ALIASES` — the repo's
+established hidden-alias mechanism (registered in the runner, absent
+from declarations; there is no literal `x-legacy` field — this IS the
+x-legacy semantics).
 
 ## Alias map (all verified by tests)
 
-| absorbed name             | resolves to                              |
-|---------------------------|------------------------------------------|
-| `guest_recall`            | `ada_memory_search` scope=`guest`        |
-| `vocab_note`              | `ada_remember` kind=`vocab`              |
-| `report_habit_observation`| `ada_remember` kind=`habit`              |
-| `guest_remember`          | `ada_remember` kind=`guest`              |
-| `guest_remember_private`  | `ada_remember` kind=`guest`, private=true|
-| `ada_ha_recall`           | `ada_session_recall` scope=`history`     |
+| absorbed name      | resolves to                                   |
+|--------------------|-----------------------------------------------|
+| `cms_list_pages`   | `cms_read` action=`list`                       |
+| `cms_get_page`     | `cms_read` action=`get` (slug→key)             |
+| `cms_verify_page`  | `cms_read` action=`verify` (slug→key)          |
+| `cms_note_update`  | `cms_edit` action=`note`                       |
+| `cms_delete_page`  | `cms_edit` action=`delete`                     |
+| `cms_automation`   | `cms_edit` action=`automate`, op=`<action>`    |
 
 ## What changed
 
 - `backend/tool_runner.py`
-  - `_ALIASES` + `_ALIAS_ARG_DEFAULTS`: the six rows above; implied
-    args merge under caller args; `_alias_call_args()` maps
-    `vocab_note(term, correct, note)` → `text="term → correction"` and
-    `ada_ha_recall(query)` → `question`. `_ARG_ALIASES` gained `q→query`
-    (the card's `search(q, …)` spelling).
-  - `ada_memory_search` gained `scope=all|banks|sessions|guest`: banks =
-    existing `memory_ops.memory_search`; sessions = new `_session_hits()`
-    over the recall-summary collection; guest = chaba `recall`.
-    An explicit `bank=` name without `scope` implies `banks`, preserving
-    the pre-merge result shape for bank-scoped callers.
-  - `ada_remember` gained `kind` + `private` + `note`: `vocab` appends to
-    the speaker's own `vocab/log` (new `_vocab_append`, shared with the
-    kept `vocab_note()` method); `guest` writes the chaba store
-    (`private=True` → `remember_private`); `habit` returns a
-    descriptive error store-side (the real path is provider-dispatched);
-    curated kinds still go through `memory_ops.remember` unchanged.
-  - `ada_session_recall(question, scope=sessions|history)`: `history`
-    delegates to the unchanged `ada_ha_recall` logic; `sessions` is
-    provider-dispatched (a store-side call returns a clear error).
-  - Gate carve-outs (`_REMEMBER_NONBANK_KINDS`): `kind∈{vocab,guest,habit}`
-    skips the `MEMORY_WRITE_TOOLS` bank gate and the secondary-speaker
-    block; `scope=guest` search skips the secondary block — matching the
-    absorbed tools' pre-merge access exactly. Alias resolution runs
-    before all gates, so every gate keys off the resolved canonical name.
-    `DEVIN_CONFIRMED_TOOLS` / confirm_strip logic untouched.
+  - `_ALIASES` + `_ALIAS_ARG_DEFAULTS`: the six rows above.
+  - `_alias_call_args`: `cms_get_page`/`cms_verify_page` map `slug`→`key`;
+    `cms_automation` moves the caller's `action` to `op` and re-stamps
+    `action="automate"` (implied defaults merge under caller args, so
+    without the shim the caller's action would shadow the canonical's).
+  - `cms_read(action=get|list|verify, key=, slug=, lang=, limit=)` and
+    `cms_edit(action=note|delete|automate, slug, note, summary, lang, op,
+    + automation knobs)` — per-action dispatch onto the unchanged
+    absorbed methods.
+  - Pre-existing private `cms_edit` (page/section ops for the PWA edit
+    drawer) renamed `_cms_edit_sections`; `pwa_server.py` call updated.
+  - `CMS_WRITE_TOOLS` = {`cms_publish_page`, `cms_edit`} — canonical holds
+    the seat. `_check_cms_write_allowed` keys the per-action split off
+    args: `note` and `automate` op=list|get stay free (pre-merge parity:
+    cms_note_update ungated, cms_automation reads free); `delete` and
+    automate writes keep confirmation; `cms_publish_page` keeps its
+    pending-request handshake. `cms_edit` action=`note` carved out of
+    the secondary-speaker block (cms_note_update was never blocked).
+    `DEVIN_CONFIRMED_TOOLS`/confirm_strip untouched — gates key off the
+    resolved name, so `_CONFIRM_GATED_TOOLS` covers `cms_edit` via
+    `CMS_WRITE_TOOLS` automatically.
+  - `_CHANGE_LOG_TOOLS`: absorbed names → `cms_edit` (same coverage).
+
 - `backend/realtime_provider.py`
-  - Deleted declarations: `vocab_note`, `report_habit_observation`,
-    `ada_ha_recall`; CHABA declarations for `guest_remember` /
-    `guest_remember_private` / `guest_recall` re-declared as
-    guest-scoped `ada_remember` (kind='guest', private flag) and
-    `ada_memory_search` (scope='guest') — the allowlist swap drops the
-    bank-facing versions so no name is declared twice.
-  - Canonical schemas extended: `ada_memory_search` +`scope`,
-    `ada_remember` +`kind`/`private`/`note`/habit fields (bank no longer
-    required — runner validates per kind), `ada_session_recall`
-    +`scope`/`limit`.
-  - Dispatch: the habit-observation `elif` accepts both the legacy name
-    and `ada_remember` kind='habit' (emits the same `habit_observation`
-    ProviderEvent); `ada_session_recall` scope='history' falls through
-    to the runner (bypassing the redundant-recall gate and the provider
-    secondary block, exactly as `ada_ha_recall` did); the budget
-    `remember_block` and the `_CONFIRM_GATED_TOOLS` Jev probe skip the
-    non-bank kinds; `HABIT_TOOLS` now tracks `ada_remember`.
-  - Instructions updated (word-coaching → `ada_remember` kind='vocab',
-    HA recall → `ada_session_recall` scope='history', chaba guest text).
-- `backend/visual_habits.py` — challenge prompt now asks for
-  `ada_remember` kind='habit' with the same structured fields.
-- `docs/ssot/ssot.tool-surface.yml` — memory family split into
-  `memory_search` / `memory_remember` / `memory_recall` sub-families
-  (each absorbed list points at its true canonical, so lint warns on
-  none); `ada_ha_recall` moved out of the `ha` family's absorbed list;
-  the five retired names dropped from `coverage_debt` (`guest_register`
-  stays — still declared).
-- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — memory row
-  updated to the executed 8→4 mapping (three canonicals + ada_forget),
-  `ha` absorbed count corrected (ada_ha_recall moved).
-- `tests/scenarios-live/tool_merge_memory.yaml` — **new** family
-  regression scenario (search → ada_memory_search, remember →
-  ada_remember, home-memory recall → ada_session_recall/ha search).
-- `tests/test_tool_runner.py` — **new** `MemoryMergeAliasTests` (7 tests):
-  every alias routes to its parent with the right implied args.
-- `tests/test_provider_events.py` — kept the legacy-name habit test and
-  added the canonical `ada_remember` kind='habit' event test.
-- `tests/test_visual_habits.py` — prompt assertion updated.
-- `docs/ssot/jobs/ada/2026-10-04-tools-merge-memory.yml` — **new** job
-  doc recording the decisions (three canonicals, gate carve-outs).
+  - Six declarations removed; `cms_read` + `cms_edit` declared with
+    explicit `action` enums (Gemini validates for free); descriptions
+    name the absorbed tools for legacy phrasing.
+  - `CMS_TOOLS` → {`cms_publish_page`, `cms_read`, `cms_edit`};
+    `CMS_INSTRUCTIONS` + one memory paragraph rewritten for canonical
+    names.
 
-## Verification
+- `docs/ssot/ssot.tool-surface.yml` — cms family split into `cms_read` /
+  `cms_edit` sub-families (memory-merge precedent); spec doc table
+  updated to the landed 7→3 design.
+- `tests/benchmark.yml` — `write_tools` cms_delete_page → cms_edit;
+  `tool_merge_cms` added to `write_allowed_in`.
+- `tests/scenarios-live/tool_merge_cms.yaml` — family regression
+  scenario (lint requires it once the merge starts).
+- `tests/test_tool_runner.py` — `CmsMergeAliasTests` (8 tests): every
+  absorbed name routes to its parent, slug→key and action→op shims,
+  gate parity (note ungated, delete/automate-writes confirmed).
+- `tests/test_tool_audit.py` — declared-count floor was a fixed `>= 100`
+  that every merge card trips (the program ratchets DOWN toward target);
+  now compares against `surface.target` from the SSOT.
+- `.gitignore` — ignore `.teststubs/` (local import stubs for hosts
+  without google-genai; needed to run the suite).
 
-- `python3 scripts/tool-lint.py` → clean: 100 declared
-  (97 builtin + 3 tools.d), 6 aliases, 0 errors.
-- `python3 -m unittest tests.test_tool_runner.MemoryMergeAliasTests`
-  → 7/7 pass (with a local `google.genai` stub — the SDK isn't
-  installed in this env; stub removed after verification).
-- `python3 -m unittest tests.test_provider_events tests.test_visual_habits
-  tests.test_tool_audit` → all pass (46 tests).
-- Full suite `python3 -m unittest discover tests` → 469 tests; the only
-  failures are pre-existing/environmental and identical on pristine HEAD:
-  3 × `ai_edge_litert` missing (Pi-only dep) and 3 × CMS publish
-  mock-drift tests — untouched by this change.
-- Card has no `pipeline: ci` field → card-pipeline not run.
-- Not committed, not pushed, not deployed (uncommitted diff in worktree).
+## Verify
 
-## Notes / limitations
+- `python3 scripts/tool-lint.py` → clean: 94 declared (98 on HEAD −6 +2),
+  15 aliases, 0 violations.
+- `PYTHONPATH=.teststubs python3 -m unittest tests.test_tool_runner` →
+  66 tests; only the 3 pre-existing CMS publish mock-drift failures
+  (identical on HEAD — verified via stash).
+- Full suite: 478 tests, 5F/16E — identical failure set to HEAD
+  (environmental: mddb/hailo absent + the publish drift). The stale
+  `>=100` lint-floor failure that was already red on HEAD now passes.
 
-- `x-legacy: true` as a literal declaration flag doesn't exist — the
-  established mechanism (alias table + off-surface) is what lint
-  enforces and what was implemented.
-- `tool_merge_memory` still needs a live scenario run on idc02 for the
-  merge-gate's pass/flaky report before the card can close to done.
-- `scope=all` now includes session-summary hits; on chaba instances it
-  also includes guest notes — intentional per `scope=all|…|guest`.
+## Notes
+
+- `tools-merge-gate.py` still needs a passing `tool_merge_cms` run in
+  `ada-ha-scenario-reports` before the card can close — scenario file
+  ships here; the live run is idc02's lane.
+- Not pushed/deployed (dispatch rules).

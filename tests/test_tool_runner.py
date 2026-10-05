@@ -549,6 +549,100 @@ class CmsAutomationTests(unittest.IsolatedAsyncioTestCase):
                 {"action": "set", "slug": "flood-report", "confirmed": True})
 
 
+class CmsMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-cms (7 -> 3): the six absorbed names stay callable via
+    _ALIASES and route to their canonical parent — cms_read for
+    get/list/verify, cms_edit for note/delete/automate."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.search_documents.return_value = []
+        self.runner.mddb.add_document.return_value = {"status": "ok"}
+        self.runner.mddb.get_document.return_value = None
+        self.runner.mddb.delete_document.return_value = {"status": "deleted"}
+        # write paths schedule a reports-index regen — stub it out
+        self.runner._cms_reports_index = AsyncMock()
+
+    async def test_list_pages_alias_routes_to_read_list(self):
+        pages = await self.runner.execute("cms_list_pages", {})
+        self.assertEqual(pages, [])
+        self.runner.mddb.search_documents.assert_awaited_once()
+
+    async def test_get_page_alias_maps_slug_to_key(self):
+        self.runner.mddb.get_document.return_value = {
+            "key": "pool-notes", "contentMd": "# Pool",
+            "meta": {"slug": ["pool-notes"], "title": ["Pool"],
+                     "format": ["markdown"]},
+        }
+        page = await self.runner.execute("cms_get_page", {"slug": "pool-notes"})
+        self.assertEqual(page["content"], "# Pool")
+        self.runner.mddb.get_document.assert_awaited_with(
+            "ada-cms-pages", "pool-notes", "en")
+
+    async def test_verify_page_alias_routes_to_read_verify(self):
+        report = await self.runner.execute("cms_verify_page", {"slug": "missing"})
+        self.assertEqual(report["status"], "not_found")
+
+    async def test_note_update_alias_routes_ungated(self):
+        # absorbed cms_note_update was never confirm-gated — action='note'
+        # must execute without confirmed=true.
+        self.runner.mddb.get_document.return_value = {
+            "key": "flood-report", "lang": "en", "contentMd": "# Flood",
+            "meta": {"slug": ["flood-report"], "title": ["Flood"]},
+        }
+        out = await self.runner.execute(
+            "cms_note_update",
+            {"slug": "flood-report", "note": "still rising"})
+        self.assertEqual(out["status"], "noted")
+
+    async def test_delete_page_alias_keeps_confirm_gate(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute("cms_delete_page", {"slug": "x"})
+        out = await self.runner.execute(
+            "cms_delete_page", {"slug": "x", "confirmed": True})
+        self.assertEqual(out["status"], "deleted")
+
+    async def test_automation_alias_moves_caller_action_to_op(self):
+        # The caller's own action= collides with the implied
+        # action='automate' — the shim must move it to op= so reads stay
+        # free and writes stay confirmation-gated.
+        out = await self.runner.execute("cms_automation", {"action": "list"})
+        self.assertIn("pages", out)
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "cms_automation", {"action": "run", "slug": "x"})
+
+    async def test_canonical_actions_reject_unknown(self):
+        with self.assertRaises(ValueError):
+            await self.runner.execute("cms_read", {"action": "bogus"})
+        # cms_edit is a write-tool seat — the confirm gate runs before
+        # action validation, same as cms_automation did pre-merge.
+        with self.assertRaises(ValueError):
+            await self.runner.execute(
+                "cms_edit", {"action": "bogus", "confirmed": True})
+
+    async def test_canonical_read_and_edit_dispatch(self):
+        pages = await self.runner.execute("cms_read", {"action": "list"})
+        self.assertEqual(pages, [])
+        self.runner.mddb.get_document.return_value = {
+            "key": "flood-report", "lang": "en", "contentMd": "# Flood",
+            "meta": {"slug": ["flood-report"], "title": ["Flood"]},
+        }
+        out = await self.runner.execute(
+            "cms_edit",
+            {"action": "note", "slug": "flood-report", "note": "direct"})
+        self.assertEqual(out["status"], "noted")
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "cms_edit", {"action": "delete", "slug": "x"})
+
+
 class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):
     """The flexible-but-bound confirmation gate: truthy spellings pass,
     denials mint single-use tokens bound to the exact call, and the

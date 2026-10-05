@@ -78,9 +78,10 @@ CALENDAR_TOOLS = {
 # Same constant pattern as CALENDAR_TOOLS: lets ADA_EXCLUDED_TOOLS strip the
 # CMS declarations and their instruction paragraph together.
 CMS_TOOLS = {
-    "cms_list_pages", "cms_get_page", "cms_verify_page",
-    "cms_publish_page", "cms_delete_page", "cms_automation",
-    "cms_note_update",
+    # tools-merge-cms (2026-10-05): 7 -> 3. The absorbed names
+    # (cms_list_pages/cms_get_page/cms_verify_page/cms_note_update/
+    # cms_delete_page/cms_automation) live on as tool_runner._ALIASES.
+    "cms_publish_page", "cms_read", "cms_edit",
 }
 
 CALENDAR_INSTRUCTIONS = (
@@ -114,19 +115,20 @@ CALENDAR_INSTRUCTIONS = (
 
 CMS_INSTRUCTIONS = (
     " You maintain the user's miniapp — a small multi-page site whose pages you own. "
-    "cms_list_pages lists existing pages with their language variants, cms_get_page reads one, "
+    "cms_read action='list' lists existing pages with their language variants and "
+    "action='get' reads one by key (its page slug), "
     "cms_publish_page creates or fully replaces a page (slugs are lowercase, e.g. 'pool-notes'; "
     "en/th variants coexist — publish the user's language plus the other when asked), "
-    "cms_note_update appends a timeline note to an existing page without replacing content, and "
-    "cms_delete_page removes one. Page content is written as markdown, html, yaml, or slides markdown. "
+    "cms_edit action='note' appends a timeline note to an existing page without replacing content, and "
+    "cms_edit action='delete' removes one. Page content is written as markdown, html, yaml, or slides markdown. "
     "For 'what's new' or 'status' questions, read the 'reports-index' page first — it lists every "
-    "report with a one-line summary and staleness flag; only cms_get_page the linked page when the "
+    "report with a one-line summary and staleness flag; only cms_read action='get' the linked page when the "
     "summary isn't enough. The report-first ritual: before answering from a report, state its "
     "last-update summary and when it was written ('the flood report from 09:12 says…'). Then "
     "decide whether to drill deeper — your knobs are the report's fresh_for hint (stale → "
-    "refresh via cms_note_update after querying) and its confidence field (low/unverified → "
+    "refresh via cms_edit action='note' after querying) and its confidence field (low/unverified → "
     "don't state it as settled). When a tool call gives you new information tied to a report, "
-    "call cms_note_update on that report and tell the user the diff — what changed and at what "
+    "call cms_edit action='note' on that report and tell the user the diff — what changed and at what "
     "time ('added: flood moved to yellow at 14:05'). "
     "Inside markdown pages you can embed rich blocks as fenced code blocks: "
     "```chart <yaml echarts option> for 2D charts (line/bar/pie/scatter), "
@@ -138,7 +140,7 @@ CMS_INSTRUCTIONS = (
     "restate the slug and title, get an explicit yes, then call the write tool with "
     "confirmed=true — writes are enforced server-side. "
     "You cannot see the rendered site: after publishing or updating a page, call "
-    "cms_verify_page to check the content parses and confirm the structure, then "
+    "cms_read action='verify' to check the content parses and confirm the structure, then "
     "tell the user the page is live (or fix it if verification failed)."
     " When the user reports an ongoing incident — a flood, outage, emergency, "
     "or similar — create or update a cms report page for it (a short status "
@@ -147,11 +149,12 @@ CMS_INSTRUCTIONS = (
     "the user's report is the consent — pass confirmed=true directly and do "
     "not ask for confirmation. "
     "Generated pages (news digests, flood reports) have an automation registry "
-    "you control with cms_automation: list/get are free reads; set, enable, "
-    "disable, and run adjust a page's feeds, refresh interval, relevance "
-    "filter, language variants, or queue a regeneration — writes need "
-    "confirmed=true like other CMS writes. When the user asks to refresh a "
-    "generated page, prefer cms_automation action='run' over republishing."
+    "you control with cms_edit action='automate': op='list'/'get' are free reads; "
+    "op='set', 'enable', 'disable', and 'run' adjust a page's feeds, refresh "
+    "interval, relevance filter, language variants, or queue a regeneration — "
+    "writes need confirmed=true like other CMS writes. When the user asks to "
+    "refresh a generated page, prefer cms_edit action='automate' op='run' over "
+    "republishing."
 )
 
 # Same constant pattern as CALENDAR_TOOLS/CMS_TOOLS: lets ADA_EXCLUDED_TOOLS
@@ -853,7 +856,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "call ada_memory_search with bank='all' first; it fans out across every bank "
             "so you never have to guess which one. For reports, research, or CMS pages "
             "('that report about X', 'the research on Y'), include bank='cms' — published "
-            "pages live there; use cms_get_page(slug) for the full text. "
+            "pages live there; use cms_read(action='get', key=<slug>) for the full text. "
             "When its top hit is a confident match, "
             "ground the answer in that result, not in earlier conversation or session "
             "context that may be stale or off-topic. "
@@ -4000,66 +4003,42 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "cms_list_pages",
+                    "name": "cms_read",
                     "description": (
-                        "List the pages in the user's miniapp. Returns each page's "
-                        "slug, title, format, and last-updated timestamp."
+                        "Read the user's miniapp pages — also handles what used to be "
+                        "cms_list_pages, cms_get_page, and cms_verify_page. "
+                        "action='list' returns every page's slug, title, format, and "
+                        "last-updated timestamp; 'get' reads one page's full content by "
+                        "key (its page slug) and lang — use before updating a page; "
+                        "'verify' re-reads a page and checks the content parses for its "
+                        "declared format, returning a structural summary (title, "
+                        "sections/items, headings, slide count) — call it after "
+                        "publishing or updating, since you cannot see the rendered site."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
-                            "limit": {
-                                "type": "integer",
-                                "description": "Max pages to return (default 50).",
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "cms_get_page",
-                    "description": (
-                        "Read one miniapp page by slug — returns its title, format, "
-                        "and full content. Use before updating a page. Pages can "
-                        "have 'en' and 'th' variants; pass lang to read a specific "
-                        "one (falls back to 'en')."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "slug": {
+                            "action": {
                                 "type": "string",
-                                "description": "Page slug, e.g. 'pool-notes' (from cms_list_pages).",
+                                "enum": ["get", "list", "verify"],
+                                "description": "Read operation.",
+                            },
+                            "key": {
+                                "type": "string",
+                                "description": "Page slug, e.g. 'pool-notes' (required for get/verify; get the real slug from action='list' or reports-index).",
                             },
                             "lang": {
                                 "type": "string",
                                 "enum": ["en", "th"],
-                                "description": "Page language variant (default en).",
+                                "description": "get: page language variant (default en; falls back to en when missing).",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "list: max pages to return (default 50).",
                             },
                         },
-                        "required": ["slug"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "cms_verify_page",
-                    "description": (
-                        "Verify a published miniapp page — re-reads it and checks the "
-                        "content parses for its declared format, returning a structural "
-                        "summary (title, sections/items, headings, slide count). You "
-                        "cannot see the rendered site, so call this after publishing "
-                        "or updating a page."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "slug": {
-                                "type": "string",
-                                "description": "Page slug to verify (from cms_list_pages).",
-                            },
-                        },
-                        "required": ["slug"],
+                        "required": ["action"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -4136,77 +4115,24 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "cms_note_update",
+                    "name": "cms_edit",
                     "description": (
-                        "Append a timeline note to an existing page — the 'this report "
-                        "learned something new' path. Merges into the page's Timeline "
-                        "section, refreshes updated, and re-summarizes; never replaces "
-                        "content. No confirmation needed. Use after tool calls that "
-                        "return newer info for a report (flood status, benchmarks)."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "slug": {
-                                "type": "string",
-                                "description": "Page slug to annotate — get the real slug from reports-index or cms_list_pages first; do not guess it.",
-                            },
-                            "note": {
-                                "type": "string",
-                                "description": "One-line note appended to the page Timeline and index entry (max ~200 chars).",
-                            },
-                            "summary": {
-                                "type": "string",
-                                "description": "Optional replacement for the page's one-line reports-index brief.",
-                            },
-                            "lang": {
-                                "type": "string",
-                                "enum": ["en", "th"],
-                                "description": "Variant to annotate (default en).",
-                            },
-                        },
-                        "required": ["slug", "note"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "cms_delete_page",
-                    "description": (
-                        "Delete a miniapp page by slug. Restate which page will be "
-                        "removed, get an explicit yes, then call with confirmed=true."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "slug": {
-                                "type": "string",
-                                "description": "Page slug to delete (from cms_list_pages).",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["slug"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "cms_automation",
-                    "description": (
-                        "Inspect and adjust a generated miniapp page's automation "
-                        "switches and knobs — the registry the scheduled news worker "
-                        "honors. list shows every configured page with its switch state "
-                        "and last-run status; get reads one page's full config; set "
-                        "changes knobs (interval_min, max_items, since_hours, feeds, "
-                        "require relevance regex, langs, parent/children); enable/disable "
-                        "pause updates; run queues a one-shot regeneration (sets run_now). "
-                        "list and get are free reads — set/enable/disable/run require "
-                        "confirmed=true after restating what will change."
+                        "Edit-side miniapp ops — also handles what used to be "
+                        "cms_note_update, cms_delete_page, and cms_automation. "
+                        "action='note' appends a one-line timeline note to an existing "
+                        "page — merges into the page's Timeline section, refreshes "
+                        "updated, and re-summarizes; never replaces content and needs "
+                        "no confirmation. Use it after tool calls that return newer "
+                        "info for a report (flood status, benchmarks). 'delete' removes "
+                        "a page — restate which page will be removed, get an explicit "
+                        "yes, then call with confirmed=true. 'automate' inspects and "
+                        "adjusts a generated page's automation registry (the switches "
+                        "the scheduled news worker honors) — op='list'/'get' are free "
+                        "reads; op='set'/'enable'/'disable'/'run' change knobs "
+                        "(interval_min, max_items, since_hours, feeds, require "
+                        "relevance regex, langs, parent/children) or queue a one-shot "
+                        "regeneration — writes need confirmed=true after restating "
+                        "what will change."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -4214,36 +4140,54 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["list", "get", "set", "enable", "disable", "run"],
-                                "description": "Registry operation.",
+                                "enum": ["note", "delete", "automate"],
+                                "description": "Edit operation.",
                             },
                             "slug": {
                                 "type": "string",
-                                "description": "Page slug the config belongs to (required except for list).",
+                                "description": "Page slug the op targets — get the real slug from cms_read action='list' or reports-index first; do not guess it.",
+                            },
+                            "note": {
+                                "type": "string",
+                                "description": "note: one-line note appended to the page Timeline and index entry (max ~200 chars).",
+                            },
+                            "summary": {
+                                "type": "string",
+                                "description": "note: optional replacement for the page's one-line reports-index brief.",
+                            },
+                            "lang": {
+                                "type": "string",
+                                "enum": ["en", "th"],
+                                "description": "note: language variant to annotate (default en).",
+                            },
+                            "op": {
+                                "type": "string",
+                                "enum": ["list", "get", "set", "enable", "disable", "run"],
+                                "description": "automate: registry operation (list/get free reads; set/enable/disable/run confirmed writes).",
                             },
                             "enabled": {
                                 "type": "boolean",
-                                "description": "set: turn the page's automation on/off.",
+                                "description": "automate set: turn the page's automation on/off.",
                             },
                             "interval_min": {
                                 "type": "integer",
-                                "description": "set: minutes between automatic runs (0 = every run, max 10080).",
+                                "description": "automate set: minutes between automatic runs (0 = every run, max 10080).",
                             },
                             "run_now": {
                                 "type": "boolean",
-                                "description": "set: queue (true) or cancel (false) a one-shot regeneration.",
+                                "description": "automate set: queue (true) or cancel (false) a one-shot regeneration.",
                             },
                             "max_items": {
                                 "type": "integer",
-                                "description": "set: max news items per update (1-50).",
+                                "description": "automate set: max news items per update (1-50).",
                             },
                             "since_hours": {
                                 "type": "integer",
-                                "description": "set: only include items published within N hours (1-720).",
+                                "description": "automate set: only include items published within N hours (1-720).",
                             },
                             "require": {
                                 "type": "string",
-                                "description": "set: relevance regex matched against item title+summary; empty string clears it.",
+                                "description": "automate set: relevance regex matched against item title+summary; empty string clears it.",
                             },
                             "feeds": {
                                 "type": "array",
@@ -4253,25 +4197,25 @@ class GeminiLiveProvider(RealtimeProvider):
                                     "minItems": 2,
                                     "maxItems": 2,
                                 },
-                                "description": "set: RSS feeds as [[name, url], ...] pairs.",
+                                "description": "automate set: RSS feeds as [[name, url], ...] pairs.",
                             },
                             "langs": {
                                 "type": "array",
                                 "items": {"type": "string", "enum": ["en", "th"]},
-                                "description": "set: which language variants to update.",
+                                "description": "automate set: which language variants to update.",
                             },
                             "parent": {
                                 "type": "string",
-                                "description": "set: parent report slug this page rolls up into (empty clears).",
+                                "description": "automate set: parent report slug this page rolls up into (empty clears).",
                             },
                             "children": {
                                 "type": "array",
                                 "items": {"type": "string"},
-                                "description": "set: child report slugs this page aggregates.",
+                                "description": "automate set: child report slugs this page aggregates.",
                             },
                             "confirmed": {
                                 "type": "boolean",
-                                "description": "Required for writes; set true only after explicit user confirmation.",
+                                "description": "Required for delete and automate writes; set true only after explicit user confirmation.",
                             },
                             "confirm_token": {
                                 "type": "string",

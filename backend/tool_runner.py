@@ -59,8 +59,11 @@ CALENDAR_WRITE_TOOLS = {
 }
 
 # Miniapp/CMS page writes: publishing or deleting a page changes what the
-# miniapp renders, so all writes require confirmed=true.
-CMS_WRITE_TOOLS = {"cms_publish_page", "cms_delete_page", "cms_automation"}
+# miniapp renders, so all writes require confirmed=true. tools-merge-cms
+# (2026-10-05): cms_delete_page/cms_automation collapsed into cms_edit —
+# the canonical name holds the seat; _check_cms_write_allowed keys the
+# per-action split (note + automation reads stay free) off args.
+CMS_WRITE_TOOLS = {"cms_publish_page", "cms_edit"}
 
 # Devin dispatch: launching an unattended agent session (devin_dispatch),
 # injecting a message into one (devin_followup), or delivering the user's
@@ -259,6 +262,15 @@ _ALIASES: dict[str, str] = {
     "cctv_snapshot": "ada_camera_snapshot",
     "traffic_camera": "ada_camera_snapshot",
     "capture_frame": "vcast_snapshot",
+    # cms family — tools-merge-cms (2026-10-05): 7 -> 3. cms_publish_page
+    # stays declared (the big writer); the three readers route to
+    # cms_read, the three writers/registry-ops route to cms_edit.
+    "cms_list_pages": "cms_read",
+    "cms_get_page": "cms_read",
+    "cms_verify_page": "cms_read",
+    "cms_note_update": "cms_edit",
+    "cms_delete_page": "cms_edit",
+    "cms_automation": "cms_edit",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the
@@ -277,6 +289,12 @@ _ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
     # old-style call still lands the frame on the living-room TV.
     "cctv_snapshot": {"source": "vms", "target": "tv"},
     "traffic_camera": {"source": "traffic"},
+    "cms_list_pages": {"action": "list"},
+    "cms_get_page": {"action": "get"},
+    "cms_verify_page": {"action": "verify"},
+    "cms_note_update": {"action": "note"},
+    "cms_delete_page": {"action": "delete"},
+    "cms_automation": {"action": "automate"},
 }
 
 def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
@@ -306,6 +324,19 @@ def _alias_call_args(alias: str, args: dict[str, Any]) -> dict[str, Any]:
         # ada_ha_recall(query) -> ada_session_recall(question, scope=history)
         if "question" not in args and "query" in args:
             args["question"] = args.pop("query")
+    elif alias in ("cms_get_page", "cms_verify_page"):
+        # cms_*_page(slug, ...) -> cms_read(action, key, ...)
+        if "key" not in args and "slug" in args:
+            args["key"] = args.pop("slug")
+    elif alias == "cms_automation":
+        # cms_automation(action=list|get|set|...) -> cms_edit(action=
+        # "automate", op=<registry action>) — the implied action merges
+        # under caller args, so the caller's own action= lands in the
+        # slot and must move to op before the canonical is re-stamped.
+        sub = str(args.pop("action", "") or "")
+        args["action"] = "automate"
+        if sub and sub != "automate":
+            args.setdefault("op", sub)
     return args
 
 
@@ -981,6 +1012,11 @@ class ToolRunner:
             guest_scope_search = (
                 name == "ada_memory_search" and str(
                     call_args.get("scope") or "").lower() == "guest")
+            # cms_edit action='note' absorbed cms_note_update — a merge-only
+            # append that was never gated or secondary-blocked.
+            cms_note_edit = (
+                name == "cms_edit" and str(
+                    call_args.get("action") or "").lower() == "note")
             # ada_enroll_speaker is exempt here — its own check is smarter:
             # the owner can re-enroll even while a secondary voice is
             # identified, as long as the buffer voice isn't the secondary's
@@ -988,7 +1024,8 @@ class ToolRunner:
             # because KK's identification was sticky and enroll refused).
             if (name in blocked and name != "ada_enroll_speaker"
                     and not nonbank_remember
-                    and not guest_scope_search) or (
+                    and not guest_scope_search
+                    and not cms_note_edit) or (
                 name == "ada_persona" and action in ("set", "reset")
                 and "persona_write" in blocked
             ):
@@ -1081,8 +1118,7 @@ class ToolRunner:
     # controls (lights, media) and memory-bank writes are deliberately
     # excluded — noisy, and already tracked elsewhere.
     _CHANGE_LOG_TOOLS = {
-        "cms_publish_page", "cms_delete_page", "cms_note_update",
-        "cms_automation", "ada_doc_archive", "ada_forget",
+        "cms_publish_page", "cms_edit", "ada_doc_archive", "ada_forget",
         "ada_ha_set_device_confidence", "devin_dispatch",
         "devin_followup", "devin_answer", "devin_job_report",
     }
@@ -1432,10 +1468,21 @@ class ToolRunner:
         pending confirmation; a resubmit with confirmed=true must match it —
         the model cannot jump straight to confirmed without the ask-step.
         Raises PermissionError on denial."""
-        if (name == "cms_automation"
-                and str(args.get("action") or "").lower()
-                in CMS_AUTOMATION_READ_ACTIONS):
-            return  # list/get read the registry — no confirmation needed
+        if name == "cms_edit":
+            # Per-action split after the tools-merge-cms collapse — alias
+            # resolution ran before this gate, so name is canonical:
+            #   note     — absorbed cms_note_update: a merge-only timeline
+            #              append that was never confirm-gated
+            #   automate — absorbed cms_automation: op list/get read the
+            #              registry, free like before; set/enable/disable/
+            #              run fall through to confirmation
+            #   delete   — absorbed cms_delete_page: confirmed
+            eaction = str(args.get("action") or "").lower()
+            if eaction == "note":
+                return
+            if (eaction == "automate" and str(args.get("op") or "").lower()
+                    in CMS_AUTOMATION_READ_ACTIONS):
+                return
         if os.environ.get("ADA_READ_ONLY") == "true":
             logger.warning("denied %s %r: ADA_READ_ONLY", name, args)
             raise PermissionError("CMS writes are disabled (ADA_READ_ONLY=true)")
@@ -2998,6 +3045,31 @@ class ToolRunner:
             page["children"] = [str(c) for c in children]
         return page
 
+    # -- cms_read: the merged read side (tools-merge-cms) -------------------
+    # Absorbs cms_list_pages/cms_get_page/cms_verify_page — the absorbed
+    # methods below keep their names as the per-action implementations;
+    # only the declared surface changed (aliases route old call sites).
+
+    async def cms_read(
+        self, action: str, key: str = "", slug: str = "",
+        lang: str = "en", limit: int = 50,
+    ) -> Any:
+        """Read the miniapp CMS. action='list' returns every page's
+        slug/title/format/updated; 'get' returns one page's full content
+        by key (the page slug) + lang; 'verify' re-reads a page and checks
+        its content parses for the declared format. Free reads — no
+        confirmation."""
+        action = (action or "").strip().lower()
+        if action not in ("get", "list", "verify"):
+            raise ValueError(
+                f"invalid action {action!r}: expected get|list|verify")
+        if action == "list":
+            return await self.cms_list_pages(limit=limit)
+        k = self._cms_slug(key or slug)
+        if action == "get":
+            return await self.cms_get_page(k, lang=lang)
+        return await self.cms_verify_page(k)
+
     async def cms_list_pages(self, limit: int = 50) -> list[dict[str, Any]]:
         """List pages in the miniapp CMS collection, grouped by slug with
         the language variants present (lang is a per-doc field in MDDB)."""
@@ -3239,7 +3311,53 @@ class ToolRunner:
                 "timeline_entries": len(meta["timeline"]),
                 "updated": now, "diff": diff}
 
-    # -- cms_edit: page/section ops -----------------------------------------
+    # -- cms_edit: the merged edit side (tools-merge-cms) -------------------
+    # Absorbs cms_note_update/cms_delete_page/cms_automation — per-action
+    # dispatch onto the absorbed methods below; 'op' carries the automation
+    # registry action for action='automate' (list|get|set|enable|disable|run).
+
+    async def cms_edit(
+        self,
+        action: str,
+        slug: str = "",
+        note: str = "",
+        summary: str = "",
+        lang: str = "en",
+        op: str = "",
+        enabled: bool | None = None,
+        interval_min: int | None = None,
+        run_now: bool | None = None,
+        max_items: int | None = None,
+        since_hours: int | None = None,
+        require: str | None = None,
+        feeds: list | None = None,
+        langs: list | None = None,
+        parent: str | None = None,
+        children: list | None = None,
+    ) -> dict[str, Any]:
+        """Edit-side CMS ops. action='note' appends a timeline note to an
+        existing page (ungated); 'delete' removes the page (confirmed);
+        'automate' drives the page's automation registry — op carries the
+        registry action (list/get are free reads; set/enable/disable/run
+        are confirmed writes)."""
+        action = (action or "").strip().lower()
+        if action == "note":
+            return await self.cms_note_update(
+                slug, note, lang=lang, summary=summary)
+        if action == "delete":
+            return await self.cms_delete_page(slug)
+        if action == "automate":
+            return await self.cms_automation(
+                op, slug=slug, enabled=enabled, interval_min=interval_min,
+                run_now=run_now, max_items=max_items,
+                since_hours=since_hours, require=require, feeds=feeds,
+                langs=langs, parent=parent, children=children)
+        raise ValueError(
+            f"invalid action {action!r}: expected note|delete|automate")
+
+    # -- _cms_edit_sections: page/section ops (PWA edit drawer; not a
+    #    declared tool — the model-facing cms_edit above carries the
+    #    note/delete/automate actions) -------------------------------------
     # Ops: add (append/insert text), update (replace section or whole page),
     # improve/expand/consolidate (LLM transforms), split (section -> new
     # page), merge (other page's content folded in). Sections are addressed
@@ -3273,7 +3391,7 @@ class ToolRunner:
             contents=prompt)
         return (resp.text or "").strip()
 
-    async def cms_edit(
+    async def _cms_edit_sections(
         self, slug: str, op: str, text: str = "", section: str = "",
         instruction: str = "", lang: str = "en", target_slug: str = "",
         title: str = "",

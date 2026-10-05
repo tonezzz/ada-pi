@@ -1,0 +1,94 @@
+# SSOT Job: cms tool-group merge (7 -> 3)
+# Card: tools-merge-cms (chaba kanban). Dispatch 20261005-100603.
+
+title: CMS tool merge — cms_read / cms_edit absorb six names, cms_publish_page unchanged
+subtitle: Third tools-merge-* card landed — _ALIASES now carries 15 retirees
+
+planning:
+  goal: |
+    Cut the cms group to its canonical three per the card spec:
+    cms_publish_page (unchanged writer), cms_read, cms_edit.
+    Absorbed names stay callable but hidden — soft aliases via
+    tool_runner._ALIASES, removed from the declared surface
+    (the repo's x-legacy mechanism; no literal x-legacy field exists).
+  decisions: |
+    - Two canonical targets, not one: the card maps get|list|verify onto
+      new cms_read and note|delete|automate onto new cms_edit —
+      ssot.tool-surface.yml cms family split into cms_read/cms_edit
+      sub-families (same pattern as memory_search/memory_remember/
+      memory_recall); the spec table's single-canonical 'cms_page' row
+      updated to match what landed.
+    - cms_edit name reuse: a private page/section-edit method already
+      existed for the PWA edit drawer (/api/cms/pages/{slug}/edit) —
+      renamed to _cms_edit_sections; the declared cms_edit carries only
+      the card's action=note|delete|automate surface.
+    - action collision: absorbed cms_automation also took action= — the
+      caller's action moves to cms_edit.op via _alias_call_args (implied
+      defaults merge UNDER caller args, so without the shim the caller's
+      action would shadow 'automate').
+    - Gate keys off the resolved name: cms_edit joins CMS_WRITE_TOOLS
+      (replacing cms_delete_page/cms_automation), so confirm_strip /
+      _CONFIRM_GATED_TOOLS / SECONDARY_BLOCKED all cover it unchanged.
+      _check_cms_write_allowed keys the per-action split off args:
+      note + automate list|get stay free (matching cms_note_update's
+      ungated merge and cms_automation's free reads); delete and
+      automate writes keep confirmation; publish keeps its stateful
+      pending-request handshake.
+    - Secondary-speaker parity: cms_edit action='note' carved out of
+      SECONDARY_BLOCKED (cms_note_update was never blocked); automate
+      stays fully blocked for secondary like cms_automation was.
+    - _CHANGE_LOG_TOOLS keys off resolved names: the three absorbed names
+      replaced by cms_edit (identical event coverage).
+    - benchmark.yml write_tools: cms_delete_page -> cms_edit; the
+      tool_merge_cms scenario joins write_allowed_in (it exercises
+      cms_edit note).
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tool_runner alias tables + arg shim"
+      status: done
+      notes: "6 _ALIASES rows + _ALIAS_ARG_DEFAULTS (action= list/get/
+        verify/note/delete/automate); _alias_call_args maps slug->key for
+        the readers and action->op for cms_automation."
+    - id: 2
+      label: "canonical methods"
+      status: done
+      notes: "cms_read(action,key,slug,lang,limit) and cms_edit(action,
+        slug,note,summary,lang,op,+automation knobs) dispatch per-action
+        onto the unchanged absorbed methods; old cms_edit section-ops
+        renamed _cms_edit_sections; pwa_server call site updated."
+    - id: 3
+      label: "provider surface"
+      status: done
+      notes: "6 declarations removed; cms_read + cms_edit declared with
+        explicit action enums; CMS_TOOLS set and CMS_INSTRUCTIONS
+        rewritten for canonical names."
+    - id: 4
+      label: "SSOT + spec + scenario + tests"
+      status: done
+      notes: "ssot.tool-surface.yml cms -> cms_read/cms_edit sub-families;
+        spec table updated; tests/scenarios-live/tool_merge_cms.yaml;
+        CmsMergeAliasTests (8 tests); test_tool_audit declared-floor
+        pinned to SSOT target_count (was a fixed >=100 the merges
+        ratchet past)."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # 94 declared, 15 aliases, clean"
+    - "PYTHONPATH=.teststubs python3 -m unittest tests.test_tool_runner.CmsMergeAliasTests"
+    - "PYTHONPATH=.teststubs python3 -m unittest discover -s tests -p 'test_*.py'"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0 — 94 declared (95->91 builtin), 15 aliases"
+  - "alias smoke: execute(cms_list_pages) -> cms_read list; "
+    "execute(cms_get_page slug) -> cms_read get key=; "
+    "execute(cms_verify_page slug) -> cms_read verify; "
+    "execute(cms_note_update) -> cms_edit note (ungated); "
+    "execute(cms_delete_page) -> cms_edit delete (confirm-gated); "
+    "execute(cms_automation action=list) -> cms_edit automate op=list (free read)"
+  - "full suite: 478 tests; failures identical to HEAD (3 CMS publish mock "
+    "drift + environmental errors; test_json_output_shape floor fixed)"

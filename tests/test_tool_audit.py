@@ -97,7 +97,10 @@ class LintAgainstRepoTests(unittest.TestCase):
             capture_output=True, text=True)
         rep = json.loads(proc.stdout)
         self.assertTrue(rep["ok"])
-        self.assertGreaterEqual(rep["surface"]["declared"], 100)
+        # Floor is the SSOT consolidation target, not a fixed census —
+        # merge cards ratchet the declared count DOWN toward it.
+        self.assertGreaterEqual(
+            rep["surface"]["declared"], rep["surface"]["target"])
 
 
 class LintFixtureTests(unittest.TestCase):
