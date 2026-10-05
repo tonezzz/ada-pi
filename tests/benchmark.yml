@@ -240,6 +240,18 @@ suites:
     - news_intake_probe
     - scenario_report_recall
 
+  # Release gate — the deploy-gate probes. Arg shapes, honesty under
+  # failure, and storm budgets. Run before promoting ada-pi; every
+  # tool-consolidation merge card closes through this suite.
+  gate:
+    - tool_selection_accuracy
+    - tool_args_shape
+    - tool_honesty
+    - tool_storm_budget
+    - education_correction
+    - doc_policy_gate
+    - cross_instance_isolation
+
   # Casting & camera — the snap→publish→cast→verify loop, the capture
   # permission contract, and display diagnostics.
   casting:

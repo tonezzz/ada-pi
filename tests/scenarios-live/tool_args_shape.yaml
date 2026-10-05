@@ -1,0 +1,31 @@
+# Arg-shape probes — the malformed-args class (gev {name,args} wrap bug,
+# cast_to_screen missing fields). Asserts the wire carries the right
+# shape, not just that the right tool was called.
+name: tool_args_shape
+tier: gate
+turns:
+  # The 0bb8e9b wrap bug: model nested {name, args} inside args.
+  # Post-fix this is tolerated, but the regression probe still watches
+  # the inner arg object carry the actual params.
+  - user: "On the map, fly to Chiang Mai."
+    expect:
+      calls_any: [gev_command]
+      call_args_contain:
+        gev_command: [["query", "locationId", "latitude"]]
+      timeout_s: 90
+      settle_s: 8
+  # cast_to_screen must carry action + a target screen — a cast without
+  # screen identity was the 'phantom success' class.
+  - user: "Put the Thai traffic camera wall on screen 4."
+    expect:
+      calls_any: [cctv_wall, cast_to_screen]
+      max_calls: 4
+      timeout_s: 120
+      settle_s: 10
+  # Control-call arg shape: entity + action, not prose.
+  - user: "Turn the office lights off please."
+    expect:
+      calls_any: [control_entity, ada_ha_get_state, search_home_devices,
+                  ada_ha_search_devices]
+      timeout_s: 90
+      settle_s: 8
