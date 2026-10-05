@@ -167,6 +167,15 @@ LEGACY_TOOL_ALIASES: dict[str, str] = {
     "cms_note_update": "cms_edit",
     "cms_delete_page": "cms_edit",
     "cms_automation": "cms_edit",
+    "calendar_list_events": "calendar_read",
+    "calendar_list_calendars": "calendar_read",
+    "calendar_freebusy": "calendar_read",
+    "calendar_create_event": "calendar_write",
+    "calendar_delete_event": "calendar_write",
+    "calendar_shift_overdue": "calendar_write",
+    "ada_daily_summary": "plan_day",
+    "ada_weekly_comparison": "plan_day",
+    "gev_tour": "gev_command",
 }
 
 _VCAST_API = os.environ.get(

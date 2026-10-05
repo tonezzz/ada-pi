@@ -1085,28 +1085,67 @@ class CastToScreenRouteTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GevTourTests(unittest.IsolatedAsyncioTestCase):
-    """gev_tour — named flyover tours must be discoverable and return an
-    executable card. The tours lived only inside scenario yaml files until
-    2026-10-02, so 'play the South Africa tour' came up empty."""
+    """gev_command's tour= branch — named flyover tours must be
+    discoverable and return an executable card. The tours lived only
+    inside scenario yaml files until 2026-10-02, so 'play the South
+    Africa tour' came up empty. tools-merge-gev (2026-10-05) folded the
+    standalone gev_tour tool into gev_command's tour= param."""
 
     def setUp(self):
         self.runner = ToolRunner.__new__(ToolRunner)
 
     async def test_list_all_tours(self):
-        out = await self.runner.gev_tour()
+        out = await self.runner.gev_command(tour="")
         self.assertIn("za", out["tours"])
         self.assertIn("bkk", out["tours"])
 
+    async def test_bare_call_lists_tours(self):
+        # No name AND no tour — the discovery mode, same answer the
+        # absorbed gev_tour() gave with no args.
+        out = await self.runner.gev_command()
+        self.assertIn("za", out["tours"])
+
     async def test_alias_resolution_thai_and_english(self):
-        za = await self.runner.gev_tour("แอฟริกาใต้")
+        za = await self.runner.gev_command(tour="แอฟริกาใต้")
         self.assertEqual(za["output"]["id"], "za")
         self.assertTrue(za["output"]["stops"])
-        ct = await self.runner.gev_tour("cape town")
+        ct = await self.runner.gev_command(tour="cape town")
         self.assertEqual(ct["output"]["id"], "capetown")
 
     async def test_unknown_tour_lists_choices(self):
-        out = await self.runner.gev_tour("atlantis")
+        out = await self.runner.gev_command(tour="atlantis")
         self.assertIn("error", out)
+        self.assertIn("za", out["tours"])
+
+
+class GevMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-gev (2 -> 1): the absorbed gev_tour name stays callable
+    via _ALIASES and routes to gev_command's tour= branch — the same arg
+    name, so no arg-default or shim mapping is involved."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+
+    async def test_tour_alias_routes_to_canonical(self):
+        out = await self.runner.execute("gev_tour", {"tour": "za"})
+        self.assertEqual(out["output"]["id"], "za")
+
+    async def test_tour_alias_lists_when_empty(self):
+        out = await self.runner.execute("gev_tour", {})
+        self.assertIn("za", out["tours"])
+
+    async def test_canonical_tour_param_thai_alias(self):
+        out = await self.runner.execute(
+            "gev_command", {"tour": "แอฟริกาใต้"})
+        self.assertEqual(out["output"]["id"], "za")
+
+    async def test_canonical_bare_call_lists(self):
+        out = await self.runner.execute("gev_command", {})
         self.assertIn("za", out["tours"])
 
 

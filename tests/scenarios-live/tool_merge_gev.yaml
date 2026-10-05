@@ -1,0 +1,33 @@
+# tools-merge-gev regression (2026-10-05): the gev group went 2 -> 1 —
+# gev_command absorbed gev_tour via its tour= param. The absorbed name
+# survives as a tool_runner._ALIASES row (gev_tour -> gev_command),
+# hidden from the declared surface. Live-side this scenario checks the
+# canonical call fires for both intents:
+#   list tours / fetch a tour card — gev_command with tour= set
+#   drive the map — gev_command with name=<gev tool> (+ args)
+name: tool_merge_gev
+turns:
+  - user: >-
+      What God's Eye View tours are available? Just list them, don't run
+      anything.
+    expect:
+      calls_any: [gev_command]
+      timeout_s: 60
+      settle_s: 8
+  - user: >-
+      Fetch the South Africa tour card — just get the card, don't fly
+      yet.
+    expect:
+      calls_any: [gev_command]
+      call_args_contain:
+        gev_command: [["tour"]]
+      timeout_s: 60
+      settle_s: 8
+  - user: >-
+      On the map, fly to Tokyo.
+    expect:
+      calls_any: [gev_command]
+      call_args_contain:
+        gev_command: [["fly_to_location", "tokyo", "locationId", "query"]]
+      timeout_s: 90
+      settle_s: 8

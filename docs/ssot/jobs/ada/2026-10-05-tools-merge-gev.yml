@@ -1,0 +1,92 @@
+# SSOT Job: gev tool-group merge (2 -> 1)
+# Card: tools-merge-gev (chaba kanban). Dispatch 20261005-180945.
+
+title: GEV merge — gev_command absorbs gev_tour via its tour= param
+subtitle: Fifth tools-merge-* card landed — _ALIASES now carries 24 retirees
+
+planning:
+  goal: |
+    Cut the gev group to its canonical one per the card spec:
+    gev_command absorbs gev_tour -> gev(command|tour=...). The absorbed
+    name stays callable but hidden — a soft alias via
+    tool_runner._ALIASES, removed from the declared surface (the repo's
+    x-legacy mechanism; no literal x-legacy field).
+  decisions: |
+    - Canonical keeps the name gev_command, not a new 'gev': the card's
+      "gev(command|tour=...)" describes the merged call shape — one tool
+      taking either command params (name+args+screen+pane+wait) or
+      tour=<id|alias>. Renaming would churn every scenario/prompt that
+      already says 'gev_command fly_to_location'.
+    - No action= param: gev_command's 'name' already IS the action
+      selector (the GEV tool name). tour= is an orthogonal mode switch —
+      when set, name/args are ignored and the tour registry answers.
+    - No _ALIAS_ARG_DEFAULTS or _alias_call_args shim: the absorbed tool's
+      only param is 'tour', identical on the canonical — the alias row
+      alone routes old calls.
+    - Bare call = discovery mode: gev_command() with no name and no tour
+      lists tours — same contract the standalone gev_tour() had.
+    - Gates unchanged: gev_command already held the CONTROL_TOOLS seat;
+      gev_tour was never gated. Aliased tour calls now count against the
+      control rate limit and ADA_READ_ONLY — the gate keys off the
+      resolved name per the card rule. DEVIN_CONFIRMED_TOOLS and the
+      provider-side confirm_strip path are untouched.
+    - scenario-live.py LEGACY_TOOL_ALIASES gained gev_tour AND the eight
+      calendar+plan rows — that mirror landed after the calendar merge
+      and was never backfilled; scenarios asserting legacy names only
+      widen (accept canonical OR legacy), never narrow.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tool_runner merge"
+      status: done
+      notes: "_ALIASES +gev_tour->gev_command; gev_command gained
+        tour=None and routes tour-set/bare calls to _gev_tour_card()
+        (the absorbed gev_tour body, hint text repointed to the
+        canonical call shape)."
+    - id: 2
+      label: "provider surface"
+      status: done
+      notes: "gev_tour declaration removed; gev_command schema gained
+        tour= and dropped required:[name]; description folds in the
+        tour-card instructions (per-stop recipe, PiP camera rule, Thai
+        aliases) so legacy phrasing still routes."
+    - id: 3
+      label: "SSOT + spec + scenario mirror"
+      status: done
+      notes: "ssot.tool-surface.yml gained the gev family (canonical
+        gev_command, scenario tool_merge_gev); gev_tour pruned from
+        coverage_debt; spec family table gained the landed gev row;
+        LEGACY_TOOL_ALIASES backfilled (+9 rows)."
+    - id: 4
+      label: "scenario + tests"
+      status: done
+      notes: "tests/scenarios-live/tool_merge_gev.yaml (list tours,
+        fetch tour card via tour=, plain fly command);
+        tool_merge_gev joined benchmark write_allowed_in;
+        GevTourTests repointed at gev_command(tour=); new
+        GevMergeAliasTests exercises the execute() alias path."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # 87 declared, 24 aliases, clean"
+    - "PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest tests.test_tool_runner.GevTourTests tests.test_tool_runner.GevMergeAliasTests"
+    - "PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest discover -s tests"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0 — 87 declared (88->87),
+    24 aliases, 12 pre-existing warnings (unchanged set)"
+  - "alias smoke: execute(gev_tour, {tour:'za'}) -> za card;
+    execute(gev_tour, {}) -> tour list;
+    execute(gev_command, {tour:'cape town'}) -> capetown card;
+    execute(gev_command, {}) -> tour list"
+  - "GevTourTests + GevMergeAliasTests: 8/8 — alias routes to parent,
+    canonical tour= works, bare call lists, Thai/English aliases resolve,
+    unknown tour lists choices"
+  - "full suite: 515 tests, 4F/19E — identical to HEAD baseline (verified
+    via stash): document_check intake + live-mddb scenarios +
+    provider/decision/detection errors are missing google.genai /
+    ai_edge_litert / mddb on this host. No merge regressions."
