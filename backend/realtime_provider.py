@@ -36,6 +36,8 @@ from backend.tool_runner import (
     DOC_CONFIRMED_TOOLS,
     MEMORY_WRITE_TOOLS,
     _resolve_alias,
+    _alias_call_args,
+    _PERSONA_VOICE_ACTIONS,
 )
 
 # Tools whose call requires an explicit user confirmation. The Jev advisory
@@ -136,7 +138,7 @@ CMS_INSTRUCTIONS = (
     "summary isn't enough. "
     "READ ORDER — most distilled first, outside last: reports-index (or cms_read action='list' / "
     "ada_memory_search bank='cms'), then the linked page, then memory banks, and only then an "
-    "outside source. Before web_search or ada_deep_research on any topic a page might already "
+    "outside source. Before web_search or ada_ops action='research' on any topic a page might already "
     "cover — status, incidents, news, research, anything previously reported — check your own "
     "pages FIRST; outside search is the fallback for what pages don't cover or what must be "
     "fresh, never the first read. "
@@ -226,11 +228,18 @@ ACTUATING_TOOLS = frozenset({
     # tools-merge-docs-drive: ada_doc_archive/ada_doc_print collapsed into
     # docs — actuation is keyed per-action at the call site below.
     "control_entity", "tv_action", "yt_cast", "yt_cast_stop",
-    "cast_to_screen", "ada_set_voice",
+    "cast_to_screen",
+    # tools-merge-meta-voice: ada_set_voice folded into
+    # ada_persona(*_voice actions) — set_voice gated per-action
+    # at the call site below.
     "devin_dispatch",
     "calendar_write",
     "tasks_add", "tasks_complete", "tasks_move",
 })
+# tools-merge-meta-voice: ada_set_voice's actuating seat (it drops the
+# live session for a reconnect) moved to ada_persona action='set_voice' —
+# counted per-call at the budget check since persona's other actions are
+# reads.
 
 # 'confirmed=true' in a tool arg is only honored when the user's own
 # speech affirms — otherwise the model could self-certify past the
@@ -540,7 +549,10 @@ CAMERA_DECLARATION = {
 # guest_remember_private, ada_memory_search(scope='guest') absorbs
 # guest_recall. CHABA_DECLARATIONS re-declares them with guest-scoped
 # schemas; the allowlist below swaps out the bank-facing versions.
-CHABA_TOOLS = {"ada_remember", "ada_memory_search", "guest_register"}
+# tools-merge-meta-voice: guest_register folded into ada_enroll_speaker
+# who='guest' — the canonical name sits in the allowlist, the absorbed
+# name stays callable as a tool_runner._ALIASES row.
+CHABA_TOOLS = {"ada_remember", "ada_memory_search", "ada_enroll_speaker"}
 
 # tools-merge-ha (2026-10-05): the finders/history reads consolidated —
 # guests get the canonical trio (home_search kind=device|sensor,
@@ -554,7 +566,8 @@ CHABA_ALLOW = CHABA_TOOLS | {
 
 CHABA_INSTRUCTIONS = (
     " You are Chaba, the house assistant for visitors. On first contact ask "
-    "the visitor's name and call guest_register with it — registration lets an "
+    "the visitor's name and call ada_enroll_speaker with who='guest' and "
+    "their name — registration lets an "
     "admin promote them to a named user later. Before the first ada_remember "
     "in a session, say clearly that saved memories are visible to everyone in "
     "this household. ada_remember(kind='guest') saves a PUBLIC note (key + "
@@ -608,17 +621,22 @@ CHABA_DECLARATIONS = [
         },
     },
     {
-        "name": "guest_register",
+        # tools-merge-meta-voice: the guest-scoped seat of
+        # ada_enroll_speaker (absorbed guest_register) — who is pinned to
+        # 'guest' so the visitor surface can't reach voice enrollment.
+        "name": "ada_enroll_speaker",
         "description": (
             "Register the visitor's name so an admin can promote them to a "
-            "named user with a private memory namespace. Ask their name first."
+            "named user with a private memory namespace — always call with "
+            "who='guest'. Ask their name first."
         ),
         "parameters_json_schema": {
             "type": "object",
             "properties": {
+                "who": {"type": "string", "enum": ["guest"]},
                 "name": {"type": "string", "description": "Visitor's declared name."},
             },
-            "required": ["name"],
+            "required": ["who", "name"],
             "additionalProperties": False,
         },
     },
@@ -819,7 +837,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "guess an object's identity from an ambiguous or blurred view; briefly "
             "ask the user to hold it steady or move it closer instead."
             " When the user asks about token usage, API usage, or what a session "
-            "costs, call ada_usage_summary and answer from its numbers."
+            "costs, call ada_ops action='usage' and answer from its numbers."
             " You have Home Assistant device control through several tools: "
             "get_home_state to check occupancy and the state of the configured home plugs "
             "(or a single entity with entity_id=, one HA domain with domain=, or the "
@@ -872,7 +890,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "While a capture is active (tool results list it in active_captures), if the user "
             "changes the subject, briefly acknowledge the running capture and ask whether to "
             "keep it or stop it — never silently stop it or leave it unmentioned. "
-            "and ada_outcome to record how a memory or check turned out when the user reports back "
+            "and ada_ops action='outcome' to record how a memory or check turned out when the user reports back "
             "(e.g. 'that shop was fine', 'the fix worked', 'I skipped it') — outcomes update confidence "
             "so future recall trusts knowledge with a good track record. "
             "You can enroll the current speaker's voice with ada_enroll_speaker — "
@@ -890,7 +908,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "write_policy there is direct so no confirmation is needed. The Devin console "
             "session elaborates raw ideas into connected items later — do not rewrite them."
             "When the user reports how something turned out ('that worked', 'it failed'), call "
-            "ada_outcome on the memory it applies to — find the key with ada_memory_search if needed. "
+            "ada_ops action='outcome' on the memory it applies to — find the key with ada_memory_search if needed. "
             "ada_persona manages the current speaker's stored style preferences (tone, verbosity, "
             "formality, language, address-name, emoji, sassiness, proactiveness): when the user asks you to "
             "change how you speak or address them, call ada_persona set — it persists across "
@@ -898,8 +916,9 @@ class GeminiLiveProvider(RealtimeProvider):
             "note at session start — honor them without announcing the mechanism. "
             "To check or change ANOTHER household member's profile, pass person ('KK' or "
             "'person.kk') — action 'list' shows the Home Assistant people Ada knows. "
-            "ada_set_voice changes your actual speaking voice — a different preference from "
-            "persona style: 'show'/'list' report the active voice and options, 'set' persists "
+            "ada_persona's *_voice actions change your actual speaking voice — a different "
+            "preference from persona style: 'show_voice'/'list_voices' report the active voice "
+            "and options, 'set_voice' persists "
             "the choice and applies it after a brief reconnect with a short pause. "
             "When calling any search or recall tool, always write a fully self-contained query: "
             "resolve 'it', 'that one', 'the same service', and similar references using the "
@@ -1462,10 +1481,11 @@ class GeminiLiveProvider(RealtimeProvider):
     # --- ada_set_voice: persisted voice + idle-gated session swap ---
 
     def _set_voice(self, args: dict) -> str:
-        """ada_set_voice — persist a new Gemini Live voice, then apply it by
-        reconnecting this session once the spoken acknowledgement finishes."""
-        action = str(args.get("action") or "set").strip() or "set"
-        if action in ("show", "list"):
+        """ada_persona's *_voice actions (absorbed ada_set_voice) — persist a
+        new Gemini Live voice, then apply it by reconnecting this session
+        once the spoken acknowledgement finishes."""
+        action = str(args.get("action") or "set_voice").strip() or "set_voice"
+        if action in ("show", "list", "show_voice", "list_voices"):
             return (
                 f"Current voice: {voice_config.current_voice()}. "
                 f"Available voices: {', '.join(voice_config.GEMINI_VOICES)}."
@@ -3322,60 +3342,30 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "ada_outcome",
+                    # tools-merge-meta-voice (2026-10-05): one ops/meta seat
+                    # absorbing ada_outcome, ada_usage_summary, ada_mddb_health,
+                    # ada_decision_check and ada_deep_research. outcome is the
+                    # only bank write (confirmed-policy gate stays); check and
+                    # research run in the background and speak their results.
+                    "name": "ada_ops",
                     "description": (
-                        "Record the real-world outcome of a stored memory or purchase check when the "
-                        "user reports how it turned out (e.g. 'that shop was fine', 'the fix worked', "
-                        "'I skipped it'). Updates the document's confidence so future recall trusts "
-                        "knowledge with a good track record. Get the document key from "
-                        "ada_memory_search or a decision-check result first."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "bank": {
-                                "type": "string",
-                                "description": "Memory bank name ({writable_banks}).",
-                            },
-                            "key": {
-                                "type": "string",
-                                "description": "Document key the outcome applies to (from ada_memory_search or a check result).",
-                            },
-                            "outcome": {
-                                "type": "string",
-                                "enum": ["good", "bad", "partial", "skipped", "worked", "failed", "bought_good", "bought_bad"],
-                                "description": "How it turned out. bought_good/bought_bad for purchase checks, worked/failed for procedures, skipped when it was never exercised.",
-                            },
-                            "note": {
-                                "type": "string",
-                                "description": "Optional detail about the outcome.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["bank", "key", "outcome"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_persona",
-                    "description": (
-                        "Read or adjust a speaker's stored style preferences "
-                        "(how you should talk to them: tone, verbosity, formality, "
-                        "language, what to call them, emoji use, proactiveness). "
-                        "Use when the user asks you to change how you speak — "
-                        "'call me T', 'be more concise', 'answer in Thai', 'be formal'. "
-                        "set persists to their personal memory and applies immediately; "
-                        "show returns the active settings; reset restores defaults. "
-                        "Pass person to view or manage ANOTHER household member's "
-                        "profile (needs full access), and use action 'list' to see "
-                        "the Home Assistant people Ada knows."
+                        "Ops and meta actions — also handles what used to be ada_outcome, "
+                        "ada_usage_summary, ada_mddb_health, ada_decision_check and "
+                        "ada_deep_research. action='outcome' records the real-world outcome "
+                        "of a stored memory or purchase check when the user reports back "
+                        "(e.g. 'that shop was fine', 'the fix worked', 'I skipped it') — it "
+                        "updates the document's confidence so future recall trusts knowledge "
+                        "with a good track record; get the key from ada_memory_search or a "
+                        "check result first. action='usage' returns cumulative token usage "
+                        "and cost — call it when the user asks about API usage or what a "
+                        "session costs. action='health' reports memory-database health "
+                        "(collections, missing vector embeddings). action='check' verifies "
+                        "a product or purchase against stored criteria plus the live web "
+                        "('should I buy this', a shared listing) — background, ~30-60s. "
+                        "action='research' runs multi-round web research on a topic "
+                        "('deep dive', 'look into', 'write a report on') — background, "
+                        "1-3 minutes; check reports-index first so you only research what "
+                        "pages don't already cover."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3383,7 +3373,104 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["set", "show", "reset", "list"],
+                                "enum": ["outcome", "usage", "health", "check", "research"],
+                                "description": "outcome=record a result on a memory/check; usage=token/cost report; health=memory-db vector health; check=purchase verification (background); research=multi-round web research (background).",
+                            },
+                            "bank": {
+                                "type": "string",
+                                "description": "action=outcome: memory bank name ({writable_banks}).",
+                            },
+                            "key": {
+                                "type": "string",
+                                "description": "action=outcome: document key the outcome applies to (from ada_memory_search or a check result).",
+                            },
+                            "outcome": {
+                                "type": "string",
+                                "enum": ["good", "bad", "partial", "skipped", "worked", "failed", "bought_good", "bought_bad"],
+                                "description": "action=outcome: how it turned out. bought_good/bought_bad for purchase checks, worked/failed for procedures, skipped when it was never exercised.",
+                            },
+                            "note": {
+                                "type": "string",
+                                "description": "action=outcome: optional detail about the outcome.",
+                            },
+                            "source": {
+                                "type": "string",
+                                "enum": ["all", "live", "posture", "clutter"],
+                                "description": "action=usage: which usage source to report; 'all' aggregates everything.",
+                            },
+                            "reset": {
+                                "type": "boolean",
+                                "description": "action=usage: zero the counters after reporting; only when the user asks.",
+                            },
+                            "collection": {
+                                "type": "string",
+                                "description": "action=health: optional — limit the report to one collection name.",
+                            },
+                            "product": {
+                                "type": "string",
+                                "description": "action=check: product description or pasted listing details — name, price, shop, ratings, specs.",
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "action=check: listing URL if the user shared one.",
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["quick", "deep"],
+                                "description": "action=check: quick = fast red-flag/price check (default); deep = thorough spec verification plus alternatives.",
+                            },
+                            "topic": {
+                                "type": "string",
+                                "description": "action=research: the research subject as the user stated it.",
+                            },
+                            "depth": {
+                                "type": "string",
+                                "enum": ["standard", "deep"],
+                                "description": "action=research: standard = 3 search rounds (default); deep = 5 — only when the user asks for a thorough report.",
+                            },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "action=outcome on confirmed-policy banks; set true only after explicit user confirmation.",
+                            },
+                            "confirm_token": {
+                                "type": "string",
+                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                            },
+                        },
+                        "required": ["action"],
+                        "additionalProperties": False,
+                    },
+                }, {
+                    # tools-merge-meta-voice: absorbed ada_set_voice — the
+                    # *_voice actions manage the actual speaking voice;
+                    # set_voice persists and applies after a brief reconnect.
+                    "name": "ada_persona",
+                    "description": (
+                        "Read or adjust a speaker's stored style preferences "
+                        "(how you should talk to them: tone, verbosity, formality, "
+                        "language, what to call them, emoji use, proactiveness) — "
+                        "also handles what used to be ada_set_voice. "
+                        "Use when the user asks you to change how you speak — "
+                        "'call me T', 'be more concise', 'answer in Thai', 'be formal'. "
+                        "set persists to their personal memory and applies immediately; "
+                        "show returns the active settings; reset restores defaults. "
+                        "Pass person to view or manage ANOTHER household member's "
+                        "profile (needs full access), and use action 'list' to see "
+                        "the Home Assistant people Ada knows. The *_voice actions "
+                        "manage your actual speaking voice — a different preference "
+                        "from style: 'show_voice'/'list_voices' report the active "
+                        "voice and options; 'set_voice' persists the choice and "
+                        "applies it after a brief reconnect with a short pause."
+                    ),
+                    "behavior": types.Behavior.NON_BLOCKING,
+                    "parameters_json_schema": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["set", "show", "reset", "list",
+                                         "set_voice", "show_voice",
+                                         "list_voices"],
                             },
                             "knob": {
                                 "type": "string",
@@ -3405,40 +3492,19 @@ class GeminiLiveProvider(RealtimeProvider):
                                     "known people."
                                 ),
                             },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_set_voice",
-                    "description": (
-                        "Change Ada's actual speaking voice (the Gemini Live voice). "
-                        "Use when the user asks to change your voice, pick a different "
-                        "voice, or asks which voices you can use. 'set' persists the "
-                        "choice for future sessions and applies it after a brief "
-                        "reconnect — expect a short pause, then continue in the new "
-                        "voice. 'show' returns the active voice, 'list' the options. "
-                        "For speaking STYLE (tone, verbosity, language) use "
-                        "ada_persona instead — this tool changes the voice itself."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["set", "show", "list"],
-                            },
                             "voice": {
                                 "type": "string",
                                 "enum": list(voice_config.GEMINI_VOICES),
-                                "description": "Required for set — the Gemini Live voice name.",
+                                "description": "Required for set_voice — the Gemini Live voice name.",
                             },
                         },
                         "required": ["action"],
                         "additionalProperties": False,
                     },
                 }, {
+                    # tools-merge-meta-voice: absorbed guest_register —
+                    # who='guest' registers a visitor name (chaba guests);
+                    # who='speaker' (default) is the voice enrollment.
                     "name": "ada_enroll_speaker",
                     "description": (
                         "Enroll the current speaker's voice so Ada can recognize them "
@@ -3454,6 +3520,11 @@ class GeminiLiveProvider(RealtimeProvider):
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "who": {
+                                "type": "string",
+                                "enum": ["speaker", "guest"],
+                                "description": "speaker (default): voice-enroll the current speaker from buffered audio. guest: register a visitor's name for later admin promotion (guest/Chaba sessions).",
+                            },
                             "name": {
                                 "type": "string",
                                 "description": "Speaker name (e.g. 'Tony', 'KK').",
@@ -3472,72 +3543,6 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                         },
                         "required": ["name"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_decision_check",
-                    "description": (
-                        "Verify a product or purchase before the user buys — checks it "
-                        "against the user's stored purchase criteria and the live web "
-                        "for price sanity, red flags, spec accuracy, and alternatives. "
-                        "Use when the user asks 'should I buy this', 'check this "
-                        "listing', shares a Shopee/Lazada link, or wants a second "
-                        "opinion on a purchase. Put the product name and listing "
-                        "details (price, shop, ratings, specs) into `product`; a bare "
-                        "URL in `url` helps but alone may not give enough detail. "
-                        "Runs in the background (~30-60 seconds); the verdict is "
-                        "spoken when ready and saved to the purchase memory bank."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "product": {
-                                "type": "string",
-                                "description": "Product description or pasted listing details — name, price, shop, ratings, specs.",
-                            },
-                            "url": {
-                                "type": "string",
-                                "description": "Listing URL if the user shared one.",
-                            },
-                            "mode": {
-                                "type": "string",
-                                "enum": ["quick", "deep"],
-                                "description": "quick = fast red-flag/price check (default). deep = thorough spec verification plus alternatives search — only when the user asks for a thorough check.",
-                            },
-                        },
-                        "required": [],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_deep_research",
-                    "description": (
-                        "Deep multi-round research on a topic — use this whenever the user asks "
-                        "to 'deep research', 'deep dive', 'look into', or 'write a report on' a "
-                        "subject (not for a single quick fact — that is web_search). Check "
-                        "reports-index first — if a page already covers the topic, read it and "
-                        "research only what is missing or stale. Fans out "
-                        "planned searches (overview/history, latest status, competitors/critics, "
-                        "plus timeline and outlook on depth='deep'), gathers sources, then reports "
-                        "back: summarize key findings to the user and offer to save a full report "
-                        "page via cms_publish_page. Runs in the background (1-3 minutes); the "
-                        "findings are spoken when ready."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "topic": {
-                                "type": "string",
-                                "description": "The research subject as the user stated it.",
-                            },
-                            "depth": {
-                                "type": "string",
-                                "enum": ["standard", "deep"],
-                                "description": "standard = 3 search rounds (default). deep = 5 rounds — only when the user explicitly asks for a thorough report.",
-                            },
-                        },
-                        "required": ["topic"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -4446,31 +4451,6 @@ class GeminiLiveProvider(RealtimeProvider):
                         "required": ["session_id"],
                         "additionalProperties": False,
                     },
-                }, {
-                    "name": "ada_usage_summary",
-                    "description": (
-                        "Returns cumulative Gemini token usage for this Ada process: "
-                        "input/output totals, per-modality breakdown (audio/text/image), "
-                        "per-source totals (live session, posture, clutter), and a rough "
-                        "USD cost estimate. Use when the user asks about token usage, API "
-                        "usage, or what Ada costs. Pass source to filter to one source; "
-                        "pass reset=true only when the user asks to zero the counters."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "source": {
-                                "type": "string",
-                                "enum": ["all", "live", "posture", "clutter"],
-                                "description": "Which usage source to report; 'all' aggregates everything.",
-                            },
-                            "reset": {
-                                "type": "boolean",
-                                "description": "Zero the counters after reporting; only when the user asks.",
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
                 }]
             }],
         }
@@ -4808,10 +4788,18 @@ class GeminiLiveProvider(RealtimeProvider):
                         _rname, _rimplied = _resolve_alias(_call_name)
                         if _rname != _call_name or _rimplied:
                             try:
+                                _merged = {**_rimplied,
+                                           **dict(call.args or {})}
+                                # Surrogate-arg remap rides along so the
+                                # ws path honors the same contract as
+                                # runner.execute (tools-merge-meta-voice:
+                                # ada_set_voice's action=set|show|list must
+                                # land on persona's *_voice actions).
+                                _merged = _alias_call_args(
+                                    _call_name, _merged)
                                 call = call.model_copy(update={
                                     "name": _rname,
-                                    "args": {**_rimplied,
-                                             **dict(call.args or {})}})
+                                    "args": _merged})
                             except Exception:
                                 logger.warning(
                                     "session=%s alias copy failed for %s",
@@ -4847,7 +4835,12 @@ class GeminiLiveProvider(RealtimeProvider):
                                 # only the write actions actuate.
                                 call.name == "docs" and str(
                                     _cargs_probe.get("action") or "")
-                                .strip().lower() in ("archive", "print")):
+                                .strip().lower() in ("archive", "print")) or (
+                                # ada_set_voice's old seat: persona's
+                                # set_voice drops the session to reconnect.
+                                call.name == "ada_persona"
+                                and str(_cargs_probe.get("action") or "")
+                                .strip().lower() == "set_voice"):
                             actuations_this_turn += 1
                         if tool_calls_this_turn > tool_budget:
                             if not budget_hit:
@@ -5030,8 +5023,18 @@ class GeminiLiveProvider(RealtimeProvider):
                         elif call.name == "get_habit_status" and self.habit_state_getter is not None:
                             result = {"output": self.habit_state_getter()}
                         elif (
-                            call.name in ("ada_session_recall", "ada_decision_check",
-                                          "ada_set_voice")
+                            # tools-merge-meta-voice: ada_decision_check ->
+                            # ada_ops action='check'; ada_set_voice ->
+                            # ada_persona *_voice actions. usage/health/
+                            # research keep their old ungated seats.
+                            (call.name == "ada_session_recall"
+                             or (call.name == "ada_ops"
+                                 and str((call.args or {}).get("action")
+                                         or "").lower() == "check")
+                             or (call.name == "ada_persona"
+                                 and str((call.args or {}).get("action")
+                                         or "").lower()
+                                 in _PERSONA_VOICE_ACTIONS))
                             # scope='history' absorbed ada_ha_recall, which was
                             # never secondary-blocked — keep that access.
                             and not (call.name == "ada_session_recall"
@@ -5071,7 +5074,11 @@ class GeminiLiveProvider(RealtimeProvider):
                                     on_slow=self._on_recall_slow,
                                 )
                                 result = {"output": recall_status}
-                        elif call.name == "ada_set_voice":
+                        elif (call.name == "ada_persona"
+                              and str((call.args or {}).get("action")
+                                      or "").lower() in _PERSONA_VOICE_ACTIONS):
+                            # absorbed ada_set_voice — provider-side so the
+                            # idle-gated reconnect can run.
                             result = {"output": self._set_voice(dict(call.args or {}))}
                         elif call.name == "ada_camera_snapshot":
                             _cargs = dict(call.args or {})
@@ -5116,9 +5123,19 @@ class GeminiLiveProvider(RealtimeProvider):
                                 dict(call.args or {}))
                             if frame:
                                 camera_frames.append(frame)
-                        elif call.name == "ada_decision_check" and self.tool_runner is not None:
+                        elif (call.name == "ada_ops"
+                              and str((call.args or {}).get("action")
+                                      or "").lower() == "check"
+                              and self.tool_runner is not None):
+                            # absorbed ada_decision_check — provider-side so
+                            # the verdict can arrive as an injected turn.
                             result = {"output": self._start_decision_check(dict(call.args or {}))}
-                        elif call.name == "ada_deep_research" and self.tool_runner is not None:
+                        elif (call.name == "ada_ops"
+                              and str((call.args or {}).get("action")
+                                      or "").lower() == "research"
+                              and self.tool_runner is not None):
+                            # absorbed ada_deep_research — provider-side so
+                            # findings can arrive as an injected turn.
                             result = {"output": self._start_deep_research(dict(call.args or {}))}
                         elif (call.name == "ada_remember" and budget_hit
                               and str((call.args or {}).get("kind") or "")
@@ -5146,7 +5163,24 @@ class GeminiLiveProvider(RealtimeProvider):
                                             and not (str(call.name) == "ada_remember"
                                                      and str(call_args.get("kind")
                                                              or "").lower()
-                                                     in ("vocab", "habit", "guest"))):
+                                                     in ("vocab", "habit", "guest"))
+                                            # tools-merge-meta-voice: only
+                                            # action='outcome' sits in the
+                                            # memory-write seat; the other
+                                            # ada_ops actions absorbed
+                                            # ungated tools.
+                                            and not (str(call.name) == "ada_ops"
+                                                     and str(call_args.get("action")
+                                                             or "").lower()
+                                                     != "outcome")
+                                            # who='guest' absorbed
+                                            # guest_register — a plain
+                                            # name registration that was
+                                            # never confirm-gated.
+                                            and not (str(call.name) == "ada_enroll_speaker"
+                                                     and str(call_args.get("who")
+                                                             or "").lower()
+                                                     == "guest")):
                                         # Resolved source text shared by the
                                         # gate and the Jev advisory probe —
                                         # probe fires on every gated call,

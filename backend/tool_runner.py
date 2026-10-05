@@ -52,7 +52,10 @@ CONTROL_TOOLS = {
 
 # Tools that mutate curated memory banks. Each bank's write_policy decides
 # whether confirmed=true is required (same gate pattern as CONTROL_TOOLS).
-MEMORY_WRITE_TOOLS = {"ada_remember", "ada_forget", "ada_outcome"}
+# tools-merge-meta-voice (2026-10-05): ada_outcome collapsed into ada_ops —
+# the canonical name holds the seat; only action='outcome' is a bank write
+# (the action-scoped guard in _execute_gated keeps usage/health free).
+MEMORY_WRITE_TOOLS = {"ada_remember", "ada_forget", "ada_ops"}
 
 # Calendar/task writes: creating or deleting events and tasks mutates the
 # user's real calendar, so all writes require confirmed=true. tools-merge-
@@ -347,6 +350,17 @@ _ALIASES: dict[str, str] = {
     "vcast_list": "cast_to_screen",
     "vcast_status": "cast_to_screen",
     "vcast_shortcut": "cast_to_screen",
+    # meta/voice family — tools-merge-meta-voice (2026-10-05): 8 -> 3.
+    # ada_set_voice folds into ada_persona (*_voice actions); the five
+    # ops/meta tools fold into the new ada_ops action= tool; guest_register
+    # folds into ada_enroll_speaker who='guest'.
+    "ada_set_voice": "ada_persona",
+    "ada_outcome": "ada_ops",
+    "ada_usage_summary": "ada_ops",
+    "ada_mddb_health": "ada_ops",
+    "ada_decision_check": "ada_ops",
+    "ada_deep_research": "ada_ops",
+    "guest_register": "ada_enroll_speaker",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the
@@ -420,6 +434,16 @@ _ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
     "vcast_list": {"action": "list"},
     "vcast_status": {"action": "status"},
     "vcast_shortcut": {"action": "shortcut"},
+    # ada_set_voice's caller-supplied action (set|show|list) collides with
+    # ada_persona's own actions — the implied action plus the
+    # _alias_call_args remap land it on the *_voice forms instead.
+    "ada_set_voice": {"action": "set_voice"},
+    "ada_outcome": {"action": "outcome"},
+    "ada_usage_summary": {"action": "usage"},
+    "ada_mddb_health": {"action": "health"},
+    "ada_decision_check": {"action": "check"},
+    "ada_deep_research": {"action": "research"},
+    "guest_register": {"who": "guest"},
 }
 
 def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
@@ -476,6 +500,16 @@ def _alias_call_args(alias: str, args: dict[str, Any]) -> dict[str, Any]:
                 if k in args:
                     args["url"] = args.pop(k)
                     break
+    elif alias == "ada_set_voice":
+        # ada_set_voice(action=set|show|list, voice) -> ada_persona
+        # (action=<sub>_voice, voice). The absorbed action names collide
+        # with persona's own set/show/list, so remap onto the *_voice
+        # forms; an already-remapped or unknown action passes through
+        # untouched (bogus actions must not silently become voice sets).
+        sub = str(args.pop("action", "") or "set").strip().lower()
+        args["action"] = {
+            "set": "set_voice", "show": "show_voice", "list": "list_voices",
+        }.get(sub, sub or "set_voice")
     return args
 
 
@@ -486,6 +520,13 @@ def _alias_call_args(alias: str, args: dict[str, Any]) -> dict[str, Any]:
 # the MEMORY_WRITE_TOOLS bank gate and the secondary-speaker block so the
 # absorbed names keep exactly the access they had before the merge.
 _REMEMBER_NONBANK_KINDS = frozenset({"vocab", "habit", "guest"})
+
+# ada_persona actions that touch the actual speaking voice — the absorbed
+# ada_set_voice seat (tools-merge-meta-voice). The provider intercepts
+# these on live sessions (the swap needs an idle-gated reconnect); the
+# runner's ada_persona serves the REST/alias path.
+_PERSONA_VOICE_ACTIONS = frozenset(
+    {"set_voice", "show_voice", "list_voices"})
 
 
 def _first(value: list[str] | None) -> str | None:
@@ -1172,6 +1213,12 @@ class ToolRunner:
             ha_confidence_read = (
                 name == "ha_confidence" and not (
                     call_args.get("status") or call_args.get("safety")))
+            # ada_ops absorbed five meta tools (tools-merge-meta-voice) with
+            # mixed postures — the name carries ada_outcome's blocked seat,
+            # but action='usage' was an open read and 'research' was never
+            # secondary-blocked, so those stay reachable on a guest turn.
+            ops_read = (
+                name == "ada_ops" and action in ("usage", "research"))
             # ada_enroll_speaker is exempt here — its own check is smarter:
             # the owner can re-enroll even while a secondary voice is
             # identified, as long as the buffer voice isn't the secondary's
@@ -1182,9 +1229,13 @@ class ToolRunner:
                     and not guest_scope_search
                     and not cms_note_edit
                     and not ha_confidence_read
-                    and not cast_ungated) or (
-                name == "ada_persona" and action in ("set", "reset")
-                and "persona_write" in blocked
+                    and not cast_ungated
+                    and not ops_read) or (
+                name == "ada_persona" and "persona_write" in blocked
+                # *_voice actions absorbed ada_set_voice — that tool was
+                # never runner-side secondary-blocked (the provider gate
+                # covers live turns), so only set/reset keep the seat.
+                and action in ("set", "reset")
             ):
                 self._log_session_event(
                     "tool_denied", tool=name,
@@ -1215,7 +1266,13 @@ class ToolRunner:
                 # telemetry) — the absorbed tools were never bank-gated.
                 if not (name == "ada_remember" and str(
                         call_args.get("kind") or "").lower()
-                        in _REMEMBER_NONBANK_KINDS):
+                        in _REMEMBER_NONBANK_KINDS) and not (
+                        # ada_ops holds ada_outcome's write seat — only
+                        # action='outcome' is a bank write; usage/health/
+                        # check/research carry no bank arg and skip the gate.
+                        name == "ada_ops" and str(
+                            call_args.get("action") or "").lower()
+                        != "outcome"):
                     self._check_memory_write_allowed(name, call_args, *confirm)
             elif name in CALENDAR_WRITE_TOOLS:
                 self._check_calendar_write_allowed(name, call_args, *confirm)
@@ -1599,7 +1656,11 @@ class ToolRunner:
         if not bank.writable:
             logger.warning("denied %s on %r: bank not writable", name, bank_name)
             raise PermissionError(f"memory bank '{bank_name}' is read-only")
-        if name not in bank.allowed_tools:
+        # Bank configs may still name an absorbed tool (ada_outcome held
+        # the outcome-write seat pre-merge) — resolve entries through
+        # _ALIASES so the canonical tool inherits the same authorization.
+        allowed_tools = {_ALIASES.get(t, t) for t in bank.allowed_tools}
+        if name not in allowed_tools:
             logger.warning("denied %s on %r: tool not in allowed_tools", name, bank_name)
             raise PermissionError(f"tool {name} is not allowed on memory bank '{bank_name}'")
         if bank.write_policy == "confirmed":
@@ -3220,7 +3281,7 @@ class ToolRunner:
 
     async def ada_persona(
         self, action: str, knob: str | None = None, value: Any = None,
-        person: str | None = None,
+        person: str | None = None, voice: str | None = None,
     ) -> dict[str, Any]:
         """Read or adjust a speaker's stored style preferences.
 
@@ -3234,6 +3295,12 @@ class ToolRunner:
         action = str(action or "show").lower()
         if action == "list":
             return await self._persona_list()
+        # *_voice actions absorbed ada_set_voice (tools-merge-meta-voice):
+        # they manage the instance's speaking voice, not a per-person
+        # profile — the provider intercepts them on live sessions (it owns
+        # the idle-gated reconnect); this path serves REST/alias calls.
+        if action in _PERSONA_VOICE_ACTIONS:
+            return self._persona_voice(action, voice)
         # "Self" follows the speaking voice (personalization); `person`
         # targeting authorizes against the session owner (P3).
         identity = self._memory_identity() or caller
@@ -3270,7 +3337,36 @@ class ToolRunner:
                     "It applies to their sessions, not this speaker's."
                 )
             return result
-        raise ValueError(f"unknown persona action {action!r} (set|show|reset|list)")
+        raise ValueError(
+            f"unknown persona action {action!r} "
+            "(set|show|reset|list|set_voice|show_voice|list_voices)")
+
+    def _persona_voice(self, action: str, voice: Any) -> dict[str, Any]:
+        """The absorbed ada_set_voice seat on ada_persona. A live-session
+        call is intercepted provider-side (the provider owns the
+        idle-gated reconnect); this runner path serves REST/alias calls —
+        a set persists the choice for the next session."""
+        from backend import voice_config
+        if action == "set_voice" and voice:
+            name = voice_config.canonical_voice(voice)
+            if not name:
+                return {"error": (
+                    f"unknown voice {voice!r} — available voices: "
+                    f"{', '.join(voice_config.GEMINI_VOICES)}")}
+            previous = voice_config.current_voice()
+            if name == previous:
+                return {"verb": "set_voice", "voice": name,
+                        "note": "already the active voice"}
+            try:
+                voice_config.set_voice(name)
+            except Exception as exc:
+                return {"error": f"could not save the voice preference: {exc}"}
+            return {"verb": "set_voice", "voice": name, "previous": previous,
+                    "note": ("voice saved — a live voice session applies it "
+                             "on reconnect")}
+        return {"verb": action,
+                "current_voice": voice_config.current_voice(),
+                "voices": list(voice_config.GEMINI_VOICES)}
 
     VOCAB_DOC_KEY = "vocab/log"
 
@@ -3414,12 +3510,99 @@ class ToolRunner:
             person_entity=self._memory_identity(),
         )
 
+    # -- Meta/ops umbrella (tools-merge-meta-voice, 2026-10-05): ada_outcome,
+    #    ada_usage_summary, ada_mddb_health, ada_decision_check and
+    #    ada_deep_research consolidated behind action=. outcome/usage/health
+    #    run here; check/research dispatch provider-side on live sessions
+    #    (their results arrive as injected text turns) and get an honest
+    #    error on this path — pre-merge they were provider-only too.
+
+    async def ada_ops(
+        self,
+        action: str,
+        bank: str | None = None,
+        key: str | None = None,
+        outcome: str | None = None,
+        note: str | None = None,
+        source: str = "all",
+        reset: bool = False,
+        collection: str | None = None,
+        product: str | None = None,
+        url: str | None = None,
+        mode: str | None = None,
+        topic: str | None = None,
+        depth: str | None = None,
+    ) -> dict[str, Any]:
+        """Meta/ops tools behind one action= param (the absorbed
+        ada_outcome / ada_usage_summary / ada_mddb_health /
+        ada_decision_check / ada_deep_research seats)."""
+        action = str(action or "").strip().lower()
+        if action == "outcome":
+            if not bank or not key or not outcome:
+                raise ValueError(
+                    "action 'outcome' requires bank, key, and outcome")
+            return await self.ada_outcome(
+                bank=str(bank), key=str(key), outcome=str(outcome),
+                note=note)
+        if action == "usage":
+            return await self.ada_usage_summary(
+                source=str(source or "all"), reset=bool(reset))
+        if action == "health":
+            return await self._ops_mddb_health(collection)
+        if action in ("check", "research"):
+            return {"error": (
+                f"ada_ops action='{action}' only runs inside a live voice "
+                "session — its result is spoken back mid-conversation; "
+                "it is not available on this call path")}
+        raise ValueError(
+            f"invalid ada_ops action {action!r}: expected "
+            "outcome|usage|health|check|research")
+
+    async def _ops_mddb_health(self, collection: str | None) -> dict[str, Any]:
+        """The absorbed ada_mddb_health drop-in (tools.d): MDDB vector-stats
+        report — total docs, missing vectors, per-collection lag."""
+        if self.mddb is None:
+            return {"ok": False, "error": "memory database is not configured"}
+        collection = (collection or "").strip()
+        resp = await self.mddb._client.get(f"{self.mddb.base_url}/vector-stats")
+        resp.raise_for_status()
+        stats = resp.json().get("collections") or {}
+        rows = []
+        total_docs = total_missing = 0
+        for name, v in sorted(stats.items()):
+            if collection and name != collection:
+                continue
+            total = int(v.get("total_documents") or 0)
+            embedded = int(v.get("embedded_documents") or 0)
+            missing = max(0, total - embedded)
+            total_docs += total
+            total_missing += missing
+            if missing:
+                rows.append(f"{name}: {missing} missing of {total}")
+        summary = {
+            "ok": True,
+            "collections": (len(stats) if not collection
+                            else (1 if collection in stats else 0)),
+            "total_documents": total_docs,
+            "missing_vectors": total_missing,
+        }
+        if collection and collection not in stats:
+            return {"ok": False, "error": f"no collection named {collection!r}"}
+        if rows:
+            summary["lagging"] = rows[:8]
+            if len(rows) > 8:
+                summary["lagging_truncated"] = len(rows) - 8
+        else:
+            summary["note"] = "all collections fully embedded"
+        return summary
+
     async def ada_enroll_speaker(
         self,
         name: str,
         ha_person: str | None = None,
         display_name: str | None = None,
         confirmed: bool = False,
+        who: str = "speaker",
     ) -> dict[str, Any]:
         """Enroll the current speaker's voice from buffered audio.
 
@@ -3428,6 +3611,11 @@ class ToolRunner:
         no separate recording needed. Call this when the user asks to
         enroll their voice or when Ada offers enrollment.
         """
+        # who='guest' absorbed chaba's guest_register (tools-merge-
+        # meta-voice): a plain name registration for later admin
+        # promotion — no voice buffer or speaker gating involved.
+        if str(who or "speaker").strip().lower() == "guest":
+            return await self.guest_register(str(name))
         speaker_session = _CALLER_SPEAKER_SESSION.get() or self.speaker_session
         if not ha_person:
             # Auto-resolve 'Name' -> person.<slug> so the enrollment maps to
@@ -3538,7 +3726,9 @@ class ToolRunner:
         return {"hits": self.chaba.recall(query, session_id=self.session_id, limit=limit)}
 
     async def guest_register(self, name: str) -> dict[str, Any]:
-        """Register the visitor's name for admin promotion to a named user."""
+        """Retired surface name (tools-merge-meta-voice) — kept as the
+        direct call form of ada_enroll_speaker who='guest'; the alias shim
+        adds who='guest' for execute()-routed calls."""
         self._require_chaba()
         return self.chaba.register_pending(name, session_id=self.session_id)
 

@@ -1,0 +1,42 @@
+# tools-merge-meta-voice regression (2026-10-05): the meta/voice group
+# went 8 -> 3 — ada_persona absorbs ada_set_voice (the *_voice actions);
+# the new ada_ops umbrella absorbs ada_outcome / ada_usage_summary /
+# ada_mddb_health / ada_decision_check / ada_deep_research behind
+# action=; ada_enroll_speaker absorbs chaba's guest_register (who=guest).
+# The seven absorbed names survive as tool_runner._ALIASES rows, hidden
+# from the declared surface. Live-side this scenario checks the canonical
+# calls still fire for the absorbed intents — read-side only, so no
+# bank write or voice reconnect happens:
+#   voice show/list — ada_persona (action=show_voice|list_voices)
+#   usage report    — ada_ops action='usage'   (absorbed ada_usage_summary)
+#   memory-db health — ada_ops action='health' (absorbed ada_mddb_health)
+# turns 2-3 also satisfy the "no write tool fires" guard implicitly —
+# none of these calls are in benchmark write_tools.
+name: tool_merge_meta_voice
+turns:
+  - user: >-
+      Ada, which voice are you speaking with right now, and what other
+      voices could you use? Just tell me the current one and the list —
+      don't actually switch.
+    expect:
+      calls_any: [ada_persona]
+      result_contains: ["Kore"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      How much token usage have you burned through so far — give me the
+      totals.
+    expect:
+      calls_any: [ada_ops]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Quick health check on your memory database — are any collections
+      missing their vectors?
+    expect:
+      calls_any: [ada_ops]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 10

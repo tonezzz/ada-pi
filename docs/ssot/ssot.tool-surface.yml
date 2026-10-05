@@ -249,6 +249,34 @@ families:
     scenario: tool_merge_memory
     absorbed:
       - ada_ha_recall
+  # meta/voice group 8 -> 3 (tools-merge-meta-voice, landed 2026-10-05):
+  # ada_persona absorbs ada_set_voice (set/show/list -> *_voice actions via
+  # the alias shim), the NEW ada_ops umbrella absorbs the five meta tools
+  # (outcome keeps the memory-write gate seat; check/research stay
+  # provider-dispatched background jobs), and ada_enroll_speaker absorbs
+  # chaba's guest_register (who='guest').
+  meta_voice_persona:
+    merge_card: tools-merge-meta-voice
+    canonical: ada_persona         # ada_set_voice -> action=set|show|list_voice(s)
+    scenario: tool_merge_meta_voice
+    absorbed:
+      - ada_set_voice            # -> set_voice/show_voice/list_voices via shim
+  meta_voice_ops:
+    merge_card: tools-merge-meta-voice
+    canonical: ada_ops             # meta/ops -> action=outcome|usage|health|check|research
+    scenario: tool_merge_meta_voice
+    absorbed:
+      - ada_outcome              # -> action='outcome' (keeps the memory-write seat)
+      - ada_usage_summary        # -> action='usage'
+      - ada_mddb_health          # -> action='health' (tools.d drop-in retired)
+      - ada_decision_check       # -> action='check' (provider-dispatched)
+      - ada_deep_research        # -> action='research' (provider-dispatched)
+  meta_voice_enroll:
+    merge_card: tools-merge-meta-voice
+    canonical: ada_enroll_speaker  # guest_register -> who='guest'
+    scenario: tool_merge_meta_voice
+    absorbed:
+      - guest_register
 
 # Tools with no reference in any tests/scenarios-live/*.yaml tool field
 # (calls/calls_any/no_calls*/needs_tools/needs_any, @family-expanded) at
@@ -261,12 +289,7 @@ coverage_debt:
   - ada_ha_history
   - ada_ha_search_events
   - ada_ha_set_device_confidence
-  - ada_doc_archive
-  - ada_doc_print
-  - ada_mddb_health
-  - ada_outcome
   - ada_resolve_action
-  - ada_usage_summary
   - chat_send
   - devin_followup
   - devin_job_report
@@ -279,7 +302,6 @@ coverage_debt:
   - get_power_summary
   - get_sensor_history
   - gev_tour
-  - guest_register
   - photos_pick
   - photos_picked
   - tasks_move

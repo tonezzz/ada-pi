@@ -1,86 +1,84 @@
-# Dispatch outcome — tools-merge-display (2026-10-05)
+# dispatch-outcome — tools-merge-meta-voice
 
-## Result
-
-Done — the display tool group merged per the card spec. Declared surface
-dropped 88 → 86 (vcast_list + vcast_say declarations removed; vcast_status
-and vcast_shortcut were census-only journal names, never declared here).
-Alias table now carries 27 retirees; 5 absorbed display names route to
-their parents.
+**Card:** `tools-merge-meta-voice` (chaba kanban)
+**Worktree:** `dispatch-wt-20261005-182958-merge-the-meta-voice-group-8-3`
+**Branch:** `dispatch/20261005-182958-merge-the-meta-voice-group-8-3` (uncommitted — no push/commit per card)
+**Result:** done — meta/voice group merged 8 declared surfaces → 3 canonical tools.
 
 ## What changed
 
-- `backend/tool_runner.py`
-  - `_ALIASES`: vcast_say/vcast_list/vcast_status/vcast_shortcut →
-    cast_to_screen (capture_frame → vcast_snapshot already existed).
-  - `_ALIAS_ARG_DEFAULTS`: each absorbed name implies its `action=` seat
-    (say|list|status|shortcut).
-  - `_alias_call_args`: vcast_shortcut's historical arg spellings
-    (name/app/shortcut) funnel into `url`.
-  - `cast_to_screen`: `screen` now optional; new actions —
-    `list` → vcast_list body, `status` → new `_vcast_display_status`
-    (per-screen filter of the list report), `say` → absorbed vcast_say
-    body, `shortcut` → `_cast_shortcut_url` (app short name →
-    `/apps/<name>/`, URLs/paths pass through), `cast` → probes the URL
-    via `_frame_check` and auto-routes image/audio/play/nav (reports
-    `action_routed`). The busy-screen interrupt gate now covers `cast`
-    (pre-routing).
-  - Gates: `cast_ungated` carve-out keeps action=list|status|say free of
-    the secondary-speaker block and CONTROL_TOOLS gate — the absorbed
-    seats were never gated; screen-ownership ACL still runs inside the
-    method. `DEVIN_CONFIRMED_TOOLS`, `CAPTURE_CONFIRMED_TOOLS`
-    (uplink-only) and confirm-strip unchanged — all key off the resolved
-    canonical name.
-  - `_CAPTURE_AWARE_TOOLS` uses canonical names only.
-  - Model-facing error strings repointed to
-    `cast_to_screen(action='list'|'say')`.
-- `backend/realtime_provider.py`
-  - `vcast_list` + `vcast_say` declarations removed; `cast_to_screen`
-    rewritten with an explicit action enum (15 values incl. the five
-    merged seats), `text` param, and naming of the absorbed operations
-    (spec rule: descriptions keep legacy phrasing routable).
-  - `ACTUATING_TOOLS`: vcast_say dropped (canonical holds the seat);
-    action=list|status carve out of the per-turn actuation count.
-  - FunctionResponse still echoes the as-called name (alias contract).
-- `scripts/scenario-live.py`
-  - `LEGACY_TOOL_ALIASES` + display rows and the calendar+plan rows the
-    earlier card missed; `_expand_families` now alias-expands `@family`
-    members (`@verify` carries vcast_list); `call_args_contain` accepts
-    the canonical call only when it carries the implied seat args
-    (new `LEGACY_ARG_DEFAULTS` mirror — a vcast_say check matches
-    cast_to_screen(action='say'), not any cast).
-- `docs/ssot/ssot.tool-surface.yml` — display family rewritten as two
-  canonical seats (cast_to_screen + vcast_snapshot); capture_frame moved
-  out of the camera family into vcast_snapshot's absorbed list;
-  vcast_gesture documented as unchanged.
-- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — display row
-  updated to the landed shape (supersedes the sketched `ada_display`).
-- `tests/scenarios-live/tool_merge_display.yaml` — smoke-tier merge
-  regression (list / say / status intents → cast_to_screen; gesture →
-  vcast_gesture).
-- `tests/test_tool_runner.py` — `DisplayMergeAliasTests`, 13 tests.
-- `tests/benchmark.yml` — `write_allowed_in` += tool_merge_display,
-  vcast_list (absorbed read/narrate calls now record as cast_to_screen,
-  a write_tools member — without the exemption the suites would flag
-  policy violations).
-- `docs/ssot/jobs/ada/2026-10-05-tools-merge-display.yml` — job record.
+Canonical seats:
+- `ada_persona` absorbed `ada_set_voice` → `action=set_voice|show_voice|list_voices` (+`voice` param).
+- New `ada_ops` absorbed five meta tools → `action=outcome|usage|health|check|research`.
+- `ada_enroll_speaker` absorbed `guest_register` → `who=speaker|guest`.
 
-## Verify
+All seven absorbed names stay registered as hidden aliases in
+`tool_runner._ALIASES` + `_ALIAS_ARG_DEFAULTS` (30 aliases total now) and are
+removed from the declared model-facing surface (5 builtin declarations + the
+chaba `guest_register` declaration removed; `ada_ops` declared; persona/enroll
+declarations extended). `ada_set_voice`'s `action=set|show|list` collides with
+persona's own actions, so `_alias_call_args` remaps them onto the `*_voice`
+forms.
 
-```
-python3 scripts/tool-lint.py        # clean: 86 declared, 27 aliases
-ADA_INSTANCE_ID=test PYTHONPATH=<genai deps> \
-  python3 -m unittest tests.test_tool_audit tests.test_tool_runner
-                                    # 109 tests, all pass (13 new)
+Fidelity decisions:
+- `check`/`research` stay provider-side background ops (verdicts/findings arrive
+  as injected turns); `ada_ops` runner method returns an honest error for them
+  on non-live paths — same as pre-merge.
+- `ada_mddb_health` was a tools.d drop-in: module deleted, manifest entry
+  removed, `run()` ported verbatim to `runner._ops_mddb_health`.
+- Voice switching stays provider-side (idle-gated reconnect); runner path
+  handles persist/show/list for REST/alias calls.
+- Gates key off resolved names: `ada_ops` holds `ada_outcome`'s
+  MEMORY_WRITE_TOOLS + confirm seat but only `action='outcome'` triggers them;
+  `usage|health|check|research` keep their old ungated semantics. Bank
+  `allowed_tools` are alias-normalized so legacy `ada_outcome` entries still
+  authorize. `who='guest'` is carved out of the enrollment confirm probe
+  (`guest_register` was never gated). `DEVIN_CONFIRMED_TOOLS` / `confirm_strip`
+  unchanged.
+- Secondary parity: provider blocks `ada_ops action=check` + persona voice
+  actions (old `ada_decision_check`/`ada_set_voice` seats); runner keeps
+  outcome/health blocked (health replaces the drop-in's
+  `secondary_allowed: false`) and usage/research free.
+
+## Files changed
+
+`backend/tool_runner.py`, `backend/realtime_provider.py`,
+`backend/tools.d/manifest.yml`, `backend/tools.d/ada_mddb_health.py` (deleted),
+`docs/ssot/ssot.tool-surface.yml`, `docs/ada-tool-dev.md`,
+`docs/assessments/tool-consolidation-spec-2026-10-04.md` (status row),
+`scripts/scenario-live.py` (LEGACY_TOOL_ALIASES), `tests/benchmark.yml`
+(write_tools + scenario allowlist), `tests/scenario_engine.py`
+(FakeMddb.is_ops_routed shim — upstream drift fix),
+`tests/scenarios-live/change_voice.yaml` (canonical names),
+`tests/scenarios-live/tool_merge_meta_voice.yaml` (new),
+`tests/test_tool_runner.py` (MetaVoiceMergeAliasTests, 11 tests),
+`tests/test_decision_check.py` (source assertions),
+`docs/ssot/jobs/ada/2026-10-05-tools-merge-meta-voice.yml` (trail).
+
+`.teststubs/` google.genai stub was recreated (gitignored) — needed by the
+suite in this fresh worktree.
+
+## How to verify
+
+```bash
+python3 scripts/tool-lint.py   # 82 declared (80 builtin + 2 tools.d), 30 aliases — clean
+PYTHONPATH=.teststubs python3 -m unittest tests.test_tool_runner.MetaVoiceMergeAliasTests   # 11/11
+PYTHONPATH=.teststubs python3 -m unittest tests.test_decision_check                          # 19/19
+PYTHONPATH=.teststubs python3 -m unittest discover -s tests -p 'test_*.py'                   # 521 tests
 ```
 
-Full sweep: 523 tests — the 5 failures are identical on clean HEAD
-(verified via stash): memory-lifecycle/michael-technician scenario
-fixtures need live mddb data; pose/hailo need `ai_edge_litert`. No merge
-regressions.
+Alias routing (all verified through `execute()`):
+`ada_set_voice`→`ada_persona` `*_voice`; `ada_outcome`→`ada_ops outcome`
+(confirm-gated); `ada_usage_summary`→`ada_ops usage`;
+`ada_mddb_health`→`ada_ops health`; `ada_decision_check`→`ada_ops check`;
+`ada_deep_research`→`ada_ops research`; `guest_register`→`ada_enroll_speaker
+who=guest` (ungated).
 
-## Not done here (by design / needs live stack)
+## Caveats
 
-- Live `tool_merge_display` run — the ada-ha-scenario-reports entry
-  tools-merge-gate wants is produced by the first suite run after deploy.
-- No commit/push/deploy — dispatch worktree only.
+- Full suite: 521 tests, 0 failures; 3 errors are `ModuleNotFoundError:
+  ai_edge_litert` (TFLite runtime missing — vision/pose tests, pre-existing
+  env dependency, unrelated).
+- Scenario tests need `ADA_INSTANCE_ID` set (conftest sets `test` under
+  discover; `tests/scenario_engine.py` runs standalone need `tony`).
+- Uncommitted by design — dispatcher owns the merge/push decision.

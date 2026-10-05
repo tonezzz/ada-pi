@@ -12,7 +12,7 @@ A tool is **one file + one manifest line** — no edits to
 ```
 backend/tools.d/
   manifest.yml          # tool name -> module + policy
-  ada_mddb_health.py    # the tool
+  ada_devteam_review.py # the tool
 ```
 
 `realtime_provider` offers the tool's `DECLARATION` to the model at

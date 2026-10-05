@@ -33,7 +33,11 @@ policy:
                 ada_camera_snapshot,
                 # calendar mutations (tools-merge-calendar-plan seat —
                 # create/delete/shift all confirm-gated)
-                calendar_write]
+                calendar_write,
+                # tools-merge-meta-voice seats: ada_ops holds the absorbed
+                # ada_outcome bank write; ada_persona persists style prefs
+                # and the speaking voice (absorbed ada_set_voice)
+                ada_ops, ada_persona]
   # scenarios permitted to exercise write tools (incl. denied attempts).
   write_allowed_in:
     # cms/report writers
@@ -73,6 +77,9 @@ policy:
     - cross_instance_isolation
     - persona_style_change
     - change_voice
+    - tool_merge_meta_voice    # ada_ops (usage/health reads share the name's write seat) + ada_persona voice actions
+    - stock_query_probe        # may trigger ada_ops action='research' (absorbed ada_deep_research)
+    - hosting_assessment       # may trigger ada_ops action='research'
     - dual_focus
     - yomi_linebot_disambiguation
     # actuation / dispatch (incl. denied)
@@ -171,7 +178,7 @@ standard:
 # Usage plan — cadence that keeps Gemini grounded-search quota healthy.
 # MEASURED: free-tier quota is 20 grounded requests/day/project/model
 # (429 RESOURCE_EXHAUSTED, GenerateRequestsPerDayPerModel) — shared with
-# interactive voice web_search AND ada_deep_research rounds.
+# interactive voice web_search AND ada_ops action='research' rounds.
 # Budget per day: ~20 total → standard deep research (3 rounds) ≈ 15%,
 # deep (5 rounds) ≈ 25%. A full benchmark day can consume the whole quota.
 usage:
@@ -186,7 +193,7 @@ usage:
   notes:
     - "429 → web_search auto-falls back to duckduckgo (free, no key).
       DDG needs SHORT keyword queries — prose queries return 0 results."
-    - "ada_deep_research — standard=3 rounds, deep=5, 2s pacing,
+    - "ada_ops action='research' — standard=3 rounds, deep=5, 2s pacing,
       keyword-compacted queries; interactive use shares the same
       daily quota — prefer standard unless the user asks for deep."
     - "Quota resets daily (~midnight PT); a paid Gemini tier raises it

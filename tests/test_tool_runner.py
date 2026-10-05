@@ -777,7 +777,6 @@ class DocsDriveMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     callable via _ALIASES and route to their canonical parent — docs for
     ada_doc_* (search/get free reads; archive/print confirm-gated), drive
     for drive_* (search/get/show free; update confirm-gated)."""
-
     async def asyncSetUp(self):
         self.ha_client = AsyncMock()
         self.ha_client.base_url = "http://test:8123"
@@ -905,6 +904,153 @@ class DocsDriveMergeAliasTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(PermissionError, msg=tool):
                     await self.runner.execute(tool, dict(args))
         self._allow.start()
+
+
+class MetaVoiceMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-meta-voice (8 -> 3): the seven absorbed names stay
+    callable via _ALIASES and route to their canonical parent —
+    ada_persona for the voice actions, ada_ops for the five meta tools,
+    ada_enroll_speaker for chaba's guest_register."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.search_documents.return_value = []
+        self.runner.memory.mddb = self.runner.mddb
+        # Voice preference writes land in a per-instance JSON — point the
+        # voice file at a tempdir so set_voice can't touch real config.
+        self._voice_tmp = tempfile.mkdtemp()
+        self._voice_prev = os.environ.get("ADA_VOICE_FILE")
+        os.environ["ADA_VOICE_FILE"] = str(
+            Path(self._voice_tmp) / "voice.json")
+
+    async def asyncTearDown(self):
+        if self._voice_prev is None:
+            os.environ.pop("ADA_VOICE_FILE", None)
+        else:
+            os.environ["ADA_VOICE_FILE"] = self._voice_prev
+
+    def _confirmed_bank(self, allowed_tools):
+        """A writable confirmed-policy bank listing the LEGACY
+        ada_outcome name — exercises the alias-normalized allowed_tools
+        check (bank configs need no edit for the merge)."""
+        path = Path(tempfile.mkdtemp()) / "banks.json"
+        path.write_text(json.dumps({"banks": {
+            "general": {
+                "title": "General", "scope": "shared",
+                "mddb_collection": "ada-ha-bank-general",
+                "instances": ["test"],
+                "writable": True,
+                "write_policy": "confirmed",
+                "allowed_tools": allowed_tools,
+                "status": "active",
+            }}}))
+        self.runner._banks = MemoryBankRegistry(
+            path=str(path), instance="test", notebook_ids={})
+
+    # -- ada_set_voice -> ada_persona (*_voice actions) --
+
+    async def test_set_voice_alias_maps_actions(self):
+        # The absorbed name's action=set|show|list collides with persona's
+        # own actions — the shim must land them on the *_voice forms.
+        out = await self.runner.execute("ada_set_voice", {"action": "list"})
+        self.assertEqual(out["verb"], "list_voices")
+        self.assertIn("Kore", out["voices"])
+        out = await self.runner.execute("ada_set_voice", {"action": "show"})
+        self.assertEqual(out["verb"], "show_voice")
+        self.assertEqual(out["current_voice"], "Kore")
+
+    async def test_set_voice_alias_set_persists(self):
+        out = await self.runner.execute(
+            "ada_set_voice", {"action": "set", "voice": "Aoede"})
+        self.assertEqual(out["verb"], "set_voice")
+        self.assertEqual(out["voice"], "Aoede")
+        self.assertEqual(out["previous"], "Kore")
+        out = await self.runner.execute("ada_set_voice", {"action": "show"})
+        self.assertEqual(out["current_voice"], "Aoede")
+
+    async def test_set_voice_alias_defaults_to_set_voice(self):
+        # ada_set_voice{} with no action -> implied action='set_voice'
+        # (arg default) — an unknown voice is an honest error, not a
+        # persona-style rejection.
+        out = await self.runner.execute(
+            "ada_set_voice", {"voice": "Notavoice"})
+        self.assertIn("error", out)
+
+    # -- ada_* meta tools -> ada_ops action= --
+
+    async def test_usage_summary_alias_routes_to_ops_usage(self):
+        out = await self.runner.execute("ada_usage_summary", {})
+        self.assertIn("input_tokens", out)
+
+    async def test_mddb_health_alias_routes_to_ops_health(self):
+        self.runner.mddb._client = AsyncMock()
+        resp = Mock()
+        resp.raise_for_status = Mock()
+        resp.json.return_value = {"collections": {
+            "ada-ha-bank-general": {
+                "total_documents": 10, "embedded_documents": 8}}}
+        self.runner.mddb._client.get = AsyncMock(return_value=resp)
+        self.runner.mddb.base_url = "http://mddb.test"
+        out = await self.runner.execute("ada_mddb_health", {})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["missing_vectors"], 2)
+        self.assertEqual(out["lagging"],
+                         ["ada-ha-bank-general: 2 missing of 10"])
+
+    async def test_decision_check_alias_is_provider_dispatched(self):
+        out = await self.runner.execute(
+            "ada_decision_check", {"product": "shower head"})
+        self.assertIn("live voice session", out["error"])
+
+    async def test_deep_research_alias_is_provider_dispatched(self):
+        out = await self.runner.execute(
+            "ada_deep_research", {"topic": "graphene"})
+        self.assertIn("live voice session", out["error"])
+
+    async def test_outcome_alias_keeps_confirm_gate(self):
+        # ada_outcome held a memory-write seat on confirmed banks — the
+        # canonical ada_ops(action='outcome') must keep the same gate.
+        self._confirmed_bank(["ada_remember", "ada_forget", "ada_outcome"])
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "ada_outcome",
+                {"bank": "general", "key": "k1", "outcome": "good"})
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "ada_ops",
+                {"action": "outcome", "bank": "general",
+                 "key": "k1", "outcome": "good"})
+
+    async def test_ops_reads_stay_ungated(self):
+        # usage/health were never in a gate set — the canonical umbrella
+        # must not drag them under the memory-write confirmation gate.
+        self._confirmed_bank(["ada_outcome"])
+        out = await self.runner.execute("ada_usage_summary", {})
+        self.assertIn("input_tokens", out)
+        out = await self.runner.execute(
+            "ada_ops", {"action": "usage"})
+        self.assertIn("input_tokens", out)
+
+    async def test_ops_rejects_unknown_action(self):
+        with self.assertRaises(ValueError):
+            await self.runner.execute("ada_ops", {"action": "bogus"})
+
+    # -- guest_register -> ada_enroll_speaker who='guest' --
+
+    async def test_guest_register_alias_routes_who_guest(self):
+        self.runner.chaba = SimpleNamespace()
+        self.runner.chaba.register_pending = Mock(
+            return_value={"ok": True, "name": "Nat"})
+        out = await self.runner.execute("guest_register", {"name": "Nat"})
+        self.runner.chaba.register_pending.assert_called_once_with(
+            "Nat", session_id=self.runner.session_id)
+        self.assertEqual(out, {"ok": True, "name": "Nat"})
 
 
 class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):

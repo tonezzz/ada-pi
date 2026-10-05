@@ -1,0 +1,110 @@
+# SSOT Job: meta/voice tool-group merge (8 -> 3)
+# Card: tools-merge-meta-voice (chaba kanban). Dispatch 20261005-182958.
+
+title: Meta/voice tool merge — ada_persona + ada_ops + ada_enroll_speaker absorb seven names
+subtitle: Fifth tools-merge-* card landed — _ALIASES now carries 30 retirees
+
+planning:
+  goal: |
+    Cut the meta/voice group to its canonical three per the card spec:
+    ada_persona absorbs ada_set_voice (action=set_voice|show_voice|
+    list_voices); NEW ada_ops absorbs ada_outcome / ada_usage_summary /
+    ada_mddb_health / ada_decision_check / ada_deep_research
+    (action=outcome|usage|health|check|research); ada_enroll_speaker
+    absorbs guest_register (who=speaker|guest).
+    Absorbed names stay callable but hidden — soft aliases via
+    tool_runner._ALIASES + _ALIAS_ARG_DEFAULTS, removed from the
+    declared surface (the repo's x-legacy mechanism).
+  decisions: |
+    - ada_ops(action=check|research) is a thin shell: decision-check and
+      deep-research are provider-side background ops (results injected
+      into the live session), so the canonical runner method only owns
+      outcome/usage/health; provider dispatch maps the actions onto
+      _start_decision_check / _start_deep_research exactly where the
+      old names dispatched.
+    - ada_mddb_health was a tools.d drop-in, not a builtin — its module
+      is deleted, its manifest entry removed, and its run() body ported
+      verbatim into runner._ops_mddb_health. tools.d count drops to 2.
+    - Voice stays provider-side: set_voice needs the idle-gated
+      reconnect in _set_voice, so ada_persona voice actions dispatch
+      there on live sessions; the runner method handles show/list only
+      (runner can't reconnect a socket it doesn't own).
+    - ada_set_voice action shim: the legacy tool reused action=
+      set|show|list — _alias_call_args rewrites them to set_voice /
+      show_voice / list_voices so the caller's action can't collide
+      with ada_persona's persona set.
+    - Gates key off the resolved name: ada_ops joins
+      MEMORY_WRITE_TOOLS and _CONFIRM_GATED_TOOLS but BOTH carve out
+      per-action — only action=outcome invokes the memory-bank write
+      gate / confirmation (usage|health|check|research keep their
+      old ungated read/background semantics). Bank allowed_tools are
+      normalized through _ALIASES so legacy 'ada_outcome' entries
+      still authorize canonical ada_ops.
+    - Confirm parity for guest_register: ada_enroll_speaker is
+      confirm-gated, so who='guest' is carved out of the probe —
+      guest_register was never gated. who='guest' also returns before
+      the secondary-speaker enrollment check (unchanged behavior).
+    - Secondary parity: provider secondary-block elif now covers
+      ada_persona voice actions + ada_ops action=check (the old
+      ada_set_voice / ada_decision_check entries); runner
+      SECONDARY_BLOCKED keeps only persona set/reset, matching the
+      pre-merge runner-side surface.
+    - DEVIN_CONFIRMED_TOOLS and confirm_strip unchanged — both already
+      operate on the resolved canonical name.
+    - benchmark.yml write_tools: ada_outcome -> ada_ops, ada_set_voice
+      -> ada_persona; tool_merge_meta_voice scenario joins
+      write_allowed_in (it exercises the alias paths).
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tool_runner alias tables + arg shims"
+      status: done
+      notes: "7 _ALIASES rows + _ALIAS_ARG_DEFAULTS (action=outcome/
+        usage/health/check/research, who=guest); _alias_call_args
+        rewrites ada_set_voice action=set|show|list -> *_voice."
+    - id: 2
+      label: "canonical methods + gate updates"
+      status: done
+      notes: "ada_ops(action=outcome|usage|health) dispatching onto
+        unchanged absorbed code + ported _ops_mddb_health; ada_persona
+        gains voice seat; ada_enroll_speaker gains who=. MEMORY_WRITE /
+        confirm gate carve-outs per action; allowed_tools alias-normalized."
+    - id: 3
+      label: "provider surface + dispatch"
+      status: done
+      notes: "5 builtin decls + chaba guest_register decl removed;
+        ada_ops declared; persona/enroll decls extended. Dispatch elifs
+        updated (set_voice -> _set_voice, check -> _start_decision_check,
+        research -> _start_deep_research); secondary-gate and
+        confirm-strip blocks keyed to canonical names."
+    - id: 4
+      label: "tools.d retirement + SSOT + scenarios + tests"
+      status: done
+      notes: "backend/tools.d/ada_mddb_health.py deleted, manifest entry
+        removed. ssot.tool-surface.yml meta/voice family + coverage_debt
+        updated; scenario-live LEGACY_TOOL_ALIASES extended;
+        tool_merge_meta_voice.yaml added, change_voice.yaml repointed;
+        MetaVoiceMergeAliasTests (11 tests)."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # 82 declared, 30 aliases, clean"
+    - "PYTHONPATH=.teststubs python3 -m unittest tests.test_tool_runner.MetaVoiceMergeAliasTests"
+    - "PYTHONPATH=.teststubs ADA_INSTANCE_ID=tony python3 -m unittest tests.test_scenarios"
+    - "PYTHONPATH=.teststubs python3 -m unittest discover -s tests -p 'test_*.py'"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0 — 82 declared (80 builtin + 2 tools.d), 30 aliases"
+  - "alias smoke: execute(ada_set_voice action=list) -> ada_persona list_voices; "
+    "execute(ada_outcome) -> ada_ops outcome (memory-write gate + confirm); "
+    "execute(ada_usage_summary) -> ada_ops usage; execute(ada_mddb_health) -> ada_ops health; "
+    "execute(ada_decision_check) -> ada_ops check; execute(ada_deep_research) -> ada_ops research; "
+    "execute(guest_register) -> ada_enroll_speaker who=guest (no confirm probe)"
+  - "test_tool_runner.MetaVoiceMergeAliasTests: 11/11 green; "
+    "test_decision_check: 19/19 green; test_scenarios: 7/7 green with ADA_INSTANCE_ID=tony"
+  - "full suite: 521 tests, 0 failures; 3 errors are missing "
+    "ai_edge_litert (TFLite runtime) — pre-existing env dependency, unrelated"
