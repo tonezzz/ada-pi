@@ -232,8 +232,11 @@ ACTUATING_TOOLS = frozenset({
     # action='say'; the canonical name holds the seat.
     # tools-merge-docs-drive: ada_doc_archive/ada_doc_print collapsed into
     # docs — actuation is keyed per-action at the call site below.
-    "control_entity", "tv_action", "yt_cast", "yt_cast_stop",
-    "cast_to_screen",
+    "control_entity", "tv_action",
+    # tools-merge-yt: yt_cast/yt_cast_stop collapsed into yt
+    # (action=cast|stop) — the canonical name holds the seat,
+    # actuation keyed per-action at the call site below.
+    "yt", "cast_to_screen",
     # tools-merge-meta-voice: ada_set_voice folded into
     # ada_persona(*_voice actions) — set_voice gated per-action
     # at the call site below.
@@ -749,7 +752,7 @@ Conversation discipline:
 - When asked to save "that plan/summary/answer", save only what you actually said this turn; if you have not said it yet, say it first, then save.
 - If a tool, service, or lookup fails or is unavailable, say so plainly and offer the nearest fallback — never describe an imagined state.
 - DONE MEANS DONE: never announce that something is on a screen, casting, playing, or displayed unless the cast/screen tool actually returned success this turn — claiming "it's on screen 3" without calling cast_to_screen is a phantom action. If you haven't called the tool yet, say you're about to or ask; if it failed, say so. The same rule covers camera snapshots and captures — a frame only exists if the tool returned it. Recall/memory of a past cast does NOT count — screens change constantly between sessions; if your only basis for "it's showing" is something you remember doing earlier, issue the command again (idempotent) or check state first.
-- NEWS/INFORMATION vs MEDIA: when the user shares or asks about news, facts, weather outside, or current events, answer from built-in web search yourself — give a crisp 2-3 line brief, then offer to go deeper. yt_cast/vcast are ONLY for explicitly requested video/web playback on a screen — never cast information lookups instead of answering them.
+- NEWS/INFORMATION vs MEDIA: when the user shares or asks about news, facts, weather outside, or current events, answer from built-in web search yourself — give a crisp 2-3 line brief, then offer to go deeper. yt(action='cast')/vcast are ONLY for explicitly requested video/web playback on a screen — never cast information lookups instead of answering them.
 - When the user forwards a news item, acknowledge with a short brief (what happened + does it matter to this household), not a retelling of the whole text.
 
 Date & time:
@@ -2391,9 +2394,11 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "yt_cast",
+                    "name": "yt",
                     "description": (
-                        "Cast a YouTube video to the living-room TV with subtitles burned in. "
+                        "YouTube on the living-room TV — also handles what used to be "
+                        "yt_cast, yt_cast_status, yt_cast_stop, and yt_transcript. "
+                        "action='cast' casts a YouTube video to the TV with subtitles burned in — "
                         "ONLY when the user wants a VIDEO playing on the TV — NOT for looking up "
                         "news, facts or information (answer those yourself via web search). "
                         "This is THE tool for any 'play/watch/cast a YouTube video on the TV' request "
@@ -2403,80 +2408,50 @@ class GeminiLiveProvider(RealtimeProvider):
                         "Do NOT search for a different video that already has subtitles or try "
                         "generic media playback — this tool generates subtitles for any video. "
                         "Pass a YouTube URL or a search phrase (video title + channel name works best). "
-                        "If the user names a numbered vcast screen instead of the TV, do NOT call this — "
+                        "If the user names a numbered vcast screen instead of the TV, do NOT cast — "
                         "use cast_to_screen(action='play', url=<YouTube URL>); vcast displays auto-embed it. "
-                        "The tool returns as soon as preparation starts — the video itself takes ~1-3 min "
+                        "action='cast' returns as soon as preparation starts — the video itself takes ~1-3 min "
                         "(download + subtitle translation + transcode; replays are much faster). "
                         "Acknowledge immediately in one short sentence, e.g. 'getting it ready, about a "
                         "minute, I'll let you know when it's on' — never claim it is already playing. "
-                        "The system will notify you when playback actually starts."
+                        "The system will notify you when playback actually starts. "
+                        "action='status' returns the current cast progress (transcode state, segment "
+                        "count, whether subtitles were generated). "
+                        "action='stop' stops the video currently casting to the TV. "
+                        "action='transcript' fetches a YouTube video's spoken content as plain text "
+                        "(auto-captions via yt-dlp on the transcript host — no video download): "
+                        "returns title, language, and up to ~6k chars — use it when the user wants "
+                        "news/content from a YouTube video summarized or transcribed (Thai news sites "
+                        "block scrapers, so YouTube is the open source). Transcript reads text only; "
+                        "it does NOT play or cast anything."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
                         "type": "object",
                         "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["cast", "status", "stop", "transcript"],
+                                "description": "Operation: cast a video, check cast progress, stop casting, or fetch a transcript.",
+                            },
                             "query": {
                                 "type": "string",
-                                "description": "YouTube URL or search phrase, e.g. 'the egg kurzgesagt'.",
+                                "description": "cast: YouTube URL, media file URL, or search phrase, e.g. 'the egg kurzgesagt'.",
+                            },
+                            "url": {
+                                "type": "string",
+                                "description": "transcript: YouTube URL or video ID.",
                             },
                             "language": {
                                 "type": "string",
                                 "description": (
-                                    "Target subtitle language code shown below the original-language "
-                                    "line (default 'th' for Thai)."
+                                    "cast: target subtitle language shown below the original-language "
+                                    "line; transcript: caption language to prefer (default 'th' for Thai, "
+                                    "falls back to en)."
                                 ),
                             },
                         },
-                        "required": ["query"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "yt_cast_status",
-                    "description": (
-                        "Returns the current YouTube-to-TV cast progress: whether transcoding is still "
-                        "running, segment count, and whether subtitles were generated."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "yt_cast_stop",
-                    "description": (
-                        "Stops the YouTube video currently casting to the TV. Use when the user asks "
-                        "to stop the video or stop casting."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "yt_transcript",
-                    "description": (
-                        "Fetches a YouTube video's spoken content as plain text (auto-captions via yt-dlp "
-                        "on the transcript host — no video download). Returns title, language, and up to "
-                        "~6k chars of transcript. Use when the user wants news/content from a YouTube "
-                        "video summarized or transcribed — Thai news sites block scrapers, so YouTube "
-                        "is the open source. This reads text only; it does NOT play or cast anything."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "url": {
-                                "type": "string",
-                                "description": "YouTube URL or video ID.",
-                            },
-                            "language": {
-                                "type": "string",
-                                "description": "Caption language to prefer (default 'th'; falls back to en).",
-                            },
-                        },
-                        "required": ["url"],
+                        "required": ["action"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -2525,7 +2500,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "cast_to_screen",
                     "description": (
                         "One tool for the numbered vcast virtual displays (browser/PWA screens — NOT the "
-                        "physical TV; for the TV use tv_action or yt_cast). Also handles what used to be "
+                        "physical TV; for the TV use tv_action or yt action='cast'). Also handles what used to be "
                         "vcast_list, vcast_say, vcast_status, and vcast_shortcut — those are now the "
                         "action='list', 'say', 'status', and 'shortcut' actions here. "
                         "READS first: action='list' enumerates the displays (screen number, device, "
@@ -4722,6 +4697,12 @@ class GeminiLiveProvider(RealtimeProvider):
                             call.name == "cast_to_screen"
                             and str(_cargs_probe.get("action") or "")
                             .strip().lower() in ("list", "status"))
+                        # yt's old seats: cast/stop actuate the TV —
+                        # status/transcript are reads and stay free.
+                        _yt_actuates = (
+                            call.name == "yt" and str(
+                                _cargs_probe.get("action") or "")
+                            .strip().lower() in ("cast", "stop"))
                         if (call.name in ACTUATING_TOOLS
                                 and not _cast_read) or (
                                 call.name == "ada_camera_snapshot"
@@ -4735,7 +4716,7 @@ class GeminiLiveProvider(RealtimeProvider):
                                 # set_voice drops the session to reconnect.
                                 call.name == "ada_persona"
                                 and str(_cargs_probe.get("action") or "")
-                                .strip().lower() == "set_voice"):
+                                .strip().lower() == "set_voice") or _yt_actuates:
                             actuations_this_turn += 1
                         if tool_calls_this_turn > tool_budget:
                             if not budget_hit:

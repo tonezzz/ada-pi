@@ -313,6 +313,20 @@ families:
       - sys_show_uploaded_document   # chaba-side name — never declared here; forward alias
       - process_document_upload      # chaba-side name — never declared here; forward alias
       - doc_upload_card_action       # chaba-side name — never declared here; forward alias
+  # yt group 4 -> 1 (tools-merge-yt, landed 2026-10-05): all four YouTube
+  # tools collapse into yt(action=cast|status|stop|transcript). None of
+  # them were confirm-gated; the actuation budget keeps parity per-action
+  # (cast/stop count, status/transcript don't). yt itself is on the
+  # display family's absorbed list for tools-merge-display.
+  yt:
+    merge_card: tools-merge-yt
+    canonical: yt                # yt_cast* + yt_transcript -> action=
+    scenario: tool_merge_yt
+    absorbed:
+      - yt_cast                  # -> yt {action: cast}
+      - yt_cast_status           # -> yt {action: status}
+      - yt_cast_stop             # -> yt {action: stop}
+      - yt_transcript            # -> yt {action: transcript}
 
 # Tools with no reference in any tests/scenarios-live/*.yaml tool field
 # (calls/calls_any/no_calls*/needs_tools/needs_any, @family-expanded) at
@@ -324,7 +338,6 @@ coverage_debt:
   - chat_send
   - devin_followup
   - devin_job_report
-  - yt_cast_status
 
 # Tools that legitimately never get a live scenario (pure meta/report
 # surfaces). Empty at census — prefer coverage_debt over listing here.

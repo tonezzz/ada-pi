@@ -249,6 +249,10 @@ LEGACY_ARG_DEFAULTS: dict[str, dict] = {
     "sys_show_uploaded_document": "chat_send",
     "process_document_upload": "chat_send",
     "doc_upload_card_action": "chat_send",
+    "yt_cast": "yt",
+    "yt_cast_status": "yt",
+    "yt_cast_stop": "yt",
+    "yt_transcript": "yt",
 }
 
 _VCAST_API = os.environ.get(

@@ -1,0 +1,96 @@
+# SSOT Job: yt tool-group merge (4 -> 1)
+# Card: tools-merge-yt (chaba kanban). Dispatch 20261005-190356.
+
+title: yt merge — yt(action=cast|status|stop|transcript) absorbs the four yt_* names
+subtitle: Fifth tools-merge-* card landed — _ALIASES now carries 27 retirees
+
+planning:
+  goal: |
+    Cut the YouTube group to one canonical tool per the card spec:
+    yt(action=cast|status|stop|transcript) absorbs yt_cast,
+    yt_cast_status, yt_cast_stop and yt_transcript. Absorbed names stay
+    callable but hidden — soft aliases via tool_runner._ALIASES, removed
+    from the declared surface (the repo's x-legacy mechanism; no literal
+    x-legacy field). DEVIN_CONFIRMED_TOOLS/confirm_strip unchanged —
+    gates key off the resolved tool name, not the alias.
+  decisions: |
+    - Canonical is 'yt', not 'yt_cast': the card's 4->1 collapses to a
+      NEW name, so yt_cast itself joins _ALIASES (yt_cast -> yt
+      {action: cast}) like the other three retirees.
+    - Action-dispatch method: yt() routes per-action onto the unchanged
+      absorbed methods (yt_cast/yt_cast_status/yt_cast_stop/
+      yt_transcript) — same pattern as calendar_read. query=/url= cross-
+      fill each other so a canonical call can pass the video either way.
+    - No gate moved: the yt tools were never confirm-gated and are not
+      in any *_TOOLS set — the only provider-side seat was
+      ACTUATING_TOOLS (yt_cast + yt_cast_stop). Exact parity needs
+      per-action counting, so 'yt' did NOT join ACTUATING_TOOLS
+      wholesale; a probe counts the call only when action=cast|stop
+      (same pattern as ada_camera_snapshot's display-push probe) —
+      status/transcript reads stay uncounted.
+    - SSOT: new 'yt' family (canonical yt, scenario tool_merge_yt). The
+      display family's absorbed list now names 'yt' instead of the three
+      yt_* names — those are already aliases, and absorbing them into
+      ada_display would create alias chains (lint-fail) until the
+      display card re-points them. yt_cast_status left coverage_debt
+      (no longer declared).
+    - No arg shim needed: yt_cast(query,language) and
+      yt_transcript(url,language) map 1:1 onto yts params after the
+      implied action= merges; status/stop take none.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "tool_runner alias tables"
+      status: done
+      notes: "4 _ALIASES rows (yt_cast/yt_cast_status/yt_cast_stop/
+        yt_transcript -> yt) + _ALIAS_ARG_DEFAULTS (action=
+        cast|status|stop|transcript). No _alias_call_args cases."
+    - id: 2
+      label: "canonical method"
+      status: done
+      notes: "yt(action='status' default, query='', url='',
+        language='th') dispatches to the four unchanged absorbed
+        methods; unknown action raises ValueError; cast accepts url= as
+        the query fallback, transcript accepts query= as url fallback."
+    - id: 3
+      label: "provider surface"
+      status: done
+      notes: "4 declarations -> 1 'yt' declaration with explicit
+        action enum [cast,status,stop,transcript]; ACTUATING_TOOLS
+        dropped yt_cast/yt_cast_stop for a per-action probe
+        (cast|stop actuate); NEWS-vs-MEDIA + cast_to_screen
+        description text repointed to yt action='cast'."
+    - id: 4
+      label: "SSOT + spec + scenario + tests"
+      status: done
+      notes: "ssot.tool-surface.yml yt family added, display absorbed
+        repointed at yt, yt_cast_status pruned from coverage_debt; spec
+        table row added (7 cards now); scenario-live.py
+        LEGACY_TOOL_ALIASES +4 rows;
+        tests/scenarios-live/tool_merge_yt.yaml (read-side turns);
+        YtMergeAliasTests (5 tests)."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # 85 declared, 27 aliases, clean"
+    - "~/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/test_tool_runner.py -k YtMerge"
+    - "~/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/ -q"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0 — 85 declared (88->85),
+    27 aliases, 41 warnings (all pre-existing; HEAD had 43)"
+  - "alias smoke: execute(yt_cast) -> yt action=cast -> _yt_api /cast;
+    yt_cast_status -> /status; yt_cast_stop -> /stop; yt_transcript ->
+    ssh transcript path (subprocess.run stubbed)"
+  - "YtMergeAliasTests: 5/5 — every absorbed name routes to yt with the
+    right action, canonical dispatch + query/url cross-fill, unknown
+    action rejected"
+  - "full suite: 546 passed, 2F — identical to HEAD baseline
+    (memory-lifecycle + michael-technician need live mddb on this host).
+    No merge regressions."
+  - "FunctionResponse still echoes the as-called (alias) name —
+    provider alias shim at realtime_provider.py ~5144 unchanged."

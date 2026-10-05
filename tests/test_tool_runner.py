@@ -772,6 +772,7 @@ class CalendarPlanMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["calendar"], "not configured")
 
 
+<<<<<<< HEAD
 class DocsDriveMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     """tools-merge-docs-drive (8 -> 2): the eight absorbed names stay
     callable via _ALIASES and route to their canonical parent — docs for
@@ -911,6 +912,12 @@ class MetaVoiceMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     callable via _ALIASES and route to their canonical parent —
     ada_persona for the voice actions, ada_ops for the five meta tools,
     ada_enroll_speaker for chaba's guest_register."""
+=======
+class YtMergeAliasTests(unittest.IsolatedAsyncioTestCase):
+    """tools-merge-yt (4 -> 1): the four absorbed names stay callable via
+    _ALIASES and route to yt(action=cast|status|stop|transcript)."""
+
+>>>>>>> dispatch/20261005-190356-merge-the-yt-group-4-1-per-the
     async def asyncSetUp(self):
         self.ha_client = AsyncMock()
         self.ha_client.base_url = "http://test:8123"
@@ -918,6 +925,7 @@ class MetaVoiceMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.ha_client.sensors.return_value = []
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _hermetic_registry()
+<<<<<<< HEAD
         self.runner.mddb = AsyncMock()
         self.runner.mddb.search_documents.return_value = []
         self.runner.memory.mddb = self.runner.mddb
@@ -1295,6 +1303,57 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
             await self.runner.execute("chat_send", {"photo": "bogus"})
         with self.assertRaises(ValueError):
             await self.runner.execute("chat_send", {"doc": "bogus"})
+=======
+        # _capture_reminder probes the vcast relay on every dict result —
+        # stub it so the tests stay hermetic.
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
+
+    async def test_cast_alias_routes_to_yt_cast_action(self):
+        with patch.object(
+                ToolRunner, "_yt_api", return_value={"ok": True}) as api:
+            out = await self.runner.execute(
+                "yt_cast", {"query": "the egg kurzgesagt"})
+        self.assertEqual(out, {"ok": True})
+        api.assert_called_once_with(
+            "/cast", {"q": "the egg kurzgesagt", "lang": "th"})
+
+    async def test_status_and_stop_aliases_route(self):
+        with patch.object(
+                ToolRunner, "_yt_api", return_value={"ok": True}) as api:
+            await self.runner.execute("yt_cast_status", {})
+            await self.runner.execute("yt_cast_stop", {})
+        self.assertEqual(
+            [c.args for c in api.call_args_list],
+            [("/status",), ("/stop", {})])
+
+    async def test_transcript_alias_routes_with_url(self):
+        proc = SimpleNamespace(
+            returncode=0,
+            stdout="TITLE: Evening news\nLANG: th\nfull transcript text",
+            stderr="")
+        with patch("subprocess.run", return_value=proc):
+            out = await self.runner.execute(
+                "yt_transcript", {"url": "https://youtu.be/abc"})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["title"], "Evening news")
+        self.assertEqual(out["transcript"], "full transcript text")
+
+    async def test_canonical_dispatch_and_fallbacks(self):
+        with patch.object(
+                ToolRunner, "_yt_api", return_value={"ok": True}) as api:
+            # url= is accepted as the cast target too
+            await self.runner.execute(
+                "yt", {"action": "cast", "url": "https://youtu.be/x"})
+            await self.runner.execute("yt", {"action": "status"})
+        self.assertEqual(
+            [c.args for c in api.call_args_list],
+            [("/cast", {"q": "https://youtu.be/x", "lang": "th"}),
+             ("/status",)])
+
+    async def test_canonical_rejects_unknown_action(self):
+        with self.assertRaises(ValueError):
+            await self.runner.execute("yt", {"action": "bogus"})
+>>>>>>> dispatch/20261005-190356-merge-the-yt-group-4-1-per-the
 
 
 class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):

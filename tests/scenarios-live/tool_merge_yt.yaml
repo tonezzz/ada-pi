@@ -1,0 +1,26 @@
+# tools-merge-yt regression (2026-10-05): the yt group went 4 -> 1 —
+# yt(action=cast|status|stop|transcript) absorbs yt_cast, yt_cast_status,
+# yt_cast_stop and yt_transcript. The four absorbed names survive as
+# tool_runner._ALIASES rows, hidden from the declared surface. Live-side
+# this scenario checks the canonical calls still fire for the absorbed
+# intents (reads only — the real-cast path is regression-covered by
+# tv_cast_control / cast_dub_to_tv, which already exercise an actual TV
+# round-trip):
+#   cast progress — yt action=status
+#   video transcript — yt action=transcript
+name: tool_merge_yt
+turns:
+  - user: >-
+      What's the status of that YouTube cast on the TV — is it still
+      transcoding?
+    expect:
+      calls_any: [yt, yt_cast_status]
+      timeout_s: 60
+      settle_s: 8
+  - user: >-
+      Get me the content of this news video and tell me what the main
+      story is about: https://www.youtube.com/watch?v=WjdLmFWtIx0
+    expect:
+      calls_any: [yt, yt_transcript]
+      timeout_s: 180
+      settle_s: 15
