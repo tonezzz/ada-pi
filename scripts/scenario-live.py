@@ -147,6 +147,28 @@ TOOL_FAMILIES: dict[str, list[str]] = {
     "wall": ["cctv_wall"],
 }
 
+# Legacy tool names that tool_runner absorbs into canonical tools
+# (backend/tool_runner.py _ALIASES). Ada can only ever call the canonical
+# name, so an expectation written for the legacy name would fail on every
+# correct call — accept either. Keep in sync with _ALIASES.
+LEGACY_TOOL_ALIASES: dict[str, str] = {
+    "guest_recall": "ada_memory_search",
+    "vocab_note": "ada_remember",
+    "report_habit_observation": "ada_remember",
+    "guest_remember": "ada_remember",
+    "guest_remember_private": "ada_remember",
+    "ada_ha_recall": "ada_session_recall",
+    "cctv_snapshot": "ada_camera_snapshot",
+    "traffic_camera": "ada_camera_snapshot",
+    "capture_frame": "vcast_snapshot",
+    "cms_list_pages": "cms_read",
+    "cms_get_page": "cms_read",
+    "cms_verify_page": "cms_read",
+    "cms_note_update": "cms_edit",
+    "cms_delete_page": "cms_edit",
+    "cms_automation": "cms_edit",
+}
+
 _VCAST_API = os.environ.get(
     "VCAST_API", "https://tony-dell.taila0626a.ts.net/api/input-bridge")
 
@@ -158,6 +180,9 @@ def _expand_families(names: list | None) -> list[str]:
             out.extend(TOOL_FAMILIES.get(n[1:], [n]))
         else:
             out.append(n)
+            canonical = LEGACY_TOOL_ALIASES.get(n)
+            if canonical:
+                out.append(canonical)
     return out
 
 # Date tokens expand in Asia/Bangkok — the container/host clock may be UTC
@@ -233,8 +258,9 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
     calls_any = _expand_families(expect.get("calls_any"))
     if calls_any and not names & set(calls_any):
         failures.append(f"calls_any: none of {calls_any} in {sorted(names)}")
-    for want in _expand_families(expect.get("calls")):
-        if want not in names:
+    for want in expect.get("calls") or []:
+        alts = _expand_families([want])
+        if not any(a in names for a in alts):
             failures.append(f"calls: {want!r} not in {sorted(names)}")
     if expect.get("no_calls"):
         exempt = set(_expand_families(expect.get("no_calls_except")))
