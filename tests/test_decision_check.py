@@ -193,12 +193,17 @@ class VoiceToolTests(unittest.IsolatedAsyncioTestCase):
         return p
 
     def test_declaration_and_dispatch_present(self):
-        # The declaration is a literal inside connect()'s config dict — verify
-        # the tool name, NON_BLOCKING behavior, and dispatch branch all exist.
+        # tools-merge-meta-voice (2026-10-05): ada_decision_check folded
+        # into ada_ops action='check' — verify the canonical declaration
+        # and its provider dispatch branch exist (the absorbed name stays
+        # callable via tool_runner._ALIASES).
         import backend.realtime_provider as rp
         src = inspect.getsource(rp)
-        self.assertIn('"name": "ada_decision_check"', src)
-        self.assertIn('call.name == "ada_decision_check"', src)
+        self.assertIn('"name": "ada_ops"', src)
+        self.assertIn('call.name == "ada_ops"', src)
+        self.assertIn('or "").lower() == "check"', src)
+        from backend.tool_runner import _ALIASES
+        self.assertEqual(_ALIASES.get("ada_decision_check"), "ada_ops")
 
     async def test_start_check_returns_running_status(self):
         p = self._provider()

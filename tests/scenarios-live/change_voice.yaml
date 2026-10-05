@@ -1,7 +1,9 @@
 name: change-voice
 # Two aspects of "change your voice": a style request must route to
-# ada_persona, and a literal voice request to ada_set_voice — which persists
-# the preference and applies it via a provider reconnect (live_reconnecting
+# ada_persona action='set', and a literal voice request to ada_persona
+# action='set_voice' (absorbed ada_set_voice — the LEGACY_TOOL_ALIASES
+# row keeps an old-name call acceptable too) — which persists the
+# preference and applies it via a provider reconnect (live_reconnecting
 # + ready). Then switch back so the run leaves no trace.
 # Runs as testo so the persona write lands in ada-ha-bank-personal-testo.
 tier: full
@@ -22,7 +24,7 @@ turns:
 
   - user: "Actually — can you change your voice itself? Switch to the Aoede voice, please."
     expect:
-      calls: [ada_set_voice]
+      calls: [ada_set_voice]   # accepts ada_persona via LEGACY_TOOL_ALIASES
       result_contains: ["Aoede"]
       events_contain: [{type: live_reconnecting}]
       response_nonempty: true
@@ -35,7 +37,7 @@ turns:
   - sleep_s: 12
     user: "Thanks — switch your voice back to Kore, please."
     expect:
-      calls: [ada_set_voice]
+      calls: [ada_set_voice]   # accepts ada_persona via LEGACY_TOOL_ALIASES
       result_contains: ["Kore"]
       response_nonempty: true
       timeout_s: 120

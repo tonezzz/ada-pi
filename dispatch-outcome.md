@@ -1,91 +1,84 @@
-# Dispatch outcome — tools-merge-calendar-plan (20261005-122438)
+# dispatch-outcome — tools-merge-meta-voice
 
-Merged the calendar+plan tool group 9 → 3 per the card's self-contained
-spec. Eight names absorbed into canonical tools via
-`tool_runner._ALIASES` — the repo's established hidden-alias mechanism
-(registered in the runner, absent from declarations; there is no
-literal `x-legacy` field — this IS the x-legacy semantics).
-
-## Alias map (all verified by tests)
-
-| absorbed name              | resolves to                              |
-|----------------------------|------------------------------------------|
-| `calendar_list_events`     | `calendar_read` action=`events`          |
-| `calendar_list_calendars`  | `calendar_read` action=`calendars`       |
-| `calendar_freebusy`        | `calendar_read` action=`freebusy`        |
-| `calendar_create_event`    | `calendar_write` action=`create`         |
-| `calendar_delete_event`    | `calendar_write` action=`delete`         |
-| `calendar_shift_overdue`   | `calendar_write` action=`shift`          |
-| `ada_daily_summary`        | `plan_day` period=`digest` (alias-only)  |
-| `ada_weekly_comparison`    | `plan_day` period=`week`, `end`→`day`    |
+**Card:** `tools-merge-meta-voice` (chaba kanban)
+**Worktree:** `dispatch-wt-20261005-182958-merge-the-meta-voice-group-8-3`
+**Branch:** `dispatch/20261005-182958-merge-the-meta-voice-group-8-3` (uncommitted — no push/commit per card)
+**Result:** done — meta/voice group merged 8 declared surfaces → 3 canonical tools.
 
 ## What changed
 
-- `backend/tool_runner.py`
-  - `_ALIASES` + `_ALIAS_ARG_DEFAULTS`: the eight rows above.
-  - `_alias_call_args`: `ada_weekly_comparison(end=…)` maps `end`→`day`
-    (the window end); `days`/`refresh` pass through.
-  - `calendar_read(action=events|calendars|freebusy, day, days, query,
-    calendar)` and `calendar_write(action=create|delete|shift, title,
-    start, end, notes, location, calendar, event_id, to)` — per-action
-    dispatch onto the unchanged absorbed methods; unknown action raises.
-  - `plan_day(period=today|tomorrow|week, day, days, refresh)`:
-    today/tomorrow return the merged events+tasks view with the day's
-    session digest folded in under `digest`; `week` returns the weekly
-    digest comparison; `day=` overrides the target. Works without a
-    configured calendar (digest-only, tagged `calendar: not
-    configured`). `period='digest'` is the alias-only seat that
-    preserves ada_daily_summary's bare-digest contract.
-  - `CALENDAR_WRITE_TOOLS` = {`calendar_write`, `tasks_add`,
-    `tasks_complete`, `tasks_move`} — the canonical holds the seat so
-    every create/delete/shift (direct or aliased) stays
-    confirm-gated. `DEVIN_CONFIRMED_TOOLS` / `confirm_strip` untouched —
-    gates key off the resolved name.
+Canonical seats:
+- `ada_persona` absorbed `ada_set_voice` → `action=set_voice|show_voice|list_voices` (+`voice` param).
+- New `ada_ops` absorbed five meta tools → `action=outcome|usage|health|check|research`.
+- `ada_enroll_speaker` absorbed `guest_register` → `who=speaker|guest`.
 
-- `backend/realtime_provider.py`
-  - Eight declarations removed; `calendar_read` + `calendar_write`
-    declared with explicit `action` enums, `plan_day` with a `period`
-    enum; descriptions name the absorbed tools for legacy phrasing.
-  - `CALENDAR_TOOLS` / actuation sets updated to canonical names;
-    `CALENDAR_INSTRUCTIONS` rewritten and `SUMMARY_INSTRUCTIONS`
-    folded in; `SUMMARY_TOOLS` removed. `ADA_EXCLUDED_TOOLS` filtering
-    unchanged.
+All seven absorbed names stay registered as hidden aliases in
+`tool_runner._ALIASES` + `_ALIAS_ARG_DEFAULTS` (30 aliases total now) and are
+removed from the declared model-facing surface (5 builtin declarations + the
+chaba `guest_register` declaration removed; `ada_ops` declared; persona/enroll
+declarations extended). `ada_set_voice`'s `action=set|show|list` collides with
+persona's own actions, so `_alias_call_args` remaps them onto the `*_voice`
+forms.
 
-- `docs/ssot/ssot.tool-surface.yml` — calendar/plan families rewritten
-  as calendar_read / calendar_write / plan_day sub-families; absorbed
-  names pruned from coverage_debt.
-- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — the group
-  row updated to the landed design.
-- `tests/benchmark.yml` — `write_tools` three absorbed writers →
-  `calendar_write`; `tool_merge_calendar_plan` joins `write_allowed_in`.
-- `tests/scenarios-live/tool_merge_calendar_plan.yaml` — family
-  regression scenario (lint requires it once the merge starts);
-  `shift_overdue.yaml` + `chaba_memory_review.yaml` repointed to
-  canonical names.
-- `tests/test_tool_runner.py` — `CalendarPlanMergeAliasTests` (11
-  tests): every absorbed name routes to its parent, write aliases keep
-  the confirmation gate, unknown action/period rejected, digest-only
-  fallback when the calendar is unconfigured.
-- `docs/ssot/jobs/ada/2026-10-05-tools-merge-calendar-plan.yml` — this
-  job's SSOT trail.
-- `.teststubs/` (gitignored, local only) — google.genai import stub for
-  this SDK-less host so the suite can run.
+Fidelity decisions:
+- `check`/`research` stay provider-side background ops (verdicts/findings arrive
+  as injected turns); `ada_ops` runner method returns an honest error for them
+  on non-live paths — same as pre-merge.
+- `ada_mddb_health` was a tools.d drop-in: module deleted, manifest entry
+  removed, `run()` ported verbatim to `runner._ops_mddb_health`.
+- Voice switching stays provider-side (idle-gated reconnect); runner path
+  handles persist/show/list for REST/alias calls.
+- Gates key off resolved names: `ada_ops` holds `ada_outcome`'s
+  MEMORY_WRITE_TOOLS + confirm seat but only `action='outcome'` triggers them;
+  `usage|health|check|research` keep their old ungated semantics. Bank
+  `allowed_tools` are alias-normalized so legacy `ada_outcome` entries still
+  authorize. `who='guest'` is carved out of the enrollment confirm probe
+  (`guest_register` was never gated). `DEVIN_CONFIRMED_TOOLS` / `confirm_strip`
+  unchanged.
+- Secondary parity: provider blocks `ada_ops action=check` + persona voice
+  actions (old `ada_decision_check`/`ada_set_voice` seats); runner keeps
+  outcome/health blocked (health replaces the drop-in's
+  `secondary_allowed: false`) and usage/research free.
 
-## Verify
+## Files changed
 
-- `python3 scripts/tool-lint.py` → clean: 88 declared (94 → 88), 23
-  aliases, 0 violations (12 pre-existing warnings).
-- `PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest
-  tests.test_tool_runner.CalendarPlanMergeAliasTests` → 11/11.
-- Full suite: 489 tests, 2F/3E — identical failure set to HEAD
-  (verified via stash): memory-lifecycle + michael-technician
-  scenarios need a live mddb; detection/pose/hailo errors are
-  `ai_edge_litert` absent on this host. No merge regressions.
+`backend/tool_runner.py`, `backend/realtime_provider.py`,
+`backend/tools.d/manifest.yml`, `backend/tools.d/ada_mddb_health.py` (deleted),
+`docs/ssot/ssot.tool-surface.yml`, `docs/ada-tool-dev.md`,
+`docs/assessments/tool-consolidation-spec-2026-10-04.md` (status row),
+`scripts/scenario-live.py` (LEGACY_TOOL_ALIASES), `tests/benchmark.yml`
+(write_tools + scenario allowlist), `tests/scenario_engine.py`
+(FakeMddb.is_ops_routed shim — upstream drift fix),
+`tests/scenarios-live/change_voice.yaml` (canonical names),
+`tests/scenarios-live/tool_merge_meta_voice.yaml` (new),
+`tests/test_tool_runner.py` (MetaVoiceMergeAliasTests, 11 tests),
+`tests/test_decision_check.py` (source assertions),
+`docs/ssot/jobs/ada/2026-10-05-tools-merge-meta-voice.yml` (trail).
 
-## Notes
+`.teststubs/` google.genai stub was recreated (gitignored) — needed by the
+suite in this fresh worktree.
 
-- `tools-merge-gate.py` needs a passing `tool_merge_calendar_plan` run
-  in `ada-ha-scenario-reports` before the card can close — scenario
-  file ships here; the live run is idc02's lane.
-- Not committed to the default branch, not pushed, not deployed
-  (dispatch rules).
+## How to verify
+
+```bash
+python3 scripts/tool-lint.py   # 82 declared (80 builtin + 2 tools.d), 30 aliases — clean
+PYTHONPATH=.teststubs python3 -m unittest tests.test_tool_runner.MetaVoiceMergeAliasTests   # 11/11
+PYTHONPATH=.teststubs python3 -m unittest tests.test_decision_check                          # 19/19
+PYTHONPATH=.teststubs python3 -m unittest discover -s tests -p 'test_*.py'                   # 521 tests
+```
+
+Alias routing (all verified through `execute()`):
+`ada_set_voice`→`ada_persona` `*_voice`; `ada_outcome`→`ada_ops outcome`
+(confirm-gated); `ada_usage_summary`→`ada_ops usage`;
+`ada_mddb_health`→`ada_ops health`; `ada_decision_check`→`ada_ops check`;
+`ada_deep_research`→`ada_ops research`; `guest_register`→`ada_enroll_speaker
+who=guest` (ungated).
+
+## Caveats
+
+- Full suite: 521 tests, 0 failures; 3 errors are `ModuleNotFoundError:
+  ai_edge_litert` (TFLite runtime missing — vision/pose tests, pre-existing
+  env dependency, unrelated).
+- Scenario tests need `ADA_INSTANCE_ID` set (conftest sets `test` under
+  discover; `tests/scenario_engine.py` runs standalone need `tony`).
+- Uncommitted by design — dispatcher owns the merge/push decision.

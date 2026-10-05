@@ -167,6 +167,12 @@ class FakeMddb:
     def __init__(self) -> None:
         self.collections: dict[str, dict[str, dict[str, Any]]] = {}
 
+    def is_ops_routed(self, collection: str) -> bool:
+        # MddbClient marks ops/scenario-report collections as ops-routed so
+        # status_outcome docs skip the 'active' status gate — the fake has
+        # no such routing, plain collections only.
+        return False
+
     def _coll(self, name: str) -> dict[str, dict[str, Any]]:
         return self.collections.setdefault(name, {})
 

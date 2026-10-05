@@ -167,6 +167,14 @@ LEGACY_TOOL_ALIASES: dict[str, str] = {
     "cms_note_update": "cms_edit",
     "cms_delete_page": "cms_edit",
     "cms_automation": "cms_edit",
+    # tools-merge-meta-voice (2026-10-05)
+    "ada_set_voice": "ada_persona",
+    "ada_outcome": "ada_ops",
+    "ada_usage_summary": "ada_ops",
+    "ada_mddb_health": "ada_ops",
+    "ada_decision_check": "ada_ops",
+    "ada_deep_research": "ada_ops",
+    "guest_register": "ada_enroll_speaker",
 }
 
 _VCAST_API = os.environ.get(

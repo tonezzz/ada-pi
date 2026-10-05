@@ -8,11 +8,9 @@
 # secondary_allowed: let non-owner identified speakers call it (default false)
 # timeout_s: hard cap on run() (default 20)
 tools:
-  ada_mddb_health:
-    module: ada_mddb_health
-    policy: read
-    secondary_allowed: false
-    timeout_s: 20
+  # tools-merge-meta-voice (2026-10-05): ada_mddb_health folded into the
+  # builtin ada_ops action='health' — the absorbed name stays callable as a
+  # tool_runner._ALIASES row; the drop-in module is retired.
   ada_devteam_review:
     module: ada_devteam_review
     policy: owner_only

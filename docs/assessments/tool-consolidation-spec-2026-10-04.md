@@ -35,6 +35,7 @@ SSOT disagree.
 | display | tools-merge-display   | `ada_display` | cast_to_screen, vcast_list, vcast_say, vcast_snapshot, vcast_gesture, yt_cast, yt_cast_status, yt_cast_stop |
 | ha      | tools-merge-ha        | `ada_ha`      | control_entity, control_cover, press_button, control_media_player, list_home_devices, search_home_devices, get_home_state, list_sensors, search_sensors, get_logbook, get_recent_events, get_entity_events, ada_ha_* (7 — ada_ha_recall moved to the memory family) |
 | memory  | tools-merge-memory    | `ada_memory_search`, `ada_remember`, `ada_session_recall` (+ `ada_forget` unchanged) | guest_recall, vocab_note, report_habit_observation, guest_remember, guest_remember_private, ada_ha_recall (→ `scope=`/`kind=`) |
+| meta/voice | tools-merge-meta-voice | `ada_persona` (adds `set_voice`/`show_voice`/`list_voices`), `ada_ops` (`action=outcome\|usage\|health\|check\|research`), `ada_enroll_speaker` (`who=speaker\|guest`) | ada_set_voice → `ada_persona` (`action=set\|show\|list` → `*_voice` via shim); ada_outcome, ada_usage_summary, ada_mddb_health, ada_decision_check, ada_deep_research → `ada_ops` (`action=`); guest_register → `ada_enroll_speaker` (`who=guest`). outcome keeps the memory-write gate seat; check/research stay provider-dispatched. Landed 8→3 |
 
 Roughly 56 absorbed names retire into 6 canonical tools; with the
 un-merged remainder the surface lands near the ~38 target.
