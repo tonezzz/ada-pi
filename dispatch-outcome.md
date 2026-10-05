@@ -1,91 +1,86 @@
-# Dispatch outcome — tools-merge-calendar-plan (20261005-122438)
+# Dispatch outcome — tools-merge-display (2026-10-05)
 
-Merged the calendar+plan tool group 9 → 3 per the card's self-contained
-spec. Eight names absorbed into canonical tools via
-`tool_runner._ALIASES` — the repo's established hidden-alias mechanism
-(registered in the runner, absent from declarations; there is no
-literal `x-legacy` field — this IS the x-legacy semantics).
+## Result
 
-## Alias map (all verified by tests)
-
-| absorbed name              | resolves to                              |
-|----------------------------|------------------------------------------|
-| `calendar_list_events`     | `calendar_read` action=`events`          |
-| `calendar_list_calendars`  | `calendar_read` action=`calendars`       |
-| `calendar_freebusy`        | `calendar_read` action=`freebusy`        |
-| `calendar_create_event`    | `calendar_write` action=`create`         |
-| `calendar_delete_event`    | `calendar_write` action=`delete`         |
-| `calendar_shift_overdue`   | `calendar_write` action=`shift`          |
-| `ada_daily_summary`        | `plan_day` period=`digest` (alias-only)  |
-| `ada_weekly_comparison`    | `plan_day` period=`week`, `end`→`day`    |
+Done — the display tool group merged per the card spec. Declared surface
+dropped 88 → 86 (vcast_list + vcast_say declarations removed; vcast_status
+and vcast_shortcut were census-only journal names, never declared here).
+Alias table now carries 27 retirees; 5 absorbed display names route to
+their parents.
 
 ## What changed
 
 - `backend/tool_runner.py`
-  - `_ALIASES` + `_ALIAS_ARG_DEFAULTS`: the eight rows above.
-  - `_alias_call_args`: `ada_weekly_comparison(end=…)` maps `end`→`day`
-    (the window end); `days`/`refresh` pass through.
-  - `calendar_read(action=events|calendars|freebusy, day, days, query,
-    calendar)` and `calendar_write(action=create|delete|shift, title,
-    start, end, notes, location, calendar, event_id, to)` — per-action
-    dispatch onto the unchanged absorbed methods; unknown action raises.
-  - `plan_day(period=today|tomorrow|week, day, days, refresh)`:
-    today/tomorrow return the merged events+tasks view with the day's
-    session digest folded in under `digest`; `week` returns the weekly
-    digest comparison; `day=` overrides the target. Works without a
-    configured calendar (digest-only, tagged `calendar: not
-    configured`). `period='digest'` is the alias-only seat that
-    preserves ada_daily_summary's bare-digest contract.
-  - `CALENDAR_WRITE_TOOLS` = {`calendar_write`, `tasks_add`,
-    `tasks_complete`, `tasks_move`} — the canonical holds the seat so
-    every create/delete/shift (direct or aliased) stays
-    confirm-gated. `DEVIN_CONFIRMED_TOOLS` / `confirm_strip` untouched —
-    gates key off the resolved name.
-
+  - `_ALIASES`: vcast_say/vcast_list/vcast_status/vcast_shortcut →
+    cast_to_screen (capture_frame → vcast_snapshot already existed).
+  - `_ALIAS_ARG_DEFAULTS`: each absorbed name implies its `action=` seat
+    (say|list|status|shortcut).
+  - `_alias_call_args`: vcast_shortcut's historical arg spellings
+    (name/app/shortcut) funnel into `url`.
+  - `cast_to_screen`: `screen` now optional; new actions —
+    `list` → vcast_list body, `status` → new `_vcast_display_status`
+    (per-screen filter of the list report), `say` → absorbed vcast_say
+    body, `shortcut` → `_cast_shortcut_url` (app short name →
+    `/apps/<name>/`, URLs/paths pass through), `cast` → probes the URL
+    via `_frame_check` and auto-routes image/audio/play/nav (reports
+    `action_routed`). The busy-screen interrupt gate now covers `cast`
+    (pre-routing).
+  - Gates: `cast_ungated` carve-out keeps action=list|status|say free of
+    the secondary-speaker block and CONTROL_TOOLS gate — the absorbed
+    seats were never gated; screen-ownership ACL still runs inside the
+    method. `DEVIN_CONFIRMED_TOOLS`, `CAPTURE_CONFIRMED_TOOLS`
+    (uplink-only) and confirm-strip unchanged — all key off the resolved
+    canonical name.
+  - `_CAPTURE_AWARE_TOOLS` uses canonical names only.
+  - Model-facing error strings repointed to
+    `cast_to_screen(action='list'|'say')`.
 - `backend/realtime_provider.py`
-  - Eight declarations removed; `calendar_read` + `calendar_write`
-    declared with explicit `action` enums, `plan_day` with a `period`
-    enum; descriptions name the absorbed tools for legacy phrasing.
-  - `CALENDAR_TOOLS` / actuation sets updated to canonical names;
-    `CALENDAR_INSTRUCTIONS` rewritten and `SUMMARY_INSTRUCTIONS`
-    folded in; `SUMMARY_TOOLS` removed. `ADA_EXCLUDED_TOOLS` filtering
-    unchanged.
-
-- `docs/ssot/ssot.tool-surface.yml` — calendar/plan families rewritten
-  as calendar_read / calendar_write / plan_day sub-families; absorbed
-  names pruned from coverage_debt.
-- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — the group
-  row updated to the landed design.
-- `tests/benchmark.yml` — `write_tools` three absorbed writers →
-  `calendar_write`; `tool_merge_calendar_plan` joins `write_allowed_in`.
-- `tests/scenarios-live/tool_merge_calendar_plan.yaml` — family
-  regression scenario (lint requires it once the merge starts);
-  `shift_overdue.yaml` + `chaba_memory_review.yaml` repointed to
-  canonical names.
-- `tests/test_tool_runner.py` — `CalendarPlanMergeAliasTests` (11
-  tests): every absorbed name routes to its parent, write aliases keep
-  the confirmation gate, unknown action/period rejected, digest-only
-  fallback when the calendar is unconfigured.
-- `docs/ssot/jobs/ada/2026-10-05-tools-merge-calendar-plan.yml` — this
-  job's SSOT trail.
-- `.teststubs/` (gitignored, local only) — google.genai import stub for
-  this SDK-less host so the suite can run.
+  - `vcast_list` + `vcast_say` declarations removed; `cast_to_screen`
+    rewritten with an explicit action enum (15 values incl. the five
+    merged seats), `text` param, and naming of the absorbed operations
+    (spec rule: descriptions keep legacy phrasing routable).
+  - `ACTUATING_TOOLS`: vcast_say dropped (canonical holds the seat);
+    action=list|status carve out of the per-turn actuation count.
+  - FunctionResponse still echoes the as-called name (alias contract).
+- `scripts/scenario-live.py`
+  - `LEGACY_TOOL_ALIASES` + display rows and the calendar+plan rows the
+    earlier card missed; `_expand_families` now alias-expands `@family`
+    members (`@verify` carries vcast_list); `call_args_contain` accepts
+    the canonical call only when it carries the implied seat args
+    (new `LEGACY_ARG_DEFAULTS` mirror — a vcast_say check matches
+    cast_to_screen(action='say'), not any cast).
+- `docs/ssot/ssot.tool-surface.yml` — display family rewritten as two
+  canonical seats (cast_to_screen + vcast_snapshot); capture_frame moved
+  out of the camera family into vcast_snapshot's absorbed list;
+  vcast_gesture documented as unchanged.
+- `docs/assessments/tool-consolidation-spec-2026-10-04.md` — display row
+  updated to the landed shape (supersedes the sketched `ada_display`).
+- `tests/scenarios-live/tool_merge_display.yaml` — smoke-tier merge
+  regression (list / say / status intents → cast_to_screen; gesture →
+  vcast_gesture).
+- `tests/test_tool_runner.py` — `DisplayMergeAliasTests`, 13 tests.
+- `tests/benchmark.yml` — `write_allowed_in` += tool_merge_display,
+  vcast_list (absorbed read/narrate calls now record as cast_to_screen,
+  a write_tools member — without the exemption the suites would flag
+  policy violations).
+- `docs/ssot/jobs/ada/2026-10-05-tools-merge-display.yml` — job record.
 
 ## Verify
 
-- `python3 scripts/tool-lint.py` → clean: 88 declared (94 → 88), 23
-  aliases, 0 violations (12 pre-existing warnings).
-- `PYTHONPATH=.teststubs ADA_INSTANCE_ID=test python3 -m unittest
-  tests.test_tool_runner.CalendarPlanMergeAliasTests` → 11/11.
-- Full suite: 489 tests, 2F/3E — identical failure set to HEAD
-  (verified via stash): memory-lifecycle + michael-technician
-  scenarios need a live mddb; detection/pose/hailo errors are
-  `ai_edge_litert` absent on this host. No merge regressions.
+```
+python3 scripts/tool-lint.py        # clean: 86 declared, 27 aliases
+ADA_INSTANCE_ID=test PYTHONPATH=<genai deps> \
+  python3 -m unittest tests.test_tool_audit tests.test_tool_runner
+                                    # 109 tests, all pass (13 new)
+```
 
-## Notes
+Full sweep: 523 tests — the 5 failures are identical on clean HEAD
+(verified via stash): memory-lifecycle/michael-technician scenario
+fixtures need live mddb data; pose/hailo need `ai_edge_litert`. No merge
+regressions.
 
-- `tools-merge-gate.py` needs a passing `tool_merge_calendar_plan` run
-  in `ada-ha-scenario-reports` before the card can close — scenario
-  file ships here; the live run is idc02's lane.
-- Not committed to the default branch, not pushed, not deployed
-  (dispatch rules).
+## Not done here (by design / needs live stack)
+
+- Live `tool_merge_display` run — the ada-ha-scenario-reports entry
+  tools-merge-gate wants is produced by the first suite run after deploy.
+- No commit/push/deploy — dispatch worktree only.

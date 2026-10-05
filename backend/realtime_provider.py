@@ -220,7 +220,9 @@ def _phantom_claim(text: str) -> bool:
 ACTUATING_TOOLS = frozenset({
     "control_entity", "control_cover", "control_media_player",
     "press_button", "tv_action", "yt_cast", "yt_cast_stop",
-    "cast_to_screen", "vcast_say",
+    # vcast_say folded into cast_to_screen action='say'
+    # (tools-merge-display); the canonical name holds the seat.
+    "cast_to_screen",
     "ada_doc_archive", "ada_doc_print", "ada_set_voice",
     "devin_dispatch",
     "calendar_write",
@@ -1848,7 +1850,7 @@ class GeminiLiveProvider(RealtimeProvider):
         try:
             screen = int(args.get("screen"))
         except (TypeError, ValueError):
-            return ({"error": "screen number required — call vcast_list to see registered displays."}, None)
+            return ({"error": "screen number required — call cast_to_screen(action='list') to see registered displays."}, None)
         base = os.environ.get(
             "VCAST_API", "https://tony-dell.taila0626a.ts.net/api/input-bridge")
         token = f"snap-{int(time.time() * 1000)}-{self.session_id[:8]}"
@@ -1871,7 +1873,7 @@ class GeminiLiveProvider(RealtimeProvider):
             delivered = json.load(r).get("delivered", 0)
             if not delivered:
                 return ({"error": f"screen {screen} is not connected — "
-                                  "check vcast_list for online displays."}, None)
+                                  "check cast_to_screen(action='list') for online displays."}, None)
         except Exception as exc:
             return ({"error": f"snap-request failed: {exc}"}, None)
         # GEV pages live in a same-origin iframe the vcast page can't read —
@@ -2538,40 +2540,39 @@ class GeminiLiveProvider(RealtimeProvider):
                         "additionalProperties": False,
                     },
                 }, {
-                    "name": "vcast_list",
-                    "description": (
-                        "List the vcast virtual displays (numbered software cast targets — iPad/iPhone/browser "
-                        "running the vcast app, NOT the TV). Returns screen number, name, device, online/offline, "
-                        "what is playing, plus the relay's ground truth: active_captures (camera-capture leases "
-                        "per screen) and camwall_zones (enabled periodic walls). Use when the user refers to "
-                        "'screen 1/2/...', asks which screens are available, or when diagnosing a cast — an "
-                        "offline screen or a stale capture explains a silent failure; call before "
-                        "cast_to_screen if unsure. A camwall_zones entry is NOT proof a wall is visible — "
-                        "when state_mismatch flags it, the wall is down; never claim a wall is on-screen "
-                        "from the registry flag alone, and a user asking you to 'put up' a flagged wall "
-                        "still needs cctv_wall action=start."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
                     "name": "cast_to_screen",
                     "description": (
-                        "Cast content to a numbered vcast virtual display (a browser/PWA screen — NOT the physical TV; "
-                        "for the TV use tv_action or yt_cast). action='nav' url='<URL>' shows a web page, "
-                        "'play' url='<m3u8, video, or YouTube/Vimeo page URL>' plays video (HLS supported, "
-                        "YouTube/Vimeo links auto-embed on the display), 'image' url='<png/jpg>' "
-                        "shows a snapshot, 'audio' url plays sound or TTS, 'stop' returns it to idle, "
+                        "One tool for the numbered vcast virtual displays (browser/PWA screens — NOT the "
+                        "physical TV; for the TV use tv_action or yt_cast). Also handles what used to be "
+                        "vcast_list, vcast_say, vcast_status, and vcast_shortcut — those are now the "
+                        "action='list', 'say', 'status', and 'shortcut' actions here. "
+                        "READS first: action='list' enumerates the displays (screen number, device, "
+                        "online/offline, what is playing) plus the relay's ground truth — active_captures "
+                        "(camera-capture leases per screen) and camwall_zones (enabled periodic walls); a "
+                        "camwall_zones entry is NOT proof a wall is visible — when state_mismatch flags it, "
+                        "the wall is down, never claim it is up from the registry flag alone. action='status' "
+                        "screen=N reports one screen's live state the same way. Call 'list' before casting "
+                        "if unsure which screen to pick — an offline screen or a stale capture explains a "
+                        "silent failure. "
+                        "CASTS: action='nav' url='<URL>' shows a web page, 'play' url='<m3u8, video, or "
+                        "YouTube/Vimeo page URL>' plays video (HLS supported, YouTube/Vimeo links auto-embed "
+                        "on the display), 'image' url='<png/jpg>' shows a snapshot, 'audio' url plays sound "
+                        "or TTS, 'cast' url='<URL>' auto-routes by what the URL actually serves (use it when "
+                        "the content type is uncertain), 'shortcut' url='<app name>' opens a named app "
+                        "('/apps/<name>/' — e.g. 'gev', 'camwall') on the screen, 'stop' returns it to idle, "
                         "'uplink' starts the display's camera uplink (frames available via "
                         "GET /frame?screen=N&token=cam), 'uplink-stop' stops it. "
+                        "NARRATE: action='say' screen=N text='...' speaks a short narration line out loud on "
+                        "that display (the screen's own speaker) — narrate what you are doing on that screen: "
+                        "right after a cast say what you loaded, before gev_command say what the map is about "
+                        "to do, on long waits say what is in progress. Keep it to one short sentence in the "
+                        "SAME language the user is speaking (Thai user -> Thai text; the display's voice "
+                        "mirrors the session language). If the result reports speak-blocked, the display "
+                        "hasn't been tapped for audio yet — tell the user to tap 'audio' once, then retry once. "
                         "SPLIT-SCREEN: action='layout' panes=N (2-5) splits the screen into sub-panes — "
                         "then cast each thing to its own pane (pane=0..N-1, 0=left/top) with nav/play/image. "
                         "action='zoom' pane=N makes one pane fullscreen; 'unzoom' returns to the grid. "
                         "stop with pane=N clears just that pane; stop alone resets to single-pane idle. "
-                        "Screens are numbered — call vcast_list first if you need to pick one. "
                         "Some screens are private to their owner — casting to another person's screen is denied. "
                         "INTERRUPT RULE: a cast onto a screen that is busy (a running camera capture/uplink, "
                         "an enabled camera wall, or media playing) returns needs_confirm with would_interrupt "
@@ -2592,15 +2593,24 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "screen": {
                                 "type": "integer",
-                                "description": "Screen number (the # shown on the display and in vcast_list).",
+                                "description": "Screen number (the # shown on the display and in action='list'). Not needed for action='list'.",
                             },
                             "action": {
                                 "type": "string",
-                                "description": "nav=web page | play=video mp4/m3u8 or YouTube/Vimeo watch URL (auto-embeds on screen) | image=still jpg/png | audio | stop | layout | zoom | unzoom | uplink | uplink-stop (default nav). Pick by content type.",
+                                "enum": ["nav", "play", "image", "audio",
+                                         "cast", "shortcut", "stop",
+                                         "layout", "zoom", "unzoom",
+                                         "uplink", "uplink-stop",
+                                         "say", "list", "status"],
+                                "description": "nav=web page | play=video mp4/m3u8 or YouTube/Vimeo watch URL (auto-embeds on screen) | image=still jpg/png | audio | cast=auto-route by content | shortcut=named /apps/<name>/ app | stop | layout | zoom | unzoom | uplink | uplink-stop | say=narrate text aloud on the display | list=enumerate displays | status=one screen's live state (default nav). Pick by content type.",
                             },
                             "url": {
                                 "type": "string",
-                                "description": "Target URL for nav/play/image/audio. Not needed for stop/layout/zoom/unzoom.",
+                                "description": "Target URL for nav/play/image/audio/cast, or the app name for action='shortcut'. Not needed for stop/layout/zoom/unzoom/say/list/status.",
+                            },
+                            "text": {
+                                "type": "string",
+                                "description": "For action='say': short spoken line, plain text, under ~200 chars.",
                             },
                             "pane": {
                                 "type": "integer",
@@ -2619,34 +2629,6 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "description": "Required for action='uplink' (camera capture) and for interrupting a busy screen (capture/camwall/playing — see needs_confirm) — set true only after the user explicitly confirms.",
                             },
                         },
-                        "required": ["screen"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "vcast_say",
-                    "description": (
-                        "Speak a short narration line out loud on a numbered vcast display (the screen's own "
-                        "speech synthesis — e.g. the iPad's speaker). Use it to narrate what you are doing on "
-                        "that screen: right after cast_to_screen say what you loaded, before gev_command say "
-                        "what the map is about to do, on long waits say what is in progress. Keep it to one "
-                        "short sentence, in the SAME language the user is speaking (Thai user -> Thai text; "
-                        "the display's voice mirrors the session language). If the result reports speak-blocked, the display hasn't been tapped "
-                        "for audio yet — tell the user to tap 'audio' once on that screen, then retry once."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "screen": {
-                                "type": "integer",
-                                "description": "Screen number to speak on (the same screen you are acting on).",
-                            },
-                            "text": {
-                                "type": "string",
-                                "description": "Short spoken line, plain text, under ~200 chars.",
-                            },
-                        },
-                        "required": ["screen", "text"],
                         "additionalProperties": False,
                     },
                 }, {
@@ -2668,7 +2650,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "screen": {
                                 "type": "integer",
-                                "description": "Screen number (the # shown on the display and in vcast_list).",
+                                "description": "Screen number (the # shown on the display and in cast_to_screen action='list').",
                             },
                         },
                         "required": ["screen"],
@@ -2730,7 +2712,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "screen": {
                                 "type": "integer",
-                                "description": "Screen number (the # shown on the display and in vcast_list).",
+                                "description": "Screen number (the # shown on the display and in cast_to_screen action='list').",
                             },
                             "mode": {
                                 "type": "string",
@@ -2782,7 +2764,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "screen": {
                                 "type": "integer",
-                                "description": "vcast screen number (vcast_list) — default 1.",
+                                "description": "vcast screen number (cast_to_screen action='list') — default 1.",
                             },
                             "pane": {
                                 "type": "integer",
@@ -2860,7 +2842,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "ordered stops with lat/lon, narration lines, and optional PiP camera frame URLs. "
                         "The card is a script, not self-running — execute it: per stop call "
                         "gev_command fly_to_location {latitude, longitude}, annotate_map to mark it, "
-                        "vcast_say the 'say' line, and cast_to_screen(action='image', url=frame_url, pane=1) "
+                        "cast_to_screen(action='say', text=...) the 'say' line, and cast_to_screen(action='image', url=frame_url, pane=1) "
                         "when the stop carries one. Tours with route_points use annotate_map type='route' "
                         "then fly_route. Make sure GEV is on the screen first "
                         "(cast_to_screen nav .../apps/gev/). Cameras during a tour: "
@@ -5132,7 +5114,16 @@ class GeminiLiveProvider(RealtimeProvider):
                             _cargs_probe.get("screen")
                             or str(_cargs_probe.get("target") or "")
                             .strip().lower() in ("tv", "screen"))
-                        if call.name in ACTUATING_TOOLS or (
+                        # cast_to_screen's absorbed read seats (list/status —
+                        # vcast_list/vcast_status were not actuating) don't
+                        # consume the actuation budget; 'say' keeps
+                        # vcast_say's actuating seat (tools-merge-display).
+                        _cast_read = (
+                            call.name == "cast_to_screen"
+                            and str(_cargs_probe.get("action") or "")
+                            .strip().lower() in ("list", "status"))
+                        if (call.name in ACTUATING_TOOLS
+                                and not _cast_read) or (
                                 call.name == "ada_camera_snapshot"
                                 and _display_push):
                             actuations_this_turn += 1

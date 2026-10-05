@@ -285,6 +285,18 @@ _ALIASES: dict[str, str] = {
     "calendar_shift_overdue": "calendar_write",
     "ada_daily_summary": "plan_day",
     "ada_weekly_comparison": "plan_day",
+    # display family — tools-merge-display (2026-10-05): 8 -> 2.
+    # cast_to_screen keeps its name and absorbs the vcast_* narrator/
+    # readers into action= (say|list|status|shortcut); vcast_snapshot
+    # stays separate (the verify-after-act loop needs its own name) and
+    # vcast_gesture is a distinct subsystem. vcast_status/vcast_shortcut
+    # were census-counted journal names (2 and 1 calls in 7d) with no
+    # committed implementation — they alias to the matching action= seats
+    # so a stale call still lands somewhere sane.
+    "vcast_say": "cast_to_screen",
+    "vcast_list": "cast_to_screen",
+    "vcast_status": "cast_to_screen",
+    "vcast_shortcut": "cast_to_screen",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the
@@ -319,6 +331,11 @@ _ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
     # daily digest so ada_daily_summary keeps its exact return contract.
     "ada_daily_summary": {"period": "digest"},
     "ada_weekly_comparison": {"period": "week"},
+    # display: the absorbed name implies cast_to_screen's action=.
+    "vcast_say": {"action": "say"},
+    "vcast_list": {"action": "list"},
+    "vcast_status": {"action": "status"},
+    "vcast_shortcut": {"action": "shortcut"},
 }
 
 def _resolve_alias(name: str) -> tuple[str, dict[str, Any]]:
@@ -366,6 +383,15 @@ def _alias_call_args(alias: str, args: dict[str, Any]) -> dict[str, Any]:
         # day=<window end>, days) — 'end' isn't a plan_day param.
         if "day" not in args and "end" in args:
             args["day"] = args.pop("end")
+    elif alias == "vcast_shortcut":
+        # The phantom census name's arg spellings (name/app/shortcut)
+        # all funnel into url — cast_to_screen resolves an app short
+        # name to its /apps/<name>/ page.
+        if "url" not in args:
+            for k in ("name", "app", "shortcut"):
+                if k in args:
+                    args["url"] = args.pop(k)
+                    break
     return args
 
 
@@ -1022,6 +1048,16 @@ class ToolRunner:
         _affirm_token = _CALLER_VERIFIED_AFFIRM.set(
             bool(call_args.pop("_verified_affirm", None)))
         policy_ident = self.policy_identity()
+        # tools-merge-display (2026-10-05): cast_to_screen's absorbed
+        # seats — action='list'/'status' were ungated reads (vcast_list /
+        # the phantom vcast_status) and 'say' (vcast_say) was actuating
+        # but never gated or secondary-blocked. The merged actions keep
+        # exactly the access they had; screen-ownership ACL still runs
+        # inside the method where it always did.
+        cast_ungated = (
+            name == "cast_to_screen" and str(
+                call_args.get("action") or "").lower()
+            in {"list", "status", "say"})
         if self._is_secondary_turn():
             action = str(call_args.get("action") or "").lower()
             blocked = self._secondary_blocked_tools()
@@ -1054,7 +1090,8 @@ class ToolRunner:
             if (name in blocked and name != "ada_enroll_speaker"
                     and not nonbank_remember
                     and not guest_scope_search
-                    and not cms_note_edit) or (
+                    and not cms_note_edit
+                    and not cast_ungated) or (
                 name == "ada_persona" and action in ("set", "reset")
                 and "persona_write" in blocked
             ):
@@ -1073,9 +1110,10 @@ class ToolRunner:
             if name in CAPTURE_CONFIRMED_TOOLS:
                 # camera-capture gate first (uplink/wall-start/cctv-snapshot);
                 # cast_to_screen then still runs the control gate (read-only,
-                # rate limit)
+                # rate limit) — except the absorbed read/narrate actions,
+                # which were never control-gated.
                 self._check_capture_confirmed(name, call_args, confirm[0])
-                if name == "cast_to_screen":
+                if name == "cast_to_screen" and not cast_ungated:
                     await self._check_control_allowed(name, call_args, *confirm)
             elif name in CONTROL_TOOLS:
                 await self._check_control_allowed(name, call_args, *confirm)
@@ -1202,10 +1240,11 @@ class ToolRunner:
         return result
 
     # Tools that already carry capture state — a reminder on them would
-    # be noise (the capture IS the subject of these calls).
+    # be noise (the capture IS the subject of these calls). The absorbed
+    # vcast_list/vcast_say names ride in as cast_to_screen actions, so
+    # the canonical name covers them (tools-merge-display).
     _CAPTURE_AWARE_TOOLS = {
-        "cast_to_screen", "cctv_wall", "vcast_list",
-        "ada_camera_snapshot", "vcast_say",
+        "cast_to_screen", "cctv_wall", "ada_camera_snapshot",
     }
     _capture_reminded_ts = 0.0
 
@@ -4741,8 +4780,9 @@ class ToolRunner:
             n = int(screen)
         except (TypeError, ValueError):
             return {"ok": False,
-                    "error": "screen number required — call vcast_list "
-                             "to see registered displays."}
+                    "error": "screen number required — call "
+                             "cast_to_screen(action='list') to see "
+                             "registered displays."}
         base = os.environ.get(
             "VCAST_API",
             "https://tony-dell.taila0626a.ts.net/api/input-bridge")
@@ -4757,7 +4797,8 @@ class ToolRunner:
         if not out.get("delivered", 0):
             return {"ok": False,
                     "error": f"screen {n} is not connected — "
-                             "check vcast_list for online displays."}
+                             "check cast_to_screen(action='list') for "
+                             "online displays."}
 
         def _post(url: str, payload: dict):
             req = urllib.request.Request(
@@ -4822,7 +4863,8 @@ class ToolRunner:
         error state if the camera or mode is unavailable)."""
         import asyncio
         if screen is None:
-            return {"error": "screen required — call vcast_list"}
+            return {"error": "screen required — call "
+                             "cast_to_screen(action='list')"}
         mode = str(mode or "off").lower()
         if mode not in ("off", "room", "hand"):
             return {"error": "mode must be off|room|hand"}
@@ -4836,7 +4878,7 @@ class ToolRunner:
                "delivered": out.get("delivered", 0)}
         if not res["delivered"]:
             res["warning"] = ("screen connected but nothing delivered — "
-                              "check vcast_list")
+                              "check cast_to_screen(action='list')")
         # give the page a beat to report its new state, then echo it back
         await asyncio.sleep(1.5)
         try:
@@ -4923,8 +4965,8 @@ class ToolRunner:
     async def gev_tour(self, tour: str | None = None) -> dict[str, Any]:
         """Named GEV flyover tours — list them (tour=None) or return the
         executable card for one. A tour card is NOT self-running: drive
-        each stop with gev_command/vcast_say/cast_to_screen per the card's
-        per_stop recipe."""
+        each stop with gev_command/cast_to_screen(action='say')/casts per
+        the card's per_stop recipe."""
         try:
             data = json.loads(self._TOURS_PATH.read_text())
         except Exception as exc:
@@ -4952,7 +4994,7 @@ class ToolRunner:
             "COORDINATES {annotations:[{type:'pin', latitude:<lat>, "
             "longitude:<lon>, label:<label>}]} — place-name resolution "
             "is unreliable, never annotate by 'target' name → "
-            "vcast_say narration from 'say'. If the stop has a "
+            "cast_to_screen(action='say', text=...) narration from 'say'. If the stop has a "
             "frame_url, also cast_to_screen(action='image', url=frame_url, "
             "pane=1) to pin the nearest CCTV camera next to the map. "
             "If the tour has route_points instead of stops: annotate_map "
@@ -5134,16 +5176,23 @@ class ToolRunner:
             pass
         return None
 
-    async def cast_to_screen(self, screen: int, action: str = "nav",
+    async def cast_to_screen(self, screen: int | None = None,
+                             action: str = "nav",
                              url: str = "", pane: int | None = None,
                              panes: int | None = None,
                              mode: str | None = None,
                              interval: int | None = None,
+                             text: str = "",
+                             shortcut: str = "",
                              confirmed: bool = False) -> dict[str, Any]:
         """Cast to a numbered vcast virtual display (NOT the TV).
         action: nav|play|image|audio|stop|layout|zoom|unzoom|uplink|
-        uplink-stop. url required except for stop/layout/zoom/unzoom/
-        uplink/uplink-stop.
+        uplink-stop, plus the merged vcast_* seats (tools-merge-display):
+        'cast' (auto-route by content), 'say' (was vcast_say — narrate on
+        the display), 'list' (was vcast_list — enumerate displays),
+        'status' (was vcast_status — one screen's live state) and
+        'shortcut' (was vcast_shortcut — nav a named /apps/<name>/ app).
+        url required for nav/play/image/audio/cast; text for say.
 
         action='image' is for still frames (JPEG/PNG) — optional
         interval=N re-fetches the image every N seconds (good for
@@ -5166,7 +5215,29 @@ class ToolRunner:
         single-pane idle."""
         import asyncio
         action = str(action or "nav").lower()
+        # Merged vcast_* seats — the reads run without a screen and before
+        # the owner check (listing displays was never owner-locked); 'say'
+        # delegates to the absorbed vcast_say body, which owner-checks the
+        # screen itself.
+        if action == "list":
+            return await self.vcast_list()
+        if action == "status":
+            return await self._vcast_display_status(screen)
+        if screen is None:
+            return {"ok": False, "delivered": 0,
+                    "error": "screen number required — "
+                             "cast_to_screen(action='list') shows the "
+                             "registered displays."}
         screen = int(screen)
+        if action == "say":
+            return await self.vcast_say(screen, text)
+        if action == "shortcut":
+            url = self._cast_shortcut_url(url or shortcut)
+            if not url:
+                return {"ok": False, "delivered": 0, "error": (
+                    "action='shortcut' needs an app name ('gev', "
+                    "'camwall', …) or a URL/path in url")}
+            action = "nav"
         await self._check_screen_owner(screen, self._memory_identity())
         # Interrupt gate: replacing content on a busy screen (camera
         # capture, camwall zone, playing stream) needs the user's yes —
@@ -5175,7 +5246,10 @@ class ToolRunner:
         # content panes it can carry (a capture lease isn't clobbered by
         # regridding). zoom/unzoom/stop-of-pane are user-directed UI ops.
         busy = None
-        if action in {"nav", "play", "image", "audio", "uplink"}:
+        # 'cast' is checked pre-routing too — it always lands on a
+        # content action, and an unprobed 'cast' onto a busy screen must
+        # confirm just like a nav/play would.
+        if action in {"nav", "play", "image", "audio", "uplink", "cast"}:
             busy = await self._screen_busy(screen, pane)
             if busy and confirmed is not True:
                 return {"ok": False, "delivered": 0,
@@ -5190,6 +5264,7 @@ class ToolRunner:
                             "first — that releases it without confirm.")}
         probe: dict[str, Any] = {}
         auto_image = False
+        cast_routed = False
         if action == "layout":
             msg: dict[str, Any] = {"type": "layout",
                                    "panes": int(panes or 1)}
@@ -5202,9 +5277,37 @@ class ToolRunner:
             msg = {
                 "type": "uplink-start" if action == "uplink" else action}
         else:
+            if action == "cast":
+                # Generic cast: pick the pane type from what the URL
+                # actually serves — a still image in <video> renders
+                # black, a page in an image pane never loads.
+                if not url:
+                    raise ValueError("url is required for action='cast'")
+                if str(url).startswith(("http://", "https://")):
+                    try:
+                        probe = await asyncio.to_thread(
+                            self._frame_check, str(url))
+                    except Exception:
+                        probe = {}
+                ctype = str(probe.get("content_type") or "").lower()
+                if ctype.startswith("image/"):
+                    action = "image"
+                elif ctype.startswith("audio/"):
+                    action = "audio"
+                elif (ctype.startswith("video/") or "mpegurl" in ctype
+                      or re.search(
+                          r"(youtube\.com|youtu\.be|youtube-nocookie\.com"
+                          r"|vimeo\.com)", str(url))
+                      or re.search(
+                          r"\.(m3u8|mp4|webm|mov|m4v)(\?|#|$)",
+                          str(url), re.I)):
+                    action = "play"
+                else:
+                    action = "nav"
+                cast_routed = True
             if action not in {"nav", "play", "image", "audio"}:
                 raise ValueError(
-                    f"unknown action {action!r} (nav|play|image|audio|stop|layout|zoom|unzoom|uplink|uplink-stop)")
+                    f"unknown action {action!r} (cast|nav|play|image|audio|stop|layout|zoom|unzoom|uplink|uplink-stop|say|list|status|shortcut)")
             if not url:
                 raise ValueError("url is required for " + action)
             # Pre-flight for nav/play: probe the target BEFORE pubbing —
@@ -5213,8 +5316,8 @@ class ToolRunner:
             # (2026-10-01: Ada cast a JPEG snapshot with action='play' and
             # an invented URL that didn't even resolve; screen 1 just
             # stayed on the previous camera with no visible error).
-            if action in {"nav", "play"} and str(url).startswith(
-                    ("http://", "https://")):
+            if (action in {"nav", "play"} and not probe
+                    and str(url).startswith(("http://", "https://"))):
                 try:
                     probe = await asyncio.to_thread(
                         self._frame_check, str(url))
@@ -5273,6 +5376,10 @@ class ToolRunner:
             out["action_fixed"] = (
                 "url serves a still image — cast as 'image', not 'play' "
                 "(a video element cannot decode it and shows black)")
+        if cast_routed:
+            out["action_routed"] = (
+                f"action='cast' resolved to '{action}' from the URL's "
+                "content type")
         # capture lease bookkeeping — the relay's /capture state is ground
         # truth for the ask-before-stopping contract; the display also POSTs
         # on uplink-start, but this covers display-offline cases
@@ -5338,6 +5445,48 @@ class ToolRunner:
         except Exception:
             pass
         return out
+
+    async def _vcast_display_status(
+            self, screen: int | None = None) -> dict[str, Any]:
+        """cast_to_screen(action='status') — the seat for the absorbed
+        vcast_status census name: one screen's live state (what it shows,
+        panes, its capture lease and camwall zone). No screen -> the same
+        full report as action='list'."""
+        data = await self.vcast_list()
+        if screen is None:
+            return data
+        n = int(screen)
+        for s in data.get("screens") or []:
+            if s.get("screen") == n:
+                out = dict(s)
+                out["ok"] = True
+                caps = data.get("active_captures") or {}
+                if str(n) in caps:
+                    out["capture"] = caps[str(n)]
+                zones = [z for z, v in (data.get("camwall_zones") or {})
+                         .items() if v.get("screen") == n]
+                if zones:
+                    out["camwall_zones"] = zones
+                if data.get("state_mismatch"):
+                    out["state_mismatch"] = data["state_mismatch"]
+                return out
+        return {"ok": False,
+                "error": f"screen {n} is not a registered display",
+                "screens": [s.get("screen")
+                            for s in data.get("screens") or []]}
+
+    def _cast_shortcut_url(self, target: str) -> str | None:
+        """cast_to_screen(action='shortcut') — resolve a short app name
+        to its same-origin /apps/<name>/ page (the display resolves it
+        against whatever origin served it — LAN or tailnet). Full URLs
+        and / paths pass through unchanged."""
+        t = str(target or "").strip()
+        if not t:
+            return None
+        if t.startswith(("http://", "https://", "/")):
+            return t
+        slug = re.sub(r"[^a-z0-9_-]+", "", t.lower())
+        return f"/apps/{slug}/" if slug else None
 
     @staticmethod
     def _frame_check(url: str) -> dict[str, Any]:

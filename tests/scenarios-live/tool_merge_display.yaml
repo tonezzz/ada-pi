@@ -1,0 +1,39 @@
+# tools-merge-display regression (2026-10-05): the display group went
+# 8 -> 2 canonical seats + vcast_gesture unchanged — cast_to_screen
+# absorbs vcast_say/vcast_list/vcast_status/vcast_shortcut
+# (action=say|list|status|shortcut, plus content-routed 'cast'),
+# vcast_snapshot stays separate (the verify-after-act loop needs its
+# own name) and absorbs the GEV remote command capture_frame.
+# The absorbed names survive as tool_runner._ALIASES rows, hidden from
+# the declared surface. Live-side this scenario checks the canonical
+# calls still fire for the absorbed intents — a call landing under the
+# legacy name would mean the model is being shown a stale declaration.
+# (calls_any on the legacy names still passes via LEGACY_TOOL_ALIASES —
+# the canonical entries here assert the new surface directly.)
+name: tool_merge_display
+tier: smoke
+turns:
+  - user: "Ada, what virtual screens are available for casting?"
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+  - user: "Say 'screen check one two' out loud on screen 1."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+  - user: "What is screen 1 showing right now — its current state?"
+    expect:
+      calls_any: [cast_to_screen, vcast_snapshot]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+  - user: "Turn on hand tracking on screen 1 for a moment."
+    expect:
+      calls_any: [vcast_gesture]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8

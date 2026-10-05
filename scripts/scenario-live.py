@@ -167,6 +167,30 @@ LEGACY_TOOL_ALIASES: dict[str, str] = {
     "cms_note_update": "cms_edit",
     "cms_delete_page": "cms_edit",
     "cms_automation": "cms_edit",
+    "calendar_list_events": "calendar_read",
+    "calendar_list_calendars": "calendar_read",
+    "calendar_freebusy": "calendar_read",
+    "calendar_create_event": "calendar_write",
+    "calendar_delete_event": "calendar_write",
+    "calendar_shift_overdue": "calendar_write",
+    "ada_daily_summary": "plan_day",
+    "ada_weekly_comparison": "plan_day",
+    "vcast_say": "cast_to_screen",
+    "vcast_list": "cast_to_screen",
+    "vcast_status": "cast_to_screen",
+    "vcast_shortcut": "cast_to_screen",
+}
+
+# Implied args an absorbed name carries into the canonical call
+# (mirror of tool_runner._ALIAS_ARG_DEFAULTS). call_args_contain uses
+# these to tighten canonical-side matches: a vcast_say arg check must
+# only match cast_to_screen(action='say') calls, not a stray nav cast.
+# Keep in sync with _ALIAS_ARG_DEFAULTS.
+LEGACY_ARG_DEFAULTS: dict[str, dict] = {
+    "vcast_say": {"action": "say"},
+    "vcast_list": {"action": "list"},
+    "vcast_status": {"action": "status"},
+    "vcast_shortcut": {"action": "shortcut"},
 }
 
 _VCAST_API = os.environ.get(
@@ -174,15 +198,21 @@ _VCAST_API = os.environ.get(
 
 
 def _expand_families(names: list | None) -> list[str]:
-    out: list[str] = []
+    # Alias expansion applies to family members too — '@verify' carries
+    # vcast_list, which now lands as cast_to_screen(action='list')
+    # (tools-merge-display).
+    flat: list[str] = []
     for n in names or []:
         if isinstance(n, str) and n.startswith("@"):
-            out.extend(TOOL_FAMILIES.get(n[1:], [n]))
+            flat.extend(TOOL_FAMILIES.get(n[1:], [n]))
         else:
-            out.append(n)
-            canonical = LEGACY_TOOL_ALIASES.get(n)
-            if canonical:
-                out.append(canonical)
+            flat.append(n)
+    out: list[str] = []
+    for n in flat:
+        out.append(n)
+        canonical = LEGACY_TOOL_ALIASES.get(n)
+        if canonical:
+            out.append(canonical)
     return out
 
 # Date tokens expand in Asia/Bangkok — the container/host clock may be UTC
@@ -383,16 +413,32 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
     # narration content: a listed tool's call args must contain each
     # substring — proves the say/prompt carried the place, not filler
     for tool, subs in (expect.get("call_args_contain") or {}).items():
+        # absorbed names land as their canonical tool (tools-merge-*):
+        # a vcast_say arg check matches cast_to_screen calls that carry
+        # the implied action='say' seat, not just any cast_to_screen.
+        canonical = LEGACY_TOOL_ALIASES.get(tool)
+        implied = LEGACY_ARG_DEFAULTS.get(tool) or {}
         for sub in subs:
             # a str entry is required; a list entry is any-of alternates
             # (e.g. narration may name the stop in Thai OR English)
             alts = sub if isinstance(sub, list) else [sub]
-            if not any(c.get("name") == tool and
-                       any(a in json.dumps(c.get("args") or {},
-                                           ensure_ascii=False,
-                                           default=str)
-                           for a in alts)
-                       for c in calls):
+            ok = False
+            for c in calls:
+                cname, cargs = c.get("name"), c.get("args") or {}
+                if cname == tool:
+                    seat = True
+                elif canonical and cname == canonical:
+                    seat = all(cargs.get(k) == v
+                               for k, v in implied.items())
+                else:
+                    continue
+                if seat and any(
+                        a in json.dumps(cargs, ensure_ascii=False,
+                                        default=str)
+                        for a in alts):
+                    ok = True
+                    break
+            if not ok:
                 failures.append(
                     f"call_args_contain: none of {alts} in "
                     f"{tool} args")
