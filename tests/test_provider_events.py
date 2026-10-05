@@ -215,6 +215,45 @@ class UserConfirmedGateTests(unittest.TestCase):
         self.assertFalse(self.provider._user_confirmed("save that note"))
         self.assertFalse(self.provider._user_confirmed(""))
 
+    # Vetoes — real divergences from jev-corpus (2026-10-04 report).
+
+    def test_explicit_negation_is_not_consent(self) -> None:
+        for text in (
+            "no",
+            "no wait",
+            "no, actually don't",
+            "เอ๊ะ! No. อือ อือ",
+            "ไม่เอา",
+            "อย่าเพิ่ง",
+            "ยกเลิก",
+        ):
+            self.assertFalse(self.provider._user_confirmed(text), text)
+
+    def test_approval_question_is_not_consent(self) -> None:
+        for text in (
+            "อย่างงั้น ผม อนุมัติ ได้ เลย ไหม",
+            "should I publish it, yes?",
+            "เอาเลยมั้ย",
+        ):
+            self.assertFalse(self.provider._user_confirmed(text), text)
+
+    def test_confirm_verb_with_object_is_not_consent(self) -> None:
+        self.assertFalse(self.provider._user_confirmed(
+            "Confirm the camera actually moved — ask it for the current view state."))
+        self.assertFalse(self.provider._user_confirmed(
+            "Confirm — what is it tracking right now? Ask the map."))
+
+    def test_no_need_grant_still_confirms(self) -> None:
+        # "go ahead, no need to wait for my confirmation" — ไม่ต้อง is
+        # granting, not denying.
+        self.assertTrue(self.provider._user_confirmed(
+            "ต่อได้เลยไม่ต้องรอผมยืนยัน"))
+
+    def test_affirmation_before_commentary_still_confirms(self) -> None:
+        # "yes" opens the turn; the trailing "don't" is commentary.
+        self.assertTrue(self.provider._user_confirmed(
+            "Yes, replace it — I don't need the wall right now."))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -234,6 +234,25 @@ _CONFIRM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Vetoes checked before the affirm regex — the gate is asymmetric: a
+# false "yes" actuates on no consent, a false "no" just re-asks.
+# (jev-corpus divergences 2026-10-04: 'เอ๊ะ! No. …' matched อือ,
+# '…อนุมัติได้เลยไหม' matched ได้เลย, 'Confirm the camera moved'
+# matched confirm-as-verb.)
+_CONFIRM_NEG_RE = re.compile(
+    r"\b(no|nope|nah|not|don't|dont|do not|cancel|wait|hold on|stop)\b|"
+    # ไม่ต้อง ("no need to …") is granting, not denying — excluded.
+    r"อย่า|หยุด|ยกเลิก|ไม่(?!ต้อง)",
+    re.IGNORECASE,
+)
+_CONFIRM_QUESTION_RE = re.compile(r"[?？]\s*$|ไหม\s*$|มั้ย\s*$")
+# "confirm" as a verb with an object ("Confirm the camera moved —") is an
+# instruction to Ada, not an affirmation of a pending ask.
+_CONFIRM_VERB_RE = re.compile(
+    r"\bconfirm(ed)?\b(?=\s+(the|a|an|that|what|it|your|my|this)\b|\s*[—–-])",
+    re.IGNORECASE,
+)
+
 DEVIN_INSTRUCTIONS = (
     " You can dispatch unattended Devin coding sessions on tony-dell: "
     "devin_dispatch starts one in a dedicated git worktree (repos: chaba, ada-pi, "
@@ -1128,9 +1147,18 @@ class GeminiLiveProvider(RealtimeProvider):
         text = self._confirm_source_text(input_transcript)
         if not text or self._is_junk_turn(text):
             return False
-        if len(text) <= self._CONFIRM_MAX_TURN:
-            return bool(_CONFIRM_RE.search(text))
-        return bool(_CONFIRM_RE.search(text[: self._CONFIRM_LEAD_WINDOW]))
+        # A turn that ends as a question is not consent.
+        if _CONFIRM_QUESTION_RE.search(text):
+            return False
+        span = text if len(text) <= self._CONFIRM_MAX_TURN else text[: self._CONFIRM_LEAD_WINDOW]
+        span = _CONFIRM_VERB_RE.sub("", span)
+        aff = _CONFIRM_RE.search(span)
+        if not aff:
+            return False
+        neg = _CONFIRM_NEG_RE.search(span)
+        # Whichever stance opens the turn wins: "yes — but don't worry"
+        # is consent with commentary, "no, uh-huh" is a denial.
+        return not (neg and neg.start() < aff.start())
 
     def _jev_confirm_probe(self, transcript: str, regex_says: bool,
                            tool: str) -> None:
