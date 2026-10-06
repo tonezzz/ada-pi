@@ -34,10 +34,13 @@ turns:
       timeout_s: 90
       settle_s: 6
 
+  # An explicit ask isn't confirm-gated (2026-09-29 contract) — she may
+  # have started the wall at T2 already. or_state waives the call
+  # assertions when the relay already shows the wall on screen 4.
   - user: "Yes, go ahead."
     expect:
       calls_any: [cctv_wall]
-      result_contains: ["'ok': True", "'zone': 'rama9'"]
+      or_state: {vcast_screen: 4, contains: "rama9"}
       response_nonempty: true
       timeout_s: 120
       settle_s: 6

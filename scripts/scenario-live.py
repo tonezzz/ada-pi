@@ -119,8 +119,33 @@ Failure taxonomy (decision: scenario-harness-false-negatives):
   `or_state:` — out-of-band outcome check; if the expected screen/relay
   state is already true, the turn passes even without a fresh cast call:
     or_state: {vcast_screen: 2, contains: "camwall"}
+  Accepts a list — every entry must hold for the call-assertion waiver
+  to apply (multi-screen turns):
+    or_state: [{vcast_screen: 6, contains: apps}, {vcast_screen: 7, contains: apps}]
   Empty-transcript turns are retried once automatically (live-API
   interrupts mid-tool-call are a known race) before scoring.
+
+Display-driver turns (no prompt to Ada — the driver itself actuates):
+  - vcast_display: {action: claim, name: flap-test}   rides the real
+      input-bridge pending→claim→paired→registered flow; the screen
+      number it lands on becomes the {flap_screen} token for later
+      turns. Claim failure aborts the run as INFRA (needs tailnet
+      trust + ADA_ADMIN_KEY on the relay).
+  - vcast_display: {action: flap, times: 3, down_s: 0.5}  drops and
+      re-registers the display ws — the relay must supersede the old
+      socket and replay remembered casts; asserts same-screen
+      re-registration and connected:true afterwards.
+  - vcast_display: {action: drop}    ws closes and stays down; asserts
+      the registry marks the screen offline promptly (no stale room).
+  - vcast_display: {action: reattach}  reconnects; lastCast replays.
+  - vcast_display: {action: pub, url: ...}  driver-side nav cast into the
+      display's room — while down it exercises the relay's
+      remember-and-replay-on-reconnect path (delivered:0, lastCast set).
+  - vcast_display: {action: release}   unclaims the name + revokes the
+      issued ada key; also auto-run in cleanup if a display is held.
+  The fake display applies play/image/nav/stop/layout msgs and
+  re-reports state like vcast-headless.mjs, so /displays keeps
+  reflecting what it 'shows'.
 """
 
 from __future__ import annotations
@@ -300,15 +325,17 @@ def _expand_tokens(obj: Any) -> Any:
     {real_screen} in all strings of the loaded scenario.
 
     {real_screen} = the real-browser lab display (vcast-real@N on idc02;
-    VCAST_REAL_SCREEN env, default 6). A string that is ONLY the token
-    expands to int so `gev_screen: "{real_screen}"` / `screens: [...]`
-    stay numeric; embedded uses ("fly screen {real_screen} to…") stay
-    strings."""
+    VCAST_REAL_SCREEN env, default 6). {real_screen2} = the second
+    real-browser display (VCAST_REAL_SCREEN2 env, default 7) — used by
+    multi-device scenarios. A string that is ONLY the token expands to
+    int so `gev_screen: "{real_screen}"` / `screens: [...]` stay numeric;
+    embedded uses ("fly screen {real_screen} to…") stay strings."""
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
     today = datetime.now(ZoneInfo("Asia/Bangkok")).date()
     tomo = today + timedelta(days=1)
     real = os.environ.get("VCAST_REAL_SCREEN") or "6"
+    real2 = os.environ.get("VCAST_REAL_SCREEN2") or "7"
     table = {
         "{today}": today.isoformat(),
         "{tomorrow}": tomo.isoformat(),
@@ -323,12 +350,13 @@ def _expand_tokens(obj: Any) -> Any:
         "{today_date_en}": f"{_MON_EN[today.month - 1]} {today.day}",
         "{tomorrow_date_en}": f"{_MON_EN[tomo.month - 1]} {tomo.day}",
         "{real_screen}": real,
+        "{real_screen2}": real2,
     }
     if isinstance(obj, str):
         for k, v in table.items():
             obj = obj.replace(k, v)
-        if obj.strip() == real:
-            return int(real)
+        if obj.strip() in (real, real2):
+            return int(obj.strip())
         return obj
     if isinstance(obj, list):
         return [_expand_tokens(x) for x in obj]
@@ -506,81 +534,100 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
                     f"{tool} args")
     # or_state: out-of-band outcome check — when the expected relay/screen
     # state already holds, waive tool-call assertions (the model may have
-    # correctly declined a redundant cast after checking state).
+    # correctly declined a redundant cast after checking state). Accepts
+    # a single spec or a list — each passing entry strips its own prefix
+    # set, so a multi-target turn waives only when ALL targets hold.
     or_state = expect.get("or_state")
-    if or_state and or_state.get("vcast_screen") is not None:
-        scr = _vcast_screen(int(or_state["vcast_screen"]))
-        contains = str(or_state.get("contains") or "")
-        if scr is None:
-            failures.append(
-                f"or_state: screen {or_state['vcast_screen']} "
-                "not registered on the relay")
+    specs = or_state if isinstance(or_state, list) else [or_state] if or_state else []
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        f, strip = _eval_or_state(spec)
+        if f:
+            failures += f
         else:
-            ok = True
-            if contains:
-                detail = str(scr.get("state_detail") or scr.get("state") or "")
-                if contains not in detail:
-                    ok = False
-                    failures.append(
-                        f"or_state: screen {or_state['vcast_screen']} state "
-                        f"{detail[:100]!r} does not contain {contains!r}")
-            if or_state.get("panes") is not None:
-                if int(scr.get("panes") or 0) != int(or_state["panes"]):
-                    ok = False
-                    failures.append(
-                        f"or_state: screen {or_state['vcast_screen']} panes="
-                        f"{scr.get('panes')} want {or_state['panes']}")
-            if or_state.get("state"):
-                if scr.get("state") != or_state["state"]:
-                    ok = False
-                    failures.append(
-                        f"or_state: screen {or_state['vcast_screen']} "
-                        f"state={scr.get('state')!r} want "
-                        f"{or_state['state']!r}")
-            if ok:
-                failures = [f for f in failures
-                            if not f.startswith(
-                                ("calls_any:", "calls:", "max_calls:"))]
-    if or_state and or_state.get("camwall_settings"):
-        # relay ground truth: the zone's stored settings must equal each
-        # k:v — the tool result doesn't echo applied settings
-        want_zone, want_kv = next(iter(or_state["camwall_settings"].items()))
-        zone_state = _camwall_zone(str(want_zone))
-        cur = (zone_state or {}).get("settings") or {}
-        # list values match by membership (any order/extras ok); scalars
-        # match exactly
-        bad = {}
-        for k, v in dict(want_kv).items():
-            got = cur.get(k)
-            if isinstance(v, list):
-                if not v:                      # [] asserts empty
-                    if isinstance(got, list) and got:
-                        bad[k] = v
-                else:
-                    # wanted item matches an element exactly OR as a
-                    # substring (effect strings carry suffixes like
-                    # "yolo:person,car@0.35")
-                    def _hit(x):
-                        return (isinstance(got, list) and
-                                any(x == g or str(x) in str(g)
-                                    for g in got))
-                    if any(not _hit(x) for x in v):
-                        bad[k] = v
-            elif got != v:
-                bad[k] = v
-        if zone_state is None:
-            failures.append(f"or_state: camwall zone {want_zone!r} "
-                            "absent from relay")
-        elif bad:
-            failures.append(
-                f"or_state: camwall {want_zone} settings {cur} "
-                f"missing/mismatched {bad}")
-        else:
-            failures = [f for f in failures
-                        if not f.startswith(
-                            ("calls_any:", "calls:", "max_calls:",
-                             "result_contains:"))]
+            failures = [x for x in failures if not x.startswith(strip)]
     return failures
+
+
+def _eval_or_state(spec: dict) -> tuple[list[str], tuple]:
+    """One or_state spec → (failures, prefixes stripped when it passes)."""
+    if spec.get("vcast_screen") is not None:
+        return _or_state_vcast(spec), ("calls_any:", "calls:", "max_calls:")
+    if spec.get("camwall_settings"):
+        return _or_state_camwall(spec), (
+            "calls_any:", "calls:", "max_calls:", "result_contains:")
+    return ["or_state: unsupported keys " + ",".join(sorted(spec))], ()
+
+
+def _or_state_vcast(or_state: dict) -> list[str]:
+    scr = _vcast_screen(int(or_state["vcast_screen"]))
+    contains = str(or_state.get("contains") or "")
+    out = []
+    if scr is None:
+        return [f"or_state: screen {or_state['vcast_screen']} "
+                "not registered on the relay"]
+    if contains:
+        detail = str(scr.get("state_detail") or scr.get("state") or "")
+        if contains not in detail:
+            out.append(
+                f"or_state: screen {or_state['vcast_screen']} state "
+                f"{detail[:100]!r} does not contain {contains!r}")
+    contains_any = or_state.get("contains_any")
+    if contains_any:
+        detail = str(scr.get("state_detail") or scr.get("state") or "")
+        if not any(c in detail for c in contains_any):
+            out.append(
+                f"or_state: screen {or_state['vcast_screen']} state "
+                f"{detail[:100]!r} contains none of {contains_any}")
+    if or_state.get("panes") is not None:
+        if int(scr.get("panes") or 0) != int(or_state["panes"]):
+            out.append(
+                f"or_state: screen {or_state['vcast_screen']} panes="
+                f"{scr.get('panes')} want {or_state['panes']}")
+    if or_state.get("state"):
+        if scr.get("state") != or_state["state"]:
+            out.append(
+                f"or_state: screen {or_state['vcast_screen']} "
+                f"state={scr.get('state')!r} want "
+                f"{or_state['state']!r}")
+    return out
+
+
+def _or_state_camwall(or_state: dict) -> list[str]:
+    # relay ground truth: the zone's stored settings must equal each
+    # k:v — the tool result doesn't echo applied settings
+    want_zone, want_kv = next(iter(or_state["camwall_settings"].items()))
+    zone_state = _camwall_zone(str(want_zone))
+    cur = (zone_state or {}).get("settings") or {}
+    # list values match by membership (any order/extras ok); scalars
+    # match exactly
+    bad = {}
+    for k, v in dict(want_kv).items():
+        got = cur.get(k)
+        if isinstance(v, list):
+            if not v:                      # [] asserts empty
+                if isinstance(got, list) and got:
+                    bad[k] = v
+            else:
+                # wanted item matches an element exactly OR as a
+                # substring (effect strings carry suffixes like
+                # "yolo:person,car@0.35")
+                def _hit(x):
+                    return (isinstance(got, list) and
+                            any(x == g or str(x) in str(g)
+                                for g in got))
+                if any(not _hit(x) for x in v):
+                    bad[k] = v
+        elif got != v:
+            bad[k] = v
+    if zone_state is None:
+        return [f"or_state: camwall zone {want_zone!r} "
+                "absent from relay"]
+    if bad:
+        return [f"or_state: camwall {want_zone} settings {cur} "
+                f"missing/mismatched {bad}"]
+    return []
 
 
 def _camwall_zone(zone: str) -> dict | None:
@@ -605,6 +652,266 @@ def _vcast_screen(n: int) -> dict | None:
         if int(s.get("screen") or -1) == n:
             return s
     return None
+
+
+class _InfraAbort(Exception):
+    """A driver-side primitive couldn't run — the environment can't
+    execute the scenario (e.g. vcast_display claim needs tailnet trust +
+    ADA_ADMIN_KEY on the relay). Reported as INFRA (exit 3)."""
+
+
+class _VcastDisplay:
+    """Driver-side fake display on the real input-bridge — the flap e2e
+    rides the genuine pending→claim→paired→registered flow, then
+    flaps/drops/reattaches the ws so the relay's supersede +
+    lastCast-replay path is exercised for real while Ada sees a normal
+    screen in /displays. State reporting mirrors vcast-headless.mjs."""
+
+    def __init__(self):
+        self.api = _VCAST_API.rstrip("/")
+        self.ws_url = re.sub(r"^http", "ws", self.api) + "/ws"
+        self.name = ""
+        self.device_id = ""
+        self.screen: int | None = None
+        self.api_key = ""
+        self.ws = None
+        self.reader: asyncio.Task | None = None
+        self.state, self.detail, self.panes = "idle", "", 1
+        self.replays: list[dict] = []    # msgs in the post-register window
+        self._replay_until = 0.0
+
+    async def _open(self):
+        self.ws = await websockets.connect(self.ws_url, max_size=8 * 1024 * 1024)
+
+    async def _send(self, obj: dict):
+        await self.ws.send(json.dumps(obj))
+
+    async def _wait_type(self, typ: str, timeout: float = 20.0) -> dict:
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            raw = await asyncio.wait_for(
+                self.ws.recv(), max(0.5, end - time.monotonic()))
+            m = json.loads(raw)
+            if m.get("type") == typ:
+                return m
+        raise TimeoutError(f"no '{typ}' from relay within {timeout}s")
+
+    def _post(self, path: str, body: dict) -> dict:
+        import urllib.request
+        req = urllib.request.Request(
+            self.api + path, data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        return json.loads(urllib.request.urlopen(req, timeout=15).read())
+
+    def _start_reader(self):
+        self._replay_until = time.monotonic() + 3.0
+        self.reader = asyncio.create_task(self._read_loop())
+
+    async def _read_loop(self):
+        """Apply cast msgs like vcast-headless and re-report state — the
+        registry entry keeps reflecting what this fake display 'shows'."""
+        try:
+            async for raw in self.ws:
+                try:
+                    m = json.loads(raw)
+                except Exception:
+                    continue
+                t = m.get("type")
+                if t in ("ping", "presence", "registered"):
+                    continue
+                if time.monotonic() < self._replay_until:
+                    self.replays.append(m)
+                if t in ("play", "image", "nav", "audio"):
+                    self.state, self.detail = t, str(m.get("url") or "")
+                elif t == "layout":
+                    self.panes = max(1, int(m.get("panes") or 1))
+                    self.state, self.detail = "layout", f"{self.panes}panes"
+                elif t == "stop":
+                    self.state, self.detail, self.panes = "idle", "", 1
+                elif t == "snap-request":
+                    await asyncio.to_thread(
+                        self._post, "/frame",
+                        {"screen": self.screen, "error": "simulated"})
+                    continue
+                else:
+                    continue
+                try:
+                    await self._send({"type": "state", "state": self.state,
+                                      "detail": self.detail})
+                except Exception:
+                    return
+        except Exception:
+            pass
+
+    async def _register(self):
+        await self._open()
+        await self._send({"type": "register-display",
+                          "api_key": self.api_key, "label": self.name,
+                          "device_id": self.device_id})
+        rm = await self._wait_type("registered")
+        n = int(rm.get("screen") or 0)
+        if n != self.screen:
+            raise RuntimeError(
+                f"re-registered as screen {n}, was {self.screen}")
+        self._start_reader()
+        # report the client's current state like the real page does on
+        # connect (it persists locally across ws reconnects)
+        await self._send({"type": "state", "state": self.state,
+                          "detail": self.detail})
+        # the relay replays remembered lastCast ~0.4s after 'registered'
+        await asyncio.sleep(1.5)
+
+    async def _drop_ws(self):
+        if self.reader:
+            self.reader.cancel()
+            self.reader = None
+        if self.ws is not None:
+            try:
+                await self.ws.close()
+            except Exception:
+                pass
+            self.ws = None
+
+    def _connected(self) -> bool:
+        s = _vcast_screen(int(self.screen or -1))
+        return bool(s and s.get("connected"))
+
+    async def claim(self, name: str, label: str) -> str:
+        self.name, self.device_id = name, f"flapdrv-{name}"
+        # clear a stale registration for this name (crashed prior run)
+        try:
+            await asyncio.to_thread(self._post, "/release", {"name": name})
+        except Exception:
+            pass
+        await self._open()
+        await self._send({"type": "register-display", "api_key": "",
+                          "label": label, "device_id": self.device_id})
+        pm = await self._wait_type("pending")
+        await asyncio.to_thread(
+            self._post, "/claim",
+            {"sid": pm["sid"], "name": name, "force": True})
+        pd = await self._wait_type("paired", 30)
+        self.api_key = str(pd.get("api_key") or "")
+        if not self.api_key:
+            raise RuntimeError("paired without an api_key")
+        await self._send({"type": "register-display",
+                          "api_key": self.api_key, "label": label,
+                          "device_id": self.device_id})
+        rm = await self._wait_type("registered")
+        self.screen = int(rm.get("screen") or 0)
+        if not self.screen:
+            raise RuntimeError("registered without a screen number")
+        self._start_reader()
+        await self._send({"type": "state", "state": self.state,
+                          "detail": self.detail})
+        return f"claimed screen {self.screen} as '{name}'"
+
+    async def flap(self, times: int = 1, down_s: float = 0.5) -> str:
+        for i in range(int(times)):
+            await self._drop_ws()
+            await asyncio.sleep(max(0.0, float(down_s)))
+            self.replays.clear()
+            await self._register()
+            if not self._connected():
+                raise RuntimeError(
+                    f"flap {i + 1}: screen {self.screen} still offline "
+                    "after re-register")
+        return (f"flapped x{int(times)} → same screen {self.screen}, "
+                f"replayed {len(self.replays)} msg(s)")
+
+    async def drop(self) -> str:
+        """Close the ws and stay down — flap detection: the relay must
+        mark the screen offline promptly, not leave a stale room."""
+        await self._drop_ws()
+        end = time.monotonic() + 8
+        while time.monotonic() < end:
+            if not self._connected():
+                return f"screen {self.screen} went offline"
+            await asyncio.sleep(0.5)
+        raise RuntimeError(
+            f"screen {self.screen} still connected after ws drop — "
+            "stale socket kept the registration live")
+
+    async def reattach(self) -> str:
+        if self.ws is not None:
+            await self._drop_ws()
+        self.replays.clear()
+        await self._register()
+        return (f"reattached as screen {self.screen}, "
+                f"replayed {len(self.replays)} msg(s)")
+
+    async def pub(self, url: str) -> str:
+        """Driver-side cast into the display's room — while the display is
+        down this exercises the relay's remember-and-replay-on-reconnect
+        path (delivered:0 but lastCast stored)."""
+        out = await asyncio.to_thread(
+            self._post, "/pub",
+            {"screen": self.screen, "msg": {"type": "nav", "url": url}})
+        return f"pub {url} → delivered={out.get('delivered')}"
+
+    async def release(self) -> str:
+        name = self.name
+        await self._drop_ws()
+        self.screen = None
+        out = await asyncio.to_thread(self._post, "/release", {"name": name})
+        return f"released '{name}' (revoked={out.get('revoked')})"
+
+
+async def _vcast_display_turn(disp, spec) -> tuple:
+    """Run one `vcast_display:` action → (display, result-summary)."""
+    spec = dict(spec or {})
+    action = str(spec.get("action") or "").lower()
+    name = str(spec.get("name") or "flap-test")
+    if action == "claim":
+        d = _VcastDisplay()
+        try:
+            msg = await d.claim(name, label=str(spec.get("label") or name))
+        except Exception as e:
+            try:
+                await d.release()   # revoke the key if claim got that far
+            except Exception:
+                pass
+            raise _InfraAbort(
+                f"vcast_display claim '{name}' failed (needs tailnet "
+                f"trust + ADA_ADMIN_KEY on the relay): {e}")
+        return d, msg
+    if disp is None:
+        raise RuntimeError(f"vcast_display {action} before any claim")
+    if action == "flap":
+        return disp, await disp.flap(int(spec.get("times") or 1),
+                                     float(spec.get("down_s") or 0.5))
+    if action == "drop":
+        return disp, await disp.drop()
+    if action == "reattach":
+        return disp, await disp.reattach()
+    if action == "pub":
+        return disp, await disp.pub(str(spec["url"]))
+    if action == "release":
+        return None, await disp.release()
+    raise RuntimeError(f"unknown vcast_display action {action!r}")
+
+
+def _subst_runtime(obj, rt: dict):
+    """Runtime tokens resolved mid-scenario — {flap_screen} becomes the
+    screen number a vcast_display claim actually got. A string that is
+    ONLY the token expands to the raw value (int) so numeric assertions
+    stay numeric."""
+    def w(o):
+        if isinstance(o, str):
+            for k, v in rt.items():
+                if v is None:
+                    continue
+                tok = "{" + k + "}"
+                if o.strip() == tok:
+                    return v
+                o = o.replace(tok, str(v))
+            return o
+        if isinstance(o, list):
+            return [w(x) for x in o]
+        if isinstance(o, dict):
+            return {k: w(v) for k, v in o.items()}
+        return o
+    return w(obj)
 
 
 def run_preflight(spec: dict) -> list[str]:
@@ -1072,6 +1379,8 @@ async def main() -> int:
     turn_log: list[dict[str, Any]] = []
     run_started = time.time()
     ws = None
+    vdisp: _VcastDisplay | None = None      # claimed by vcast_display turns
+    rtokens: dict = {"flap_screen": None}   # mid-scenario runtime tokens
     try:
         try:
             ws = await connect(url)
@@ -1081,6 +1390,7 @@ async def main() -> int:
         print("connected (ready)")
 
         for i, turn in enumerate(turns):
+            turn = _subst_runtime(turn, rtokens)
             expect = dict(turn.get("expect") or {})
             expect.setdefault("timeout_s", turn.get("timeout_s", 90))
             expect.setdefault("settle_s", turn.get("settle_s", 5))
@@ -1088,7 +1398,26 @@ async def main() -> int:
                 await asyncio.sleep(float(turn["sleep_s"]))
             turn_t0 = time.time()
             kind, prompt = "text", ""
-            if "reconnect" in turn:
+            if "vcast_display" in turn:
+                # driver-side display action — not an Ada turn; the action
+                # itself produces pass/fail (claim failure → INFRA abort).
+                kind = "vcast_display"
+                try:
+                    vdisp, msg = await _vcast_display_turn(
+                        vdisp, turn.get("vcast_display"))
+                    if vdisp is not None and vdisp.screen:
+                        rtokens["flap_screen"] = vdisp.screen
+                    failures = []
+                except _InfraAbort:
+                    print(f"turn {i + 1}: vcast_display → INFRA")
+                    raise
+                except Exception as exc:
+                    msg = str(exc)
+                    failures = [f"vcast_display: {exc}"]
+                prompt = f"{(turn.get('vcast_display') or {}).get('action')} → {msg}"
+                print(f"turn {i + 1}: vcast_display {prompt}")
+                events = [{"type": "_note", "text": prompt}]
+            elif "reconnect" in turn:
                 away = (turn.get("reconnect") or {}).get("away_s")
                 rurl = url
                 if away is not None:
@@ -1224,9 +1553,17 @@ async def main() -> int:
                 print(f"    transcript: {transcript[:300]!r}")
             else:
                 print(f"  ok ({n_tools} tool calls) ada: {transcript[:140]!r}")
+    except _InfraAbort as exc:
+        print(f"INFRA: {exc}")
+        return 3
     finally:
         if ws is not None:
             await ws.close()
+        if vdisp is not None:
+            try:
+                await vdisp.release()
+            except Exception as exc:
+                print(f"  cleanup: vcast_display release failed: {exc}")
         if not args.no_cleanup:
             mddb_url = os.environ.get("MDDB_BASE_URL") or "http://127.0.0.1:11023/v1"
             run_cleanup(spec, mddb_url.rstrip("/"), args.verbose)

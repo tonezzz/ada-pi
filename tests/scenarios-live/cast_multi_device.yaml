@@ -1,0 +1,76 @@
+name: cast-multi-device
+# Live scenario — multi-device simultaneous cast (vcast gap coverage).
+#
+# What it verifies:
+#   - one ask → casts land on BOTH target screens; the relay routes each
+#     into its own room (vcast-N), so two deliveries must be independent
+#   - ground truth: BOTH registries show the page — or_state is a list
+#     here, so the call-assertion waiver applies only when every target
+#     holds; one screen landing without the other is a real failure
+#   - a busy target asks first (needs_confirm is the correct gate, the
+#     confirm turn tolerates that path)
+#   - teardown returns both screens to idle
+#
+# Targets {real_screen} + {real_screen2} — the real-browser lab displays
+# (vcast-real@N on idc02; defaults 6+7, override with VCAST_REAL_SCREEN /
+# VCAST_REAL_SCREEN2). Offline target → INFRA, not a model regression.
+#
+# tier: full — actuates two real displays.
+
+tier: full
+
+preflight:
+  - {check: vcast_online, screens: ["{real_screen}", "{real_screen2}"]}
+
+turns:
+  # Warmup — absorbs the first-turn-after-connect greeting race.
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  # T1 — one ask, two screens. She may deliver both casts immediately,
+  # or ask first if a target is busy — both are correct; T2 settles it.
+  - user: "Ada, put the apps index page — slash apps slash on tony-dell — on screens {real_screen} and {real_screen2} at the same time."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      max_calls: 12
+      timeout_s: 120
+      settle_s: 8
+
+  # T2 — confirm-or-noop turn. If T1 already delivered both, saying yes
+  # must not produce wrong state; if it asked, the casts land now. The
+  # or_state list is the pass condition: both screens must show the page.
+  - user: "Yes — put it on both screens."
+    expect:
+      calls_any: [cast_to_screen]
+      or_state:
+        - {vcast_screen: "{real_screen}", contains: "apps"}
+        - {vcast_screen: "{real_screen2}", contains: "apps"}
+      response_nonempty: true
+      max_calls: 12
+      timeout_s: 120
+      settle_s: 8
+
+  # T3 — "are both up?" must re-verify, not answer from memory.
+  # cast_to_screen covers the action='list'/'status' verify seats.
+  - user: "Are both screens actually showing it right now?"
+    expect:
+      calls_any: ["@verify", cast_to_screen]
+      response_nonempty: true
+      max_calls: 10
+      timeout_s: 120
+      settle_s: 8
+
+  # T4 — teardown: both screens idle.
+  - user: "Thanks — stop both screens, back to idle."
+    expect:
+      calls_any: [cast_to_screen]
+      or_state:
+        - {vcast_screen: "{real_screen}", state: idle}
+        - {vcast_screen: "{real_screen2}", state: idle}
+      response_nonempty: true
+      max_calls: 10
+      timeout_s: 90
+      settle_s: 8

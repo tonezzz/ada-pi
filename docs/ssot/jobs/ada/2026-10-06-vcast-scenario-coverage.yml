@@ -1,0 +1,87 @@
+# SSOT Job: vcast scenario coverage — cast suite gap scenarios
+# Card: vcast-scenarios (chaba kanban). Dispatch 20261006-081312 (work),
+# committed by re-dispatch 20261006-094149 after 081312's worktree was
+# left dirty at session end (auto-merge requires a commit).
+
+title: Cast suite — multi-device / restart-window / flap-e2e gap scenarios
+subtitle: New vcast_display driver primitive runs the real claim/flap/release lifecycle on the live input-bridge
+
+planning:
+  goal: |
+    Keep the named seven cast scenarios green and add the three gap
+    scenarios the vcast program was missing: multi-device simultaneous
+    cast, cast during the restart window, and flap detection end-to-end.
+  decisions: |
+    - "cast during HA restart" is exercised as the ada-ha SERVICE restart
+      window — the reconnect turn drops and re-establishes the session ws
+      (the same failure shape a service bounce produces) and asserts the
+      cast survives on relay ground truth. Bouncing real Home Assistant
+      mid-test is neither safe nor needed: HA state is not what a restart
+      breaks — the lost ws session is.
+    - Flap e2e needed a driver-side display: scenario-live.py only drives
+      Ada's ws, so a new `vcast_display` turn primitive claims a REAL
+      screen on the live input-bridge (pending → claim → paired →
+      registered — the genuine flow, tailnet-trusted + ADA_ADMIN_KEY) and
+      can flap/drop/reattach its ws. This exercises the relay's supersede
+      + lastCast-replay invariants that vcast-flap-check.mjs guards on a
+      spawned relay — here against the live relay with Ada in the loop.
+      The claimed screen number is exposed as the {flap_screen} token.
+    - or_state gained list form (every entry must hold for the waiver)
+      and a contains_any variant — needed for multi-target assertions.
+      Driver-side `pub` action gives a deterministic deferred-cast check
+      (relay remembers a nav pubbed while the display is down and replays
+      it on reattach).
+    - cast_interrupt_gate T3 was a stale expectation: an explicit wall
+      ask is not confirm-gated (2026-09-29 contract), so when Ada starts
+      the wall at T2 the T3 "yes" has nothing to execute. The turn now
+      carries or_state {screen 4 contains 'rama9'} — pass iff the wall is
+      actually up after the confirm, on either path.
+
+work:
+  - id: 1
+    label: "scenario-live.py driver"
+    status: done
+    notes: "vcast_display turn primitive (claim/flap/drop/reattach/pub/
+      release; fake display reports state like vcast-headless.mjs);
+      {flap_screen} runtime token; {real_screen2} token
+      (VCAST_REAL_SCREEN2, default 7); or_state list + contains_any;
+      claim failure aborts as INFRA; held displays auto-released in
+      finally."
+  - id: 2
+    label: "new scenarios"
+    status: done
+    notes: "cast_multi_device (screens {real_screen}+{real_screen2}),
+      cast_during_ha_restart (reconnect window on screen 4),
+      vcast_flap_recovery (claim → cast → flap x3 → drop-detect →
+      honest-offline turn → driver pub while down → reattach replay)."
+  - id: 3
+    label: "regression gate"
+    status: done
+    notes: "benchmark.yml casting suite + write_allowed_in gained the
+      three missing named scenarios (cast_switch_flow was already in
+      write_allowed_in but not the suite; camera_cycle_screen,
+      cast_recast_stale_lease likewise absent) plus the three new ones."
+
+invoke:
+  commands:
+    - "python3 scripts/scenario-live.py tests/scenarios-live/<name>.yaml --url ws://<ada>:<port>/ws --api-key $ADA_API_KEY"
+    - "# against ada-lab on idc02 from tony-dell: ssh -N -L 18012:127.0.0.1:8012 idc02, then --url ws://127.0.0.1:18012/ws with the lab ADA_API_KEY"
+
+verification:
+  - "live runs vs ada-lab (idc02:8012, ssh-forwarded): 9/10 green —
+    all three new scenarios PASS; cam_to_screen, camera_cycle_screen,
+    cast_recast_stale_lease, cast_switch_flow, cctv_snapshot_to_screen,
+    cast_interrupt_gate PASS (interrupt_gate after the or_state fix)."
+  - "camera_cast_permission T3 observed red on ada-lab: the calendar
+    topic-shift answer hit lab's unconfigured calendar and never reached
+    the camera acknowledgment — environment-dependent, not exercised by
+    this change; needs a prod-side re-run to classify."
+  - "_VcastDisplay exercised standalone against the live relay:
+    claim → nav pub → flap x2 → drop → reattach → release, registry clean
+    afterwards (no pending, no stale screen)."
+  - "re-verified on commit dispatch (094149): cast_multi_device,
+    cast_during_ha_restart and cam_to_screen re-run PASS vs ada-lab;
+    vcast_flap_recovery aborted INFRA (exit 3, correct classification) —
+    relay /claim needs ada auth at idc01:8001 but ada-ha-tony was stopped
+    09:07. Pending probe entries self-clean on ws close; registry verified
+    residue-free."
