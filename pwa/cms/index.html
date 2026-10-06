@@ -347,7 +347,10 @@ function pageGroup(p) {
 }
 const GROUP_ORDER = ["CCTV Walls", "Cameras", "Reports", "Pages"];
 const groupOpen = new Map();  // survives list re-renders; all open initially
-let curTab = "pages";         // "pages" | "security" | "traffic" | "flood" — sidebar split
+// ?tab=pages|security|traffic|flood deep-links the sidebar split; unknown
+// values fall back to pages, and a #/slug route still overrides it below.
+const _t = new URLSearchParams(location.search).get("tab");
+let curTab = ["pages","security","traffic","flood"].includes(_t) ? _t : "pages";
 
 const isCctv = (p) => {
   const t = titleOf(p), s = p.slug || "";
