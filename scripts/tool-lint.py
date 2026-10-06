@@ -8,7 +8,9 @@ YAML only, so it runs in any CI/validate environment):
   builtin  — dicts with "name": <str> + description/parameters in
              backend/realtime_provider.py
   drop-in  — enabled entries in backend/tools.d/manifest.yml
-  aliases  — backend/tool_runner.py::_ALIASES / _ALIAS_ARG_DEFAULTS
+  aliases  — backend/tool_runner/common.py::_ALIASES /
+             _ALIAS_ARG_DEFAULTS (the package that replaced
+             backend/tool_runner.py)
   contract — docs/ssot/ssot.tool-surface.yml (cap, families, debt)
 
 Checks (each FAIL exits 1):
@@ -54,7 +56,7 @@ _NAME_RE = re.compile(r"^[a-z0-9_]+$")
 _EXPECT_LIST_FIELDS = ("calls", "calls_any", "no_calls_except")
 _EXPECT_FLAG_FIELDS = ("no_calls",)          # bool flag — names not held here
 _TOP_LIST_FIELDS = ("needs_tools", "needs_any")
-# tool_runner.py set names whose members must resolve (gates preserved).
+# tool_runner set names whose members must resolve (gates preserved).
 _GATE_SETS = (
     "CONTROL_TOOLS", "MEMORY_WRITE_TOOLS", "CALENDAR_WRITE_TOOLS",
     "CMS_WRITE_TOOLS", "DEVIN_CONFIRMED_TOOLS", "DOC_TOOLS",
@@ -177,59 +179,93 @@ def _eval_str_list_dict(node: ast.AST) -> dict[str, dict]:
     return out
 
 
+def runner_src(repo: Path) -> Path:
+    """tool_runner source: the package dir after tool-runner-split
+    (backend/tool_runner/), else the legacy single file."""
+    pkg = repo / "backend/tool_runner"
+    return pkg if pkg.is_dir() else repo / "backend/tool_runner.py"
+
+
+def _runner_files(runner_path: Path) -> list[Path]:
+    if runner_path.is_dir():
+        return sorted(runner_path.glob("*.py"))
+    return [runner_path]
+
+
 def runner_tables(runner_path: Path) -> dict:
     """Pull _ALIASES / _ALIAS_ARG_DEFAULTS / *_TOOLS gate sets out of
-    tool_runner.py without importing it."""
-    tree = ast.parse(runner_path.read_text(encoding="utf-8"))
+    the tool_runner source (package or single file) without importing
+    it."""
     env: dict[str, frozenset] = {}
     aliases: dict[str, str] = {}
     arg_defaults: dict[str, dict] = {}
-    for node in ast.walk(tree):
-        targets = []
-        value = None
-        if isinstance(node, ast.Assign):
-            targets, value = node.targets, node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            targets, value = [node.target], node.value
-        else:
-            continue
-        for t in targets:
-            if not isinstance(t, ast.Name):
+    for path in _runner_files(runner_path):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            targets = []
+            value = None
+            if isinstance(node, ast.Assign):
+                targets, value = node.targets, node.value
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                targets, value = [node.target], node.value
+            else:
                 continue
-            if t.id == "_ALIASES":
-                aliases = _eval_str_dict(value)
-            elif t.id == "_ALIAS_ARG_DEFAULTS":
-                arg_defaults = _eval_str_list_dict(value)
-            elif t.id in _GATE_SETS:
-                env[t.id] = _eval_set(value, env)
-            elif isinstance(value, (ast.Set, ast.BinOp)):
-                env.setdefault(t.id, _eval_set(value, env))
+            for t in targets:
+                if not isinstance(t, ast.Name):
+                    continue
+                if t.id == "_ALIASES":
+                    aliases = _eval_str_dict(value)
+                elif t.id == "_ALIAS_ARG_DEFAULTS":
+                    arg_defaults = _eval_str_list_dict(value)
+                elif t.id in _GATE_SETS:
+                    env[t.id] = _eval_set(value, env)
+                elif isinstance(value, (ast.Set, ast.BinOp)):
+                    env.setdefault(t.id, _eval_set(value, env))
     return {"aliases": aliases, "arg_defaults": arg_defaults,
             "gate_sets": {k: env.get(k, frozenset()) for k in _GATE_SETS}}
 
 
 def runner_methods(runner_path: Path) -> dict[str, dict]:
-    """Public methods on class ToolRunner -> {"line": int, "async": bool}.
+    """Public methods on class ToolRunner -> {"file", "line", "async"}.
 
     execute() dispatches a tool name via getattr(self, name) and awaits
     the call, so a tool's implementation seat is a same-named public
     method — and only an async one actually works (the await rejects a
-    sync return). Methods defined on other classes in tool_runner.py
-    (AdaMemoryStore, ToolContext) are not dispatch seats.
+    sync return). Methods defined on other classes (AdaMemoryStore,
+    ToolContext) are not dispatch seats — but since tool-runner-split the
+    seats live on ToolRunner's domain-mixin bases in backend/tool_runner/,
+    so public methods are collected from ToolRunner plus every class in
+    its (transitive) base list defined inside the package.
     """
+    files = _runner_files(runner_path)
+    classes: dict[str, tuple[ast.ClassDef, Path]] = {}
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name not in classes:
+                classes[node.name] = (node, path)
     out: dict[str, dict] = {}
-    tree = ast.parse(runner_path.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.ClassDef)
-                and node.name == "ToolRunner"):
+    seen: set[str] = set()
+    stack = [classes["ToolRunner"]] if "ToolRunner" in classes else []
+    while stack:
+        cls_node, path = stack.pop()
+        if cls_node.name in seen:
             continue
-        for item in node.body:
+        seen.add(cls_node.name)
+        for item in cls_node.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) \
                     and not item.name.startswith("_"):
-                out[item.name] = {
+                out.setdefault(item.name, {
+                    "file": path.name,
                     "line": item.lineno,
                     "async": isinstance(item, ast.AsyncFunctionDef),
-                }
+                })
+        for base in cls_node.bases:
+            base_name = (base.id if isinstance(base, ast.Name)
+                         else base.attr if isinstance(base, ast.Attribute)
+                         else None)
+            if base_name in classes:
+                stack.append(classes[base_name])
     return out
 
 
@@ -294,7 +330,7 @@ def collect_surface(repo: Path) -> dict:
     repo = Path(repo)
     builtin = declared_builtin(repo / "backend/realtime_provider.py")
     dynamic = declared_tools_d(repo / "backend/tools.d/manifest.yml")
-    tables = runner_tables(repo / "backend/tool_runner.py")
+    tables = runner_tables(runner_src(repo))
     families = scenario_families(repo / "scripts/scenario-live.py")
     return {
         "builtin": builtin, "dynamic": dynamic,
@@ -302,7 +338,7 @@ def collect_surface(repo: Path) -> dict:
         "aliases": tables["aliases"],
         "arg_defaults": tables["arg_defaults"],
         "gate_sets": tables["gate_sets"],
-        "runner_methods": runner_methods(repo / "backend/tool_runner.py"),
+        "runner_methods": runner_methods(runner_src(repo)),
         "scenario_families": families,
     }
 
@@ -461,8 +497,8 @@ def lint(repo: Path) -> dict:
         if impl:
             errors.append(
                 f"impl: {name} is declared but ToolRunner.{name} "
-                f"(line {impl['line']}) is not async — execute() awaits "
-                "every tool method")
+                f"({impl.get('file', 'tool_runner.py')}:{impl['line']}) "
+                "is not async — execute() awaits every tool method")
         else:
             errors.append(
                 f"impl: {name} declared in realtime_provider (line "
@@ -480,9 +516,10 @@ def lint(repo: Path) -> dict:
         if name in runner_internal:
             continue
         errors.append(
-            f"impl: ToolRunner.{name} (line {meta['line']}) is a public "
-            "async method with no declaration or alias — declare it, "
-            "rename it _private, or list it in ssot runner_internal")
+            f"impl: ToolRunner.{name} "
+            f"({meta.get('file', 'tool_runner.py')}:{meta['line']}) is a "
+            "public async method with no declaration or alias — declare "
+            "it, rename it _private, or list it in ssot runner_internal")
     if absorbed_impls:
         infos.append(
             f"impl: {absorbed_impls} alias-key ToolRunner methods kept "
