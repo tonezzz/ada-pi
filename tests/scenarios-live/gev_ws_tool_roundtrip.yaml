@@ -1,0 +1,34 @@
+name: gev-ws-tool-roundtrip
+# gev-bridge card verify — "send {type:text,...} -> function_call ->
+# tool_response over wss /apps/gev-live/ws". This plays the GEV page's
+# half of the gev-gemini bridge protocol directly: connect, send a text
+# turn, collect the function_call, answer with the real client's
+# tool_response shape, and require the model to close the loop with
+# text + done.
+#
+# Covers end-to-end: caddy ws proxy -> bridge -> Gemini Live session ->
+# tool declarations -> function_call -> tool_response -> reply. Any
+# break in the chain (caddy route, dead bridge, rejected setup, a
+# declaration Live refuses) fails the turn — and if the bridge is
+# unreachable the preflight reports INFRA instead.
+#
+# No Ada ws needed — this is a pure bridge probe (the driver opens the
+# Ada socket lazily and this scenario never asks for it).
+#
+# tier: full — hits the live Gemini-backed bridge.
+tier: full
+preflight:
+  - {check: gev_bridge, label: gev-bridge-ws}
+turns:
+  - gev_bridge:
+      text: "Fly the map to Bangkok."
+      # payload the client answers each function_call with — mirrors
+      # gevGeminiRealtime: {type:tool_response, responses:[{id,name,
+      # response}]}
+      respond: {ok: true, note: "scenario probe — camera moved"}
+    expect:
+      calls_any: [fly_to_location]
+      call_args_contain: {fly_to_location: ["Bangkok"]}
+      response_nonempty: true    # text deltas after the tool_response
+      timeout_s: 60
+      settle_s: 3
