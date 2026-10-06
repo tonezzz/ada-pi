@@ -20,22 +20,26 @@ Backends are lazy — importing this module never imports torch/onnxruntime.
 """
 from __future__ import annotations
 
-import math
 import os
+import sys
 import urllib.request
 from pathlib import Path
 
 import numpy as np
 
+_REPO = Path(__file__).resolve().parents[2]
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
+
+# Shared implementations — the prod shadow path uses the same fbank,
+# cosine, and ONNX session wrapper.
+from backend.voice_encoders import (  # noqa: E402
+    OnnxSpeakerEncoder, SAMPLE_RATE, cosine, fbank80 as _fbank80,
+    normalize as _normalize,
+)
+
 MODEL_DIR = Path(os.environ.get(
     "ADA_VOICE_MODELS", "~/.cache/ada-voice-bench")).expanduser()
-SAMPLE_RATE = 16000
-
-
-def _normalize(v: np.ndarray) -> np.ndarray:
-    v = np.asarray(v, dtype=np.float32).ravel()
-    n = np.linalg.norm(v)
-    return v / n if n > 0 else v
 
 
 def _download(urls: list[str], dest: Path) -> Path | None:
@@ -50,38 +54,6 @@ def _download(urls: list[str], dest: Path) -> Path | None:
         except Exception:
             continue
     return None
-
-
-def _fbank80(wav: np.ndarray) -> np.ndarray:
-    """Kaldi-compatible 80-mel fbank, numpy-only: 25ms/10ms frames,
-    preemphasis 0.97, power spectrum, log — then per-utterance mean
-    normalization (wespeaker-style CMN)."""
-    wav = np.asarray(wav, dtype=np.float32)
-    if wav.size < 400:
-        wav = np.pad(wav, (0, 400 - wav.size))
-    wav = np.concatenate([[wav[0]], wav[1:] - 0.97 * wav[:-1]])
-    fl, fs_ = int(0.025 * SAMPLE_RATE), int(0.010 * SAMPLE_RATE)
-    n_f = 1 + (wav.size - fl) // fs_
-    idx = np.arange(fl)[None, :] + fs_ * np.arange(n_f)[:, None]
-    frames = wav[idx] * np.hamming(fl)[None, :]
-    spec = np.abs(np.fft.rfft(frames, n=512, axis=1)) ** 2
-    # mel filterbank (slaney-style, 0–8kHz)
-    def hz2mel(f): return 2595.0 * math.log10(1 + f / 700.0)
-    def mel2hz(m): return 700.0 * (10 ** (m / 2595.0) - 1)
-    mels = np.linspace(0, hz2mel(SAMPLE_RATE / 2), 82)
-    freqs = np.linspace(0, SAMPLE_RATE / 2, spec.shape[1])
-    fb = np.zeros((80, spec.shape[1]), dtype=np.float32)
-    for i in range(80):
-        lo, c, hi = mel2hz(mels[i]), mel2hz(mels[i + 1]), mel2hz(mels[i + 2])
-        fb[i] = np.clip(
-            np.minimum((freqs - lo) / max(c - lo, 1e-6),
-                       (hi - freqs) / max(hi - c, 1e-6)), 0, None)
-    feat = np.log(np.maximum(spec @ fb.T, 1e-6)).astype(np.float32)
-    return feat - feat.mean(axis=0, keepdims=True)
-
-
-def cosine(a: np.ndarray, b: np.ndarray) -> float:
-    return float(np.dot(_normalize(a), _normalize(b)))
 
 
 class BaseEncoder:
@@ -149,8 +121,8 @@ class _OnnxFbankEncoder(BaseEncoder):
     urls: list[str] = []
 
     def __init__(self):
-        self._sess = None
         self._path = MODEL_DIR / self.filename
+        self._enc = OnnxSpeakerEncoder(self._path)
 
     def available(self):
         try:
@@ -164,24 +136,12 @@ class _OnnxFbankEncoder(BaseEncoder):
     def model_size_mb(self):
         return self._path.stat().st_size / 1e6 if self._path.exists() else 0.0
 
-    def _load(self):
-        if self._sess is None:
-            import time as _t
-            import onnxruntime as ort
-            t0 = _t.monotonic()
-            self._sess = ort.InferenceSession(
-                str(self._path), providers=["CPUExecutionProvider"])
-            self.load_s = _t.monotonic() - t0
-        return self._sess
-
     def embed(self, wav):
-        sess = self._load()
-        feat = _fbank80(wav)[None, :, :]  # [1,T,80]
-        out = sess.run(
-            None, {sess.get_inputs()[0].name: feat})[0].ravel()
+        out = self._enc.embed(wav)
+        self.load_s = self._enc.load_s
         if self.embed_dim == 0:
             self.embed_dim = int(out.size)
-        return _normalize(out)
+        return out
 
 
 _WS_ZOO = ("https://wespeaker-1256283475.cos.ap-shanghai.myqcloud.com"

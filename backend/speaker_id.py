@@ -63,6 +63,15 @@ UNKNOWN_AFTER_MISSES = 2
 # naming the wrong person (wrong memory banks, wrong name in conversation).
 MIN_MARGIN = 0.05
 
+# Shadow mode: ADA_SPEAKER_SHADOW_MODEL points at a wespeaker-style ONNX
+# file — the shadow encoder scores every identify() chunk in parallel and
+# reports agree/disagree, but ECAPA stays the decider. Shadow voiceprints
+# are re-embedded from the stored enrollment audio (speaker_samples/*.pcm)
+# so both models see the same enrollment data.
+SHADOW_MODEL = os.environ.get("ADA_SPEAKER_SHADOW_MODEL", "")
+# campplus EER threshold from voice-bench-models (2026-10-06).
+SHADOW_THRESHOLD = float(os.environ.get("ADA_SPEAKER_SHADOW_THRESHOLD", "0.39"))
+
 # Placeholder names that must never become enrolled profiles — the model
 # once enrolled a real speaker (KK) under "Guest" when she didn't state a
 # name, which then identified her as a sandbox guest instead of prompting
@@ -194,6 +203,12 @@ class SpeakerIdentifier:
         # for scoring modes and benchmark leave-one-out.
         self._prints: dict[str, list[np.ndarray]] = {}
         self._metadata: dict[str, dict[str, Any]] = {}  # name -> {ha_person, display_name}
+        self._shadow: Any = None
+        self._shadow_prints: dict[str, list[np.ndarray]] = {}
+        self._shadow_tried = False
+        # callable(dict) — the server wires ops events on disagreements.
+        self.on_shadow: Callable[[dict], None] | None = None
+        self.shadow_stats = {"probes": 0, "agree": 0, "disagree": 0}
         self._profiles_path = Path(
             os.environ.get(
                 "ADA_SPEAKER_PROFILES",
@@ -243,6 +258,93 @@ class SpeakerIdentifier:
         wav = torch.from_numpy(audio).unsqueeze(0)  # [1, time]
         emb = self._model.encode_batch(wav)  # [1, 1, emb_dim]
         return emb.squeeze().cpu().numpy()
+
+    # -- shadow backend --------------------------------------------------
+
+    def _init_shadow(self) -> None:
+        """Lazy-load the shadow ONNX encoder and re-embed each enrolled
+        speaker's stored sample audio into shadow voiceprints. Runs once;
+        failures disable shadow quietly (primary path untouched)."""
+        if self._shadow_tried or not SHADOW_MODEL:
+            return
+        self._shadow_tried = True
+        try:
+            from backend.voice_encoders import OnnxSpeakerEncoder
+            enc = OnnxSpeakerEncoder(SHADOW_MODEL)
+            if not enc.available:
+                logger.info("speaker shadow unavailable: %s", SHADOW_MODEL)
+                return
+            for name, meta in self._metadata.items():
+                prints: list[np.ndarray] = []
+                for rel in meta.get("audio") or []:
+                    p = self._samples_dir.parent / rel
+                    try:
+                        wav = np.frombuffer(
+                            p.read_bytes(), dtype=np.int16
+                        ).astype(np.float32) / 32768.0
+                        if wav.size >= SAMPLE_RATE // 2:
+                            prints.append(enc.embed(wav))
+                    except OSError:
+                        continue
+                if prints:
+                    self._shadow_prints[name] = prints
+            self._shadow = enc
+            logger.info(
+                "speaker shadow ready: %s — %d/%d speakers re-embedded",
+                os.path.basename(SHADOW_MODEL), len(self._shadow_prints),
+                len(self._metadata))
+        except Exception as exc:
+            logger.warning("speaker shadow init failed: %s", exc)
+            self._shadow = None
+
+    def _shadow_identify(self, pcm16: bytes) -> tuple[str | None, float]:
+        """Best person match under the shadow backend — same max-over-
+        prints scoring as the primary centroid pool."""
+        emb = self._shadow.embed(
+            np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0)
+        best_name: str | None = None
+        best = 0.0
+        for name, prints in self._shadow_prints.items():
+            if self.is_media(name):
+                continue
+            s = max(_cosine_similarity(emb, p) for p in prints)
+            if s > best:
+                best_name, best = name, s
+        return (best_name if best >= SHADOW_THRESHOLD else None), best
+
+    def _maybe_shadow(self, pcm16: bytes, primary_name: str | None,
+                      primary_score: float) -> None:
+        """Score the same chunk with the shadow backend and report
+        agreement. Never raises, never changes the primary result."""
+        if not SHADOW_MODEL:
+            return
+        self._init_shadow()
+        if self._shadow is None or not self._shadow_prints:
+            return
+        try:
+            sname, sscore = self._shadow_identify(pcm16)
+        except Exception as exc:
+            logger.info("speaker shadow embed failed: %s", exc)
+            return
+        agree = sname == primary_name
+        st = self.shadow_stats
+        st["probes"] += 1
+        st["agree" if agree else "disagree"] += 1
+        logger.info(
+            "speaker_shadow primary=%s@%.2f shadow=%s@%.2f agree=%s",
+            primary_name, primary_score, sname, sscore, agree)
+        if self.on_shadow:
+            try:
+                self.on_shadow({
+                    "primary_name": primary_name,
+                    "primary_score": primary_score,
+                    "shadow_name": sname,
+                    "shadow_score": sscore,
+                    "agree": agree,
+                    "model": os.path.basename(SHADOW_MODEL),
+                })
+            except Exception:
+                pass
 
     # -- enrolled profiles ----------------------------------------------
 
@@ -601,6 +703,14 @@ class SpeakerIdentifier:
         """identify() plus the raw best person candidate — the soft-owner
         hint needs to know WHO nearly matched even when the result is
         unrecognized. Returns (name, conf, best_person_name, best_person_score)."""
+        result = self._identify_scored_core(pcm16, sample_rate, threshold)
+        self._maybe_shadow(pcm16, result[0], result[1])
+        return result
+
+    def _identify_scored_core(
+        self, pcm16: bytes, sample_rate: int = SAMPLE_RATE,
+        threshold: float = DEFAULT_THRESHOLD,
+    ) -> tuple[str | None, float, str | None, float]:
         if not self._enrolled:
             return None, 0.0, None, 0.0
         emb = self._compute_embedding(pcm16, sample_rate)

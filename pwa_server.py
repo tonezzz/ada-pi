@@ -830,6 +830,17 @@ async def voice_socket(ws: WebSocket) -> None:
                         f"{display} — this device's registered owner. Address "
                         f"them as {display}; if they correct you, they're "
                         "likely a different person.")
+            # Shadow backend (ADA_SPEAKER_SHADOW_MODEL): every identify
+            # probe is re-scored in parallel — agreements go to the log,
+            # disagreements become ops events for the digest.
+            def _on_shadow(ev):
+                if not ev.get("agree"):
+                    provider_ref[0]._emit_ops_event(
+                        "speaker_shadow",
+                        f"{ev['model']}: shadow={ev['shadow_name']}@"
+                        f"{ev['shadow_score']:.2f} vs primary="
+                        f"{ev['primary_name']}@{ev['primary_score']:.2f}")
+            identifier.on_shadow = _on_shadow
             speaker_session = SpeakerSession(
                 identifier, _on_speaker, on_unrecognized=_on_unrecognized,
                 owner_speaker=owner_spk, on_likely_owner=_on_likely_owner,

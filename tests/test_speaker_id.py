@@ -355,3 +355,102 @@ class SpeakerSwitchHysteresisTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ShadowModeTest(unittest.TestCase):
+    """ADA_SPEAKER_SHADOW_MODEL: the shadow backend scores every identify
+    probe in parallel but never changes the primary decision."""
+
+    class _FakeShadow:
+        def __init__(self, emb):
+            self._emb = emb
+
+        def embed(self, wav):
+            return self._emb
+
+    def setUp(self):
+        self.ident = speaker_id.SpeakerIdentifier()
+        self.ident._enrolled = {}
+        self.ident._prints = {}
+        self.ident._metadata = {}
+        self.ident._shadow = None
+        self.ident._shadow_prints = {}
+        self.ident._shadow_tried = True
+        self.ident.on_shadow = None
+        self.ident.shadow_stats = {"probes": 0, "agree": 0, "disagree": 0}
+        self._pcm = b"\x00" * 64000
+        self._patcher = patch.object(
+            speaker_id, "SHADOW_MODEL", "fake-shadow.onnx")
+        self._patcher.start()
+        self.addCleanup(self._patcher.stop)
+
+    def _run(self, primary_emb, shadow_emb):
+        self.ident._shadow = self._FakeShadow(shadow_emb)
+        events = []
+        self.ident.on_shadow = events.append
+        with patch.object(self.ident, "_compute_embedding",
+                          return_value=primary_emb):
+            name, score = self.ident.identify(self._pcm)
+        return name, events
+
+    def test_agree_logged_no_event_needed(self):
+        tony = _vec(20)
+        self.ident._enrolled = {"Tony": tony}
+        self.ident._prints = {"Tony": [tony]}
+        self.ident._shadow_prints = {"Tony": [_vec(50)]}
+        name, events = self._run(tony, _vec(50))
+        self.assertEqual(name, "Tony")
+        self.assertEqual(len(events), 1)
+        self.assertTrue(events[0]["agree"])
+        self.assertEqual(events[0]["shadow_name"], "Tony")
+        self.assertEqual(self.ident.shadow_stats["agree"], 1)
+
+    def test_disagree_fires_event(self):
+        tony, kk = _vec(20), _vec(21)
+        self.ident._enrolled = {"Tony": tony, "KK": kk}
+        self.ident._prints = {"Tony": [tony], "KK": [kk]}
+        # shadow thinks the audio is KK, primary says Tony
+        self.ident._shadow_prints = {"Tony": [_vec(60)], "KK": [_vec(50)]}
+        name, events = self._run(tony, _vec(50))
+        self.assertEqual(name, "Tony")          # primary wins — always
+        self.assertEqual(len(events), 1)
+        self.assertFalse(events[0]["agree"])
+        self.assertEqual(events[0]["shadow_name"], "KK")
+        self.assertEqual(self.ident.shadow_stats["disagree"], 1)
+
+    def test_shadow_below_threshold_is_none(self):
+        tony = _vec(20)
+        self.ident._enrolled = {"Tony": tony}
+        self.ident._prints = {"Tony": [tony]}
+        # shadow emb far from its only print → shadow says None,
+        # primary identified → disagree
+        self.ident._shadow_prints = {"Tony": [_vec(50)]}
+        name, events = self._run(tony, -_vec(50))
+        self.assertEqual(name, "Tony")
+        self.assertIsNone(events[0]["shadow_name"])
+
+    def test_no_shadow_model_no_probe(self):
+        with patch.object(speaker_id, "SHADOW_MODEL", ""):
+            tony = _vec(20)
+            self.ident._enrolled = {"Tony": tony}
+            self.ident._prints = {"Tony": [tony]}
+            with patch.object(self.ident, "_compute_embedding",
+                              return_value=tony):
+                name, _ = self.ident.identify(self._pcm)
+            self.assertEqual(name, "Tony")
+            self.assertEqual(self.ident.shadow_stats["probes"], 0)
+
+    def test_shadow_failure_never_breaks_identify(self):
+        tony = _vec(20)
+        self.ident._enrolled = {"Tony": tony}
+        self.ident._prints = {"Tony": [tony]}
+        self.ident._shadow_prints = {"Tony": [_vec(50)]}
+
+        class Boom:
+            def embed(self, wav):
+                raise RuntimeError("shadow crashed")
+        self.ident._shadow = Boom()
+        with patch.object(self.ident, "_compute_embedding",
+                          return_value=tony):
+            name, score = self.ident.identify(self._pcm)
+        self.assertEqual(name, "Tony")

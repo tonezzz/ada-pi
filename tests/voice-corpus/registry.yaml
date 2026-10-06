@@ -212,3 +212,48 @@ speakers:
   - yt-wRM-azvEBZg-spk4-02.wav
   - yt-wRM-azvEBZg-spk4-03.wav
   - yt-wRM-azvEBZg-spk4-04.wav
+- id: mic-KK
+  source: mic-enrollment
+  lang: th
+  kind: person
+  qualified: pending
+  note: enrollment audio — review before qualifying
+  clips:
+  - mic-KK-1790620533283.wav
+- id: mic-Ratree
+  source: mic-enrollment
+  lang: th
+  kind: person
+  qualified: pending
+  note: enrollment audio — review before qualifying
+  clips:
+  - mic-Ratree-1790843285272.wav
+- id: mic-Tony
+  source: mic-enrollment
+  lang: th
+  kind: person
+  qualified: pending
+  note: enrollment audio — review before qualifying
+  clips:
+  - mic-Tony-1790656640206.wav
+  - mic-Tony-1790666648509.wav
+  - mic-Tony-1790666656635.wav
+  - mic-Tony-1790666659123.wav
+  - mic-Tony-1790677568033.wav
+  - mic-Tony-1790815963044.wav
+  - mic-Tony-1790843100639.wav
+  - mic-Tony-1790843222269.wav
+  - mic-Tony-1790858534268.wav
+  - mic-Tony-1790866430623.wav
+  - mic-Tony-1790899085845.wav
+  - mic-Tony-1790902936182.wav
+  - mic-Tony-1790914090314.wav
+  - mic-Tony-1790953776767.wav
+- id: mic-พรศิริ-สุนทรประสิทธิ์
+  source: mic-enrollment
+  lang: th
+  kind: person
+  qualified: pending
+  note: enrollment audio — review before qualifying
+  clips:
+  - mic-พรศิริ-สุนทรประสิทธิ์-1790989910227.wav
