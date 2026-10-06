@@ -18,6 +18,15 @@ MDDB_BASE_URL = os.environ.get("MDDB_BASE_URL", "http://127.0.0.1:11023/v1")
 # Unset -> everything routes to the leader (single-store behaviour).
 MDDB_OPS_URL = (os.environ.get("MDDB_OPS_URL") or "").rstrip("/")
 
+# Read replica: MDDB_READ_URL points at a read-only follower (e.g. the
+# idc01 replica on :11123). Reads are lag-GATED — the follower's
+# /v1/replication/status is checked (cached READ_CHECK_TTL_S) and reads
+# only go there while healthy and under MDDB_READ_MAX_LAG_MS. Writes and
+# write-path reads always hit the leader.
+MDDB_READ_URL = (os.environ.get("MDDB_READ_URL") or "").rstrip("/")
+MDDB_READ_MAX_LAG_MS = float(os.environ.get("MDDB_READ_MAX_LAG_MS", "120000"))
+_READ_CHECK_TTL_S = 30.0
+
 # Prefix match — per-instance names (ada-ha-events-tony) route with
 # their family. Keep in sync with docs/kb/mddb-ops-split.md.
 OPS_COLLECTION_PREFIXES = (
@@ -56,16 +65,53 @@ class MddbClient:
         self.base_url = (base_url or MDDB_BASE_URL).rstrip("/")
         # ops routing only on the default leader client
         self._ops_url = (MDDB_OPS_URL if base_url is None else "")
+        # follower reads only on the default leader client — an explicit
+        # base_url pins the client (lab tests, direct follower access)
+        self._read_url = (MDDB_READ_URL if base_url is None else "")
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(20.0))
+        self._follower_ok_at = 0.0
+        self._follower_ok = False
 
     def is_ops_routed(self, collection: str) -> bool:
         """True when this client routes the collection to the ops store
         (no embedding provider there — vector_search will always fail)."""
         return bool(self._ops_url) and is_ops_collection(collection)
 
+    async def _follower_usable(self) -> bool:
+        """Follower serves reads only while healthy and inside the lag
+        budget — a stale replica quietly serves old memory, so the check
+        is refreshed every _READ_CHECK_TTL_S and fails closed to the
+        leader."""
+        if not self._read_url:
+            return False
+        now = asyncio.get_running_loop().time()
+        if now - self._follower_ok_at < _READ_CHECK_TTL_S:
+            return self._follower_ok
+        self._follower_ok_at = now
+        try:
+            resp = await self._client.get(
+                f"{self._read_url}/replication/status", timeout=3.0)
+            st = resp.json()
+            self._follower_ok = bool(
+                st.get("healthy")
+                and float(st.get("replication_lag_ms") or 0)
+                <= MDDB_READ_MAX_LAG_MS)
+        except Exception:
+            self._follower_ok = False
+        return self._follower_ok
+
     def _url(self, collection: str) -> str:
         if self._ops_url and is_ops_collection(collection):
             return self._ops_url
+        return self.base_url
+
+    async def _rurl(self, collection: str) -> str:
+        """Read-path URL: ops collections keep their store; the rest hit
+        the follower when it passes the lag gate, leader otherwise."""
+        if self._ops_url and is_ops_collection(collection):
+            return self._ops_url
+        if await self._follower_usable():
+            return self._read_url
         return self.base_url
 
     def _to_outbox(
@@ -135,7 +181,8 @@ class MddbClient:
         if filter_meta:
             payload["filterMeta"] = filter_meta
         try:
-            resp = await self._client.post(self._url(collection) + "/search", json=payload)
+            resp = await self._client.post(
+                await self._rurl(collection) + "/search", json=payload)
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
@@ -169,7 +216,8 @@ class MddbClient:
         for attempt in range(len(delays) + 1):
             try:
                 resp = await self._client.post(
-                    self._url(collection) + "/vector-search", json=payload
+                    await self._rurl(collection) + "/vector-search",
+                    json=payload
                 )
                 if resp.status_code >= 500 and attempt < len(delays):
                     await asyncio.sleep(delays[attempt])
@@ -192,11 +240,14 @@ class MddbClient:
         return None
 
     async def get_document(
-        self, collection: str, key: str, lang: str = "en"
+        self, collection: str, key: str, lang: str = "en",
+        prefer_leader: bool = False,
     ) -> dict[str, Any] | None:
         try:
+            base = (self._url(collection) if prefer_leader
+                    else await self._rurl(collection))
             resp = await self._client.post(
-                self._url(collection) + "/get",
+                base + "/get",
                 json={"collection": collection, "key": key, "lang": lang},
             )
             if resp.status_code == 404 or (
@@ -222,7 +273,10 @@ class MddbClient:
     ) -> dict[str, Any] | None:
         # mddb has no /update — /add upserts on (collection,key,lang), and a
         # meta-only /add wipes contentMd. Merge onto the existing doc.
-        existing = await self.get_document(collection, key, lang)
+        # The merge read must hit the leader — a lagging follower would
+        # miss a just-written body and the write would store it stale.
+        existing = await self.get_document(collection, key, lang,
+                                           prefer_leader=True)
         if existing is None and content_md is None:
             # Read failed or doc absent — a meta-only write here would store
             # an empty body (or wipe the real one if the read merely
