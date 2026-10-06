@@ -17,3 +17,8 @@ tools:
     policy: read
     secondary_allowed: false
     timeout_s: 20
+  ada_track_device:
+    module: ada_track_device
+    policy: owner_only
+    secondary_allowed: false
+    timeout_s: 20
