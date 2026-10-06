@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -1074,13 +1074,28 @@ class ConversationMemory:
         string on a confident hit, else None (caller escalates to
         NotebookLM)."""
         threshold = float(os.environ.get("ADA_BANK_SEARCH_THRESHOLD", "0.45"))
+        coll = _summary_collection()
+        mddb = _mddb()
         try:
-            docs = await _mddb().vector_search(
-                collection=_summary_collection(),
-                query=question,
-                limit=3,
-                threshold=threshold,
-            )
+            if mddb.is_ops_routed(coll):
+                # Ops store has no embeddings — a vector call is a
+                # guaranteed 400. Listings there are oldest-first, so
+                # bound by `date` meta, then keyword-rank candidates.
+                from backend import memory_ops
+                days = [
+                    (datetime.now(timezone.utc).date() - timedelta(days=i)).isoformat()
+                    for i in range(14)
+                ]
+                listed = await mddb.search_documents(
+                    collection=coll, filter_meta={"date": days}, limit=100)
+                docs = memory_ops._keyword_rank(listed, question)[:3] or None
+            else:
+                docs = await mddb.vector_search(
+                    collection=coll,
+                    query=question,
+                    limit=3,
+                    threshold=threshold,
+                )
         except Exception as exc:
             _report_failure("summary_recall", exc)
             return None

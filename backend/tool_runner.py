@@ -14,7 +14,7 @@ import re
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -3615,12 +3615,22 @@ class ToolRunner:
         coll = _summary_collection()
         q = str(query or "").strip()
         docs = None
-        if q and q != "*":
+        if q and q != "*" and not self.mddb.is_ops_routed(coll):
             docs = await self.mddb.vector_search(
                 collection=coll, query=q, limit=int(limit) * 2)
         if docs is None:
+            listing_filter = None
+            if self.mddb.is_ops_routed(coll):
+                # Ops listings are oldest-first — bound by `date` meta so
+                # recent summaries enter the candidate window.
+                days = [
+                    (datetime.now(timezone.utc).date() - timedelta(days=i)).isoformat()
+                    for i in range(14)
+                ]
+                listing_filter = {"date": days}
             listed = await self.mddb.search_documents(
-                collection=coll, limit=max(int(limit) * 5, 20))
+                collection=coll, filter_meta=listing_filter,
+                limit=max(int(limit) * 5, 20))
             docs = (memory_ops._keyword_rank(listed, q)
                     if q and q != "*" else listed)
         hits = []

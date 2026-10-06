@@ -115,6 +115,9 @@ class ControlGateTests(unittest.IsolatedAsyncioTestCase):
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _hermetic_registry()
         self.runner.mddb = AsyncMock()
+        # no live captures in unit tests — keep the capture_reminder
+        # advisory off result dicts (and don't probe the real relay)
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
         self.runner.mddb.search_documents.return_value = []
         self.runner.memory.mddb = self.runner.mddb
 
@@ -187,6 +190,9 @@ class MemoryMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _hermetic_registry()
         self.runner.mddb = AsyncMock()
+        # no live captures in unit tests — keep the capture_reminder
+        # advisory off result dicts (and don't probe the real relay)
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
         self.runner.mddb.search_documents.return_value = []
         self.runner.mddb.vector_search.return_value = []
         self.runner.memory.mddb = self.runner.mddb
@@ -665,6 +671,9 @@ class CmsMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _hermetic_registry()
         self.runner.mddb = AsyncMock()
+        # no live captures in unit tests — keep the capture_reminder
+        # advisory off result dicts (and don't probe the real relay)
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
         self.runner.mddb.search_documents.return_value = []
         self.runner.mddb.add_document.return_value = {"status": "ok"}
         self.runner.mddb.get_document.return_value = None
@@ -761,6 +770,9 @@ class CalendarPlanMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _hermetic_registry()
         self.runner.mddb = AsyncMock()
+        # no live captures in unit tests — keep the capture_reminder
+        # advisory off result dicts (and don't probe the real relay)
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
         self.runner.mddb.search_documents.return_value = []
         self.runner.mddb.get_document.return_value = None
         from tests.test_calendar_providers import FakeProvider, TZ
@@ -1010,6 +1022,9 @@ class MetaVoiceMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _hermetic_registry()
         self.runner.mddb = AsyncMock()
+        # no live captures in unit tests — keep the capture_reminder
+        # advisory off result dicts (and don't probe the real relay)
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
         self.runner.mddb.search_documents.return_value = []
         self.runner.memory.mddb = self.runner.mddb
         # Voice preference writes land in a per-instance JSON — point the
@@ -1182,6 +1197,7 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
             self.ha_client, habit_state_getter=lambda: {"habits": []},
             instance_id="test")
         self.runner._banks = _doc_registry()
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
         self.runner.mddb = AsyncMock()
         self.runner.mddb.search_documents.return_value = []
         from tests.test_calendar_providers import FakeProvider, TZ
@@ -1468,6 +1484,9 @@ class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _hermetic_registry()
         self.runner.mddb = AsyncMock()
+        # no live captures in unit tests — keep the capture_reminder
+        # advisory off result dicts (and don't probe the real relay)
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
         self.runner.mddb.search_documents.return_value = []
         self.runner.mddb.delete_document.return_value = {"status": "deleted"}
         self.runner.memory.mddb = self.runner.mddb
@@ -1701,6 +1720,9 @@ class DevinMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _hermetic_registry()
         self.runner.mddb = AsyncMock()
+        # no live captures in unit tests — keep the capture_reminder
+        # advisory off result dicts (and don't probe the real relay)
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
         self.runner.mddb.search_documents.return_value = []
         self.runner.mddb.add_document.return_value = {"status": "ok"}
         self.runner.mddb.get_document.return_value = None
@@ -2078,6 +2100,7 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.ha_client.recent_events.return_value = {"events": []}
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _hermetic_registry()
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
         # memory/events/mddb are real objects in non-chaba mode — swap the
         # network faces so the suite stays hermetic.
         self.runner.mddb = AsyncMock()
