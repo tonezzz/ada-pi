@@ -2460,7 +2460,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "text": {
                                 "type": "string",
-                                "description": "Command text/payload: nav target (URL, 'screenlive:workspace:N[:pad|crop]', 'tony-omen:workspace:N'), scroll direction, visible text to click, text to type, or shot/viewport args.",
+                                "description": "Command text/payload: nav target (URL, 'gev' for live God's Eye View, 'screenlive:workspace:N[:pad|crop]', 'tony-omen:workspace:N'), scroll direction, visible text to click, text to type, or shot/viewport args.",
                             },
                             "selector": {"type": "string", "description": "CSS selector for click."},
                             "role": {"type": "string", "description": "ARIA role for click (e.g. 'button')."},

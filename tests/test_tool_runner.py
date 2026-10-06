@@ -2081,6 +2081,129 @@ class TvInputMismatchTests(unittest.IsolatedAsyncioTestCase):
         self.ha_client.tv_action.assert_not_awaited()
 
 
+class TvGevLaneTests(unittest.IsolatedAsyncioTestCase):
+    """tv-cast-gev-path (2026-10-05): 'nav gev' and /apps/gev/ URL navs
+    went through shotAndCast — six {ok,cast:200} results while the TV
+    showed a frozen PNG. GEV nav targets now rewrite to the live
+    tony-omen workspace lane, and cast-bearing results verify the cast
+    target actually left off/idle (off-Chromecast 200 no-op class)."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.tv_action.return_value = {
+            "ok": True, "cast": "camera.play_stream:200",
+            "stream": "tony-omen/index0.m3u8"}
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        # Registry with no 'sources' block — desktop-source ACL is shared.
+        reg = Path(tempfile.mkdtemp()) / "cast-screens.json"
+        reg.write_text(json.dumps({"screens": {}}))
+        env = patch.dict(os.environ, {"ADA_CAST_SCREENS": str(reg)})
+        env.start()
+        self.addCleanup(env.stop)
+        # Keep the verification polls instant.
+        slp = patch("asyncio.sleep", new=AsyncMock())
+        slp.start()
+        self.addCleanup(slp.stop)
+        self._ha_states()
+
+    def _ha_states(self, cast_state="playing",
+                   select="TONY-TV Cast", tv_app="com.webos.app.browser"):
+        def fake(entity_id):
+            if entity_id == "input_select.tv_cast_target":
+                return {"state": select}
+            if entity_id == "media_player.tony_tv_cast":
+                return {"state": cast_state, "attributes": {}}
+            if entity_id == "media_player.tony_tv":
+                return {"entity_id": entity_id, "state": "on",
+                        "attributes": {"app_id": tv_app,
+                                       "app_name": tv_app}}
+            return {"state": "unknown"}
+        self.ha_client.get_state.side_effect = fake
+
+    def _sent_text(self):
+        call = self.ha_client.tv_action.await_args
+        return call.args[1] if len(call.args) > 1 else call.kwargs["text"]
+
+    async def test_nav_gev_key_rewrites_to_live_lane(self):
+        out = await self.runner.tv_action(cmd="nav", text="gev")
+        self.assertEqual(self._sent_text(), "tony-omen:workspace:4")
+        self.assertEqual(out["gev_lane"], "tony-omen:workspace:4")
+        self.assertEqual(out["cast_verify"]["state"], "playing")
+        self.assertTrue(out["ok"])
+
+    async def test_nav_gev_url_rewrites_too(self):
+        out = await self.runner.tv_action(
+            cmd="nav",
+            text="https://tony-dell.taila0626a.ts.net/apps/gev/")
+        self.assertEqual(self._sent_text(), "tony-omen:workspace:4")
+        self.assertIn("gev_lane", out)
+
+    async def test_nav_relative_gev_path_rewrites(self):
+        await self.runner.tv_action(cmd="nav", text="/apps/gev/")
+        self.assertEqual(self._sent_text(), "tony-omen:workspace:4")
+
+    async def test_plain_url_nav_not_rewritten(self):
+        out = await self.runner.tv_action(
+            cmd="nav", text="https://example.com/")
+        self.assertEqual(self._sent_text(), "https://example.com/")
+        self.assertNotIn("gev_lane", out)
+
+    async def test_lane_env_override(self):
+        with patch.dict(os.environ,
+                        {"ADA_GEV_TV_TARGET": "tony-omen:workspace:2"}):
+            await self.runner.tv_action(cmd="nav", text="gev")
+        self.assertEqual(self._sent_text(), "tony-omen:workspace:2")
+
+    async def test_cast_verify_off_player_fails_loudly(self):
+        self._ha_states(cast_state="off")
+        out = await self.runner.tv_action(cmd="nav", text="gev")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["cast_verify"]["state"], "off")
+        self.assertIn("tony_tv_cast", out["error"])
+        self.assertIn("nothing reached the TV", out["error"])
+
+    async def test_cast_verify_idle_player_fails(self):
+        self._ha_states(cast_state="idle")
+        out = await self.runner.tv_action(
+            cmd="nav", text="https://example.com/")
+        self.assertFalse(out["ok"])
+
+    async def test_cast_verify_wakes_after_first_poll(self):
+        # Player still 'off' on the first read, 'playing' on the second —
+        # the poll must wait out the wake latency instead of failing.
+        states = iter([{"state": "TONY-TV Cast"}])
+        player = iter([{"state": "off"}, {"state": "playing"}])
+
+        def fake(entity_id):
+            if entity_id == "input_select.tv_cast_target":
+                return next(states, {"state": "TONY-TV Cast"})
+            if entity_id == "media_player.tony_tv_cast":
+                return next(player, {"state": "playing"})
+            if entity_id == "media_player.tony_tv":
+                return {"state": "on",
+                        "attributes": {"app_id": "com.webos.app.browser"}}
+            return {"state": "unknown"}
+        self.ha_client.get_state.side_effect = fake
+        out = await self.runner.tv_action(cmd="nav", text="gev")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["cast_verify"]["state"], "playing")
+
+    async def test_verify_inconclusive_does_not_fail(self):
+        # HA unreachable -> no verdict; the cast-browser ok stands.
+        self.ha_client.get_state.side_effect = RuntimeError("ha down")
+        out = await self.runner.tv_action(cmd="nav", text="gev")
+        self.assertTrue(out["ok"])
+        self.assertNotIn("cast_verify", out)
+
+    async def test_non_cast_result_skips_verify(self):
+        # A bare {ok} result carries no cast attempt — nothing to verify.
+        self.ha_client.tv_action.return_value = {"ok": True}
+        out = await self.runner.tv_action(
+            cmd="nav", text="https://example.com/")
+        self.assertNotIn("cast_verify", out)
+
+
 class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     """tools-merge-ha (21 -> 6): every absorbed name stays callable via
     _ALIASES and routes to its canonical parent — home_search for the

@@ -1,0 +1,139 @@
+# SSOT Job: GEV-to-TV live lane + post-cast state verification
+# Card: tv-cast-gev-path. Dispatch 20261006-111008-1-confirm-which-path-ada-ha-to.
+
+title: TV cast — 'nav gev' routes to a live workspace stream; casts verify the player woke
+subtitle: >
+  2026-10-05 incident: Tony asked ada-ha-tony for GEV on TONY-TV. Six
+  tv_action calls returned ok while the TV showed nothing useful — the
+  navs went through cast-browser's shotAndCast, which casts a static PNG
+  of the page (~4s in, Cesium still booting), not live video.
+
+planning:
+  goal: |
+    Make 'send GEV to the TV' produce live video, make tv_action
+    results honest about whether the cast actually landed, and cover
+    both with scenarios.
+  incident_findings: |
+    Confirmed from cast-browser journal on tony-omen (journalctl --user
+    -u cast-browser): at 2026-10-05 18:50:59–18:53:37 +07 (= the card's
+    11:51-53 UTC) ada-ha-tony hit POST http://100.75.102.88:8799/cmd
+    directly (the CAST_BROWSER_URL default path — rest_command was NOT
+    used). Six runCommand entries, all speaker=person.tony:
+      5x {"cmd":"nav","text":"https://tony-dell.taila0626a.ts.net/apps/gev/"}
+      1x {"cmd":"scroll","text":"down"}
+    Each nav -> gotoInternal -> headless Chromium loads the GEV URL ->
+    shotAndCast -> PNG screenshot -> media_player.play_media image/png
+    -> {ok:true, cast:"cast:200", url}. scroll -> re-shot PNG ->
+    {cast:"cast:200"}. So ok=true was literal truth — a PNG cast
+    succeeded; the card's hypothesis that Ada called `nav gev` and hit
+    'unknown key' is NOT what happened in that window. A real `nav gev`
+    appears later at 20:40 (no speaker — manual probe); it returns
+    {ok:false, err:"unknown key gev"}, which already raises RuntimeError
+    via the err-body check added in 7c440ba (2026-10-02).
+  decisions: |
+    - A 'gev' entry in cast-browser KEYS was REJECTED: every KEYS nav
+      funnels into gotoInternal + shotAndCast -> PNG. It can never give
+      live video.
+    - Live lane = the screenlive/desktop-cast path: cast-browser's
+      `nav tony-omen:workspace:N` switches omen's XFCE to workspace N,
+      restarts cast-desktop@0 (ffmpeg x11grab :0 -> index0.m3u8),
+      camera.tony_omen_desktop_1 picks the stream via :8082, and
+      camera.play_stream pushes HLS to the cast target. Live video.
+      (`screenlive:*` targets the tony-dell seat — display :1 doesn't
+      exist on omen and camera.desktop_1 reads tony-dell's dir, so the
+      tony-omen spelling is the only working lane.)
+    - ToolRunner.tv_action rewrites GEV nav intents BEFORE the ACL check:
+      'gev', "god's eye view" spellings, and any /apps/gev/ URL (the
+      exact call Ada made) -> 'tony-omen:workspace:4' by default;
+      override via ADA_GEV_TV_TARGET or cast-screens.json "gev".target.
+      The rewrite lands on the 'omen' ACL source (owner person.tony) —
+      guests can't stream Tony's desktop to the TV.
+    - Post-cast verification (fail loudly): any tv_action result
+      carrying a cast ('cast'/'stream' keys) now polls the resolved cast
+      target (input_select.tv_cast_target -> 'TONY-TV Cast' ->
+      media_player.tony_tv_cast; ADA_TV_CAST_ENTITY override) up to
+      ~7.5s. Still off/idle/standby/unavailable -> result flips to
+      ok:false + error 'nothing reached the TV'. Inconclusive reads
+      (HA down) never fail the cast.
+    - Omen provisioning (done this session): gev-workspace.service keeps
+      a dedicated-profile Chrome window titled 'God's Eye View' parked
+      maximized on XFCE workspace 4 (desktop index 3);
+      cast-stream-http.service serves ~/.local/share/cast-stream at
+      :8082 (replaces the disabled caddy-tony-omen :8082 block) so
+      camera.tony_omen_desktop_1 can fetch index0.m3u8. Verified: GEV
+      window on ws4 + answering get_current_view_state via the
+      gev-gemini bridge; :8082 returns 200 for the playlist path.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-06"
+  steps:
+    - id: 1
+      label: "incident path confirmed"
+      status: done
+      notes: "cast-browser journal + runCommand code trace — see
+        planning.incident_findings."
+    - id: 2
+      label: "gev nav rewrite + live lane"
+      status: done
+      notes: "backend/tool_runner.py: _gev_tv_target() + rewrite in
+        runner.tv_action before _check_tv_source_owner; result carries
+        gev_lane + gev_note. Tool desc (realtime_provider.py) and
+        tool_guide.yml updated — 'nav gev' documented."
+    - id: 3
+      label: "post-cast media_player verification"
+      status: done
+      notes: "_tv_cast_entity() mirrors cast-browser getCastTarget();
+        _tv_cast_verify() polls 5x1.5s for the player to leave
+        off/idle/standby/unavailable/unknown. Failure flips the result
+        to ok:false + error — an off-Chromecast 200 can no longer read
+        as success."
+    - id: 4
+      label: "omen provisioning"
+      status: done
+      notes: "~/.local/bin/gev-workspace.sh + gev-workspace.service
+        (chrome --app=GEV parked ws4, re-park loop 15s);
+        ~/.local/bin/cast-stream-http.sh + cast-stream-http.service
+        (python http.server :8082 -> ~/.local/share/cast-stream with
+        tony-omen/desktop symlink). Both enabled+running."
+    - id: 5
+      label: "scenarios + tests"
+      status: done
+      notes: "tests/scenarios/tv_cast_gev_live.yaml (offline regression:
+        gev key/URL rewrite, plain-URL untouched, verify pass/fail);
+        tests/scenarios-live/gev_to_tv_live.yaml (tier: full — real TV
+        + workspace switch); TvGevLaneTests x10 in test_tool_runner.py;
+        benchmark.yml lists gev_to_tv_live in write_allowed_in +
+        casting + gev suites."
+
+invoke:
+  commands:
+    - "~/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/test_tool_runner.py -k TvGevLane -q"
+    - "~/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/test_scenarios.py -k tv_cast_gev_live -q"
+    - "python3 scripts/scenario-live.py tests/scenarios-live/gev_to_tv_live.yaml   # live, actuates TV"
+
+verification:
+  - "pytest TvGevLaneTests — 10 tests: gev key/URL/relative-path rewrite,
+    env override, plain URL untouched, verify off/idle fail, wake-after-
+    first-poll, inconclusive pass, non-cast skip"
+  - "offline scenario tv_cast_gev_live — rewrite + verification replayed"
+  - "omen: `systemctl --user status gev-workspace cast-stream-http`,
+    `DISPLAY=:0 wmctrl -l` shows 'God's Eye View' on desktop 3,
+    `curl :8082/tony-omen/desktop/index0.m3u8` -> 200"
+  - "live (operator): 'Put God's Eye View on the TV' -> tv_action nav
+    gev -> TV shows live map; state reads playing on
+    media_player.tony_tv_cast"
+
+notes:
+  - "The lane switches tony-omen's physical workspace to 4 and leaves it
+    there — designed behavior of the tony-omen:workspace target (the
+    stream IS the physical display)."
+  - "gev_workspace choice is config-driven: cast-screens.json 'gev'
+    block or ADA_GEV_TV_TARGET; default tony-omen:workspace:4."
+  - "screens.json 'tv-desk' source (shared virtual display) is the
+    future home for GEV-to-TV so non-owners can cast it too — needs an
+    Xvfb seat + a cast-browser nav handler; out of scope here."
+  - "Follow-up if wanted: cast-browser could get a real 'gev' handler
+    (provision window + stream + play_stream atomically) — cleaner UX,
+    but the file is hand-managed on omen (not in a repo)."

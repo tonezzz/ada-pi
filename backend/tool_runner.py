@@ -3218,12 +3218,29 @@ class ToolRunner:
         # Deny non-owners here (rest_command swallows the controller's 403)
         # and pass the speaker so cast-browser enforces as backstop too.
         target = text or " ".join(str(cmd).split()[1:])
+        # GEV on the TV never goes through shotAndCast — that lane casts a
+        # frozen PNG of whatever the headless page had painted (~4s in,
+        # Cesium still booting). 2026-10-05: five navs of the /apps/gev/
+        # URL all returned {ok,cast:200} while the TV showed a still.
+        # Rewrite GEV nav targets to the live workspace stream instead.
+        gev_lane = self._gev_tv_target(cmd, target)
+        if gev_lane:
+            target = text = gev_lane
         self._check_tv_source_owner(target, self._memory_identity())
         out = await self.context.ha_client.tv_action(
             cmd, text, selector=selector or None, role=role or None,
             key=key or None, dx=dx, dy=dy, factor=factor,
             speaker=self._memory_identity() or "",
         )
+        if isinstance(out, dict):
+            out = dict(out)
+        if gev_lane and isinstance(out, dict):
+            out["gev_lane"] = gev_lane
+            out["gev_note"] = (
+                "GEV streams live from the tony-omen workspace — a URL "
+                "nav would have cast a still image. GEV must be open on "
+                "that workspace; if the picture is wrong, say so rather "
+                "than claiming the map is up.")
         # Post-nav ground truth: cast-browser acking the nav only means
         # the browser took the URL — if the TV's foreground app is the
         # STB or another input, the page loaded but is invisible
@@ -3242,6 +3259,25 @@ class ToolRunner:
                             "URL again or switch the TV input.")
             except Exception:
                 pass
+        # Post-cast truth: {ok,cast:200} only proves HA accepted the
+        # play_media / camera.play_stream call — an off or idle cast
+        # target swallows it silently (the off-Chromecast 200 no-op
+        # class, same as the 2026-10-05 GEV failure where six ok results
+        # put nothing on the TV). Verify the player actually woke.
+        if isinstance(out, dict) and ("cast" in out or "stream" in out):
+            try:
+                verify = await self._tv_cast_verify()
+            except Exception:
+                verify = {"ok": None}
+            if verify.get("ok") is not None:
+                out["cast_verify"] = verify
+            if verify.get("ok") is False:
+                out["ok"] = False
+                out["error"] = (
+                    f"the cast went out but {verify.get('entity')} is "
+                    f"'{verify.get('state')}' — nothing reached the TV. "
+                    "Do not claim it is showing; the cast target is off "
+                    "or did not take the stream.")
         return out
 
     async def home_status(
@@ -6645,6 +6681,86 @@ class ToolRunner:
         elif app:
             out["on_cast_app"] = any(
                 pat in app.lower() for pat in cfg["ok_apps"])
+        return out
+
+    _GEV_TV_TARGET_DEFAULT = "tony-omen:workspace:4"
+
+    def _gev_tv_target(self, cmd: str, target: str) -> str | None:
+        """Nav targets that mean God's Eye View resolve to the live-
+        desktop lane spec ('tony-omen:workspace:N' style — the stream,
+        workspace and camera are all cast-browser-side). 'gev',
+        "god's eye view" spellings and /apps/gev/ URLs (relative or
+        absolute) all match — a raw URL nav would cast a still PNG.
+        The lane comes from cast-screens.json "gev".target, overridable
+        via ADA_GEV_TV_TARGET."""
+        parts = str(cmd or "").lower().split()
+        if not parts or parts[0] != "nav":
+            return None
+        t = str(target or "").strip().lower()
+        if not t:
+            return None
+        if not (re.fullmatch(r"god'?s?\s*eye\s*view|gev", t)
+                or re.search(r"/apps/gev(?:[/?#]|$)", t)):
+            return None
+        cfg = self._cast_screens_cfg()
+        gev = cfg.get("gev") if isinstance(cfg.get("gev"), dict) else {}
+        return (os.environ.get("ADA_GEV_TV_TARGET")
+                or str(gev.get("target") or "").strip()
+                or self._GEV_TV_TARGET_DEFAULT)
+
+    _TV_CAST_FAIL_STATES = frozenset(
+        {"off", "idle", "standby", "unavailable", "unknown"})
+    _TV_CAST_SELECT = "input_select.tv_cast_target"
+    _TV_CAST_SELECT_MAP = {"TONY-TV Cast": "media_player.tony_tv_cast"}
+    _TV_CAST_DEFAULT_ENTITY = "media_player.tony_tv_cast"
+
+    async def _tv_cast_entity(self) -> str:
+        """The media_player cast-browser actually casts to — mirrors
+        its getCastTarget(): input_select.tv_cast_target wins (mapped
+        through the 'TONY-TV Cast' alias or slugged), else the
+        Chromecast default. ADA_TV_CAST_ENTITY overrides outright."""
+        env = os.environ.get("ADA_TV_CAST_ENTITY")
+        if env:
+            return env
+        try:
+            st = await self.context.ha_client.get_state(
+                self._TV_CAST_SELECT)
+            sel = str(st.get("state") or "").strip()
+            if sel:
+                if sel in self._TV_CAST_SELECT_MAP:
+                    return self._TV_CAST_SELECT_MAP[sel]
+                if sel.startswith("media_player."):
+                    return sel
+                slug = _slug(sel)
+                if slug:
+                    return f"media_player.{slug}"
+        except Exception:
+            pass
+        return self._TV_CAST_DEFAULT_ENTITY
+
+    async def _tv_cast_verify(self) -> dict[str, Any]:
+        """Post-cast state check on the cast target: poll a few seconds
+        for the player to leave the dead states (off/idle/standby/
+        unavailable). {ok:True,state} when it woke, {ok:False,state}
+        when it stayed dead, {ok:None} when HA can't say — an
+        inconclusive read never fails the cast."""
+        out: dict[str, Any] = {"ok": None}
+        try:
+            entity = await self._tv_cast_entity()
+            out["entity"] = entity
+            last = None
+            for _ in range(5):
+                st = await self.context.ha_client.get_state(entity)
+                last = str(st.get("state") or "unknown").lower()
+                if last not in self._TV_CAST_FAIL_STATES:
+                    out["ok"] = True
+                    out["state"] = last
+                    return out
+                await asyncio.sleep(1.5)
+            out["ok"] = False
+            out["state"] = last
+        except Exception:
+            pass
         return out
 
     def _tv_abs_url(self, url: str) -> str:
