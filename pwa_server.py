@@ -1866,7 +1866,14 @@ async def call_tool(request: Request) -> dict:
     logger.info("tool call: %s args=%r client=%s caller=%s", name, args, client_ip, caller)
     try:
         output = await tool_runner.execute(name, args)
-        return {"tool": name, "status": "ok", "output": output}
+        # Uniform result contract: the tool's own outcome is a
+        # {ok: bool, ...} dict; gate denials still raise below.
+        status = "ok"
+        if isinstance(output, dict) and output.get("ok") is False:
+            status = (
+                "denied" if (output.get("error_type") == "PermissionError"
+                             or output.get("needs_confirm")) else "error")
+        return {"tool": name, "status": status, "output": output}
     except PermissionError as exc:
         logger.warning("tool %s denied client=%s: %s", name, client_ip, exc)
         return {"tool": name, "status": "denied", "error": str(exc)}

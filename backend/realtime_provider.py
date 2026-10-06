@@ -38,6 +38,7 @@ from backend.tool_runner import (
     _resolve_alias,
     _alias_call_args,
     _PERSONA_VOICE_ACTIONS,
+    normalize_tool_result,
 )
 
 # Tools whose call requires an explicit user confirmation. The Jev advisory
@@ -5027,18 +5028,29 @@ class GeminiLiveProvider(RealtimeProvider):
                                         speaker=self.current_speaker_ha_person,
                                         speaker_session=self.speaker_session,
                                         owner=owner)
-                                    result = {"output": output}
+                                    # Contract (tool-error-contract):
+                                    # execute() already returns the
+                                    # canonical {ok: bool, ...} dict —
+                                    # pass it through at top level so an
+                                    # ok:false is never buried under an
+                                    # "output" wrapper.
+                                    result = (output if isinstance(output, dict)
+                                              else {"ok": True, "output": output})
                                     if call.name == "ada_memory_search":
                                         self._note_search_result(output)
                                 except Exception as exc:
                                     result = {"error": f"{call.name} failed: {exc}"}
                             else:
                                 result = {"error": "Unsupported or unavailable function"}
+                        # Uniform result contract: every tool_result the
+                        # model sees carries top-level ok: bool — the
+                        # honesty checks (event log below, scenario-live
+                        # no_failed_result) rely on it.
+                        result = normalize_tool_result(result)
                         self.conversation.log_event(
                             "tool_call", tool=str(call.name),
                             dur_ms=int((time.monotonic() - tool_t0) * 1000),
-                            ok=("error" not in result
-                                if isinstance(result, dict) else True))
+                            ok=bool(result.get("ok", True)))
                         yield ProviderEvent("tool_result", {
                             "name": str(call.name),
                             "result": _safe_args(result) if isinstance(result, dict) else {"value": str(result)[:500]},

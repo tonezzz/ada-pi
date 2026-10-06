@@ -368,10 +368,11 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mddb_write_failure_propagates(self):
         self.runner.mddb.add_document.return_value = None
-        with self.assertRaises(RuntimeError):
-            await self.runner.execute(
-                "ada_remember", {"bank": "personal", "text": "x"}
-            )
+        out = await self.runner.execute(
+            "ada_remember", {"bank": "personal", "text": "x"}
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "RuntimeError")
 
     async def test_mddb_update_failure_propagates(self):
         self.runner.mddb.get_document.return_value = {
@@ -379,12 +380,13 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
             "meta": {"status": ["active"]},
         }
         self.runner.mddb.update_document.return_value = None
-        with self.assertRaises(RuntimeError):
-            await self.runner.execute(
-                "ada_remember",
-                {"bank": "personal", "key": "personal/gate-remote-location",
-                 "text": "fixed"},
-            )
+        out = await self.runner.execute(
+            "ada_remember",
+            {"bank": "personal", "key": "personal/gate-remote-location",
+             "text": "fixed"},
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "RuntimeError")
 
     async def test_readonly_bank_denied(self):
         with self.assertRaises(PermissionError):
@@ -457,11 +459,12 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(upd_kw["meta"]["superseded_by"], ["personal/new"])
 
     async def test_supersede_missing_doc_fails(self):
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "ada_remember",
-                {"bank": "personal", "text": "x", "supersedes": "personal/none"},
-            )
+        out = await self.runner.execute(
+            "ada_remember",
+            {"bank": "personal", "text": "x", "supersedes": "personal/none"},
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     async def test_forget_retracts(self):
         self.runner.mddb.get_document.return_value = {
@@ -496,23 +499,25 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_person_scope_write_denied_for_other_identity(self):
         self.runner._banks = self._person_scope_registry()
-        with self.assertRaises(PermissionError) as ctx:
-            await self.runner.execute(
-                "ada_remember",
-                {"bank": "personal-testo", "text": "not his note"},
-                identity="person.tony",
-            )
-        self.assertIn("private to its owner", str(ctx.exception))
+        out = await self.runner.execute(
+            "ada_remember",
+            {"bank": "personal-testo", "text": "not his note"},
+            identity="person.tony",
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "PermissionError")
+        self.assertIn("private to its owner", out["error"])
         self.runner.mddb.add_document.assert_not_called()
 
     async def test_person_scope_write_denied_for_anonymous(self):
         self.runner._banks = self._person_scope_registry()
-        with self.assertRaises(PermissionError):
-            await self.runner.execute(
-                "ada_remember",
-                {"bank": "personal-testo", "text": "anon note"},
-                identity=None,
-            )
+        out = await self.runner.execute(
+            "ada_remember",
+            {"bank": "personal-testo", "text": "anon note"},
+            identity=None,
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "PermissionError")
         self.runner.mddb.add_document.assert_not_called()
 
     async def test_person_scope_write_allowed_for_owner(self):
@@ -537,12 +542,13 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_person_scope_forget_denied_for_other_identity(self):
         self.runner._banks = self._person_scope_registry()
-        with self.assertRaises(PermissionError):
-            await self.runner.execute(
-                "ada_forget",
-                {"bank": "personal-testo", "key": "personal-testo/x"},
-                identity="person.kk",
-            )
+        out = await self.runner.execute(
+            "ada_forget",
+            {"bank": "personal-testo", "key": "personal-testo/x"},
+            identity="person.kk",
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "PermissionError")
         self.runner.mddb.update_document.assert_not_called()
 
     async def test_ops_routed_bank_skips_vector_and_windows_listing(self):
@@ -711,11 +717,12 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kw["meta"]["confidence"], ["0.3"])
 
     async def test_outcome_rejects_unknown_value(self):
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "ada_outcome",
-                {"bank": "personal", "key": "k", "outcome": "meh"},
-            )
+        out = await self.runner.execute(
+            "ada_outcome",
+            {"bank": "personal", "key": "k", "outcome": "meh"},
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
         self.runner.mddb.update_document.assert_not_called()
 
     async def test_outcome_confirmed_policy_needs_confirmation(self):
@@ -728,11 +735,12 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_outcome_missing_doc_fails(self):
         self.runner.mddb.get_document.return_value = None
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "ada_outcome",
-                {"bank": "personal", "key": "personal/none", "outcome": "good"},
-            )
+        out = await self.runner.execute(
+            "ada_outcome",
+            {"bank": "personal", "key": "personal/none", "outcome": "good"},
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     def _persona_registry(self):
         spec = {
@@ -794,10 +802,11 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self.runner._banks = self._persona_registry()
         self.runner.session_caller_name = None
         self.runner.current_speaker_ha_person = None
-        with self.assertRaises(PermissionError):
-            await self.runner.execute(
-                "ada_persona", {"action": "set", "knob": "tone", "value": "direct"}
-            )
+        out = await self.runner.execute(
+            "ada_persona", {"action": "set", "knob": "tone", "value": "direct"}
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "PermissionError")
 
     async def test_persona_show_returns_defaults(self):
         self.runner._banks = self._persona_registry()
@@ -858,11 +867,12 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self._mock_persons([
             {"entity_id": "person.tony", "name": "Tony", "state": "home"},
         ])
-        with self.assertRaises(PermissionError):
-            await self.runner.execute(
-                "ada_persona",
-                {"action": "set", "person": "Tony", "knob": "tone", "value": "direct"},
-            )
+        out = await self.runner.execute(
+            "ada_persona",
+            {"action": "set", "person": "Tony", "knob": "tone", "value": "direct"},
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "PermissionError")
         self.runner.mddb.add_document.assert_not_called()
 
     async def test_persona_key_bound_ha_person_routes_identity(self):
@@ -900,11 +910,12 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self._mock_persons([
             {"entity_id": "person.kk", "name": "KK", "state": "home"},
         ])
-        with self.assertRaises(ValueError) as ctx:
-            await self.runner.execute(
-                "ada_persona", {"action": "show", "person": "nobody"}
-            )
-        self.assertIn("person.kk", str(ctx.exception))
+        out = await self.runner.execute(
+            "ada_persona", {"action": "show", "person": "nobody"}
+        )
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
+        self.assertIn("person.kk", out["error"])
 
     def _pin_session(self, caller, person, owner=None, speaker=None):
         self.runner.session_caller_name = caller
@@ -931,6 +942,14 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
             ("ada_memory_search", {"bank": "general", "query": "x"}),
             ("ada_enroll_speaker", {"name": "Tony"}),
         ):
+            # Gate denials still raise; ada_enroll_speaker's own check
+            # lives inside the method — the boundary normalizes it to
+            # the canonical {ok: False, error_type: "PermissionError"}.
+            if tool == "ada_enroll_speaker":
+                out = await self.runner.execute(tool, args)
+                self.assertFalse(out["ok"], tool)
+                self.assertEqual(out["error_type"], "PermissionError")
+                continue
             with self.assertRaises(PermissionError, msg=tool):
                 await self.runner.execute(tool, args)
         self.runner.mddb.add_document.assert_not_called()
@@ -1005,12 +1024,13 @@ class MemoryToolTests(unittest.IsolatedAsyncioTestCase):
         self._mock_persons([
             {"entity_id": "person.bob", "name": "Bob", "state": "home"},
         ])
-        with self.assertRaises(PermissionError) as ctx:
-            await self.runner.execute(
-                "ada_persona",
-                {"action": "set", "person": "Bob", "knob": "tone",
-                 "value": "direct"})
-        self.assertIn("person-scoped", str(ctx.exception))
+        out = await self.runner.execute(
+            "ada_persona",
+            {"action": "set", "person": "Bob", "knob": "tone",
+             "value": "direct"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "PermissionError")
+        self.assertIn("person-scoped", out["error"])
         self.runner.mddb.add_document.assert_not_called()
 
 

@@ -198,6 +198,54 @@ _SECONDARY_BLOCKED_GROUPS = {
 
 def _slug(text: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(text or "").lower()).strip("_")
+
+
+# Uniform tool-result contract (kanban tool-error-contract, 2026-10-05):
+# every value that leaves ToolRunner.execute() is a dict carrying
+# top-level ok: bool — {ok: True, ...} on success, {ok: False,
+# error: str, ...} on failure. Until then five conventions coexisted:
+# bare raises, {"error": ...}, {"ok": False}, {"err": ...}, and failures
+# buried inside responses[].response.ok — the "did it honestly succeed"
+# checks couldn't be uniform. normalize_tool_result wraps the legacy
+# shapes at the runner boundary; dispatch-layer denials (the _check_*
+# gates, unknown-tool KeyError) still raise — a refusal is not a tool
+# result.
+_RESULT_FAIL_STATUSES = frozenset({"error", "failed", "not_found", "denied"})
+
+
+def normalize_tool_result(result: Any) -> dict[str, Any]:
+    """Coerce a tool method's return into the canonical
+    {ok: bool, error?: str, ...} shape. Pure — never raises."""
+    if not isinstance(result, dict):
+        return {"ok": True, "output": result}
+    out = dict(result)
+    # Buried fan-out failure (the gev_command pattern, 0bb8e9b,
+    # generalized): a delivered command whose every client response is
+    # ok:false is a top-level failure, not a success with bad parts.
+    resps = out.get("responses")
+    if isinstance(resps, list) and resps and out.get("ok") is not False:
+        errs = [
+            r["response"] for r in resps
+            if isinstance(r, dict) and isinstance(r.get("response"), dict)
+            and r["response"].get("ok") is False
+        ]
+        if errs and len(errs) == len(resps):
+            out["ok"] = False
+            out["error"] = (
+                errs[0].get("error") or out.get("error")
+                or "all client responses failed")
+    if out.get("ok") is None:
+        out["ok"] = not (
+            out.get("error") or out.get("err") or out.get("needs_confirm")
+            or str(out.get("status") or "").lower() in _RESULT_FAIL_STATUSES)
+    else:
+        out["ok"] = bool(out["ok"])
+    # `err` is a legacy spelling of `error` — surface it canonically.
+    if out["ok"] is False and not out.get("error") and out.get("err"):
+        out["error"] = str(out["err"])
+    return out
+
+
 # Per-call identity propagated through a ContextVar: the runner is shared
 # across concurrent sessions, so every policy/memory check inside a tool
 # call must see the SESSION's identity, not the runner's mutable fields
@@ -1177,7 +1225,12 @@ class ToolRunner:
                       *, identity: Any = _IDENTITY_UNSET,
                       speaker: Any = _IDENTITY_UNSET,
                       speaker_session: Any = _IDENTITY_UNSET,
-                      owner: Any = _IDENTITY_UNSET) -> Any:
+                      owner: Any = _IDENTITY_UNSET) -> dict[str, Any]:
+        """Run a tool by name. Always returns the canonical
+        {ok: bool, error?: str, ...} dict (normalize_tool_result wraps
+        legacy shapes). Gate denials (confirmation required, secondary
+        speaker, policy) still raise PermissionError — a refused call is
+        not a tool result."""
         # Retired names from the tool consolidation resolve to their
         # canonical action= tool first — the alias table is the contract,
         # phonetic normalization below is just typo repair. The alias's
@@ -1435,7 +1488,22 @@ class ToolRunner:
             call_args["confirm_token"] = confirm[1]
         call_args = self._normalize_args(name, method, call_args)
         logger.info("tool %s args=%r", name, call_args)
-        result = await method(**call_args)
+        try:
+            result = await method(**call_args)
+        except Exception as exc:
+            # The tools.d contract ("never raise into the model") applies
+            # to native methods too — a tool that fails mid-execution
+            # reports {ok: False, error} like every other failure shape.
+            # Dispatch-layer denials (the _check_* gates above, an
+            # unknown tool name) still raise: the tool never ran, so
+            # there is no tool result.
+            logger.warning("tool %s raised: %s", name, exc)
+            result = {
+                "ok": False,
+                "error": str(exc) or type(exc).__name__,
+                "error_type": type(exc).__name__,
+            }
+        result = normalize_tool_result(result)
         self._log_change_request(name, call_args, result, ident)
         result = self._denial_breaker(name, call_args, result)
         return await self._capture_reminder(name, result)
@@ -1471,8 +1539,7 @@ class ToolRunner:
         if name == "devin_read" and str(
                 args.get("action") or "") not in ("report", "review"):
             return
-        if isinstance(result, dict) and (
-                result.get("error") or result.get("needs_confirm")):
+        if isinstance(result, dict) and result.get("ok") is False:
             return
         detail = args.get("slug") or args.get("title") or \
             args.get("task_id") or args.get("key") or \
@@ -1503,7 +1570,7 @@ class ToolRunner:
         self._denials[key] = hits
         if len(hits) >= 3:
             self._denials[key] = []
-            return {"error": (
+            return {"ok": False, "error": (
                 "STOP RETRYING — this exact call was refused " +
                 str(len(hits)) +
                 " times: the screen is busy and self-asserted confirmed=true "
@@ -6006,16 +6073,10 @@ class ToolRunner:
             for dead in ("controls", "detection", "scenePlayback",
                          "celestalRing", "bloom", "sharpen"):
                 r.pop(dead, None)
-        # A delivered command whose every client response is ok:false is a
-        # real failure — surface it at top level instead of leaving the
-        # error buried inside responses[] where the model may miss it.
-        resps = out.get("responses") or []
-        errs = [r.get("response") for r in resps
-                if isinstance(r.get("response"), dict)
-                and r["response"].get("ok") is False]
-        if resps and errs and len(errs) == len(resps):
-            out["ok"] = False
-            out["error"] = errs[0].get("error") or "all GEV clients failed"
+        # The all-failed -> top-level-error lift (0bb8e9b) is generalized
+        # at the execute() boundary — normalize_tool_result surfaces a
+        # responses[] where every client reported ok:false as a top-level
+        # failure for every tool, not just this one.
         return out
 
     def _gev_tour_card(self, tour: str | None) -> dict[str, Any]:

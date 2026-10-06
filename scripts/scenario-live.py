@@ -421,27 +421,21 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
             failures.append(
                 f"result_geo_near: no tool_result within {km} km of "
                 f"({want_lat}, {want_lon})")
-    # nested failure: a listed tool's result contains an inner
-    # {"ok": false} — e.g. gev_command fly_to_location returned
-    # ok:false (query unresolvable) yet the outer call succeeded and
-    # Ada narrated success. result_not_contains misses structured
-    # falses; walk the payload. (2026-09-30 Cape Town phantom flight)
+    # failed tool result (2026-09-30 Cape Town phantom flight): the
+    # uniform {ok: bool} contract (tool-error-contract) normalizes every
+    # failure shape — {"error"}, {"err"}, buried responses[].response.ok,
+    # raised exceptions — to top-level ok:false at the runner/provider
+    # boundary, so this check reads the canonical field directly.
     failed_tools = expect.get("no_failed_result") or []
     if failed_tools:
-        def _has_false_ok(x):
-            if isinstance(x, dict):
-                if x.get("ok") is False:
-                    return True
-                return any(_has_false_ok(v) for v in x.values())
-            if isinstance(x, list):
-                return any(_has_false_ok(v) for v in x)
-            return False
         for r in results:
-            if r.get("name") in failed_tools and _has_false_ok(r.get("result")):
+            res = r.get("result")
+            if (r.get("name") in failed_tools and isinstance(res, dict)
+                    and res.get("ok") is False):
                 failures.append(
-                    f"no_failed_result: {r.get('name')} result contains "
+                    f"no_failed_result: {r.get('name')} returned "
                     f"ok:false — action did not execute "
-                    f"({str(r.get('result'))[:160]})")
+                    f"({str(res)[:160]})")
     # out-of-band ground truth: ask the GEV bridge for the live camera
     # position — verifies where the map ACTUALLY is, not what a tool
     # result claimed. Needs expect.gev_screen for targeting.

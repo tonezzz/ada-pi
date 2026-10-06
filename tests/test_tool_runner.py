@@ -241,9 +241,10 @@ class MemoryMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("events", result)
 
     async def test_canonical_search_scope_rejects_unknown(self):
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "ada_memory_search", {"query": "x", "scope": "bogus"})
+        out = await self.runner.execute(
+            "ada_memory_search", {"query": "x", "scope": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
 
 class CmsToolTests(unittest.IsolatedAsyncioTestCase):
@@ -312,24 +313,22 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
                     {"slug": "ok", "title": "x", "content": "x", "format": "exe"}):
             with self.assertRaises(PermissionError):
                 await self.runner.execute("cms_publish_page", bad)
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "cms_publish_page",
-                {"slug": "../evil", "title": "x", "content": "x", "confirmed": True},
-            )
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "cms_publish_page",
-                {"slug": "ok", "title": "x", "content": "x", "format": "exe", "confirmed": True},
-            )
+        for bad in (
+            {"slug": "../evil", "title": "x", "content": "x", "confirmed": True},
+            {"slug": "ok", "title": "x", "content": "x", "format": "exe",
+             "confirmed": True},
+        ):
+            out = await self.runner.execute("cms_publish_page", bad)
+            self.assertFalse(out["ok"])
+            self.assertEqual(out["error_type"], "ValueError")
 
     async def test_list_and_get_are_not_gated(self):
         self.runner.mddb.search_documents.return_value = [
             {"key": "pool-notes", "meta": {"slug": ["pool-notes"], "title": ["Pool"], "format": ["markdown"], "updated": ["2026-09-22T10:00:00+00:00"]}},
         ]
         pages = await self.runner.execute("cms_list_pages", {})
-        self.assertEqual(pages[0]["slug"], "pool-notes")
-        self.assertEqual(pages[0]["title"], "Pool")
+        self.assertEqual(pages["output"][0]["slug"], "pool-notes")
+        self.assertEqual(pages["output"][0]["title"], "Pool")
 
         self.runner.mddb.get_document.return_value = {
             "key": "pool-notes",
@@ -547,18 +546,18 @@ class CmsAutomationTests(unittest.IsolatedAsyncioTestCase):
                      "feeds": [["x", "ftp://nope"]]},
                     {"action": "set", "slug": "flood-report", "confirmed": True,
                      "langs": ["de"]}):
-            with self.assertRaises(ValueError):
-                await self.runner.execute("cms_automation", bad)
+            out = await self.runner.execute("cms_automation", bad)
+            self.assertFalse(out["ok"])
+            self.assertEqual(out["error_type"], "ValueError")
 
     async def test_bad_action_and_empty_set(self):
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "cms_automation",
-                {"action": "bogus", "slug": "flood-report", "confirmed": True})
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "cms_automation",
-                {"action": "set", "slug": "flood-report", "confirmed": True})
+        for bad in (
+            {"action": "bogus", "slug": "flood-report", "confirmed": True},
+            {"action": "set", "slug": "flood-report", "confirmed": True},
+        ):
+            out = await self.runner.execute("cms_automation", bad)
+            self.assertFalse(out["ok"])
+            self.assertEqual(out["error_type"], "ValueError")
 
 
 class CmsMergeAliasTests(unittest.IsolatedAsyncioTestCase):
@@ -583,7 +582,7 @@ class CmsMergeAliasTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_list_pages_alias_routes_to_read_list(self):
         pages = await self.runner.execute("cms_list_pages", {})
-        self.assertEqual(pages, [])
+        self.assertEqual(pages["output"], [])
         self.runner.mddb.search_documents.assert_awaited_once()
 
     async def test_get_page_alias_maps_slug_to_key(self):
@@ -631,17 +630,19 @@ class CmsMergeAliasTests(unittest.IsolatedAsyncioTestCase):
                 "cms_automation", {"action": "run", "slug": "x"})
 
     async def test_canonical_actions_reject_unknown(self):
-        with self.assertRaises(ValueError):
-            await self.runner.execute("cms_read", {"action": "bogus"})
+        out = await self.runner.execute("cms_read", {"action": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
         # cms_edit is a write-tool seat — the confirm gate runs before
         # action validation, same as cms_automation did pre-merge.
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "cms_edit", {"action": "bogus", "confirmed": True})
+        out = await self.runner.execute(
+            "cms_edit", {"action": "bogus", "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     async def test_canonical_read_and_edit_dispatch(self):
         pages = await self.runner.execute("cms_read", {"action": "list"})
-        self.assertEqual(pages, [])
+        self.assertEqual(pages["output"], [])
         self.runner.mddb.get_document.return_value = {
             "key": "flood-report", "lang": "en", "contentMd": "# Flood",
             "meta": {"slug": ["flood-report"], "title": ["Flood"]},
@@ -691,8 +692,9 @@ class CalendarPlanMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         out = await self.runner.execute(
             "calendar_read", {"action": "calendars"})
         self.assertIn("calendars", out)
-        with self.assertRaises(ValueError):
-            await self.runner.execute("calendar_read", {"action": "bogus"})
+        out = await self.runner.execute("calendar_read", {"action": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     async def test_create_alias_keeps_confirm_gate(self):
         args = {"title": "dentist", "start": "2026-10-06T14:00",
@@ -711,7 +713,7 @@ class CalendarPlanMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         out = await self.runner.execute(
             "calendar_delete_event",
             {"event_id": "fake:primary/abc", "confirmed": True})
-        self.assertIn("deleted", out)
+        self.assertIn("deleted", out["output"])
         self.assertEqual(self.provider.deleted, ["primary/abc"])
 
     async def test_shift_alias_keeps_confirm_gate(self):
@@ -726,9 +728,10 @@ class CalendarPlanMergeAliasTests(unittest.IsolatedAsyncioTestCase):
             await self.runner.execute(
                 "calendar_write",
                 {"action": "delete", "event_id": "fake:primary/abc"})
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "calendar_write", {"action": "bogus", "confirmed": True})
+        out = await self.runner.execute(
+            "calendar_write", {"action": "bogus", "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     async def test_daily_summary_alias_returns_bare_digest(self):
         self.runner.mddb.get_document.return_value = {
@@ -796,7 +799,7 @@ class DocsDriveMergeAliasTests(unittest.IsolatedAsyncioTestCase):
                    new=AsyncMock(return_value=[{"slug": "A-68"}])) as m:
             out = await self.runner.execute(
                 "ada_doc_search", {"query": "deed"})
-        self.assertEqual(out, [{"slug": "A-68"}])
+        self.assertEqual(out["output"], [{"slug": "A-68"}])
         m.assert_awaited_once_with("deed", limit=5)
         self.assertEqual(self.runner.doc_log[0]["action"], "search")
 
@@ -878,19 +881,21 @@ class DocsDriveMergeAliasTests(unittest.IsolatedAsyncioTestCase):
                    new=AsyncMock(return_value=[])):
             out = await self.runner.execute(
                 "docs", {"action": "search", "query": "deed"})
-        self.assertEqual(out, [])
+        self.assertEqual(out["output"], [])
         # docs/drive hold the confirm-gated seats — the gate runs before
         # action validation for anything that isn't a known free read.
         with self.assertRaises(PermissionError):
             await self.runner.execute("docs", {"action": "bogus"})
         with self.assertRaises(PermissionError):
             await self.runner.execute("drive", {"action": "bogus"})
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "docs", {"action": "bogus", "confirmed": True})
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "drive", {"action": "bogus", "confirmed": True})
+        out = await self.runner.execute(
+            "docs", {"action": "bogus", "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
+        out = await self.runner.execute(
+            "drive", {"action": "bogus", "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     async def test_docs_and_drive_denied_when_bank_not_allowed(self):
         self._allow.stop()
@@ -1037,8 +1042,9 @@ class MetaVoiceMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("input_tokens", out)
 
     async def test_ops_rejects_unknown_action(self):
-        with self.assertRaises(ValueError):
-            await self.runner.execute("ada_ops", {"action": "bogus"})
+        out = await self.runner.execute("ada_ops", {"action": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     # -- guest_register -> ada_enroll_speaker who='guest' --
 
@@ -1169,7 +1175,7 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         out = await self.runner.execute(
             "tasks_complete",
             {"task_id": "fake:@default/t1", "confirmed": True})
-        self.assertIn("completed", out)
+        self.assertIn("completed", out["output"])
         out = await self.runner.execute(
             "tasks_move",
             {"task_id": "fake:@default/t1", "due": "tomorrow",
@@ -1182,9 +1188,10 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         # action still needs confirmed to reach the ValueError.
         with self.assertRaises(PermissionError):
             await self.runner.execute("tasks", {"action": "bogus"})
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "tasks", {"action": "bogus", "confirmed": True})
+        out = await self.runner.execute(
+            "tasks", {"action": "bogus", "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     # -- home_status family ----------------------------------------------
 
@@ -1203,24 +1210,26 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         await self.runner.execute("get_dashboard_tab", {"tab": "TPL"})
         self.ha_client.dashboard_tab.assert_awaited_once_with("TPL")
         out = await self.runner.execute("get_habit_status", {})
-        self.assertEqual(out, {"habits": []})
+        self.assertEqual(out, {"habits": [], "ok": True})
 
     async def test_home_status_canonical_what_dispatch(self):
         out = await self.runner.execute(
             "home_status", {"what": "power", "hours": 12})
-        self.assertEqual(out, {"solar_kwh": 5})
+        self.assertEqual(out, {"solar_kwh": 5, "ok": True})
         self.ha_client.power_summary.assert_awaited_once_with(hours=12)
         # what='battery' with no index reads the bank, with an index
         # reads one battery (the absorbed get_battery_detail path).
         out = await self.runner.execute("home_status", {"what": "battery"})
-        self.assertEqual(out, {"soc": 90})
+        self.assertEqual(out, {"soc": 90, "ok": True})
         out = await self.runner.execute(
             "home_status", {"what": "battery", "battery_index": 2})
-        self.assertEqual(out, {"battery": 2})
-        with self.assertRaises(ValueError):
-            await self.runner.execute("home_status", {"what": "bogus"})
-        with self.assertRaises(ValueError):
-            await self.runner.execute("home_status", {})
+        self.assertEqual(out, {"battery": 2, "ok": True})
+        out = await self.runner.execute("home_status", {"what": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
+        out = await self.runner.execute("home_status", {})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     # -- chat_send photo/doc flows ---------------------------------------
 
@@ -1271,18 +1280,21 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
                 "process_document_upload", {})
             self.assertEqual(out["doc"], "doc/test-1")  # newest held
             # The card action's 'archive' button re-dispatches through
-            # execute() — ada_doc_archive's confirm gate still applies.
-            with self.assertRaises(PermissionError):
-                await self.runner.execute(
-                    "doc_upload_card_action",
-                    {"action": "archive", "intake_key": "doc/test-1"})
+            # execute() — ada_doc_archive's confirm gate denial surfaces
+            # as a normalized failure result.
+            out = await self.runner.execute(
+                "doc_upload_card_action",
+                {"action": "archive", "intake_key": "doc/test-1"})
+            self.assertFalse(out["ok"])
+            self.assertEqual(out["error_type"], "PermissionError")
         finally:
             engine._held.pop("doc/test-1", None)
 
     async def test_doc_alias_without_held_intake_errors(self):
-        with self.assertRaises(RuntimeError):
-            await self.runner.execute(
-                "sys_show_uploaded_document", {"intake_key": "doc/nope"})
+        out = await self.runner.execute(
+            "sys_show_uploaded_document", {"intake_key": "doc/nope"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "RuntimeError")
 
     async def test_chat_send_plain_send_still_queues(self):
         self.runner._chat_send_run = AsyncMock()
@@ -1291,10 +1303,12 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["status"], "queued")
 
     async def test_chat_send_rejects_unknown_photo_doc(self):
-        with self.assertRaises(ValueError):
-            await self.runner.execute("chat_send", {"photo": "bogus"})
-        with self.assertRaises(ValueError):
-            await self.runner.execute("chat_send", {"doc": "bogus"})
+        out = await self.runner.execute("chat_send", {"photo": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
+        out = await self.runner.execute("chat_send", {"doc": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
 
 class YtMergeAliasTests(unittest.IsolatedAsyncioTestCase):
@@ -1355,8 +1369,9 @@ class YtMergeAliasTests(unittest.IsolatedAsyncioTestCase):
              ("/status",)])
 
     async def test_canonical_rejects_unknown_action(self):
-        with self.assertRaises(ValueError):
-            await self.runner.execute("yt", {"action": "bogus"})
+        out = await self.runner.execute("yt", {"action": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
 
 
@@ -1586,9 +1601,10 @@ class DevinJobReportTests(unittest.IsolatedAsyncioTestCase):
         self.runner.mddb.search_documents.return_value = self._ledger()
         with patch("backend.tool_runner.devin_dispatch_mod.tasks",
                    new=AsyncMock(return_value=[])):
-            with self.assertRaises(PermissionError):
-                await self.runner.execute(
-                    "devin_job_report", {"publish": True})
+            out = await self.runner.execute(
+                "devin_job_report", {"publish": True})
+            self.assertFalse(out["ok"])
+            self.assertEqual(out["error_type"], "PermissionError")
             self.runner.mddb.add_document.assert_not_awaited()
             result = await self.runner.execute(
                 "devin_job_report", {"publish": True, "confirmed": True})
@@ -1636,7 +1652,7 @@ class DevinMergeAliasTests(unittest.IsolatedAsyncioTestCase):
             out = await self.runner.execute(
                 "devin_followup",
                 {"task_id": "t-1", "message": "hi", "confirmed": True})
-        self.assertEqual(out, "sent")
+        self.assertEqual(out["output"], "sent")
         fu.assert_awaited_once_with("t-1", "hi")
 
     async def test_answer_alias_keeps_confirm_gate_and_records(self):
@@ -1658,30 +1674,31 @@ class DevinMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         with patch("backend.tool_runner.devin_dispatch_mod.status",
                    new=AsyncMock(return_value="two tasks")) as st:
             out = await self.runner.execute("devin_status", {})
-        self.assertEqual(out, "two tasks")
+        self.assertEqual(out["output"], "two tasks")
         st.assert_awaited_once_with(None)
 
-        self.assertEqual(await self.runner.execute("devin_pending", {}), [])
-        self.assertEqual(
-            await self.runner.execute("devin_jobs", {"status": "failed"}),
-            [])
+        out = await self.runner.execute("devin_pending", {})
+        self.assertEqual(out["output"], [])
+        out = await self.runner.execute("devin_jobs", {"status": "failed"})
+        self.assertEqual(out["output"], [])
         fm = self.runner.mddb.search_documents.call_args.kwargs[
             "filter_meta"]
         self.assertEqual(fm["status"], ["failed"])
 
     async def test_canonical_devin_read_actions(self):
-        self.assertEqual(
-            await self.runner.execute("devin_read", {"action": "pending"}),
-            [])
-        with self.assertRaises(ValueError):
-            await self.runner.execute("devin_read", {"action": "bogus"})
+        out = await self.runner.execute("devin_read", {"action": "pending"})
+        self.assertEqual(out["output"], [])
+        out = await self.runner.execute("devin_read", {"action": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
         # devin is a confirm-gated seat — the gate runs before action
         # validation, same as the absorbed writers did pre-merge.
         with self.assertRaises(PermissionError):
             await self.runner.execute("devin", {"action": "bogus"})
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "devin", {"action": "bogus", "confirmed": True})
+        out = await self.runner.execute(
+            "devin", {"action": "bogus", "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     async def test_canonical_devin_dispatch(self):
         with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
@@ -1698,9 +1715,10 @@ class DevinMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     async def test_report_publish_gate_on_canonical(self):
         with patch("backend.tool_runner.devin_dispatch_mod.tasks",
                    new=AsyncMock(return_value=[])):
-            with self.assertRaises(PermissionError):
-                await self.runner.execute(
-                    "devin_read", {"action": "report", "publish": True})
+            out = await self.runner.execute(
+                "devin_read", {"action": "report", "publish": True})
+            self.assertFalse(out["ok"])
+            self.assertEqual(out["error_type"], "PermissionError")
             self.runner.mddb.add_document.assert_not_awaited()
             out = await self.runner.execute(
                 "devin_read",
@@ -1710,9 +1728,10 @@ class DevinMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     async def test_review_alias_denied_without_full_policy(self):
         # ada_devteam_review was manifest owner_only — the hermetic
         # registry has no person_policies, so the review action refuses.
-        with self.assertRaises(PermissionError):
-            await self.runner.execute(
-                "ada_devteam_review", {"request": "a tool that counts"})
+        out = await self.runner.execute(
+            "ada_devteam_review", {"request": "a tool that counts"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "PermissionError")
 
     async def test_review_action_owner_allowed(self):
         reg_path = Path(tempfile.mkdtemp()) / "banks.json"
@@ -1878,22 +1897,22 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
                       "ada_ha_search_devices"):
             self.ha_client.search_entities.reset_mock()
             out = await self.runner.execute(alias, {"query": "kitchen"})
-            self.assertEqual(out[0]["entity_id"], "light.kitchen")
+            self.assertEqual(out["output"][0]["entity_id"], "light.kitchen")
             self.ha_client.search_entities.assert_awaited_once()
 
     async def test_list_home_devices_alias_lists_bounded(self):
         out = await self.runner.execute("list_home_devices", {})
-        self.assertEqual(len(out), 4)
+        self.assertEqual(len(out["output"]), 4)
         self.ha_client.entities.assert_awaited_once()
 
     async def test_sensor_finder_aliases_route_to_home_search(self):
         for alias in ("search_sensors", "ada_ha_search_sensors"):
             self.ha_client.sensors.reset_mock()
             out = await self.runner.execute(alias, {"query": "temp"})
-            self.assertEqual(out[0]["entity_id"], "sensor.temp")
+            self.assertEqual(out["output"][0]["entity_id"], "sensor.temp")
             self.ha_client.sensors.assert_awaited_once()
         out = await self.runner.execute("list_sensors", {})
-        self.assertEqual(out[0]["entity_id"], "sensor.temp")
+        self.assertEqual(out["output"][0]["entity_id"], "sensor.temp")
 
     async def test_event_search_alias_uses_recorder_and_mddb(self):
         out = await self.runner.execute(
@@ -1904,12 +1923,13 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     async def test_home_search_canonical_kinds(self):
         out = await self.runner.execute(
             "home_search", {"query": "kitchen", "kind": "device"})
-        self.assertEqual(out[0]["entity_id"], "light.kitchen")
+        self.assertEqual(out["output"][0]["entity_id"], "light.kitchen")
         out = await self.runner.execute(
             "home_search", {"kind": "sensor"})
-        self.assertEqual(out[0]["entity_id"], "sensor.temp")
-        with self.assertRaises(ValueError):
-            await self.runner.execute("home_search", {"kind": "bogus"})
+        self.assertEqual(out["output"][0]["entity_id"], "sensor.temp")
+        out = await self.runner.execute("home_search", {"kind": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     # -- get_home_state --
 
@@ -1917,10 +1937,10 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         sentinel = {"controllable": 4, "sensors": 1}
         self.runner.memory.overview = AsyncMock(return_value=sentinel)
         out = await self.runner.execute("ada_ha_get_state", {})
-        self.assertEqual(out, sentinel)
+        self.assertEqual(out, {**sentinel, "ok": True})
         out = await self.runner.execute(
             "get_home_state", {"domain": "memory"})
-        self.assertEqual(out, sentinel)
+        self.assertEqual(out, {**sentinel, "ok": True})
 
     async def test_get_home_state_entity_and_domain_reads(self):
         out = await self.runner.execute(
@@ -1930,7 +1950,7 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         out = await self.runner.execute(
             "get_home_state", {"domain": "light"})
         self.assertEqual(
-            [d["entity_id"] for d in out], ["light.office"])
+            [d["entity_id"] for d in out["output"]], ["light.office"])
 
     # -- home_history --
 
@@ -1939,14 +1959,14 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["count"], 1)
         out = await self.runner.execute(
             "get_sensor_history", {"entity_id": "sensor.temp"})
-        self.assertEqual(out, [[{"state": "22"}]])
+        self.assertEqual(out["output"], [[{"state": "22"}]])
         out = await self.runner.execute(
             "get_entity_events", {"entity_id": "cover.gate"})
         self.assertIn("transitions", out)
         out = await self.runner.execute("get_recent_events", {})
         self.assertIn("events", out)
         out = await self.runner.execute("ada_ha_history", {})
-        self.assertEqual(out, [])
+        self.assertEqual(out["output"], [])
         self.runner.mddb.search_documents.assert_awaited()
 
     async def test_home_history_default_kind_resolution(self):
@@ -1963,9 +1983,10 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.ha_client.recent_events.assert_awaited_once()
         await self.runner.execute("home_history", {})
         self.ha_client.logbook.assert_awaited_once()
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "home_history", {"kind": "bogus"})
+        out = await self.runner.execute(
+            "home_history", {"kind": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     # -- control_entity --
 
@@ -1982,7 +2003,7 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         out = await self.runner.execute(
             "press_button",
             {"entity_id": "button.gate_my_position", "confirmed": True})
-        self.assertEqual(out, {"pressed": True})
+        self.assertEqual(out, {"pressed": True, "ok": True})
         self.ha_client.press_button.assert_awaited_once_with(
             "button.gate_my_position")
         # media_player.* -> control_media_player
@@ -1997,7 +2018,7 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         out = await self.runner.execute(
             "control_entity",
             {"entity_id": "light.office", "on": False})
-        self.assertIn("Turned off light.office", out)
+        self.assertIn("Turned off light.office", out["output"])
         self.ha_client.set_power.assert_awaited_once_with(
             "light.office", False)
         # action=on|off shims the absorbed on= surface
@@ -2024,9 +2045,10 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
              "action": "press", "confirmed": True})
         self.ha_client.press_button.assert_awaited_with(
             "button.gate_my_position")
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "control_entity", {"entity_id": "light.office"})
+        out = await self.runner.execute(
+            "control_entity", {"entity_id": "light.office"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 
     async def test_control_aliases_keep_the_danger_gate(self):
         # The absorbed names resolve to control_entity before the gate —
@@ -2068,10 +2090,11 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
             {"entity_id": "light.office", "status": "learning"})
         self.assertIn("learning", str(out))
         # status is required on any write — safety-only still fails
-        with self.assertRaises(ValueError):
-            await self.runner.execute(
-                "ha_confidence",
-                {"entity_id": "light.office", "safety": "safe"})
+        out = await self.runner.execute(
+            "ha_confidence",
+            {"entity_id": "light.office", "safety": "safe"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
 class DisplayMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     """tools-merge-display (8 -> 2 canonical seats): vcast_say/vcast_list/
     vcast_status/vcast_shortcut are absorbed into cast_to_screen's action=
@@ -2321,6 +2344,152 @@ class GevMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     async def test_canonical_bare_call_lists(self):
         out = await self.runner.execute("gev_command", {})
         self.assertIn("za", out["tours"])
+
+
+class ResultContractTests(unittest.IsolatedAsyncioTestCase):
+    """tool-error-contract (2026-10-05): every ToolRunner.execute()
+    result is a dict with top-level ok: bool — {ok: True, ...} on
+    success, {ok: False, error: str, ...} on failure. The legacy shapes
+    (bare values, {error}, {err}, status-based failure, needs_confirm,
+    all-failed fan-out responses, method raises) normalize at the
+    boundary; dispatch-layer denials still raise — a refusal is not a
+    tool result."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+
+    def _stub_gev(self, value=None, exc=None):
+        """Swap gev_command for a stub that returns/raises `value` — the
+        execute() boundary must normalize whatever the method does."""
+        async def fake(**_kwargs):
+            if exc is not None:
+                raise exc
+            return value
+        self.runner.gev_command = fake
+
+    async def _gev(self):
+        return await self.runner.execute("gev_command", {"name": "x"})
+
+    async def test_non_dict_return_wraps_in_output(self):
+        self._stub_gev("sent")
+        out = await self._gev()
+        self.assertEqual(out, {"ok": True, "output": "sent"})
+
+    async def test_error_dict_is_top_level_failure(self):
+        self._stub_gev({"error": "relay down"})
+        out = await self._gev()
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "relay down")
+
+    async def test_err_dict_surfaces_canonical_error(self):
+        self._stub_gev({"err": "bad args"})
+        out = await self._gev()
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "bad args")
+
+    async def test_status_failures_are_top_level_failures(self):
+        for status in ("error", "failed", "not_found", "denied"):
+            self._stub_gev({"status": status, "slug": "x"})
+            out = await self._gev()
+            self.assertFalse(out["ok"], status)
+
+    async def test_needs_confirm_is_a_failure(self):
+        self._stub_gev({"needs_confirm": "open the gate?"})
+        out = await self._gev()
+        self.assertFalse(out["ok"])
+
+    async def test_ok_dict_passes_through(self):
+        self._stub_gev({"ok": True, "slug": "x"})
+        self.assertEqual(await self._gev(), {"ok": True, "slug": "x"})
+        self._stub_gev({"ok": False, "error": "nope"})
+        out = await self._gev()
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "nope")
+
+    async def test_plain_dict_gains_ok_true(self):
+        self._stub_gev({"slug": "x", "count": 3})
+        out = await self._gev()
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["slug"], "x")
+
+    async def test_all_failed_fanout_lifts_to_top_level(self):
+        # The gev_command pattern (0bb8e9b), generalized at the boundary:
+        # every client response ok:false means the command failed.
+        self._stub_gev({"delivered": 2, "responses": [
+            {"client": "a", "response": {"ok": False, "error": "nav failed"}},
+            {"client": "b", "response": {"ok": False}},
+        ]})
+        out = await self._gev()
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "nav failed")
+
+    async def test_mixed_fanout_is_not_top_level_failure(self):
+        self._stub_gev({"delivered": 2, "responses": [
+            {"client": "a", "response": {"ok": True}},
+            {"client": "b", "response": {"ok": False, "error": "nav failed"}},
+        ]})
+        out = await self._gev()
+        self.assertTrue(out["ok"])
+
+    async def test_method_exception_is_a_tool_failure(self):
+        self._stub_gev(exc=RuntimeError("relay exploded"))
+        out = await self._gev()
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "RuntimeError")
+        self.assertIn("relay exploded", out["error"])
+
+    async def test_forced_failure_fixture_reports_top_level_ok_false(self):
+        # The card's verify step: a real tool failing for real — the
+        # unconfigured calendar raises inside the method — surfaces as
+        # ok:false at top level, not a raise.
+        self.runner._calendar = None
+        self.runner._calendar_loaded = True
+        out = await self.runner.execute("calendar_list_events", {})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "RuntimeError")
+        self.assertIn("not configured", out["error"])
+
+    async def test_gate_denial_still_raises_not_a_result(self):
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "cms_publish_page",
+                {"slug": "x", "title": "x", "content": "x"})
+
+    async def test_unknown_tool_still_raises(self):
+        with self.assertRaises(KeyError):
+            await self.runner.execute("no_such_tool", {})
+
+
+class NormalizeToolResultTests(unittest.TestCase):
+    """Direct unit coverage of the normalizer's shape table."""
+
+    def test_shapes(self):
+        from backend.tool_runner import normalize_tool_result as n
+        self.assertEqual(n("x"), {"ok": True, "output": "x"})
+        self.assertEqual(n(None), {"ok": True, "output": None})
+        self.assertEqual(n([1]), {"ok": True, "output": [1]})
+        self.assertFalse(n({"error": "e"})["ok"])
+        self.assertFalse(n({"err": "e"})["ok"])
+        self.assertEqual(n({"err": "e"})["error"], "e")
+        self.assertFalse(n({"status": "not_found"})["ok"])
+        self.assertFalse(n({"needs_confirm": "ok?"})["ok"])
+        self.assertTrue(n({"status": "published"})["ok"])
+        self.assertTrue(n({"a": 1})["ok"])
+        # explicit ok wins over everything else in the payload
+        self.assertTrue(n({"ok": True, "error": "warn"})["ok"])
+        # all-failed fan-out lifts; partial failure does not
+        all_bad = {"responses": [{"response": {"ok": False, "error": "x"}},
+                                 {"response": {"ok": False}}]}
+        self.assertFalse(n(all_bad)["ok"])
+        partial = {"responses": [{"response": {"ok": True}},
+                                 {"response": {"ok": False}}]}
+        self.assertTrue(n(partial)["ok"])
+        self.assertTrue(n({"responses": []})["ok"])
 
 
 if __name__ == "__main__":

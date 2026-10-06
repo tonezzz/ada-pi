@@ -261,8 +261,13 @@ def check_expect(result: Any, expect: dict[str, Any]) -> list[str]:
 
     if "verb" in expect and result.get("verb") != expect["verb"]:
         failures.append(f"verb: want {expect['verb']!r}, got {result.get('verb')!r}")
-    if expect.get("no_error") and result.get("error"):
-        failures.append(f"unexpected error: {result['error']}")
+    # Contract (tool-error-contract): execute() results carry top-level
+    # ok: bool — no_error trips on ok:false even when no error text came
+    # back (e.g. a not_found/buried failure normalized at the boundary).
+    if expect.get("no_error") and (
+            result.get("error") or result.get("ok") is False):
+        failures.append(
+            f"unexpected error: {result.get('error') or result}")
     if "error_contains" in expect and expect["error_contains"] not in str(result.get("error", "")):
         failures.append(f"error: want substring {expect['error_contains']!r}, got {result.get('error')!r}")
     if "count" in expect and result.get("count") != expect["count"]:
@@ -420,7 +425,14 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
                         str(step["tool"]), _subst(dict(step.get("args") or {}))
                     )
                 except Exception as exc:
-                    result = {"error": f"{type(exc).__name__}: {exc}"}
+                    # Gate denials still raise past the boundary — wrap
+                    # them in the canonical shape so expectations and
+                    # reports see one contract.
+                    result = {
+                        "ok": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "error_type": type(exc).__name__,
+                    }
             else:
                 result = {"error": "unknown step kind"}
         except Exception as exc:  # engine bug safety net

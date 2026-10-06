@@ -447,8 +447,10 @@ class CalendarGateTests(unittest.IsolatedAsyncioTestCase):
         runner = self._runner()
         runner._calendar = None
         runner._calendar_loaded = True
-        with self.assertRaises(RuntimeError):
-            await runner.execute("calendar_list_events", {})
+        out = await runner.execute("calendar_list_events", {})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "RuntimeError")
+        self.assertIn("not configured", out["error"])
 
     async def test_read_tools_ungated(self):
         runner = self._runner()

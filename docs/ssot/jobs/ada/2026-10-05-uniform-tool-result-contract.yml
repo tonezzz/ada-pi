@@ -1,0 +1,100 @@
+# SSOT Job: uniform tool result contract
+# Card: tool-error-contract (chaba kanban). Dispatch 20261005-223854.
+
+title: Uniform tool result contract — {ok, error} canonical at the runner boundary
+subtitle: One shape out of ToolRunner.execute(); honesty checks read top-level ok
+
+planning:
+  goal: |
+    Card spec: every ToolRunner method returns {ok: bool, ...}. Five
+    conventions coexisted — bare raises, {"error"}, {"ok": False},
+    {"err"}, and failures buried inside responses[].response.ok — so
+    "did it honestly succeed" checks each invented their own detection
+    (recursive payload walks, error-key sniffing, provider-side output
+    wrapping). Pick {ok, error} as canonical, normalize at the runner
+    boundary, keep the gev_command all-failed->top-level-error pattern
+    (0bb8e9b) generalized, and make the honesty checks rely on it.
+  decisions: |
+    - normalize_tool_result() is the single coercer: non-dict ->
+      {ok: True, output}; dict without explicit ok infers failure from
+      error/err/needs_confirm/status in {error,failed,not_found,denied};
+      `err` is surfaced as canonical `error`; an all-failed
+      responses[].response.ok fan-out lifts to top-level {ok: False,
+      error} (the 0bb8e9b lift, generalized to every tool).
+    - Method-body exceptions ARE tool results: a raise inside a tool
+      method becomes {ok: False, error, error_type} at the boundary —
+      same enforcement the tools.d contract ("never raise into the
+      model") always asked for. error_type preserves the exception class
+      for debugging; error is what the model reads aloud.
+    - Dispatch-layer denials still raise: unknown tool (KeyError) and
+      the _check_* gates (confirm/secondary/bank/policy ->
+      PermissionError) never produce a result dict — a refused call is
+      not a tool result. The "NOT EXECUTED" denial prefix is unchanged.
+    - Provider path no longer buries results: the generic dispatch sends
+      the runner dict through directly (was {"output": result}), then
+      normalizes before the tool_call event log and FunctionResponse —
+      ok:false reaches the model at top level.
+    - Honesty checks read top-level ok only: scenario_engine's no_error,
+      scenario-live's no_failed_result (recursive nested-ok walk
+      deleted), the provider's tool_call ok flag, and pwa /api/tools/call
+      status mapping (ok:false + PermissionError/needs_confirm ->
+      "denied", else "error").
+    - Existing tests asserting method-level raises were migrated to the
+      contract: {ok: False, error_type: <ClassName>} keeps the same
+      information the assertRaises carried.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-05"
+  steps:
+    - id: 1
+      label: "runner boundary"
+      status: done
+      notes: "normalize_tool_result() + _RESULT_FAIL_STATUSES added;
+        _execute_gated wraps method() in try/except -> {ok: False,
+        error, error_type} and normalizes every return; gev_command's
+        inline all-failed lift removed (generalized at the boundary);
+        _denial_breaker returns {ok: False, error}; _log_change_request
+        skips ok:false results."
+    - id: 2
+      label: "provider + api honesty surfaces"
+      status: done
+      notes: "realtime_provider passes the runner dict through at top
+        level (no more output wrapper), normalizes before logging +
+        FunctionResponse, logs tool_call ok from the canonical flag;
+        pwa /api/tools/call maps output.ok -> ok/denied/error."
+    - id: 3
+      label: "scenario honesty checks"
+      status: done
+      notes: "scenario_engine.check_expect no_error now fails on
+        error-field OR ok:false, and tool exceptions land as canonical
+        {ok: False, error, error_type}; scenario-live no_failed_result
+        checks only the named tool's top-level ok."
+    - id: 4
+      label: "tests + docs"
+      status: done
+      notes: "~30 assertion sites migrated from assertRaises/raw-shape
+        to contract assertions (ok:false + error_type, out['output']
+        for wrapped non-dicts); new ResultContractTests (14) cover every
+        legacy shape + forced-fail fixture + still-raises boundary;
+        NormalizeToolResultTests unit-table the coercer;
+        docs/ada-tool-dev.md rule 1 documents the enforcement."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py  # clean"
+    - "python3 -m pytest tests/test_tool_runner.py -k 'ResultContract or NormalizeToolResult'"
+    - "python3 -m pytest tests/ -x -q"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0 — 38 declared, 90 aliases,
+    53 pre-existing warnings"
+  - "contract tests: 14/14 — bare value wraps, {error}/{err}/status/
+    needs_confirm -> ok:false, explicit ok passes through, all-failed
+    fan-out lifts (mixed does not), method raise -> ok:false +
+    error_type, forced-fail calendar_read fixture -> top-level ok:false,
+    gate denial + unknown tool still raise"
+  - "full suite: 623 passed, 18 subtests, 30 warnings — clean"
+  - "provider: session.responses[0].response is the normalized dict —
+    ok:false is never buried under an 'output' wrapper"
