@@ -1,7 +1,7 @@
 """Drop-in tool loader — backend/tools.d/.
 
 A tool is one module file plus one manifest line; no edits to
-tool_runner.py or realtime_provider.py are needed to add a tool.
+tool_runner/ or realtime_provider.py are needed to add a tool.
 
 Module contract (backend/tools.d/<module>.py):
 

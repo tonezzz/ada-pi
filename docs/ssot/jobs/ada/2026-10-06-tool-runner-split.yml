@@ -1,0 +1,115 @@
+# SSOT Job: tool_runner split — 7k-line module -> backend/tool_runner/
+# package with domain mixins. Card: tool-runner-split (chaba kanban).
+# Dispatch worktree: dispatch-wt-20261006-105550-split-backend-tool-runner-py-4.
+
+title: tool_runner split — backend/tool_runner.py (7066 lines, 209 class
+  members) decomposed into a package of domain mixins
+subtitle: pure mechanical move — ToolRunner composes the mixins via
+  multiple inheritance; public tool names, gates and patch targets
+  unchanged
+
+planning:
+  goal: |
+    backend/tool_runner.py had grown past 7k lines / ~126 async tool
+    methods plus gate machinery, making the serialized tools-merge-*
+    cards collide in one file. Split it into per-domain mixin modules
+    under backend/tool_runner/ so merge cards touch disjoint files.
+  context: |
+    Hard constraints discovered and honored:
+    - tests patch backend.tool_runner.<name> (CONFIRM_TOKEN_TTL_S,
+      doc_archive_client.*, devin_dispatch_mod.*, tools_loader.registry)
+      and import internals (_ALIASES, _resolve_alias, AdaMemoryStore,
+      ToolContext, _CALLER_SPEAKER_SESSION contextvar, gate set names)
+      — so backend.tool_runner must keep exporting the full original
+      namespace.
+    - scripts/tool-lint.py AST-reads backend/tool_runner.py for the
+      alias tables, gate sets, and the public-async-method <->
+      declaration census.
+    - three @staticmethods self-reference ToolRunner.X — a module-level
+      import of ToolRunner inside a mixin would be circular.
+    - two __file__-anchored data paths (tool_guide.yml, gev_tours.json)
+      move one directory level deeper.
+  scope: |
+    - backend/tool_runner/common.py — module prelude verbatim: imports,
+      logger, constants, contextvars, alias tables, helpers, ToolContext,
+      AdaMemoryStore; ends with `__all__ = [n for n in dir() if not
+      n.startswith('__')]` so wildcard import reproduces the original
+      namespace exactly.
+    - backend/tool_runner/__init__.py — `from .common import *` +
+      `class ToolRunner(DevinMixin, DocsDriveMixin, MetaMixin,
+      CalendarMixin, HaMixin, WebMixin, MemoryMixin, CmsMixin,
+      ChatMixin, ScreensMixin, GevMixin)` holding __init__, identity/
+      speaker/owner context, execute() + _execute_gated dispatch, and
+      all confirmation/policy gate machinery.
+    - backend/tool_runner/{devin,docs_drive,meta,calendar,ha,web,
+      memory,cms,screens,chat,gev}.py — method bodies moved verbatim
+      (each chunk carries its leading comment block); each does
+      `from .common import *`.
+    - scripts/tool-lint.py — runner_src()/runner_tables()/runner_
+      methods() accept the package dir or the legacy file;
+      runner_methods collects public async seats from ToolRunner plus
+      transitive package-internal base classes; impl errors now report
+      file:line.
+    - tests/test_tool_audit.py — runner_tables called via
+      lint_mod.runner_src(REPO).
+    - docs/ssot/ssot.tool-surface.yml, backend/tools_loader.py,
+      backend/playbooks/build-tool.yml — stale `tool_runner.py` path
+      references repointed.
+    Deliberate micro-edits (resolved path/behavior identical):
+    - common.py _GUIDE_PATH and gev.py _TOURS_PATH use .parent.parent.
+    - screens.py _vms_publish/_yt_publish/_cctv_grab gained
+      `from . import ToolRunner` (deferred) so ToolRunner._vcast_api
+      patch.object() interception keeps working.
+    Out of scope: no behavior change, no signature change, no reordering.
+  success_criteria:
+    - 'tool-lint clean: 38 declared, 90 aliases (identical to pre-split)'
+    - 'pytest tests/ — 679 passed, 18 subtests'
+    - 'every declared tool + alias target resolves to an async method on
+       the composed ToolRunner (dispatch smoke)'
+
+processing:
+  status: done
+  started_at: "2026-10-06"
+  steps:
+    - id: 1
+      label: "AST-driven split"
+      status: done
+      notes: "generator script chunked ToolRunner.body on member
+        boundaries (decorator-aware); inter-member comments travel with
+        the following member so the class body is preserved byte-for-
+        byte; asserted every member assigned exactly once."
+    - id: 2
+      label: "namespace fidelity"
+      status: done
+      notes: "common.py __all__ wildcard => backend.tool_runner.*
+        re-exports identical; CONFIRM_TOKEN_TTL_S patch target still
+        read by the confirm-token gates which stayed in __init__.py."
+    - id: 3
+      label: "lint + tests"
+      status: done
+      notes: "tool-lint clean (same 53 warnings as baseline);
+        679 tests + 18 subtests pass."
+    - id: 4
+      label: "equivalence check"
+      status: done
+      notes: "ast.get_source_segment diff old-vs-new: all 209 members
+        byte-identical except the 5 intended diffs (3 deferred imports,
+        2 path anchors, class bases header)."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py   # 38 declared, 90 aliases, clean"
+    - ".venv/bin/python -m pytest tests/ -q   # 679 passed"
+    - "ls backend/tool_runner/"
+
+follow_ups:
+  - repo: ada-pi
+    task: "post-merge on a host with the live backend: run
+      scripts/ci-scenarios.sh smoke — not runnable in this worktree
+      (no ada service/MDDB on the dispatch host)"
+
+verification:
+  - "python3 scripts/tool-lint.py  # exit 0, 38 declared / 90 aliases"
+  - ".venv/bin/python -m pytest tests/ -q  # 679 passed, 18 subtests"
+  - "dispatch smoke: all 36 runner-seat tools + 90 alias targets resolve"
+  - "scripts/ci-scenarios.sh smoke  # post-merge, on a live host"

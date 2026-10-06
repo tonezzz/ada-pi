@@ -30,7 +30,7 @@ target_count: 38        # spec: docs/assessments/tool-consolidation-spec-2026-10
 desc_max_lines: 4       # AST content lines of the description value
 desc_max_chars: 300     # ~2 short lines of prose
 spec: docs/assessments/tool-consolidation-spec-2026-10-04.md
-alias_table: backend/tool_runner.py::_ALIASES
+alias_table: backend/tool_runner/common.py::_ALIASES
 scenario_dir: tests/scenarios-live
 
 # Merge families — one per tools-merge-* kanban card. `absorbed` lists the

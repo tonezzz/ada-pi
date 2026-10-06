@@ -300,7 +300,7 @@ class AliasTableTests(unittest.TestCase):
     backend (google.genai absent in lint/CI environments)."""
 
     def test_alias_table_exists_and_shape(self):
-        tables = lint_mod.runner_tables(REPO / "backend/tool_runner.py")
+        tables = lint_mod.runner_tables(lint_mod.runner_src(REPO))
         self.assertIn("aliases", tables)
         self.assertIsInstance(tables["aliases"], dict)
         self.assertIsInstance(tables["arg_defaults"], dict)

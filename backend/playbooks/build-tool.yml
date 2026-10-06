@@ -48,9 +48,9 @@ task_template: |
     user-facing
   - honest results — report what actually happened, never claim a write
     that did not occur
-  Do NOT edit tool_runner.py confirm-gate internals; the tools.d loader
-  picks the tool up without provider edits. If the spec demands core-file
-  edits, stop and write needs-input.txt instead of improvising.
+  Do NOT edit backend/tool_runner/ confirm-gate internals; the tools.d
+  loader picks the tool up without provider edits. If the spec demands
+  core-file edits, stop and write needs-input.txt instead of improvising.
 memory_domains:
   - devin-handoff      # the spec doc itself + job ledger conventions
 verify:
