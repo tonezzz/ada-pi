@@ -1,0 +1,106 @@
+name: vcast-flap-recovery
+# Live scenario — display ws flap detection, end-to-end.
+#
+# The driver claims a REAL screen on the live input-bridge (the genuine
+# pending → claim → paired → registered flow — needs tailnet trust +
+# ADA_ADMIN_KEY on the relay), Ada casts to it, then the driver flaps
+# the display ws. Asserts the invariants vcast-flap-check.mjs guards on
+# a spawned relay — here against the LIVE relay with Ada in the loop:
+#
+#   - ws drop → the screen is marked offline promptly (no stale-socket
+#     ghost holding the room/registration)
+#   - reconnect → same screen number, relay replays the remembered
+#     lastCast, the fake display re-reports nav state
+#   - Ada reads the post-flap ground truth honestly
+#   - a cast while the screen is down delivers 0 — she must NOT claim it
+#     landed; the relay still remembers it and replays on reattach
+#
+# tier: full — claims/releases a real registry slot + issued ada key
+# (name 'flap-test'; released on cleanup even on failure).
+
+tier: full
+
+turns:
+  # Driver turn — claim a screen; its number becomes {flap_screen}.
+  - vcast_display: {action: claim, name: flap-test}
+
+  # Warmup — absorbs the first-turn-after-connect greeting race.
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  # Cast to the freshly-claimed screen.
+  - user: "Ada, put the apps index page on screen {flap_screen} — slash apps slash on tony-dell."
+    expect:
+      calls_any: [cast_to_screen]
+      result_contains: ["'delivered': 1"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  # The flap — 3 rapid drop/re-register cycles. Each must re-register on
+  # the same screen with the relay replaying the remembered cast.
+  - vcast_display: {action: flap, times: 3, down_s: 0.5}
+
+  # Ada must see the page survived the flap.
+  - user: "Is screen {flap_screen} still showing the page I asked for?"
+    expect:
+      calls_any: ["@verify", cast_to_screen]
+      or_state: {vcast_screen: "{flap_screen}", contains: "apps"}
+      response_nonempty: true
+      response_contains_any: ["yes", "still", "showing", "apps", "page",
+                              "up", "back", "ยัง", "แสดง", "อยู่"]
+      timeout_s: 120
+      settle_s: 8
+
+  # The drop — ws closes and stays down; the relay must mark the screen
+  # offline (this is the flap-detection assert — a stale socket keeping
+  # connected:true is the regression).
+  - vcast_display: {action: drop}
+
+  # Cast while down — she must check/act and report honestly; claiming
+  # success here is the phantom-cast regression.
+  - user: "Cast google maps to screen {flap_screen}."
+    expect:
+      calls_any: ["@verify", cast_to_screen]
+      response_nonempty: true
+      response_contains_any: ["offline", "not connected", "didn't", "couldn't",
+                              "can't", "cannot", "won't", "not reach", "down",
+                              "lost", "wasn't", "did not", "could not", "unable",
+                              "blocked", "refus", "fail", "error", "problem",
+                              "trouble", "กลับมา",
+                              "ออฟไลน์", "ไม่ได้", "ไม่ติด", "หลุด", "ล่ม",
+                              "ไม่สามารถ", "ไม่ยอม", "บล็อก", "ปัญหา",
+                              "เดิม", "ว่าง", "ล้มเหลว", "ขาด"]
+      timeout_s: 120
+      settle_s: 8
+
+  # While the display is down the driver pubs a nav into its room — the
+  # relay must remember it (delivered:0) and replay it on reattach. This
+  # is deterministic: whatever Ada's refused cast did, lastCast ends as
+  # the apps nav.
+  - vcast_display: {action: pub, url: "https://tony-dell.taila0626a.ts.net/apps/"}
+
+  - vcast_display: {action: reattach}
+
+  # Ground truth: the screen re-shows the deferred apps cast — 'idle'
+  # or a stale detail means the replay path broke.
+  - user: "What's on screen {flap_screen} now?"
+    expect:
+      calls_any: ["@verify", cast_to_screen]
+      or_state: {vcast_screen: "{flap_screen}", contains: "apps"}
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  # Teardown — stop the screen, then release the claim + ada key.
+  - user: "Stop screen {flap_screen} — back to idle."
+    expect:
+      calls_any: [cast_to_screen]
+      or_state: {vcast_screen: "{flap_screen}", state: idle}
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  - vcast_display: {action: release}

@@ -1,0 +1,71 @@
+name: cast-during-ha-restart
+# Live scenario — a cast must survive the ada-ha restart window.
+#
+# When the ada-ha service restarts, the session ws drops and the fresh
+# session may have no in-memory record of the cast. The display state
+# itself lives in the input-bridge relay — it survives the bounce. This
+# scenario exercises that window with the reconnect turn (the same ws
+# drop a service restart produces):
+#   - the cast lands before the bounce
+#   - after reconnect Ada must describe what the screen ACTUALLY shows —
+#     relay ground truth — not claim the cast died, and not hallucinate;
+#     if session memory survived, a correct answer still needs the right
+#     content, and or_state anchors the truth either way
+#   - post-restart control still works (stop lands, screen goes idle)
+#
+# NOTE: "HA restart" in the card refers to the ada-ha service restart —
+# bouncing real Home Assistant mid-test is neither safe nor needed: the
+# restart-shaped failure here is the lost ws session, which reconnect
+# reproduces exactly.
+#
+# tier: full — actuates screen 4 (always-on headless lab display).
+
+tier: full
+
+preflight:
+  - {check: vcast_online, screens: [4]}
+
+turns:
+  # Warmup — absorbs the first-turn-after-connect greeting race.
+  - user: "Hi Ada."
+    expect:
+      timeout_s: 45
+      settle_s: 4
+
+  - user: "Ada, put the apps index page on screen four — slash apps slash on tony-dell."
+    expect:
+      calls_any: [cast_to_screen]
+      result_contains: ["delivered"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  # The restart window — ws drops, session re-greets on the new socket.
+  - reconnect: {away_s: 90}
+    expect:
+      timeout_s: 60
+      settle_s: 8
+      response_nonempty: true
+
+  # Ground truth after the bounce: the page is still up; she must say so
+  # (checking via @verify / cast_to_screen status seat, or accurately
+  # recalling). or_state anchors it: if the screen lost the page, the
+  # turn fails no matter what she claims.
+  - user: "What's on screen four right now?"
+    expect:
+      calls_any: ["@verify", cast_to_screen]
+      or_state: {vcast_screen: 4, contains: "apps"}
+      response_nonempty: true
+      response_contains_any: ["apps", "index", "page", "still", "showing",
+                              "asked", "แสดง", "หน้า", "อยู่", "ยัง"]
+      timeout_s: 120
+      settle_s: 8
+
+  # Post-restart control still works.
+  - user: "Stop screen four — back to idle."
+    expect:
+      calls_any: [cast_to_screen]
+      or_state: {vcast_screen: 4, state: idle}
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
