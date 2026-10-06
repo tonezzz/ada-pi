@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.request
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backend.report_meta import (  # noqa: E402
     fresh_for_seconds, validate_report_meta)
 
-MDDB = "http://100.74.146.0:11023/v1"
+MDDB = os.environ.get("MDDB_BASE_URL", "http://100.102.134.91:11023/v1")
 COLLECTION = "ada-cms-pages"
 SKIP_PREFIXES = ("report-digest", "domains-overview", "reports-index")
 
