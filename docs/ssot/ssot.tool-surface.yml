@@ -293,6 +293,7 @@ families:
       - ada_mddb_health          # -> action='health' (tools.d drop-in retired)
       - ada_decision_check       # -> action='check' (provider-dispatched)
       - ada_deep_research        # -> action='research' (provider-dispatched)
+      - report_refresh           # -> action='report' (chaba report-graph live refresh, P3)
   meta_voice_enroll:
     merge_card: tools-merge-meta-voice
     canonical: ada_enroll_speaker  # guest_register -> who='guest'

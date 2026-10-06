@@ -271,9 +271,13 @@ ada_ops: >-
   verifies a product/listing against stored criteria + live web
   (product=, url=, mode=quick|deep) — background ~30-60s. 'research'
   multi-round web research (topic=, depth=standard|deep) — background
-  1-3 min; check reports-index first. Absorbs ada_outcome,
-  ada_usage_summary, ada_mddb_health, ada_decision_check,
-  ada_deep_research.
+  1-3 min; check reports-index first. 'report' = chaba report-graph:
+  returns the current summary's generated_at + running state and starts
+  a background refresh (node= defaults system-report, depth=
+  leaf|subtree|full) — answer with the cached numbers and say fresh ones
+  are coming; a 'report-updated' ops event lands when it finishes.
+  Absorbs ada_outcome, ada_usage_summary, ada_mddb_health,
+  ada_decision_check, ada_deep_research, report_refresh.
 
 ada_persona: >-
   action=set|show|reset manage the speaker's style prefs (knob=

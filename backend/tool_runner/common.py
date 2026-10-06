@@ -427,6 +427,9 @@ _ALIASES: dict[str, str] = {
     "ada_mddb_health": "ada_ops",
     "ada_decision_check": "ada_ops",
     "ada_deep_research": "ada_ops",
+    # report-graph refresh (report-graph P3) — a literal call name that
+    # lands on ada_ops action='report' (freshness + background refresh).
+    "report_refresh": "ada_ops",
     "guest_register": "ada_enroll_speaker",
     # tasks+status family — tools-merge-tasks-status (2026-10-05): 13 -> 3
     # on the declared surface (10 card-counted + chat_send's five absorbed
@@ -481,6 +484,7 @@ _ALIAS_ARG_DEFAULTS: dict[str, dict[str, Any]] = {
     "guest_recall": {"scope": "guest"},
     "vocab_note": {"kind": "vocab"},
     "report_habit_observation": {"kind": "habit"},
+    "report_refresh": {"action": "report"},
     "guest_remember": {"kind": "guest"},
     "guest_remember_private": {"kind": "guest", "private": True},
     "ada_ha_recall": {"scope": "history"},

@@ -78,6 +78,7 @@ class MetaMixin:
         mode: str | None = None,
         topic: str | None = None,
         depth: str | None = None,
+        node: str | None = None,
     ) -> dict[str, Any]:
         """Meta/ops tools behind one action= param (the absorbed
         ada_outcome / ada_usage_summary / ada_mddb_health /
@@ -95,6 +96,8 @@ class MetaMixin:
                 source=str(source or "all"), reset=bool(reset))
         if action == "health":
             return await self._ops_mddb_health(collection)
+        if action == "report":
+            return await self._ops_report(node, depth)
         if action in ("check", "research"):
             return {"error": (
                 f"ada_ops action='{action}' only runs inside a live voice "
@@ -102,7 +105,48 @@ class MetaMixin:
                 "it is not available on this call path")}
         raise ValueError(
             f"invalid ada_ops action {action!r}: expected "
-            "outcome|usage|health|check|research")
+            "outcome|usage|health|check|research|report")
+
+    async def _ops_report(
+            self, node: str | None, depth: str | None) -> dict[str, Any]:
+        """Report-graph freshness + live refresh (chaba report-api on
+        tony-dell:8792). Returns the current summary state and kicks the
+        subtree walk — Ada answers with the cached numbers and the
+        update lands behind her; a 'report-updated' ops event follows
+        when it finishes (chaba docs/design/report-live-refresh.md)."""
+        import httpx
+        base = os.environ.get(
+            "REPORT_API_URL", "http://100.68.142.13:8792").rstrip("/")
+        token = os.environ.get("REPORT_API_TOKEN", "")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        node = str(node or "system-report")
+        depth = str(depth or "subtree")
+        if depth not in ("leaf", "subtree", "full"):
+            depth = "subtree"
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                status = (await client.get(f"{base}/status")).json()
+                resp = await client.post(
+                    f"{base}/refresh",
+                    json={"node": node, "depth": depth},
+                    headers=headers)
+        except Exception as exc:
+            return {"error": f"report-api unreachable: {exc}"}
+        out: dict[str, Any] = {
+            "node": node,
+            "generated_at": status.get("generated_at"),
+            "running": status.get("running"),
+        }
+        if resp.status_code == 202:
+            out["refresh"] = ("started — say the cached numbers are from "
+                              "the last run and fresh ones are coming")
+        elif resp.status_code == 409:
+            out["refresh"] = "already running"
+        elif resp.status_code == 403:
+            out["refresh"] = "not authorized from this host"
+        else:
+            out["refresh"] = f"failed ({resp.status_code})"
+        return out
 
     async def _ops_mddb_health(self, collection: str | None) -> dict[str, Any]:
         """The absorbed ada_mddb_health drop-in (tools.d): MDDB vector-stats

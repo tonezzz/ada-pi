@@ -3101,10 +3101,9 @@ class GeminiLiveProvider(RealtimeProvider):
                     # research run in the background and speak their results.
                     "name": "ada_ops",
                     "description": (
-                        "Ops/meta — action='outcome' (record a result on a memory), 'usage' "
-                        "(token/cost report), 'health' (memory-db), 'check' (purchase check, "
-                        "background), 'research' (deep web research, background). Absorbs "
-                        "ada_outcome/usage_summary/mddb_health/decision_check/deep_research."
+                        "Ops/meta — outcome|usage|health|check|research|report — see "
+                        "tool_guide; 'report' returns report freshness and starts a "
+                        "background refresh (answer cached numbers now, fresh lands next)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3112,8 +3111,12 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["outcome", "usage", "health", "check", "research"],
-                                "description": "outcome=record a result on a memory/check; usage=token/cost report; health=memory-db vector health; check=purchase verification (background); research=multi-round web research (background).",
+                                "enum": ["outcome", "usage", "health", "check", "research", "report"],
+                                "description": "outcome=record a result on a memory/check; usage=token/cost report; health=memory-db vector health; check=purchase verification (background); research=multi-round web research (background); report=system report freshness + live refresh (node=name or default system-report, depth=leaf|subtree|full).",
+                            },
+                            "node": {
+                                "type": "string",
+                                "description": "action=report: report-graph node to refresh (default system-report — the whole chain).",
                             },
                             "bank": {
                                 "type": "string",
@@ -3164,8 +3167,8 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "depth": {
                                 "type": "string",
-                                "enum": ["standard", "deep"],
-                                "description": "action=research: standard = 3 search rounds (default); deep = 5 — only when the user asks for a thorough report.",
+                                "enum": ["standard", "deep", "leaf", "subtree", "full"],
+                                "description": "action=research: standard = 3 search rounds (default); deep = 5 — only when the user asks for a thorough report. action=report: refresh scope leaf|subtree (default)|full.",
                             },
                             "confirmed": {
                                 "type": "boolean",
