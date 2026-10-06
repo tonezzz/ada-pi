@@ -65,11 +65,12 @@ class ScreensMixin:
         can be idle/booting), `box` = media_player.tony_tv (the TrueID box's
         Android state), `panel` is always 'unsensed' — the Samsung panel is
         IR-toggle only with no power sensor, so 'playing' does not guarantee
-        a lit screen. If the user says the screen is dark, offer
-        script.tv_power (IR Power toggle — fires blindly, could turn OFF a
-        lit panel, so ask first). If the box is unreachable the fix is
-        script.cast_power_on(target='box') — it cold-wakes the plug AND
-        fires the panel IR."""
+        a lit screen. The box outputs to HDMI2 — if the user reports a dark
+        screen while state is 'playing', the panel is likely off or on the
+        wrong input: wake via remote.tony_tv command POWER (CEC) or offer
+        script.tv_power (IR toggle — could turn OFF a lit panel, ask first),
+        then script.tv_source to reach HDMI2. Nuclear cold-boot:
+        script.cast_power_on(target='box')."""
         import asyncio
         return await asyncio.to_thread(
             self._yt_api, "/cast", {"q": query, "lang": language})
