@@ -1,0 +1,45 @@
+name: gev-sw-stale-cache
+# gev-screens card — the /apps/sw.js stale-cache case (the apps-v6
+# worker cached pages with query strings stripped, so ?v=N never
+# busted and old bundles persisted indefinitely — 2026-10-04
+# incident). The deployed fix is a deliberately non-caching worker
+# that purges every 'apps-*' cache on activate and never intercepts
+# fetch.
+#
+# This guard re-fetches the live worker and asserts the regression
+# shape cannot come back silently:
+#   turn 1 — sw.js must carry the apps-* purge (caches.delete +
+#   startsWith('apps-')) and must NOT register a fetch handler or call
+#   respondWith / caches.open — with no fetch interception there is no
+#   path by which an old bundle can be served. (Asserted as regexes on
+#   code, not substrings — the header comment legitimately mentions
+#   "respondWith(fetch())".)
+#   turn 2 — /apps/gev/ must reference a hashed module bundle and that
+#   bundle must fetch 200 — catches an index pointing at a pruned
+#   asset after a rebuild.
+#
+# tier: full — HTTP guard on the deployed worker; no Ada turn.
+tier: full
+turns:
+  - http_check:
+      label: "sw.js — non-caching self-heal worker"
+      url: "https://tony-dell.taila0626a.ts.net/apps/sw.js"
+      contains:
+        - "addEventListener('activate'"
+        - caches.delete
+        - "startsWith('apps-'"     # the apps-* purge (apps-v6 and older)
+        - skipWaiting
+        - clients.claim
+      not_regex:
+        - "addEventListener\\(['\"]fetch"   # no fetch interception
+        - '\bonfetch\b'
+        - '\w\.respondWith\('               # no response override
+        - 'caches\.open\('                  # no cache writes
+  - http_check:
+      label: "gev index -> hashed bundle fetchable"
+      page: "https://tony-dell.taila0626a.ts.net/apps/gev/"
+      page_regex:
+        - 'src="/apps/gev/assets/index-[A-Za-z0-9_-]+\.js"'
+      contains:
+        - tool_response      # bundle still speaks the bridge protocol
+        - function_call

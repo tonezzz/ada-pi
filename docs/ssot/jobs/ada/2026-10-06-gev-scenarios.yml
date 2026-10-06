@@ -1,0 +1,97 @@
+# SSOT Job: gev scenarios — regression gate for the gev program
+# Card: gev-scenarios (chaba kanban). Dispatch 20261006-101358.
+
+title: GEV scenario coverage — ws round-trip, mute no-leak, tools regen, SW cache
+subtitle: Two new driver primitives (gev_bridge + http_check) make the gev-* area-card verify fields runnable
+
+planning:
+  goal: |
+    Only gev_pane_honest_fail existed for the gev program. The card asks
+    for scenarios covering the four remaining verify surfaces: the
+    gev-gemini bridge ws tool-call round trip (gev-bridge), mic mute
+    no-leak (gev-voice), the tools.json regen / additionalProperties
+    guard (gev-bridge note), and the /apps/sw.js apps-v6 stale-cache
+    case (gev-screens).
+  decisions: |
+    - The bridge round trip is a driver-side primitive, not an Ada turn:
+      scenario-live gains `gev_bridge` turns that play the GEV client's
+      half of the protocol on $GEV_LIVE_WS (default
+      wss://tony-dell.taila0626a.ts.net/apps/gev-live/ws — the caddy
+      path, so the proxy chain is exercised; ws://127.0.0.1:8789 locally
+      via env override). function_call msgs normalize to tool_call +
+      synthesized tool_result (carrying the `respond` payload), text
+      deltas to assistant_transcript_delta, done to response_completed —
+      the standard expect vocabulary (calls_any, call_args_contain,
+      response_nonempty) applies unmodified.
+    - tools.json is not HTTP-served by the bridge (probed /tools.json,
+      /tools on :8789/:8790 and the caddy paths — all 404/426), so the
+      regen check is behavioral: an additionalProperties leak makes Live
+      reject the session setup and no function_call ever arrives; drift
+      (dropped/renamed declaration) means the named command is never
+      emitted. gev_tools_regen probes three declarations (set_hud,
+      get_current_view_state, annotate_map+fly_route) so single-tool
+      drift still trips. The source-drift half stays in chaba's
+      tools-check.mjs.
+    - Mic mute is client-side (gevGeminiRealtime): a live scenario can't
+      press the page's mute button, so the runnable form is a
+      served-bundle guard — `http_check` turns fetch a URL, or `page:`
+      an HTML doc and follow its first module <script src> to the
+      bundle, then assert contains/not_contains/regex/not_regex. The
+      mute scenario pins the shipped invariants: capture gated by
+      isRecording inside onaudioprocess, the GainNode wired into the
+      mic chain, the setter driving micGain.gain.value, and a negative
+      regex for the regression shape (recordedChunks.push reachable
+      with no isRecording gate).
+    - sw.js negative assertions use regexes, not substrings — the
+      worker's header comment legitimately mentions
+      "respondWith(fetch())"; the real invariants are no fetch listener
+      / respondWith call / caches.open, plus the apps-* purge surviving.
+    - Ada /ws is now opened lazily (ensure_ws) — driver-only scenarios
+      never connect, so a down Ada can't FATAL a GEV/infra probe.
+      Connect-refused also returns FATAL 2 instead of a traceback.
+
+work:
+  - id: 1
+    label: "scenario-live.py driver"
+    status: done
+    notes: "gev_bridge turn kind (connect→status greeting→text→
+      function_call→tool_response→text/done; connect/greeting failure
+      aborts INFRA); http_check turn kind (url direct or page→bundle
+      follow; status/contains/not_contains/regex/not_regex, page_* on
+      the HTML); preflight check gev_bridge (sync ws greeting probe →
+      INFRA); lazy ensure_ws for Ada turns."
+  - id: 2
+    label: "new scenarios"
+    status: done
+    notes: "gev_ws_tool_roundtrip (fly_to_location call + arg + text
+      reply), gev_tools_regen (three-declaration probe), gev_mute_no_leak
+      (bundle mute-wiring invariant), gev_sw_stale_cache (non-caching
+      worker + hashed-bundle fetchable)."
+  - id: 3
+    label: "regression gate"
+    status: done
+    notes: "benchmark.yml gained a `gev` suite — the four new probes
+      plus all existing gev_* / tool_merge_gev scenarios; run it before
+      closing gev program cards."
+
+invoke:
+  commands:
+    - "python3 scripts/scenario-live.py tests/scenarios-live/gev_ws_tool_roundtrip.yaml"
+    - "python3 scripts/scenario-benchmark.py --suite gev   # full gate"
+    - "GEV_LIVE_WS=ws://127.0.0.1:8789 python3 scripts/scenario-live.py tests/scenarios-live/gev_tools_regen.yaml  # bypass caddy"
+
+verification:
+  - "all four new scenarios PASS live on tony-dell (2026-10-06):
+    round-trip got fly_to_location{query:Bangkok} + 'Flying to Bangkok.'
+    + done; regen got set_hud, get_current_view_state, annotate_map +
+    fly_route across three turns; both http_check guards green."
+  - "GEV_LIVE_WS=ws://127.0.0.1:9/dead -> preflight INFRA exit 3
+    (environment, not model regression)."
+  - "ADA_LIVE_URL=ws://127.0.0.1:9/dead + driver-only scenario -> PASS
+    without ever connecting; a text turn FATALs cleanly (exit 2)."
+  - "lazy-connect plumbing verified against a stub ws (ready + delta +
+    response_completed): http_check turn ran before any Ada connect,
+    text turn connected lazily and scored."
+  - "python3 scripts/tool-lint.py: clean (0 errors; the GEV command
+    names show as 'undeclared tool' warnings, same class as existing
+    ada_ha_snapshot/vcast_pose warnings)."

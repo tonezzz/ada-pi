@@ -1,0 +1,48 @@
+name: gev-tools-regen
+# tools.json regen check — the live, behavioral half of the chaba
+# tools-check.mjs drift guard (stacks/tony-dell/gev-gemini). tools.json
+# is extracted from GEV_REALTIME_TOOLS in vite.config.js with
+# additionalProperties stripped recursively, because Gemini Live
+# rejects declarations that carry it.
+#
+# Failure shapes this catches on the served system:
+#   - additionalProperties leak  -> Live rejects the session setup at
+#     declaration time -> NO function_call ever arrives -> every
+#     calls_any below fails.
+#   - drift (tool dropped/renamed in source but not regenerated, or
+#     vice versa) -> the model can't emit the named command -> the
+#     matching calls_any fails.
+# Three turns probe three different declarations so single-tool drift
+# still trips; the respond payloads keep the session healthy for the
+# next turn.
+#
+# tier: full — live bridge probe; no Ada turn.
+tier: full
+preflight:
+  - {check: gev_bridge, label: gev-bridge-ws}
+turns:
+  - gev_bridge:
+      text: "Hide the HUD."
+      respond: {ok: true}
+    expect:
+      calls_any: [set_hud]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 3
+  - gev_bridge:
+      text: "What is the current view state?"
+      respond:
+        ok: true
+        camera: {latitude: 13.7563, longitude: 100.5018, altitude: 40000}
+    expect:
+      calls_any: [get_current_view_state]
+      timeout_s: 60
+      settle_s: 3
+  - gev_bridge:
+      text: "Fly the map along a route from Bangkok to Chiang Mai."
+      respond: {ok: true}
+    expect:
+      calls_any: [annotate_map, fly_route]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 3

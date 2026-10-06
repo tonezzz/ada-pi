@@ -1,0 +1,44 @@
+name: gev-mute-no-leak
+# gev-voice card verify — "muted mic leaks 0 audio frames". The mute
+# invariant lives client-side in gevGeminiRealtime (~/gods-eye-view):
+# mic audio passes through a GainNode held at 0 while muted AND the
+# ScriptProcessor capture gate checks isRecording — the card notes the
+# recording flag alone is not sufficient. With both gates, a muted
+# session produces zero recorded chunks, so flushAndSend never emits a
+# PCM frame.
+#
+# A live scenario can't press the page's mute button, so the runnable
+# form is a served-bundle guard: fetch /apps/gev/ and its module bundle
+# and assert the mute wiring is shipped — capture gate inside
+# onaudioprocess, gain node wired into the mic chain, mute setter
+# driving gain.value, and the ws send path. A rebuild that drops or
+# bypasses any of them (e.g. chunks pushed unconditionally) fails here.
+#
+# tier: full — HTTP guard on the deployed bundle; no Ada turn.
+tier: full
+turns:
+  - http_check:
+      label: "gev bundle — mute wiring invariant"
+      page: "https://tony-dell.taila0626a.ts.net/apps/gev/"
+      page_regex:
+        - 'assets/index-[A-Za-z0-9_-]+\.js'   # index references a hashed bundle
+      contains:
+        - isRecording
+        - recordedChunks
+        - micGain
+      regex:
+        # capture gate: chunks are only recorded while isRecording
+        - 'onaudioprocess=[^;]{0,80}isRecording'
+        - 'isRecording&&[^;]{0,80}recordedChunks\.push'
+        # gain gate: the mute setter drives the GainNode
+        - 'micGain\.gain\.value\s*='
+        # gain node sits in the mic chain (source -> gain -> processor)
+        - 'connect\(this\.micGain\)'
+        - 'micGain\.connect\('
+        # pcm leaves over the ws only via the explicit send
+        - '\.send\(\w+\.buffer\)'
+      not_regex:
+        # regression shape: recordedChunks.push reachable inside an
+        # onaudioprocess handler with no isRecording gate in the way —
+        # that is what a muted-but-leaking build looks like
+        - 'onaudioprocess=\w+=>\{(?:(?!isRecording)[^}]){0,200}recordedChunks\.push'

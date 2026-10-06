@@ -125,6 +125,34 @@ Failure taxonomy (decision: scenario-harness-false-negatives):
   Empty-transcript turns are retried once automatically (live-API
   interrupts mid-tool-call are a known race) before scoring.
 
+Bridge-driver turns (GEV — no Ada ws needed):
+  - gev_bridge: {text: "fly to Bangkok", respond: {ok: true}}
+      plays the GEV client's half of the gev-gemini bridge protocol on
+      $GEV_LIVE_WS (default wss://tony-dell.taila0626a.ts.net/apps/gev-live/ws,
+      ws://127.0.0.1:8789 locally): connect -> status greeting -> send
+      {"type":"text"} -> collect function_call msgs -> answer each with
+      {"type":"tool_response","responses":[{id,name,response:respond}]}
+      -> collect text deltas + done. Events are normalized into the
+      standard vocabulary (function_call -> tool_call, our reply ->
+      tool_result, text -> assistant_transcript_delta, done ->
+      response_completed) so calls_any / call_args_contain /
+      response_nonempty / events_contain all work unmodified. The card
+      verify "text -> function_call -> tool_response over wss
+      /apps/gev-live/ws" maps to calls_any + response_nonempty.
+      Connect/greeting failure aborts the run as INFRA.
+  - http_check: {url|page, status, contains, not_contains, regex,
+                 not_regex}
+      HTTP guard turn — fetch a URL, or `page:` an HTML document and
+      follow its first <script type="module" src> to fetch the served
+      bundle; then assert status/contains/not_contains/regex/not_regex
+      on the body (page_contains/page_regex/… assert on the HTML when
+      `page:` is used). Used by the served-code guards: sw.js
+      stale-cache regression and the GEV bundle mute-wiring invariant.
+
+Ada ws is opened lazily — a scenario whose turns are all driver-side
+(vcast_display / gev_bridge / http_check) never connects to /ws, so a
+down Ada doesn't misclassify a GEV/infra probe as FATAL.
+
 Display-driver turns (no prompt to Ada — the driver itself actuates):
   - vcast_display: {action: claim, name: flap-test}   rides the real
       input-bridge pending→claim→paired→registered flow; the screen
@@ -282,6 +310,10 @@ LEGACY_ARG_DEFAULTS: dict[str, dict] = {
 
 _VCAST_API = os.environ.get(
     "VCAST_API", "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+
+_GEV_LIVE_WS = os.environ.get(
+    "GEV_LIVE_WS",
+    "wss://tony-dell.taila0626a.ts.net/apps/gev-live/ws")
 
 
 def _expand_families(names: list | None) -> list[str]:
@@ -885,6 +917,177 @@ async def _vcast_display_turn(disp, spec) -> tuple:
     raise RuntimeError(f"unknown vcast_display action {action!r}")
 
 
+async def _gev_bridge_turn(spec: dict, expect: dict, verbose: bool):
+    """One text turn on the gev-gemini bridge ($GEV_LIVE_WS) — the GEV
+    client's half of the protocol: {type:text} in, function_call out,
+    tool_response back, text deltas + done to close. Bridge msgs are
+    normalized into the ada event vocabulary so check_turn applies:
+    function_call -> tool_call (+ synthesized tool_result carrying the
+    `respond` payload we answered), text -> assistant_transcript_delta,
+    done -> response_completed; status/error pass through raw."""
+    respond = spec.get("respond")
+    if respond is None:
+        respond = {"ok": True}
+    timeout = float(expect.get("timeout_s") or spec.get("timeout_s") or 60)
+    settle = float(expect.get("settle_s") or spec.get("settle_s") or 3)
+    try:
+        ws = await websockets.connect(
+            _GEV_LIVE_WS, max_size=8 * 1024 * 1024, open_timeout=15)
+    except Exception as exc:
+        raise _InfraAbort(f"gev_bridge connect {_GEV_LIVE_WS}: {exc}")
+    events: list[dict] = []
+    try:
+        # greeting — the bridge announces {"type":"status",...} on connect
+        greeted = False
+        end = time.monotonic() + 15
+        while time.monotonic() < end and not greeted:
+            try:
+                raw = await asyncio.wait_for(
+                    ws.recv(), max(0.5, end - time.monotonic()))
+            except asyncio.TimeoutError:
+                break
+            if isinstance(raw, str):
+                m = json.loads(raw)
+                events.append(m)
+                if m.get("type") == "status":
+                    greeted = True
+        if not greeted:
+            raise _InfraAbort(
+                "gev_bridge: no status greeting within 15s — "
+                "bridge is up but not answering")
+        text = str(spec.get("text") or "")
+        await ws.send(json.dumps({"type": "text", "text": text}))
+        t0 = time.monotonic()
+        deadline = t0 + timeout
+        done_at = 0.0
+        while time.monotonic() < deadline:
+            wait = (min(settle, deadline - time.monotonic())
+                    if done_at else deadline - time.monotonic())
+            try:
+                raw = await asyncio.wait_for(ws.recv(), max(wait, 0.1))
+            except asyncio.TimeoutError:
+                break
+            if isinstance(raw, bytes):
+                # bridge-side audio frames — recorded so a leak shows in
+                # --timing/events output even though nothing asserts it
+                events.append({"type": "_audio_frame", "bytes": len(raw)})
+                continue
+            try:
+                m = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            m["_t"] = round(time.monotonic() - t0, 3)
+            t = m.get("type")
+            if t == "function_call":
+                events.append({"type": "tool_call", "name": m.get("name"),
+                               "args": m.get("args") or {}, "_t": m["_t"]})
+                await ws.send(json.dumps({
+                    "type": "tool_response",
+                    "responses": [{"id": m.get("id"),
+                                   "name": m.get("name"),
+                                   "response": respond}]}))
+                events.append({"type": "tool_result",
+                               "name": m.get("name"),
+                               "result": respond, "_t": m["_t"]})
+            elif t == "text":
+                events.append({"type": "assistant_transcript_delta",
+                               "text": m.get("text"), "_t": m["_t"]})
+            elif t == "done":
+                events.append({"type": "response_completed",
+                               "_t": m["_t"]})
+                done_at = time.monotonic()
+            else:
+                events.append(m)   # status / error / anything else
+            if verbose:
+                if t == "function_call":
+                    print(f"      function_call {m.get('name')} "
+                          f"{m.get('args')}")
+                elif t == "text":
+                    pass  # transcript deltas stream; run_turn prints match
+                elif t == "done":
+                    print("      done")
+            if done_at and time.monotonic() - done_at > settle:
+                break
+        return events, check_turn(events, expect)
+    finally:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
+def _http_check(spec: dict) -> list[str]:
+    """HTTP guard turn — fetch `url` directly, or fetch `page` HTML and
+    follow its first module <script src> to the served bundle. Assertions:
+    status (default 200), contains/not_contains (substrings), regex /
+    not_regex (must / must-not match). With `page:`, page_contains /
+    page_not_contains / page_regex / page_not_regex assert on the HTML
+    and the plain fields assert on the bundle body."""
+    import urllib.parse
+    import urllib.request
+    label = str(spec.get("label") or spec.get("url") or spec.get("page"))
+    want = int(spec.get("status") or 200)
+
+    def fetch(url: str) -> tuple[int, str]:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "scenario-live/http_check"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+
+    def check_body(body: str, scope: dict, where: str,
+                   out: list[str]) -> None:
+        for sub in scope.get("contains") or []:
+            if str(sub) not in body:
+                out.append(f"{label}: {where} missing {sub!r}")
+        for sub in scope.get("not_contains") or []:
+            if str(sub) in body:
+                out.append(
+                    f"{label}: {where} unexpectedly contains {sub!r}")
+        for pat in scope.get("regex") or []:
+            if not re.search(str(pat), body):
+                out.append(f"{label}: {where} no match for /{pat}/")
+        for pat in scope.get("not_regex") or []:
+            if re.search(str(pat), body):
+                out.append(f"{label}: {where} matched /{pat}/")
+
+    failures: list[str] = []
+    try:
+        if spec.get("page"):
+            status, html = fetch(str(spec["page"]))
+            if status != want:
+                failures.append(
+                    f"{label}: page HTTP {status} want {want}")
+            check_body(html, {
+                "contains": spec.get("page_contains"),
+                "not_contains": spec.get("page_not_contains"),
+                "regex": spec.get("page_regex"),
+                "not_regex": spec.get("page_not_regex"),
+            }, "page", failures)
+            m = (re.search(r'<script[^>]+type="module"[^>]+src="([^"]+)"',
+                           html)
+                 or re.search(r'<script[^>]+src="([^"]+\.js[^"]*)"',
+                              html))
+            if not m:
+                failures.append(
+                    f"{label}: no module script src in {spec['page']}")
+                return failures
+            bundle_url = urllib.parse.urljoin(str(spec["page"]),
+                                              m.group(1))
+            status, body = fetch(bundle_url)
+            if status != want:
+                failures.append(
+                    f"{label}: bundle {bundle_url} HTTP {status}")
+            check_body(body, spec, "bundle", failures)
+        else:
+            status, body = fetch(str(spec["url"]))
+            if status != want:
+                failures.append(f"{label}: HTTP {status} want {want}")
+            check_body(body, spec, "body", failures)
+    except Exception as exc:
+        failures.append(f"{label}: {exc}")
+    return failures
+
+
 def _subst_runtime(obj, rt: dict):
     """Runtime tokens resolved mid-scenario — {flap_screen} becomes the
     screen number a vcast_display claim actually got. A string that is
@@ -931,6 +1134,27 @@ def run_preflight(spec: dict) -> list[str]:
                 continue
             if code not in codes:
                 fails.append(f"preflight {label}: HTTP {code}")
+        elif check == "gev_bridge":
+            # greeting probe on the gev-gemini bridge ws — a hung or
+            # down bridge is an environment failure, not a model bug
+            try:
+                from websockets.sync.client import (
+                    connect as _ws_sync_connect)
+                got = {}
+                with _ws_sync_connect(_GEV_LIVE_WS,
+                                      open_timeout=15) as bws:
+                    end = time.monotonic() + 15
+                    while time.monotonic() < end:
+                        m = json.loads(bws.recv(
+                            timeout=max(0.5, end - time.monotonic())))
+                        if m.get("type") == "status":
+                            got = m
+                            break
+                if not got:
+                    fails.append(
+                        f"preflight {label}: no status greeting")
+            except Exception as e:
+                fails.append(f"preflight {label}: {e}")
         elif check == "vcast_online":
             import urllib.request as _ur
             try:
@@ -1346,6 +1570,24 @@ async def main() -> int:
                     my_session[0] = str(msg.get("session") or "")
                     return ws
 
+    async def ensure_ws() -> Any:
+        """Lazy Ada /ws connect — driver-only scenarios (vcast_display /
+        gev_bridge / http_check turns) never need it, so a down Ada can't
+        FATAL a probe that isn't about Ada."""
+        nonlocal ws
+        if ws is not None:
+            return ws
+        try:
+            ws = await connect(url)
+        except asyncio.TimeoutError:
+            print("FATAL: no ready event from server")
+            return None
+        except OSError as exc:
+            print(f"FATAL: cannot connect to {url.split('?')[0]}: {exc}")
+            return None
+        print("connected (ready)")
+        return ws
+
     turns = spec.get("turns") or []
     print(f"scenario: {spec.get('name') or args.scenario.stem} -> {url.split('?')[0]}")
 
@@ -1376,13 +1618,6 @@ async def main() -> int:
     vdisp: _VcastDisplay | None = None      # claimed by vcast_display turns
     rtokens: dict = {"flap_screen": None}   # mid-scenario runtime tokens
     try:
-        try:
-            ws = await connect(url)
-        except asyncio.TimeoutError:
-            print("FATAL: no ready event from server")
-            return 2
-        print("connected (ready)")
-
         for i, turn in enumerate(turns):
             turn = _subst_runtime(turn, rtokens)
             expect = dict(turn.get("expect") or {})
@@ -1392,7 +1627,37 @@ async def main() -> int:
                 await asyncio.sleep(float(turn["sleep_s"]))
             turn_t0 = time.time()
             kind, prompt = "text", ""
-            if "vcast_display" in turn:
+            if "gev_bridge" in turn:
+                # gev-gemini bridge probe — plays the GEV client's half
+                # of the voice protocol; events normalize into the
+                # standard vocabulary for check_turn.
+                kind = "gev_bridge"
+                bspec = dict(turn.get("gev_bridge") or {})
+                prompt = str(bspec.get("text") or "")[:120]
+                print(f"turn {i + 1}: gev_bridge {prompt!r}")
+                try:
+                    events, failures = await _gev_bridge_turn(
+                        bspec, expect, args.verbose)
+                except _InfraAbort:
+                    raise
+                except Exception as exc:
+                    events = [{"type": "_note", "text": str(exc)}]
+                    failures = [f"gev_bridge: {exc}"]
+            elif "http_check" in turn:
+                # driver-side HTTP guard — served-code/config checks
+                # (sw.js non-caching worker, bundle invariants)
+                kind = "http_check"
+                hspec = dict(turn.get("http_check") or {})
+                prompt = str(hspec.get("label") or hspec.get("url")
+                             or hspec.get("page") or "")
+                print(f"turn {i + 1}: http_check {prompt}")
+                events = [{"type": "_note", "text": prompt}]
+                try:
+                    failures = await asyncio.to_thread(
+                        _http_check, hspec)
+                except Exception as exc:
+                    failures = [f"http_check: {exc}"]
+            elif "vcast_display" in turn:
                 # driver-side display action — not an Ada turn; the action
                 # itself produces pass/fail (claim failure → INFRA abort).
                 kind = "vcast_display"
@@ -1419,7 +1684,8 @@ async def main() -> int:
                     rurl = f"{rurl}{sep}simulate_away_s={away}"
                 print(f"turn {i + 1}: reconnect (away_s={away})")
                 kind, prompt = "reconnect", f"away_s={away}"
-                await ws.close()
+                if ws is not None:
+                    await ws.close()
                 ws = await connect(rurl)
                 # The reconnect prime triggers the greeting turn unprompted —
                 # collect it like a normal response window.
@@ -1449,6 +1715,8 @@ async def main() -> int:
                     burst_ms = int((turn.get("speech") or {}).get("burst_ms") or 800)
                     prompt = f"speech burst {burst_ms}ms (no audio)"
                     print(f"turn {i + 1}: {prompt}")
+                    if await ensure_ws() is None:
+                        return 2
                     await ws.send(json.dumps({"type": "local_speech_started"}))
                     await asyncio.sleep(burst_ms / 1000.0)
                     await ws.send(json.dumps({"type": "local_speech_stopped"}))
@@ -1480,6 +1748,8 @@ async def main() -> int:
                 if upload_error:
                     events, failures = [], [f"upload: {upload_error}"]
                 else:
+                    if await ensure_ws() is None:
+                        return 2
                     # turn.notify: {text, urgent, delay_s} — fires
                     # POST /api/notify concurrently while the response is
                     # in flight (mid-response interruption test).
