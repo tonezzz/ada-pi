@@ -1,0 +1,84 @@
+# Chaba Nest topology registry — declarative compound-AI structures.
+#
+# Levels (cost tiers):
+#   L0  rules/regex/deterministic — free, always first
+#   L1  student micro model (gemma-3-1b, phi3) — ~1 cpu-s/call
+#   L2  heavy local (gemma-3-4b) — ~5-10 cpu-s/call
+#   L3  arbiter cloud (Gemini) — quota-priced, last resort
+#
+# Wiring `ways`:
+#   series    — output of each node feeds the next (cascade)
+#   parallel  — all nodes run, votes merge (weighted in gray band)
+#   router    — feature router picks ONE node per input
+#   verifier  — node decides, auditor may veto
+#
+# Each entry maps to an orch-bench structure today; entries with
+# `impl: chain` are graph-configurations for the future executor —
+# keep them here so the bench and the report see the same registry.
+
+student_endpoint: http://100.75.102.88:8778   # gemma-3-1b-it (open-jev)
+heavy_endpoint:   http://100.75.102.88:8777   # gemma-3-4b-it (open-jev)
+
+topologies:
+  student:
+    impl: builtin            # orch-bench --structure student
+    way: series
+    nodes: [{level: L1, role: decider}]
+    note: baseline — small model alone, no backup
+
+  cascade:
+    impl: builtin
+    way: series
+    nodes:
+      - {level: L1, role: decider, escalate_in: [0.35, 0.75]}
+      - {level: L2, role: decider}
+    note: cheap decider first; L2 only takes the gray band
+
+  parallel:
+    impl: builtin
+    way: parallel
+    nodes:
+      - {level: L1, role: voter}
+      - {level: L2, role: voter, weight_in_gray: 0.75}
+    note: both always run — the cost ceiling, quality ceiling too?
+
+  router:
+    impl: builtin
+    way: router
+    nodes:
+      - {level: L0, role: router, feats: [code-switch, imperative, tool-shaped]}
+      - {level: L1, role: decider, when: clean-short}
+      - {level: L2, role: decider, when: default}
+    note: zero extra calls to route — stands in for a learned router
+
+  verifier:
+    impl: builtin
+    way: verifier
+    nodes:
+      - {level: L1, role: decider}
+      - {level: L2, role: auditor, audits: [yes-decisions, tool-choices]}
+    note: asymmetry — only expensive-to-be-wrong answers get audited
+
+  # --- future chains (impl: chain — for the graph executor card) ---
+  nest-2l-router:
+    impl: chain
+    way: router+series
+    note: >-
+      L0 route -> domain students (confirm-jev / tool-pick / triage) ->
+      L2 escalate in-band. The kanban-brief tier model generalized.
+    nodes:
+      - {level: L0, role: router}
+      - {level: L1, role: domain-expert, of: [confirm, tool, triage]}
+      - {level: L2, role: fallback}
+
+  nest-3l-verify:
+    impl: chain
+    way: series+verifier
+    note: >-
+      cascade decide -> L2 audit of YES -> L3 arbiter only when L1/L2
+      disagree. The fullest trust ladder; measures whether escalation
+      depth pays for itself.
+    nodes:
+      - {level: L1, role: decider}
+      - {level: L2, role: auditor}
+      - {level: L3, role: arbiter, when: disagree}
