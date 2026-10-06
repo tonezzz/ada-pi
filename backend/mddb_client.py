@@ -84,10 +84,11 @@ class MddbClient:
         return bool(self._ops_url) and is_ops_collection(collection)
 
     async def _follower_usable(self) -> bool:
-        """Follower serves reads only while healthy and inside the lag
-        budget — a stale replica quietly serves old memory, so the check
-        is refreshed every _READ_CHECK_TTL_S and fails closed to the
-        leader."""
+        """Refreshed every _READ_CHECK_TTL_S, fails closed to the leader.
+        prefer: follower only while replication is healthy and inside the
+        lag budget — a stale replica quietly serves old memory.
+        fallback: follower is the outage path — a healthy /v1/health
+        suffices; hours-stale recall beats none when the leader is down."""
         if not self._read_url:
             return False
         now = asyncio.get_running_loop().time()
@@ -95,13 +96,18 @@ class MddbClient:
             return self._follower_ok
         self._follower_ok_at = now
         try:
-            resp = await self._client.get(
-                f"{self._read_url}/replication/status", timeout=3.0)
-            st = resp.json()
-            self._follower_ok = bool(
-                st.get("healthy")
-                and float(st.get("replication_lag_ms") or 0)
-                <= MDDB_READ_MAX_LAG_MS)
+            if MDDB_READ_MODE == "fallback":
+                resp = await self._client.get(
+                    f"{self._read_url}/health", timeout=3.0)
+                self._follower_ok = resp.json().get("status") == "healthy"
+            else:
+                resp = await self._client.get(
+                    f"{self._read_url}/replication/status", timeout=3.0)
+                st = resp.json()
+                self._follower_ok = bool(
+                    st.get("healthy")
+                    and float(st.get("replication_lag_ms") or 0)
+                    <= MDDB_READ_MAX_LAG_MS)
         except Exception:
             self._follower_ok = False
         return self._follower_ok
