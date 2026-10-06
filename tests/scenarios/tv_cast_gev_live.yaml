@@ -1,0 +1,60 @@
+name: tv-cast-gev-live
+instance: tony
+# tv-cast-gev-path card (2026-10-05): Tony asked for GEV on TONY-TV.
+# Five tv_action navs of the /apps/gev/ URL returned {ok,cast:200} —
+# each one a shotAndCast PNG of a half-loaded page, not live video.
+# Fixes under test:
+#   1) 'nav gev' and /apps/gev/ URLs rewrite to the live workspace lane
+#      (tony-omen:workspace:N -> cast-desktop x11grab -> HLS ->
+#      camera.play_stream), recorded in the result as gev_lane.
+#   2) Post-cast verification: a cast-bearing result polls the cast
+#      target's HA state — a player stuck off/idle means the 200 was a
+#      no-op and the result fails loudly instead of lying ok.
+cast_screens:
+  screens: {}
+ha_states:
+  input_select.tv_cast_target: {state: "TONY-TV Cast"}
+  media_player.tony_tv:
+    state: "on"
+    attributes: {app_id: "com.webos.app.browser",
+                 app_name: "com.webos.app.browser", friendly_name: TONY-TV}
+ha_states_seq:
+  media_player.tony_tv_cast:
+    # steps 1-3 pass verification (playing); step 4 stays off -> fail.
+    - {state: "playing"}
+    - {state: "playing"}
+    - {state: "playing"}
+    - {state: "off"}
+ha_tv_action:
+  {ok: true, cast: "camera.play_stream:200",
+   stream: "tony-omen/index0.m3u8"}
+steps:
+  # 'nav gev' must never reach shotAndCast — it rewrites to the live lane.
+  - tool: tv_action
+    args: {cmd: nav, text: gev}
+    expect:
+      output_contains:
+        - "gev_lane"
+        - "tony-omen:workspace:4"
+        - "camera.play_stream"
+        - "playing"
+  # The raw /apps/gev/ URL (the exact call Ada made in the incident)
+  # rewrites the same way.
+  - tool: tv_action
+    args:
+      {cmd: nav,
+       text: "https://tony-dell.taila0626a.ts.net/apps/gev/"}
+    expect:
+      output_contains: ["gev_lane", "tony-omen:workspace:4"]
+  # A non-GEV page is left alone — still verified post-cast.
+  - tool: tv_action
+    args: {cmd: nav, text: "https://example.com/"}
+    expect:
+      output_contains: ["cast_verify", "playing"]
+      output_not_contains: ["gev_lane"]
+  # Cast target off after the cast -> loud failure, not ok.
+  - tool: tv_action
+    args: {cmd: nav, text: "https://example.com/"}
+    expect:
+      error_contains: "nothing reached the TV"
+      output_contains: ["cast_verify", "off"]

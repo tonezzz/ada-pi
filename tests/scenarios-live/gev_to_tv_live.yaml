@@ -1,0 +1,41 @@
+name: gev-to-tv-live
+# Live scenario — "send God's Eye View to the TV" end-to-end
+# (tv-cast-gev-path card, Tony ask 2026-10-05 18:50). Exercises the live
+# lane added after the PNG-cast failure: nav gev -> tony-omen workspace
+# stream -> cast-desktop HLS -> camera.play_stream on TONY-TV Cast, plus
+# the post-cast media_player verification (off/idle = honest failure).
+#
+# What it verifies:
+#   - Ada resolves "God's Eye View on the TV" to tv_action nav gev (or
+#     the /apps/gev/ URL — both rewrite to the live lane)
+#   - the result carries the live-lane markers, not a PNG shot
+#   - the cast target reads playing via HA ground truth
+#
+# tier: full — switches tony-omen's live workspace and actuates the TV.
+tier: full
+
+turns:
+  - user: "Put God's Eye View on the TV."
+    expect:
+      calls_any: [tv_action]
+      # live lane = camera.play_stream / workspace / gev_lane markers;
+      # a PNG shot would come back as cast:200 with no stream.
+      result_contains_any: ["camera.play_stream", "workspace", "gev_lane"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 15
+
+  - user: "Is it actually playing? Check the TV state."
+    expect:
+      calls_any: [ada_ha_get_state, get_home_state]
+      result_contains_any: ["playing", "tony_tv_cast"]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 5
+
+  - user: "Stop it — put the TV back to normal."
+    expect:
+      calls_any: [tv_action, control_media_player, yt_cast_stop]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8

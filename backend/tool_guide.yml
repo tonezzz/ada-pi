@@ -66,6 +66,9 @@ yt: >-
 tv_action: >-
   LG TV only — vcast panes zoom/scroll via cast_to_screen pane=N, not
   here. cmd='nav' text='<URL>' shows a page in the TV browser;
+  text='gev' streams God's Eye View LIVE (routed to the dedicated
+  tony-omen workspace — a /apps/gev/ URL nav would only cast a frozen
+  PNG, so it is auto-rewritten to the live lane);
   text='screenlive:workspace:N[:pad|crop]' casts this host's live
   workspace; text='tony-omen:workspace:N' casts Tony's desktop (also
   switches his live workspace). On a nav'd page: scroll text='up|down'
@@ -76,7 +79,9 @@ tv_action: >-
   Personal screens are owner-locked; the TV is shared. After nav the
   result carries tv_input (the TV's foreground app via HA) — input_warn
   means the page loaded but the TV is on another input and it is NOT
-  visible; never claim it is showing then.
+  visible; never claim it is showing then. Results that cast also carry
+  cast_verify (the cast target's HA state) — a failed verification
+  comes back ok:false because a 200 on an off Chromecast is a no-op.
 
 cast_to_screen: >-
   Numbered vcast displays — not the physical TV (tv_action / yt cast for

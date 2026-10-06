@@ -143,6 +143,7 @@ policy:
     - cast_multi_device
     - cast_during_ha_restart
     - vcast_flap_recovery
+    - gev_to_tv_live         # tv_action nav gev -> live workspace stream + verify
 
 # The standard — what a benchmark result is allowed to mean. Three clauses:
 # evidence contract, failure integrity, retention. Enforced by
@@ -331,6 +332,7 @@ suites:
     - cast_multi_device
     - cast_during_ha_restart
     - vcast_flap_recovery
+    - gev_to_tv_live
 
   # GEV regression gate (card gev-scenarios, 2026-10-06) — every gev_*
   # scenario: the bridge/served-code probes (ws round-trip, tools.json
@@ -358,6 +360,7 @@ suites:
     - gev_bkk_route_th
     - gev_za_pip
     - gev_za_tour_th
+    - gev_to_tv_live
     - tool_merge_gev
 
   # Everything — the full picture (slow; expects ~1h+).
