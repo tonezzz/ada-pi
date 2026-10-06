@@ -1904,6 +1904,135 @@ class CastToScreenRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("action_fixed", out)
 
 
+class TvInputMismatchTests(unittest.IsolatedAsyncioTestCase):
+    """cast-input-mismatch (2026-10-04): cctv_wall 'delivered' while the
+    TV sat on the True STB app for 3min — the wall loaded in the
+    backgrounded webOS browser, invisible. Post-cast the runner must read
+    the TV's foreground app via HA and, on mismatch, push the URL at the
+    TV browser (tv_action nav) and report honestly."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.tv_action.return_value = {"ok": True}
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.pubbed = []
+        # TV-hosted screen 1; screen 2 is a plain vcast display.
+        reg = Path(tempfile.mkdtemp()) / "cast-screens.json"
+        reg.write_text(json.dumps({
+            "screens": {"1": "shared", "2": "shared"},
+            "tv": {"entity": "media_player.tony_tv",
+                   "screens": [1], "ok_apps": ["browser"]},
+        }))
+        env = patch.dict(os.environ, {
+            "ADA_CAST_SCREENS": str(reg),
+            # dead port — the camwall manifest read fails fast offline
+            "ADA_CAMWALL_BASE": "http://127.0.0.1:9/",
+        })
+        env.start()
+        self.addCleanup(env.stop)
+
+        def fake_vcast(path, payload=None):
+            if path == "/pub":
+                self.pubbed.append(payload)
+                return {"ok": True, "delivered": 1}
+            if path == "/displays":
+                return {"screens": [
+                    {"screen": 1, "name": "screen-1", "label": "TONY-TV",
+                     "connected": True, "state": "nav",
+                     "state_detail": "camwall ?zone=noble-park"}]}
+            return {"captures": {}, "zones": {}}
+
+        p = patch.object(ToolRunner, "_vcast_api", staticmethod(fake_vcast))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _tv_state(self, app):
+        return {"entity_id": "media_player.tony_tv", "state": "on",
+                "attributes": {"app_id": app, "app_name": app,
+                               "friendly_name": "TONY-TV"}}
+
+    async def test_wall_on_wrong_input_remediates_and_reports(self):
+        # STB on the first read, browser after the remediation nav.
+        self.ha_client.get_state.side_effect = [
+            self._tv_state("com.truedmp.idtv"),
+            self._tv_state("com.webos.app.browser"),
+        ]
+        out = await self.runner.cctv_wall("start", "noble-park", screen=1)
+        self.assertTrue(out.get("tv_input_mismatch"))
+        self.assertEqual(out["tv_input"]["app"], "com.truedmp.idtv")
+        self.assertTrue(out["tv_remediation"]["ok"])
+        # the wall URL is pushed at the TV browser as an absolute URL
+        nav = self.ha_client.tv_action.await_args
+        self.assertEqual(nav.kwargs.get("cmd") or nav.args[0], "nav")
+        self.assertIn("/apps/camwall/", str(nav))
+        self.assertTrue(str(nav.args[1] if len(nav.args) > 1
+                            else nav.kwargs["text"]).startswith("https://"))
+        self.assertIn("now showing", out["note"])
+        self.assertNotIn("NOT visible", out["note"])
+
+    async def test_wall_still_wrong_input_reports_not_visible(self):
+        self.ha_client.get_state.side_effect = [
+            self._tv_state("com.truedmp.idtv"),
+            self._tv_state("com.truedmp.idtv"),  # nav didn't switch it
+        ]
+        out = await self.runner.cctv_wall("start", "noble-park", screen=1)
+        self.assertTrue(out.get("tv_input_mismatch"))
+        self.assertIn("NOT visible", out["note"])
+
+    async def test_wall_on_right_input_no_remediation(self):
+        self.ha_client.get_state.return_value = self._tv_state(
+            "com.webos.app.browser")
+        out = await self.runner.cctv_wall("start", "noble-park", screen=1)
+        self.assertNotIn("tv_input_mismatch", out)
+        self.assertEqual(out["tv_input"]["on_cast_app"], True)
+        self.ha_client.tv_action.assert_not_awaited()
+
+    async def test_non_tv_screen_skips_the_check(self):
+        out = await self.runner.cctv_wall("start", "noble-park", screen=2)
+        self.assertNotIn("tv_input", out)
+        self.ha_client.get_state.assert_not_awaited()
+
+    async def test_cast_to_screen_on_tv_verifies(self):
+        self.ha_client.get_state.return_value = self._tv_state(
+            "com.truedmp.idtv")
+        out = await self.runner.cast_to_screen(
+            1, "image", url="https://img.test/x.jpg")
+        self.assertTrue(out.get("tv_input_mismatch"))
+        self.ha_client.tv_action.assert_awaited_once()
+
+    async def test_tv_action_nav_appends_input_state(self):
+        self.ha_client.get_state.return_value = self._tv_state(
+            "com.truedmp.idtv")
+        out = await self.runner.tv_action(cmd="nav", text="https://x.test/")
+        self.assertEqual(out["tv_input"]["app"], "com.truedmp.idtv")
+        self.assertIn("input_warn", out)
+        self.assertIn("NOT visible", out["input_warn"])
+
+    async def test_tv_action_nav_clean_input_no_warn(self):
+        self.ha_client.get_state.return_value = self._tv_state(
+            "com.webos.app.browser")
+        out = await self.runner.tv_action(cmd="nav", text="https://x.test/")
+        self.assertEqual(out["tv_input"]["on_cast_app"], True)
+        self.assertNotIn("input_warn", out)
+
+    async def test_vcast_list_surfaces_tv_input(self):
+        self.ha_client.get_state.return_value = self._tv_state(
+            "com.truedmp.idtv")
+        out = await self.runner.vcast_list()
+        self.assertEqual(out["tv_input"]["app"], "com.truedmp.idtv")
+        self.assertFalse(out["tv_input"]["on_cast_app"])
+        self.assertIn("warning", out["tv_input"])
+        self.assertTrue(out["screens"][0].get("on_tv"))
+
+    async def test_ha_unreachable_does_not_block_the_cast(self):
+        self.ha_client.get_state.side_effect = RuntimeError("ha down")
+        out = await self.runner.cctv_wall("start", "noble-park", screen=1)
+        self.assertTrue(out.get("ok"))
+        self.assertIsNone(out["tv_input"]["on_cast_app"])
+        self.ha_client.tv_action.assert_not_awaited()
+
+
 class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     """tools-merge-ha (21 -> 6): every absorbed name stays callable via
     _ALIASES and routes to its canonical parent — home_search for the

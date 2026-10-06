@@ -36,6 +36,7 @@ confirmations` snapshots the runner's structured confirm ledger.
 from __future__ import annotations
 
 import json
+import os
 import re
 import tempfile
 import time
@@ -325,6 +326,55 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
 
         runner.context.ha_client.resolve_person = _resolve_person
         runner.context.ha_client.persons = _persons
+
+    # `env:` sets os.environ for the scenario duration (restored after).
+    env_spec = {str(k): str(v) for k, v in (data.get("env") or {}).items()}
+    # `cast_screens:` writes the registry to a temp file and points
+    # ADA_CAST_SCREENS at it — screen ownership + the tv block.
+    tmp_files: list[str] = []
+    if data.get("cast_screens") is not None:
+        with tempfile.NamedTemporaryFile(
+                "w", suffix=".json", delete=False) as f:
+            json.dump(data["cast_screens"], f)
+            tmp_files.append(f.name)
+        env_spec["ADA_CAST_SCREENS"] = f.name
+    saved_env = {k: os.environ.get(k) for k in env_spec}
+    os.environ.update(env_spec)
+
+    # `ha_states:` / `ha_states_seq:` stub ha_client.get_state —
+    # entity_id -> HA state doc ({"state","attributes"}); seq entries are
+    # consumed in call order, the last one repeats.
+    ha_states = data.get("ha_states") or {}
+    ha_seqs = {k: list(v) for k, v in
+               (data.get("ha_states_seq") or {}).items()}
+    if ha_states or ha_seqs:
+        async def _get_state(entity_id):
+            seq = ha_seqs.get(str(entity_id))
+            if seq:
+                return dict(seq.pop(0) if len(seq) > 1 else seq[0])
+            st = ha_states.get(str(entity_id))
+            if isinstance(st, dict):
+                return dict(st)
+            return {"entity_id": entity_id, "state": "unknown"}
+        runner.context.ha_client.get_state = _get_state
+    # `ha_tv_action:` return value for ha_client.tv_action (the
+    # cast-browser body).
+    if "ha_tv_action" in data:
+        tv_res = data["ha_tv_action"]
+        runner.context.ha_client.tv_action = unittest.mock.AsyncMock(
+            return_value=dict(tv_res) if isinstance(tv_res, dict)
+            else tv_res)
+    # `vcast:` stubs ToolRunner._vcast_api — path -> canned response.
+    vcast_stub = data.get("vcast")
+    if isinstance(vcast_stub, dict):
+        def _fake_vcast(path, payload=None):
+            resp = vcast_stub.get(path)
+            if isinstance(resp, dict):
+                if set(resp) == {"error"}:
+                    raise RuntimeError(str(resp["error"]))
+                return dict(resp)
+            return resp if resp is not None else {}
+        runner._vcast_api = _fake_vcast
     conv = ConversationMemory(session_id="scenario")
     usage_ledger.configure(None)  # no data/usage.jsonl writes in offline runs
     usage_ledger.reset()
@@ -372,7 +422,17 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
             return [_subst(v) for v in value]
         return value
 
-    for i, step in enumerate(data.get("steps") or []):
+    def _restore_env() -> None:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        for p in tmp_files:
+            Path(p).unlink(missing_ok=True)
+
+    try:
+      for i, step in enumerate(data.get("steps") or []):
         entry: dict[str, Any] = {"i": i, "step": step}
         t0 = time.monotonic()
         try:
@@ -439,5 +499,7 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
             f"step {i} ({step.get('tool') or next(iter(step))}): {f}"
             for f in entry["failures"]
         )
+    finally:
+        _restore_env()
     report["ok"] = not report["failures"]
     return report
