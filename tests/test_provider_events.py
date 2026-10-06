@@ -155,7 +155,7 @@ class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
         events=[event async for event in provider.events()]
         self.assertEqual([e.type for e in events],["tool_call","tool_result"])
         self.assertEqual(session.responses[0].name,"get_habit_status")
-        self.assertEqual(session.responses[0].response,{"output":snapshot})
+        self.assertEqual(session.responses[0].response,{"ok":True,"output":snapshot})
 
     async def test_home_status_canonical_returns_habit_snapshot(self) -> None:
         snapshot={"window_days":7,"habits":[{"habit_key":"posture","lifecycle_status":"possible"}]}
@@ -164,7 +164,7 @@ class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
         events=[event async for event in provider.events()]
         self.assertEqual([e.type for e in events],["tool_call","tool_result"])
         self.assertEqual(session.responses[0].name,"home_status")
-        self.assertEqual(session.responses[0].response,{"output":snapshot})
+        self.assertEqual(session.responses[0].response,{"ok":True,"output":snapshot})
 
     async def test_doc_card_alias_remaps_args_before_dispatch(self) -> None:
         provider=GeminiLiveProvider()

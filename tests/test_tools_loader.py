@@ -196,8 +196,9 @@ async def run(runner, **args):
                    return_value=reg), \
                 patch.object(ToolRunner, "_is_secondary_turn",
                              return_value=False):
-            with self.assertRaises(asyncio.TimeoutError):
-                await runner.execute("ada_slow", {}, identity="person.tony")
+            out = await runner.execute("ada_slow", {}, identity="person.tony")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "TimeoutError")
 
 
 if __name__ == "__main__":

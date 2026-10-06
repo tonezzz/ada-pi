@@ -223,7 +223,7 @@ class ActionProposalTests(unittest.IsolatedAsyncioTestCase):
                    new=AsyncMock(return_value="marked dismissed")) as m:
             out = await runner.execute(
                 "ada_resolve_action", {"key": "k1", "resolution": "dismissed"})
-        self.assertEqual(out, "marked dismissed")
+        self.assertEqual(out["output"], "marked dismissed")
         m.assert_awaited_once_with("k1", "dismissed")
 
 

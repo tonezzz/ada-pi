@@ -50,6 +50,16 @@ async def run(runner, **args):           # MUST be async
 1. **Never raise into the model.** Catch exceptions at the tool boundary,
    return `{"ok": False, "error": "<plain sentence>"}`. The error string
    may be spoken aloud — make it honest and human, not a traceback.
+   The runner enforces this too (uniform result contract, 2026-10-05):
+   whatever `run()` returns — or raises — leaves `execute()` as a dict
+   with top-level `ok: bool`. Legacy shapes (`{"error"}`, `{"err"}`,
+   status-based failures, all-failed `responses[].response.ok`) are
+   normalized by `normalize_tool_result`; an exception becomes
+   `{"ok": False, "error": <str(exc)>, "error_type": <ClassName>}`.
+   Still return the honest shape yourself — `error_type` is a debugging
+   aid, `error` is what the model reads aloud. Dispatch-layer denials
+   (unknown tool, confirm/secondary/bank gates) still raise
+   `KeyError`/`PermissionError` — a refused call is not a tool result.
 2. **Policy is declared, not coded.** Pick the manifest policy:
    - `read` — any identified session, no confirmation (read-only tools)
    - `confirmed` — mutating; requires `confirmed=true` after a spoken yes

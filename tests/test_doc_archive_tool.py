@@ -75,15 +75,17 @@ class DocConfirmedGateTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["archive_id"], "x")
 
     async def test_archive_needs_a_source(self):
-        with self.assertRaises(RuntimeError):
-            await self.runner.execute(
-                "ada_doc_archive", {"slug": "x", "confirmed": True})
+        out = await self.runner.execute(
+            "ada_doc_archive", {"slug": "x", "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "RuntimeError")
 
     async def test_bad_true_size_mm(self):
-        with self.assertRaises(RuntimeError):
-            await self.runner.execute(
-                "ada_doc_print",
-                {"slug": "A-68", "true_size_mm": "abc", "confirmed": True})
+        out = await self.runner.execute(
+            "ada_doc_print",
+            {"slug": "A-68", "true_size_mm": "abc", "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "RuntimeError")
 
 
 class PageSpecTest(unittest.TestCase):
