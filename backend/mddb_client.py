@@ -23,7 +23,13 @@ MDDB_OPS_URL = (os.environ.get("MDDB_OPS_URL") or "").rstrip("/")
 # /v1/replication/status is checked (cached READ_CHECK_TTL_S) and reads
 # only go there while healthy and under MDDB_READ_MAX_LAG_MS. Writes and
 # write-path reads always hit the leader.
+# MDDB_READ_MODE: "prefer" (default) reads the follower first — offload
+# for batch/remote consumers. "fallback" reads the leader first and only
+# fails over to the follower on transport/5xx errors — right choice for
+# services co-located with the leader (leader-down resilience without
+# paying replica latency on the happy path).
 MDDB_READ_URL = (os.environ.get("MDDB_READ_URL") or "").rstrip("/")
+MDDB_READ_MODE = os.environ.get("MDDB_READ_MODE", "prefer")
 MDDB_READ_MAX_LAG_MS = float(os.environ.get("MDDB_READ_MAX_LAG_MS", "120000"))
 _READ_CHECK_TTL_S = 30.0
 
@@ -105,14 +111,35 @@ class MddbClient:
             return self._ops_url
         return self.base_url
 
-    async def _rurl(self, collection: str) -> str:
-        """Read-path URL: ops collections keep their store; the rest hit
-        the follower when it passes the lag gate, leader otherwise."""
+    async def _read_bases(self, collection: str) -> list[str]:
+        """Ordered read targets: ops collections keep their store; the
+        rest try the follower (when it passes the lag gate) and the
+        leader in MDDB_READ_MODE order."""
         if self._ops_url and is_ops_collection(collection):
-            return self._ops_url
-        if await self._follower_usable():
-            return self._read_url
-        return self.base_url
+            return [self._ops_url]
+        follower = self._read_url if await self._follower_usable() else ""
+        if MDDB_READ_MODE == "fallback":
+            return [b for b in (self.base_url, follower) if b]
+        return [b for b in (follower, self.base_url) if b]
+
+    async def _read_post(
+        self, collection: str, path: str, payload: dict[str, Any]
+    ) -> httpx.Response:
+        """POST a read against each base in order. Transport errors and
+        5xx fall through to the next base; anything else (incl. 404) is
+        returned so the caller keeps its own status handling."""
+        bases = await self._read_bases(collection)
+        for i, base in enumerate(bases):
+            try:
+                resp = await self._client.post(base + path, json=payload)
+            except Exception:
+                if i < len(bases) - 1:
+                    continue
+                raise
+            if resp.status_code >= 500 and i < len(bases) - 1:
+                continue
+            return resp
+        raise RuntimeError("unreachable")
 
     def _to_outbox(
         self, op: str, collection: str, key: str, lang: str,
@@ -181,8 +208,7 @@ class MddbClient:
         if filter_meta:
             payload["filterMeta"] = filter_meta
         try:
-            resp = await self._client.post(
-                await self._rurl(collection) + "/search", json=payload)
+            resp = await self._read_post(collection, "/search", payload)
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:
@@ -215,9 +241,8 @@ class MddbClient:
         delays = (3.0, 8.0)
         for attempt in range(len(delays) + 1):
             try:
-                resp = await self._client.post(
-                    await self._rurl(collection) + "/vector-search",
-                    json=payload
+                resp = await self._read_post(
+                    collection, "/vector-search", payload
                 )
                 if resp.status_code >= 500 and attempt < len(delays):
                     await asyncio.sleep(delays[attempt])
@@ -244,12 +269,16 @@ class MddbClient:
         prefer_leader: bool = False,
     ) -> dict[str, Any] | None:
         try:
-            base = (self._url(collection) if prefer_leader
-                    else await self._rurl(collection))
-            resp = await self._client.post(
-                base + "/get",
-                json={"collection": collection, "key": key, "lang": lang},
-            )
+            if prefer_leader:
+                resp = await self._client.post(
+                    self._url(collection) + "/get",
+                    json={"collection": collection, "key": key, "lang": lang},
+                )
+            else:
+                resp = await self._read_post(
+                    collection, "/get",
+                    {"collection": collection, "key": key, "lang": lang},
+                )
             if resp.status_code == 404 or (
                 resp.status_code == 400 and "not found" in resp.text.lower()
             ):
