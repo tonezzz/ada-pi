@@ -357,7 +357,6 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(meta["timeline"][0].endswith("published: Pool notes"))
 
     async def test_publish_rejects_bad_slug_and_format(self):
-        # Register pending first so the calls reach validation.
         # Missing report-meta fails in the gate before confirmation registers.
         for bad in ({"slug": "../evil", "title": "x", "content": "x"},
                     {"slug": "ok", "title": "x", "content": "x", "format": "exe"}):
