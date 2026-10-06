@@ -61,7 +61,9 @@ yt: >-
   'status' reports cast progress; 'stop' stops it; 'transcript' fetches
   spoken content as text (title, language, ~6k chars; does NOT play
   anything). Absorbs yt_cast, yt_cast_status, yt_cast_stop,
-  yt_transcript.
+  yt_transcript. Voice-dub demos live in the
+  voice-dub-demos CMS page — read it and cast the local .mp4 URL,
+  never a title/search phrase.
 
 tv_action: >-
   LG TV only — vcast panes zoom/scroll via cast_to_screen pane=N, not
