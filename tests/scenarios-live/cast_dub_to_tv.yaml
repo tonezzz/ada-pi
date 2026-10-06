@@ -48,6 +48,17 @@ turns:
       timeout_s: 60
       settle_s: 4
 
+  # 2026-10-06 incident: box 'playing' while the Samsung panel was dark —
+  # the panel is a separate IR-toggle device with no power sensor. She
+  # must not claim the screen is lit; she should offer the IR power
+  # script when the user reports darkness.
+  - user: "The screen is still dark — can you see anything?"
+    expect:
+      response_contains_any: ["panel", "IR", "power", "screen", "dark", "tv_power"]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 3
+
   - user: "Stop it."
     expect:
       calls_any: [yt_cast_stop, control_media_player, tv_action]

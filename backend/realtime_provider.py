@@ -2408,10 +2408,14 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "yt",
                     "description": (
-                        "YouTube on the living-room TV — action='cast' plays a video with "
-                        "generated subtitles (absorbs yt_cast*/yt_transcript); 'status'|'stop'|"
-                        "'transcript' (text only, no playback). For video on the TV only — "
-                        "NOT fact/news lookups; a numbered vcast screen means cast_to_screen."
+                        "YouTube/media on the living-room TV — action='cast' plays a video; "
+                        "direct .mp4/.m3u8 URLs play instantly (e.g. the voice-dub demos in "
+                        "the voice-dub-demos CMS page — ALWAYS read that page and cast the "
+                        "local file URL, never a title/search phrase); 'status'|'stop'|"
+                        "'transcript'. A 'playing' result means the box is decoding — the "
+                        "Samsung panel is a separate IR-toggle device with no sensor, so if "
+                        "the screen looks dark offer tv_action/script.tv_power. NOT for "
+                        "fact/news lookups; a numbered vcast screen means cast_to_screen."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {

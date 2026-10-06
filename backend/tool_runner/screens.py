@@ -58,7 +58,18 @@ class ScreensMixin:
         `query` is a YouTube URL, media file URL, or a search phrase — prefer
         the video title plus channel name for accuracy. TV ONLY — if the user
         names a numbered screen, use cast_to_screen(action='play') instead;
-        vcast displays auto-embed YouTube URLs."""
+        vcast displays auto-embed YouTube URLs.
+
+        Result fields: `player` = media_player.tony_tv_cast state (must be
+        'playing' for real playback — HTTP 200 alone is NOT proof, the box
+        can be idle/booting), `box` = media_player.tony_tv (the TrueID box's
+        Android state), `panel` is always 'unsensed' — the Samsung panel is
+        IR-toggle only with no power sensor, so 'playing' does not guarantee
+        a lit screen. If the user says the screen is dark, offer
+        script.tv_power (IR Power toggle — fires blindly, could turn OFF a
+        lit panel, so ask first). If the box is unreachable the fix is
+        script.cast_power_on(target='box') — it cold-wakes the plug AND
+        fires the panel IR."""
         import asyncio
         return await asyncio.to_thread(
             self._yt_api, "/cast", {"q": query, "lang": language})
