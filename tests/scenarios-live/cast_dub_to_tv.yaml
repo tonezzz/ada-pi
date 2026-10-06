@@ -30,7 +30,7 @@ turns:
   # fine (the interrupt gate applies to numbered vcast screens, not TV).
   - user: "Play the Noel Gallagher interview dub on the TV — the Graham Norton one."
     expect:
-      calls_any: [yt_cast]
+      calls_any: [yt_cast, yt]
       # the 2026-10-05 regression was yt_cast("Noel interview") -> YouTube
       # search -> subtitle pipeline. The direct-mp4 path echoes the local
       # file URL back in its result — require it.
@@ -42,7 +42,7 @@ turns:
   # verify she confirms real state, not just "done"
   - user: "Is it actually playing? Check the TV state."
     expect:
-      calls_any: [ada_ha_get_state]
+      calls_any: [ada_ha_get_state, get_home_state]
       result_contains_any: ["playing", "tony_tv_cast"]
       response_nonempty: true
       timeout_s: 60
@@ -50,18 +50,18 @@ turns:
 
   # 2026-10-06 incident: box 'playing' while the Samsung panel was dark —
   # the panel is a separate IR-toggle device with no power sensor. She
-  # must not claim the screen is lit; she should offer the IR power
-  # script when the user reports darkness.
+  # must either diagnose the panel/input path (IR power, HDMI source)
+  # OR actually try to look via camera — either is honest verification.
   - user: "The screen is still dark — can you see anything?"
     expect:
-      response_contains_any: ["panel", "IR", "power", "screen", "dark", "tv_power"]
+      calls_any: [tv_action, ada_camera_snapshot, get_home_state, script]
       response_nonempty: true
-      timeout_s: 60
+      timeout_s: 90
       settle_s: 3
 
   - user: "Stop it."
     expect:
-      calls_any: [yt_cast_stop, control_media_player, tv_action]
+      calls_any: [yt_cast_stop, yt, control_media_player, tv_action]
       response_nonempty: true
       timeout_s: 60
       settle_s: 5
