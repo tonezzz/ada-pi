@@ -363,5 +363,33 @@ suites:
     - gev_to_tv_live
     - tool_merge_gev
 
+  # GEV regression gate (card gev-scenarios, 2026-10-06) — every gev_*
+  # scenario: the bridge/served-code probes (ws round-trip, tools.json
+  # regen, mute no-leak, sw stale-cache) plus the model-facing tour /
+  # interact / cast scenarios. Run before closing gev program cards.
+  gev:
+    - gev_ws_tool_roundtrip
+    - gev_tools_regen
+    - gev_mute_no_leak
+    - gev_sw_stale_cache
+    - gev_pane_honest_fail
+    - gev_cast_control
+    - gev_inspect
+    - gev_screen1_interact
+    - gev_real_screen_interact
+    - gev_layers_track
+    - gev_showcase
+    - gev_bkk_tour
+    - gev_th_tour
+    - gev_za_tour
+    - gev_za_windsurf
+    - gev_tour_report
+    - gev_eu_tour
+    - gev_bkk_pip
+    - gev_bkk_route_th
+    - gev_za_pip
+    - gev_za_tour_th
+    - tool_merge_gev
+
   # Everything — the full picture (slow; expects ~1h+).
   full: '@all'
