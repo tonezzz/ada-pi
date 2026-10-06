@@ -2596,6 +2596,97 @@ class GevMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("za", out["tours"])
 
 
+class GevArgWhitelistTests(unittest.IsolatedAsyncioTestCase):
+    """gev-command-whitelist: known GEV commands get their args checked
+    against the tools.json schema BEFORE the ws relay round-trip — bad
+    shapes return the expected schema locally instead of surfacing as a
+    cryptic client error (the 0bb8e9b wrap-bug class). Commands with no
+    map entry pass through untouched."""
+
+    def setUp(self):
+        # Dead relay: a call that passes validation fails fast with the
+        # "gev command relay" error; a schema rejection never touches
+        # the network at all.
+        self.runner = ToolRunner.__new__(ToolRunner)
+        self._old_url = os.environ.get("GEV_CMD_URL")
+        os.environ["GEV_CMD_URL"] = "http://127.0.0.1:9/"
+
+    def tearDown(self):
+        if self._old_url is None:
+            os.environ.pop("GEV_CMD_URL", None)
+        else:
+            os.environ["GEV_CMD_URL"] = self._old_url
+
+    async def test_unknown_arg_rejected_with_schema(self):
+        out = await self.runner.gev_command(
+            name="fly_to_location",
+            args={"query": "Bangkok", "altitude": 5000})
+        self.assertFalse(out["ok"])
+        self.assertIn("unknown args ['altitude']", out["error"])
+        self.assertIn("fly_to_location", out["error"])
+        self.assertIn("query", out["error"])  # expected schema echoed
+        self.assertIn("locationId", out["error"])
+
+    async def test_missing_required_arg_rejected(self):
+        out = await self.runner.gev_command(
+            name="set_layer_visibility", args={"layerId": "flights"})
+        self.assertFalse(out["ok"])
+        self.assertIn("missing required args ['enabled']", out["error"])
+        self.assertIn("enabled*", out["error"])
+
+    async def test_no_args_at_all_reports_every_required(self):
+        out = await self.runner.gev_command(name="track_entity")
+        self.assertFalse(out["ok"])
+        self.assertIn("missing required args ['query']", out["error"])
+
+    async def test_non_dict_args_rejected(self):
+        out = await self.runner.gev_command(
+            name="fly_to_location", args="Bangkok")
+        self.assertFalse(out["ok"])
+        self.assertIn("args must be an object", out["error"])
+
+    async def test_fly_to_location_needs_a_target(self):
+        out = await self.runner.gev_command(
+            name="fly_to_location", args={"viewMode": "close"})
+        self.assertFalse(out["ok"])
+        self.assertIn("needs one of", out["error"])
+        self.assertIn("latitude+longitude", out["error"])
+
+    async def test_annotate_map_requires_annotations(self):
+        out = await self.runner.gev_command(
+            name="annotate_map", args={"persist": True})
+        self.assertFalse(out["ok"])
+        self.assertIn("missing required args ['annotations']",
+                      out["error"])
+
+    async def test_nested_envelope_unwraps_then_validates(self):
+        # The 0bb8e9b unwrap stays: a wrapped envelope whose inner args
+        # are valid must NOT be schema-rejected — it must reach the
+        # relay (which, blackholed here, returns the relay error).
+        out = await self.runner.gev_command(
+            name="fly_to_location",
+            args={"name": "fly_to_location",
+                  "args": {"query": "Bangkok"}})
+        self.assertFalse(out["ok"])
+        self.assertIn("gev command relay", out["error"])
+
+    async def test_unknown_command_passthrough(self):
+        # No map entry — never rejected locally, goes straight to relay.
+        out = await self.runner.gev_command(
+            name="some_future_command", args={"bogus": 1})
+        self.assertFalse(out["ok"])
+        self.assertIn("gev command relay", out["error"])
+
+    async def test_rejection_surfaces_through_execute(self):
+        runner = ToolRunner(AsyncMock(), instance_id="test")
+        runner._banks = _hermetic_registry()
+        out = await runner.execute(
+            "gev_command",
+            {"name": "annotate_map", "args": {"flub": 1}})
+        self.assertFalse(out["ok"])
+        self.assertIn("rejected before relay", out["error"])
+
+
 class ResultContractTests(unittest.IsolatedAsyncioTestCase):
     """tool-error-contract (2026-10-05): every ToolRunner.execute()
     result is a dict with top-level ok: bool — {ok: True, ...} on

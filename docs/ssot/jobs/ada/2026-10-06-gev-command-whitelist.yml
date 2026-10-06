@@ -1,0 +1,92 @@
+# SSOT Job: gev_command client-side arg whitelist
+# Card: gev-command-whitelist (chaba kanban). Dispatch 20261006-101356.
+
+title: gev_command — per-command known-args map, local schema rejection
+subtitle: Bad arg shapes fail in-process with the expected schema instead
+  of a ws relay round-trip + cryptic client error
+
+planning:
+  goal: |
+    Per the card spec: add a per-command known-args map to gev_command
+    (fly_to_location: {locationId, query, latitude, longitude};
+    annotate_map: {annotations}; the rest enumerated from the GEV tool
+    schema in chaba stacks/tony-dell/gev-gemini/tools.json) — reject
+    unknown or missing keys locally with the expected schema in the
+    error, before the ws relay round-trip. Keep the 0bb8e9b
+    {name,args}-inside-args unwrap. Passthrough stays the default for
+    commands without a map entry.
+  decisions: |
+    - Map mirrors ALL 28 tools in tools.json, not just the card's two
+      examples — cross-checked against gods-eye-view
+      src/voice/gevActions.js dispatch: every schema name is client-
+      handled, zero drift (schema-only: [], client-only: [AbortError]).
+    - fly_to_location uses the full property set (locationId, query,
+      latitude, longitude, viewMode, rangeM, waitForArrival), not the
+      card's abbreviated 4 — rejecting schema-valid args like
+      waitForArrival would break tour sequencing. The card's braces were
+      shorthand; the schema is authoritative.
+    - required[] from the schema is enforced; fly_to_location
+      additionally gets requires_one = locationId | query |
+      latitude+longitude — the exact guaranteed-fail shape the client
+      reports ("needs a locationId, query, or latitude/longitude"), the
+      0bb8e9b wrap-bug symptom class. Verified in gevActions.js:
+      annotateMap returns 'No annotations supplied' when
+      args.annotations is not a non-empty array — required is real.
+    - No type/enum value validation — the card asks for key-level checks
+      ("unknown or missing keys"). Value validation stays the client's
+      job; the whitelist only short-circuits guaranteed refusals.
+    - args=None means "no args" -> missing-required error, not
+      "args must be an object"; non-dict non-None args get the
+      object-shape error. Non-string name (unhashable) can't reach the
+      map (isinstance guard) — passthrough.
+    - Error shape: {ok: False, error, expected} — the error string
+      carries a compact schema ({arg: kind, * = required}) so the model
+      can self-repair in one retry; expected holds the raw map entry.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-06"
+  steps:
+    - id: 1
+      label: "tool_runner whitelist"
+      status: done
+      notes: "_GEV_ARG_SCHEMAS class map (28 commands: args kind-specs,
+        required[], fly_to_location requires_one) + _gev_args_error()
+        validator; gev_command calls it after the unwrap, before
+        building the relay payload."
+    - id: 2
+      label: "provider surface"
+      status: done
+      notes: "gev_command args= description notes the local schema
+        check so a rejection reads as 'fix and retry', not a dead end."
+    - id: 3
+      label: "tests"
+      status: done
+      notes: "GevArgWhitelistTests (9 tests): unknown arg, missing
+        required, no-args, non-dict args, requires_one, annotate_map
+        required, unwrap-then-validate, unmapped passthrough,
+        execute() boundary normalization. Dead-relay URL
+        (127.0.0.1:9) distinguishes schema rejections from relay
+        failures."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py"
+    - ".venv/bin/python -m pytest tests/test_tool_runner.py -k Gev -x -q"
+
+verification:
+  - "GevArgWhitelistTests + GevTourTests + GevMergeAliasTests: 17/17
+    pass; full test_tool_runner.py 191/191."
+  - "synthetic bad-args probe (direct method call, real default
+    GEV_CMD_URL): fly_to_location {query, altitude} -> 0ms
+    'unknown args [altitude]' + schema; annotate_map {flyTo} ->
+    'missing required args [annotations]'; wrapped-envelope
+    {name,args:{bogus}} -> 'unknown args' + 'needs one of'. No relay
+    round-trip on any rejection."
+  - "tools-lint clean (38 declared, 90 aliases, 53 pre-existing
+    warnings)."
+  - "live gev_* scenarios: not run in-worktree (no Ada backend here —
+    services on idc03; scenario runs belong to the idc02 staging
+    checkout per AGENTS.md). Whitelist only rejects calls the client
+    itself would refuse, verified 1:1 against gevActions.js."

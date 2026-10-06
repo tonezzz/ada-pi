@@ -2680,7 +2680,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         "type": "object",
                         "properties": {
                             "name": {"type": "string", "description": "GEV tool name — required for a command; omit for a tour lookup."},
-                            "args": {"type": "object", "description": "Tool arguments (per GEV tools.json)."},
+                            "args": {"type": "object", "description": "Tool arguments (per GEV tools.json). Known commands are validated against that schema before relay — a rejected call returns the expected args in the error; fix and retry."},
                             "screen": {"type": "integer", "description": "Limit to this vcast screen (omit = all GEV pages)."},
                             "pane": {"type": "integer", "description": "Limit to this split-screen pane (0-based; omit = all panes)."},
                             "wait": {"type": "number", "description": "Seconds to wait for client responses (0 = fire-and-forget). Default 3."},

@@ -6235,6 +6235,171 @@ class ToolRunner:
 
     _TOURS_PATH = Path(__file__).resolve().parent / "gev_tours.json"
 
+    # Per-command arg whitelist (gev-command-whitelist card) — mirrors
+    # the GEV tool schema in chaba stacks/tony-dell/gev-gemini/tools.json
+    # (extracted from GEV_REALTIME_TOOLS in gods-eye-view/vite.config.js).
+    # args: {key: kind-spec} is the allowed key set; required keys must be
+    # present; requires_one lists alternative groups where one group must
+    # be fully present. Commands absent from the map pass through — the
+    # whitelist only short-circuits calls the client is guaranteed to
+    # refuse, it never narrows a command's real surface.
+    _GEV_ARG_SCHEMAS: dict[str, dict[str, Any]] = {
+        "fly_to_location": {
+            "args": {"locationId": "enum[austin|sf|nyc|tokyo|london|paris|dubai|dc]", "query": "str", "latitude": "num", "longitude": "num", "viewMode": "enum[close|overview]", "rangeM": "num", "waitForArrival": "bool"},
+            "required": [],
+            "requires_one": [["locationId"], ["query"], ["latitude", "longitude"]],
+        },
+        "select_nearest_aircraft": {
+            "args": {"layerId": "enum[flights|military]", "locationId": "enum[austin|sf|nyc|tokyo|london|paris|dubai|dc]", "locationQuery": "str", "latitude": "num", "longitude": "num"},
+            "required": ["layerId"],
+        },
+        "adjust_camera_zoom": {
+            "args": {"direction": "enum[in|out]", "amount": "enum[little|medium|lot]"},
+            "required": ["direction", "amount"],
+        },
+        "zoom_to_globe": {
+            "args": {},
+            "required": [],
+        },
+        "set_layer_visibility": {
+            "args": {"layerId": "enum[flights|military|earthquakes|satellites|rocket-launches|traffic|cctv|radio|bikeshare|ais-live-vessels|local-datacenters|local-dams|telegeography-submarine-cables|local-firms|local-flood-inundation-high|local-flood-inundation-medium|local-flood-inundation-low]", "enabled": "bool"},
+            "required": ["layerId", "enabled"],
+        },
+        "show_data_layers_menu": {
+            "args": {"layerId": "enum[flights|military|earthquakes|satellites|traffic|cctv|radio|bikeshare|ais-live-vessels|local-datacenters|local-dams|telegeography-submarine-cables|local-firms|local-flood-inundation-high|local-flood-inundation-medium|local-flood-inundation-low]"},
+            "required": [],
+        },
+        "set_panel_open": {
+            "args": {"panelId": "enum[data-panel|location-bar|control-panel|cctv-panel|radio-panel|scene-panel|pp-toggles|global-context-panel]", "open": "bool"},
+            "required": ["panelId", "open"],
+        },
+        "set_context_mode": {
+            "args": {"mode": "enum[off|contacts|flights|space-missions|missions]"},
+            "required": ["mode"],
+        },
+        "control_cockpit": {
+            "args": {"action": "enum[enter|exit|previous|next|prev|status]", "targetLayer": "enum[flights|military|ais-live-vessels|military-installations]", "aircraftClass": "str"},
+            "required": ["action"],
+        },
+        "set_visual_style": {
+            "args": {"style": "enum[normal|retro|surveillance|thermal|anime|noir|snow]"},
+            "required": ["style"],
+        },
+        "get_entity_context": {
+            "args": {"scope": "enum[auto|selected|in_view]", "layerId": "enum[local-datacenters|local-dams|telegeography-submarine-cables|local-firms]", "limit": "num"},
+            "required": [],
+        },
+        "get_current_view_state": {
+            "args": {},
+            "required": [],
+        },
+        "set_hud": {
+            "args": {"visible": "enum[on|off|auto]", "layout": "enum[tactical|operator|minimal]"},
+            "required": [],
+        },
+        "set_detection": {
+            "args": {"enabled": "bool", "mode": "enum[sparse|balanced|dense]", "densityPct": "num", "allocationStrategy": "enum[elastic|weighted]"},
+            "required": [],
+        },
+        "set_map_stack": {
+            "args": {"stack": "enum[photoreal|bing-aerial|bing-labels|esri-imagery|osm]"},
+            "required": ["stack"],
+        },
+        "set_post_processing": {
+            "args": {"bloom": "obj", "sharpen": "obj"},
+            "required": [],
+        },
+        "control_scene": {
+            "args": {"action": "enum[list|play|stop|next|status]", "sceneId": "str"},
+            "required": ["action"],
+        },
+        "control_cctv": {
+            "args": {"action": "enum[enable|disable|select|next|prev|nearest|focus|coverage|viewshed|adjust|projection|autohop]", "cameraQuery": "str", "enabled": "bool"},
+            "required": ["action"],
+        },
+        "control_radio": {
+            "args": {"action": "enum[enable|disable|play|resume|pause|stop|next|previous|volume|select|status]", "volumePct": "num", "category": "enum[all|news|talk|weather|public-safety|aviation-marine|traffic-transit|music]", "locationId": "enum[austin|sf|nyc|tokyo|london|paris|dubai|dc]", "locationQuery": "str", "latitude": "num", "longitude": "num", "country": "str", "stationQuery": "str"},
+            "required": ["action"],
+        },
+        "track_entity": {
+            "args": {"query": "str", "layerId": "str"},
+            "required": ["query"],
+        },
+        "stop_tracking": {
+            "args": {},
+            "required": [],
+        },
+        "frame_overhead": {
+            "args": {"target": "enum[flights|military|satellites|vessels]", "radiusKm": "num"},
+            "required": ["target"],
+        },
+        "annotate_map": {
+            "args": {"annotations": "list", "flyTo": "bool", "persist": "bool"},
+            "required": ["annotations"],
+        },
+        "clear_annotations": {
+            "args": {},
+            "required": [],
+        },
+        "move_camera": {
+            "args": {"motion": "enum[orbit|pan|tilt|rotate|zoom|fly|stop]", "direction": "enum[left|right|up|down|in|out|forward|back]", "speed": "enum[slow|normal|fast]", "mode": "enum[once|continuous]", "amount": "enum[little|medium|lot]"},
+            "required": ["motion"],
+        },
+        "fly_route": {
+            "args": {"label": "str", "speed": "enum[slow|normal|fast]"},
+            "required": [],
+        },
+        "analyst_query": {
+            "args": {"layers": "list", "scope": "obj", "filters": "list", "sortBy": "str", "sortDir": "enum[asc|desc]", "limit": "num", "followUp": "bool"},
+            "required": [],
+        },
+        "next_iss_pass": {
+            "args": {"latitude": "num", "longitude": "num", "minElevationDeg": "num"},
+            "required": [],
+        },
+    }
+
+    def _gev_args_error(self, name: str,
+                        args: Any) -> dict[str, Any] | None:
+        """Local arg check for known GEV commands — rejects unknown or
+        missing keys with the expected schema instead of spending a ws
+        relay round-trip on a call the client is guaranteed to refuse
+        (the {name,args}-in-args wrap bug class, 0bb8e9b). Commands
+        without a map entry pass through untouched."""
+        schema = (self._GEV_ARG_SCHEMAS.get(name)
+                  if isinstance(name, str) else None)
+        if schema is None:
+            return None
+        problems = []
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            problems.append(f"args must be an object, got {type(args).__name__}")
+        else:
+            unknown = sorted(k for k in args if k not in schema["args"])
+            if unknown:
+                problems.append(f"unknown args {unknown}")
+            missing = [k for k in schema["required"] if k not in args]
+            if missing:
+                problems.append(f"missing required args {missing}")
+            groups = schema.get("requires_one") or []
+            if groups and not any(
+                    all(k in args for k in g) for g in groups):
+                problems.append(
+                    "needs one of " + " | ".join(
+                        "+".join(g) for g in groups))
+        if not problems:
+            return None
+        required = schema["required"]
+        expected = ", ".join(
+            f"{k}{'*' if k in required else ''}: {v}"
+            for k, v in schema["args"].items())
+        return {"ok": False,
+                "error": (f"gev_command '{name}' rejected before relay: "
+                          f"{'; '.join(problems)} — expected args "
+                          f"schema: {{{expected}}}"),
+                "expected": schema}
+
     async def gev_command(self, name: str | None = None,
                           args: dict[str, Any] | None = None,
                           screen: int | None = None,
@@ -6262,6 +6427,12 @@ class ToolRunner:
         if (isinstance(args, dict) and "name" in args
                 and isinstance(args.get("args"), dict)):
             args = args["args"]
+        # Arg whitelist (gev-command-whitelist): known commands get their
+        # args checked against the GEV schema locally — a guaranteed-refuse
+        # call returns the expected schema instead of a relay round-trip.
+        err = self._gev_args_error(name, args)
+        if err is not None:
+            return err
         base = os.environ.get(
             "GEV_CMD_URL",
             "https://tony-dell.taila0626a.ts.net/apps/gev-cmd/command")
