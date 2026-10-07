@@ -68,7 +68,7 @@ def _age_s(ts: int) -> str:
     return f"{ago}s ago"
 
 
-async def _mddb_docs(limit: int = 200) -> list[dict[str, Any]]:
+async def _mddb_docs(limit: int = 400) -> list[dict[str, Any]]:
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
             r = await c.post(f"{_MDBB}/search",
@@ -80,17 +80,20 @@ async def _mddb_docs(limit: int = 200) -> list[dict[str, Any]]:
         return []
 
 
-def _device_map(docs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """key <device>/latest -> parsed doc."""
-    out: dict[str, dict[str, Any]] = {}
-    for d in docs:
-        key = str(d.get("key") or "")
-        if key.endswith("/latest"):
-            try:
-                out[key[:-7]] = json.loads(d.get("contentMd") or "{}")
-            except Exception:
-                pass
-    return out
+async def _mddb_get(key: str) -> dict[str, Any] | None:
+    """Point-read <device>/latest. /v1/search ordering is not guaranteed and
+    `latest` keys fall out of the window as hist docs accumulate — never
+    rely on search for the live pointer."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.post(f"{_MDBB}/get",
+                             json={"collection": _COLL, "key": key,
+                                   "lang": "en"})
+            if r.status_code != 200:
+                return None
+            return json.loads(r.json().get("contentMd") or "{}")
+    except Exception:
+        return None
 
 
 def _tailnet() -> dict[str, dict[str, Any]]:
@@ -168,18 +171,20 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
     action = str(args.get("action") or "where").lower()
     docs, nodes = await asyncio.gather(_mddb_docs(),
                                        asyncio.to_thread(_tailnet))
-    latest = _device_map(docs)
+    pool = sorted(set(nodes) |
+                  {str(d.get("key", "")).split("/")[0] for d in docs
+                   if "/" in str(d.get("key", ""))})
 
     if action == "list":
-        names = sorted(set(latest) | set(nodes))
-        rows = [_describe(n, latest.get(n), nodes.get(n)) for n in names]
+        tele = dict(zip(pool, await asyncio.gather(
+            *(_mddb_get(f"{n}/latest") for n in pool))))
+        rows = [_describe(n, tele.get(n), nodes.get(n)) for n in pool]
         return {"ok": True, "devices": rows, "count": len(rows),
                 "hint": "ask 'where is <device>' for detail"}
 
     if action == "history":
         dev_in = str(args.get("device") or "").strip()
-        names = _match(dev_in, sorted(set(latest) | set(nodes))) if dev_in \
-            else sorted(set(latest) | set(nodes))
+        names = _match(dev_in, pool) if dev_in else pool
         lim = int(args.get("limit") or _HIST_DEFAULT)
         hist = [d for d in docs if any(str(d.get("key", "")).startswith(
                 f"{n}/") and not d["key"].endswith("/latest")
@@ -197,13 +202,13 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
         return {"ok": False,
                 "error": "which device? e.g. ada_track_device "
                          "(device='iphone-15') or action='list'"}
-    names = _match(dev_in, sorted(set(latest) | set(nodes)))
+    names = _match(dev_in, pool)
     if not names:
         return {"ok": False,
                 "error": f"no device matching '{dev_in}' — try "
                          "action='list' for the fleet"}
     dev = names[0]
-    out = _describe(dev, latest.get(dev), nodes.get(dev))
+    out = _describe(dev, await _mddb_get(f"{dev}/latest"), nodes.get(dev))
     if len(names) > 1:
         out["also_matched"] = names[1:4]
     out["ok"] = True
