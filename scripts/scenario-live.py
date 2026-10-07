@@ -16,7 +16,8 @@ Turn expectations (all optional, all must pass):
   calls_any: [tool, ...]       at least one of these tools was invoked
   calls: [tool, ...]           all of these tools were invoked
   no_calls: true               no tools were invoked
-  no_calls_except: [tool, ...] no_calls, but these tools don't count (e.g. set_facial_expression)
+  no_calls: [tool, ...]        blacklist — these tools must NOT be invoked
+  no_calls_except: [tool, ...] no_calls:true, but these tools don't count (e.g. set_facial_expression)
   max_calls: N                 fail if more than N tool_call events fired this turn
   result_contains: [s, ...]    each substring appears in some tool_result
   result_contains_any: [s, ...]  at least one substring appears in a result
@@ -414,7 +415,14 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
         alts = _expand_families([want])
         if not any(a in names for a in alts):
             failures.append(f"calls: {want!r} not in {sorted(names)}")
-    if expect.get("no_calls"):
+    nc = expect.get("no_calls")
+    if isinstance(nc, list):
+        # blacklist form: these tools must not appear in the turn
+        banned = set(_expand_families(nc))
+        bad = sorted(names & banned)
+        if bad:
+            failures.append(f"no_calls: banned tools called {bad}")
+    elif nc:
         exempt = set(_expand_families(expect.get("no_calls_except")))
         unexpected = sorted(names - exempt)
         if unexpected:

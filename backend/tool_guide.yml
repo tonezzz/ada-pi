@@ -95,7 +95,10 @@ cast_to_screen: >-
   CASTS: nav=web page, play=video/m3u8/YouTube-Vimeo (auto-embeds),
   image=still, audio, cast=auto-route by content type,
   shortcut='<app name>' opens /apps/<name>/, stop returns to idle,
-  uplink/uplink-stop for the display's camera. NARRATE: action='say'
+  uplink/uplink-stop for the display's camera. Playable Thai dubs and
+  cached clips are listed on the cached-videos-report page — when the
+  user wants 'the dubbed version' or asks what's cached, cms_read it and
+  cast the local /apps/yt-live/*.mp4 URL, not a YouTube watch URL. NARRATE: action='say'
   speaks one short line on the display in the user's language — narrate
   what you did/are doing on that screen; speak-blocked means the display
   needs one tap on 'audio', then retry once. SPLIT: action='layout'

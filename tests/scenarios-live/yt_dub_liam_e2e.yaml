@@ -21,18 +21,21 @@ turns:
     expect:
       # she must actually look — search or transcript peek — not guess
       calls_any: [web_search, ada_ops, yt, yt_transcript, cms_read]
-      response_contains_any: ["gallagher", "liam", "noel"]
+      # bilingual-tolerant: Thai replies name the show, not the surnames
+      response_contains_any: ["gallagher", "liam", "noel", "norton",
+                              "สัมภาษณ์", "แกลลาเกอร์"]
       response_nonempty: true
       timeout_s: 120
       settle_s: 4
 
-  - user: "Play that clip on screen 2 — the Thai dubbed version if we
-           have it."
+  - user: "Play the Liam and Noel clip on screen 2 — the Thai dubbed
+           version we made."
     expect:
       calls_any: [cast_to_screen]
-      result_contains_any: ["screen"]
-      # must land on a numbered display — the pub payload carries the
-      # yt-live mp4 or a youtube url; a TV/yt_cast call here is a fail
+      # the dub is the only LLALMFmabV4 asset under /apps/yt-live/;
+      # casting a youtube watch URL instead of the local mp4 is a fail
+      result_contains_any: ["yt-live", "-dub", ".mp4"]
+      # must land on a numbered display — a TV/yt_cast call here is a fail
       no_calls: [yt_cast, tv_action]
       response_nonempty: true
       timeout_s: 90
