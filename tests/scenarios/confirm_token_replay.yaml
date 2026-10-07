@@ -1,0 +1,92 @@
+name: confirm-token-replay
+instance: tony
+# Flake regression — voice session 2026-10-07-56d2e4d167: the model resends
+# confirmed=true on the identical call instead of replaying the denial's
+# confirm_token, so confirmed-policy bank writes returned NOT EXECUTED
+# repeatedly. Asserts both replay forms work end-to-end — the bound token
+# executes the exact proposed call AND a confirmed=true resend while the
+# token is still pending executes — and that a granted write burns the
+# outstanding token so it can never re-arm the same call.
+
+steps:
+  # 1. Bare write on a confirmed-policy bank is refused; the denial
+  #    carries a bound confirm_token for this exact call.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The garage door code changed to 4471."
+      subject: garage-code
+      attribute: access
+    expect: {error_contains: "requires confirmation"}
+    capture: {token: "confirm_token='(cfm-[0-9a-f]+)'"}
+
+  # 2. Replaying the identical call with the minted token executes.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The garage door code changed to 4471."
+      subject: garage-code
+      attribute: access
+      confirm_token: "{token}"
+    expect: {verb: create}
+
+  # 3. End-to-end: the write actually landed — recall finds it.
+  - tool: ada_memory_search
+    args: {bank: personal, query: "garage door code"}
+    expect:
+      count_min: 1
+      hits_contain: ["4471"]
+
+  # 4. The consumed token cannot arm the call a second time.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The garage door code changed to 4471."
+      subject: garage-code
+      attribute: access
+      confirm_token: "{token}"
+    expect: {error_contains: "unknown or expired confirm_token"}
+
+  # 5. The model's actual resend shape — identical call with
+  #    confirmed=true while a denial's token is still pending —
+  #    executes (the voice path passes it through when
+  #    pending_confirm() matches; the runner gate accepts a truthy
+  #    confirmed either way).
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The pool pump timer is set to four hours."
+      subject: pool-timer
+      attribute: schedule
+    expect: {error_contains: "requires confirmation"}
+    capture: {token2: "confirm_token='(cfm-[0-9a-f]+)'"}
+
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The pool pump timer is set to four hours."
+      subject: pool-timer
+      attribute: schedule
+      confirmed: true
+    expect: {verb: create}
+
+  # 6. The confirmed-grant burned the pending token — replaying it now
+  #    is refused instead of silently re-arming the same write.
+  - tool: ada_remember
+    args:
+      bank: personal
+      text: "The pool pump timer is set to four hours."
+      subject: pool-timer
+      attribute: schedule
+      confirm_token: "{token2}"
+    expect: {error_contains: "unknown or expired confirm_token"}
+
+  # 7. Audit ledger recorded the full trail for both paths.
+  - audit: confirmations
+    expect:
+      count_min: 5
+      output_contains:
+        - '"event": "denied"'
+        - '"event": "proposed"'
+        - '"event": "consumed"'
+        - '"event": "granted"'

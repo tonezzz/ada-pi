@@ -694,6 +694,30 @@ class ToolRunner(
         self._confirm_tokens.pop(token, None)  # single-use
         return None
 
+    def pending_confirm(self, tool: str, args: dict[str, Any]) -> bool:
+        """True when a live confirm token already covers this exact
+        tool+args — an earlier denial proposed this call and the caller
+        is retrying within the token window. `args` must exclude the
+        confirmed/confirm_token envelope keys (the provider filters them
+        before calling). Used to accept the model's actual retry form —
+        confirmed=true on the identical call — which never carries the
+        token spelling (2026-10-07 ada_remember flake: 6/8 writes
+        NOT-EXECUTED because the model resends confirmed=true)."""
+        fp = _confirm_fingerprint(tool, args)
+        now = time.monotonic()
+        for rec in self._confirm_tokens.values():
+            if (rec["tool"] == tool and rec["fp"] == fp
+                    and now - rec["at"] <= CONFIRM_TOKEN_TTL_S):
+                return True
+        return False
+
+    def _burn_pending_confirms(self, tool: str, fingerprint: str) -> None:
+        """Drop live tokens for this exact call — a confirmed=true grant
+        already armed it, so an outstanding token must not replay it."""
+        for tok, rec in list(self._confirm_tokens.items()):
+            if rec["tool"] == tool and rec["fp"] == fingerprint:
+                self._confirm_tokens.pop(tok, None)
+
     def _require_confirmation(
         self,
         name: str,
@@ -711,6 +735,11 @@ class ToolRunner(
                 # Burn the token even though the flag sufficed — a token left
                 # unconsumed here could otherwise be replayed later.
                 self._consume_confirm_token(name, args, token)
+            else:
+                # Same hygiene for the flag-only grant: any outstanding
+                # token minted for this exact call is dead — replaying it
+                # must not re-arm the same write.
+                self._burn_pending_confirms(name, fp)
             self._audit_confirmation("granted", name, fp, "confirmed")
             return
         rejected = ""
@@ -726,9 +755,10 @@ class ToolRunner(
         fresh = self._mint_confirm_token(name, args)
         logger.warning("denied %s %r: confirmation required%s", name, args, rejected)
         raise PermissionError(
-            f"{instruction}{rejected} A bound alternative: replay the same "
-            f"call with confirm_token='{fresh}' "
-            f"(single use, expires in {int(CONFIRM_TOKEN_TTL_S)}s)."
+            f"{instruction}{rejected} TO EXECUTE: replay the SAME call "
+            f"adding the argument confirm_token='{fresh}' (single use, "
+            f"expires in {int(CONFIRM_TOKEN_TTL_S)}s) — or resend the "
+            "identical call with confirmed=true."
         )
 
     async def _check_control_allowed(

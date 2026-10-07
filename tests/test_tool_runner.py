@@ -1616,6 +1616,52 @@ class ConfirmationGateTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(result.get("ok"))  # upstream may add advisory fields (capture_reminder)
 
+    async def test_pending_confirm_tracks_denied_call(self):
+        # 2026-10-07 flake: the provider consults pending_confirm to pass
+        # the model's confirmed=true resend through — it must match only
+        # the exact denied call. Tokens are minted under the RESOLVED
+        # name/args (cms_delete_page -> cms_edit action='delete'), which
+        # is also what the provider queries after its own alias pass.
+        canon = {"action": "delete", "slug": "pool-notes"}
+        self.assertFalse(self.runner.pending_confirm("cms_edit", canon))
+        await self._deny_for_token()
+        self.assertTrue(self.runner.pending_confirm("cms_edit", canon))
+        self.assertFalse(self.runner.pending_confirm(
+            "cms_edit", {"action": "delete", "slug": "other-page"}))
+        self.assertFalse(self.runner.pending_confirm(
+            "control_cover",
+            {"entity_id": "cover.gate", "action": "open"}))
+
+    async def test_pending_confirm_expires_with_token(self):
+        await self._deny_for_token()
+        with patch("backend.tool_runner.CONFIRM_TOKEN_TTL_S", -1):
+            self.assertFalse(self.runner.pending_confirm(
+                "cms_edit", {"action": "delete", "slug": "pool-notes"}))
+
+    async def test_confirmed_grant_burns_pending_token(self):
+        # The flag-grant path must retire the outstanding token for the
+        # same call — otherwise a minted token could re-arm the write.
+        token = await self._deny_for_token()
+        result = await self.runner.execute(
+            "cms_delete_page", {"slug": "pool-notes", "confirmed": True}
+        )
+        self.assertEqual(result["status"], "deleted")
+        self.assertFalse(self.runner.pending_confirm(
+            "cms_edit", {"action": "delete", "slug": "pool-notes"}))
+        with self.assertRaises(PermissionError) as ctx:
+            await self.runner.execute(
+                "cms_delete_page",
+                {"slug": "pool-notes", "confirm_token": token},
+            )
+        self.assertIn("unknown or expired", str(ctx.exception))
+
+    async def test_denial_text_instructs_exact_replay_arg(self):
+        with self.assertRaises(PermissionError) as ctx:
+            await self.runner.execute("cms_delete_page", {"slug": "pool-notes"})
+        text = str(ctx.exception)
+        self.assertIn("confirm_token='cfm-", text)
+        self.assertIn("replay the SAME call", text)
+
 
 class DevinJobReportTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
