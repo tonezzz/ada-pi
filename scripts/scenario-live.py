@@ -465,6 +465,26 @@ def check_turn(events: list[dict], expect: dict) -> list[str]:
     for bad in expect.get("events_not_contain") or []:
         if any(all(e.get(k) == v for k, v in bad.items()) for e in events):
             failures.append(f"events_not_contain: matched {bad}")
+    # token shape (card ada-context-budget): 'usage' events carry per-turn
+    # {"in": N, "out": N, "total_in": N}. input_tokens_below asserts the
+    # context ceiling; input_tokens_above asserts traffic actually flowed
+    # (a below-assertion on a silent turn is vacuous otherwise).
+    usage_in = [e.get("in") for e in events
+                if e.get("type") == "usage" and isinstance(e.get("in"), int)]
+    cap = expect.get("input_tokens_below")
+    if cap is not None:
+        if not usage_in:
+            failures.append("input_tokens_below: no usage events seen")
+        elif max(usage_in) > int(cap):
+            failures.append(
+                f"input_tokens_below: peak {max(usage_in)} > {int(cap)}")
+    floor = expect.get("input_tokens_above")
+    if floor is not None:
+        if not usage_in:
+            failures.append("input_tokens_above: no usage events seen")
+        elif max(usage_in) <= int(floor):
+            failures.append(
+                f"input_tokens_above: peak {max(usage_in)} <= {int(floor)}")
     # claim-vs-action drift: transcript refuses ("can't / ไม่สามารถ /
     # unable") yet none of the listed tools were even attempted — the
     # 2026-09-29 ZA tour skipped fly_route this way.

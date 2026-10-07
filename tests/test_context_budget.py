@@ -11,7 +11,9 @@ a tool-call leak, and (b) rotate the live session once per-turn input
 tokens exceed the budget, clearing the resumption handle so the new
 session starts with a clean window.
 """
+import importlib.util
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -20,6 +22,20 @@ from backend.realtime_provider import (
     _GENERIC_TOOL_LEAK_RE,
     _ROLE_LEAK_RE,
 )
+
+_SCENARIO_LIVE = (Path(__file__).resolve().parents[1]
+                 / "scripts" / "scenario-live.py")
+
+
+def _load_scenario_live():
+    spec = importlib.util.spec_from_file_location(
+        "scenario_live_test", _SCENARIO_LIVE)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+scenario_live = _load_scenario_live()
 
 
 def _provider() -> GeminiLiveProvider:
@@ -109,6 +125,56 @@ class ContextBudgetTests(unittest.TestCase):
         with patch.dict(os.environ, {"ADA_CONTEXT_TURN_BUDGET": "12345"}):
             p = _provider()
             self.assertEqual(p._context_turn_budget, 12345)
+
+
+class UsageTurnSnapshotTests(unittest.TestCase):
+    def test_record_usage_populates_last_turn_snapshot(self):
+        # The 'usage' ProviderEvent is yielded from this snapshot —
+        # scenario-live's input_tokens_below reads these fields.
+        p = _provider()
+        p._record_usage(_usage(1234))
+        p._record_usage(_usage(56))
+        self.assertEqual(
+            p._last_usage_turn,
+            {"in": 56, "out": 10, "total_in": 1290})
+
+
+class CheckTurnTokenAssertionsTests(unittest.TestCase):
+    """scenario-live check_turn token-shape assertions — the
+    context_growth.yaml scenario drives on these."""
+
+    def _events(self, *ins: int) -> list[dict]:
+        return [{"type": "usage", "in": n, "out": 10, "total_in": n}
+                for n in ins]
+
+    def test_below_ceiling_passes_and_fails(self):
+        ok = scenario_live.check_turn(
+            self._events(5_000, 9_000), {"input_tokens_below": 40000})
+        self.assertEqual(ok, [])
+        bad = scenario_live.check_turn(
+            self._events(5_000, 78_000), {"input_tokens_below": 40000})
+        self.assertEqual(len(bad), 1)
+        self.assertIn("peak 78000", bad[0])
+
+    def test_above_floor_passes_and_fails(self):
+        ok = scenario_live.check_turn(
+            self._events(5_000), {"input_tokens_above": 2000})
+        self.assertEqual(ok, [])
+        bad = scenario_live.check_turn(
+            self._events(500), {"input_tokens_above": 2000})
+        self.assertEqual(len(bad), 1)
+
+    def test_no_usage_events_is_a_failure_not_a_pass(self):
+        # A ceiling assertion on a turn that saw no usage data must
+        # fail loudly — otherwise a wire break reports green.
+        bad = scenario_live.check_turn(
+            [{"type": "response_completed"}],
+            {"input_tokens_below": 40000})
+        self.assertEqual(len(bad), 1)
+        self.assertIn("no usage events", bad[0])
+        bad = scenario_live.check_turn(
+            [], {"input_tokens_above": 2000})
+        self.assertEqual(len(bad), 1)
 
 
 if __name__ == "__main__":

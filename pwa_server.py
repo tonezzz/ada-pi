@@ -1085,6 +1085,9 @@ async def voice_socket(ws: WebSocket) -> None:
                     "expression",
                     "tool_call",
                     "tool_result",
+                    # per-turn token counts (card ada-context-budget) —
+                    # scenario-live asserts input_tokens_below on these.
+                    "usage",
                 ):
                     if event.type == "user_transcript":
                         # Transcribed speech is a user turn even without

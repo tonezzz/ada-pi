@@ -1,0 +1,105 @@
+# Context-growth regression (card ada-context-budget) — replays the
+# shape of session d6cbf6e6e7 (2026-10-07), where 12 minutes of mixed
+# talk+tools accumulated ~78k input tokens/turn and the model degraded
+# into emitting raw role tags ("—user\n…model") that fabricated a user
+# reply inside Ada's own turn.
+#
+# Two assertions:
+#   ceiling — every turn's input tokens stay under input_tokens_below.
+#     With sliding-window compression triggered at 24k (target 8k) and
+#     session rotation at 45k, a healthy session never approaches the
+#     ~78k failure point.
+#   floor   — a fact planted at the start must survive compression:
+#     the final turn asks it back. Trimming that drops early turns
+#     passes a naive token check but fails this one.
+#
+# The plant turn explicitly says not to save — recall must come from
+# the live context window, not ada_memory_search. no_calls pins that.
+#
+# tier: memory — manual runs only; burns live tokens, so it stays out
+# of the hourly smoke tier.
+name: context-growth
+tier: memory
+turns:
+  # plant a retention fact first — compression must keep or re-derive it
+  - user: "Quick fact just for this conversation, no need to save it anywhere: my appointment code is 4471. Just say OK."
+    expect:
+      response_nonempty: true
+      no_calls: [ada_remember]
+      timeout_s: 60
+      settle_s: 4
+  # ordinary turns to accumulate context; each asserts the ceiling —
+  # if any turn's input exceeds the cap the scenario fails.
+  - user: "What is the weather like today?"
+    expect:
+      response_nonempty: true
+      input_tokens_below: 40000
+      input_tokens_above: 2000
+      timeout_s: 90
+      settle_s: 3
+  - user: "Tell me one interesting fact about elephants."
+    expect:
+      response_nonempty: true
+      input_tokens_below: 40000
+      input_tokens_above: 2000
+      timeout_s: 90
+      settle_s: 3
+  - user: "And one about octopuses."
+    expect:
+      response_nonempty: true
+      input_tokens_below: 40000
+      input_tokens_above: 2000
+      timeout_s: 90
+      settle_s: 3
+  - user: "What is 37 times 14?"
+    expect:
+      response_nonempty: true
+      input_tokens_below: 40000
+      input_tokens_above: 2000
+      timeout_s: 90
+      settle_s: 3
+  - user: "Name three colors that start with the letter B."
+    expect:
+      response_nonempty: true
+      input_tokens_below: 40000
+      input_tokens_above: 2000
+      timeout_s: 90
+      settle_s: 3
+  - user: "If a train travels 60 km in 45 minutes, what is its average speed?"
+    expect:
+      response_nonempty: true
+      input_tokens_below: 40000
+      input_tokens_above: 2000
+      timeout_s: 90
+      settle_s: 3
+  - user: "Give me a short two-line poem about rain."
+    expect:
+      response_nonempty: true
+      input_tokens_below: 40000
+      input_tokens_above: 2000
+      timeout_s: 90
+      settle_s: 3
+  - user: "What is the capital of Portugal?"
+    expect:
+      response_nonempty: true
+      input_tokens_below: 40000
+      input_tokens_above: 2000
+      timeout_s: 90
+      settle_s: 3
+  - user: "Summarize what we've talked about so far in one sentence."
+    expect:
+      response_nonempty: true
+      input_tokens_below: 40000
+      input_tokens_above: 2000
+      timeout_s: 90
+      settle_s: 4
+  # recall floor — the planted code must come back after the window has
+  # compressed. If trimming ate it, this is the failure that matters.
+  - user: "What was my appointment code I told you earlier?"
+    expect:
+      response_nonempty: true
+      response_contains_any: ["4471"]
+      input_tokens_below: 40000
+      input_tokens_above: 2000
+      timeout_s: 90
+      settle_s: 4

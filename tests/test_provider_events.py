@@ -94,6 +94,24 @@ class DocCardToolSession(ExpressionToolSession):
         self.provider._closed=True
 
 
+class UsageMetadataSession:
+    """Yields one message carrying usage_metadata — the provider must
+    forward it as a 'usage' event so scenario-live can assert the
+    context ceiling (card ada-context-budget)."""
+
+    def __init__(self, provider: GeminiLiveProvider) -> None:
+        self.provider = provider
+
+    async def receive(self):
+        yield types.LiveServerMessage(
+            usage_metadata=types.UsageMetadata(
+                prompt_token_count=1234,
+                response_token_count=56,
+            )
+        )
+        self.provider._closed = True
+
+
 class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
     def test_live_config_guards_long_full_duplex_sessions(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "backend/realtime_provider.py").read_text()
@@ -106,6 +124,15 @@ class ProviderEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("SessionResumptionConfig", source)
         self.assertIn("session_resumption_update", source)
         self.assertIn("message.go_away", source)
+
+    async def test_usage_metadata_emits_usage_event(self) -> None:
+        provider = GeminiLiveProvider()
+        provider._session = UsageMetadataSession(provider)
+        events = [event async for event in provider.events()]
+        usage = [e for e in events if e.type == "usage"]
+        self.assertEqual(len(usage), 1)
+        self.assertEqual(
+            usage[0].data, {"in": 1234, "out": 56, "total_in": 1234})
 
     async def test_interruption_discards_coalesced_stale_audio(self) -> None:
         provider = GeminiLiveProvider()

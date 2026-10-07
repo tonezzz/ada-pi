@@ -1138,6 +1138,7 @@ class GeminiLiveProvider(RealtimeProvider):
         self._context_turn_budget = int(
             os.environ.get("ADA_CONTEXT_TURN_BUDGET", "45000"))
         self._rotate_scheduled = False
+        self._last_usage_turn: dict[str, int] = {}
         # Markup-artifact scrubber for the output transcript (&nbsp;, '][',
         # markdown links — transcript 519088cb6d spoke them aloud). Deltas
         # can split a token mid-way ("&nbs" | "p;"), so the possible
@@ -2472,6 +2473,12 @@ class GeminiLiveProvider(RealtimeProvider):
             cached_tokens=int(getattr(usage, "cached_content_token_count", 0) or 0),
             tool_use_tokens=int(getattr(usage, "tool_use_prompt_token_count", 0) or 0),
         )
+        # Last-turn snapshot for the 'usage' ProviderEvent — scenarios
+        # assert token shape (context ceiling) without log scraping.
+        self._last_usage_turn = {
+            "in": in_tokens, "out": out_tokens,
+            "total_in": self.usage_input_tokens,
+        }
         logger.info(
             "session=%s usage turn in=%d out=%d | total in=%d out=%d in_by_modality=%s out_by_modality=%s",
             self.session_id, in_tokens, out_tokens,
@@ -2555,8 +2562,16 @@ class GeminiLiveProvider(RealtimeProvider):
             # Native audio consumes context quickly. Sliding-window compression
             # prevents an extended voice conversation from exhausting the
             # session context while retaining recent conversational history.
+            # trigger/target explicit (card ada-context-budget): unset defaults
+            # let session d6cbf6e6e7 ride to ~78k input tokens/turn before any
+            # compression — well past the point where output degenerates.
             "context_window_compression": types.ContextWindowCompressionConfig(
-                sliding_window=types.SlidingWindow(),
+                sliding_window=types.SlidingWindow(
+                    target_tokens=int(os.environ.get(
+                        "ADA_CONTEXT_TARGET_TOKENS", "8000")),
+                ),
+                trigger_tokens=int(os.environ.get(
+                    "ADA_CONTEXT_TRIGGER_TOKENS", "24000")),
             ),
             "session_resumption": types.SessionResumptionConfig(
                 handle=resumption_handle,
@@ -4498,6 +4513,8 @@ class GeminiLiveProvider(RealtimeProvider):
                 usage = message.usage_metadata
                 if usage:
                     self._record_usage(usage)
+                    yield ProviderEvent(
+                        "usage", dict(self._last_usage_turn))
                 update = message.session_resumption_update
                 if update and update.resumable and update.new_handle:
                     self.resumption_handle = update.new_handle
