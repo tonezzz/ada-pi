@@ -5,10 +5,11 @@ name: yt-dub-liam-e2e
 #      (target asset: LLALMFmabV4 — Liam & Noel interview, uploaded
 #      2026-09-11, 2:21, en captions; Thai dub pre-built at
 #      /apps/yt-live/LLALMFmabV4-dub.mp4 by scripts/ops/yt-vtt-dub.py)
-#   2. REPORT: cached-videos-report (CMS) reflects real cache state;
-#      Ada quotes it when asked what's cached
-#   3. PLAY: "play it on screen 2" -> cast_to_screen(action='play',
-#      screen=2, url=<dub mp4>) — numbered vcast screen, NOT the TV
+#   2. REPORT: "what videos are cached" -> cms_read cached-videos-report
+#      and quote real items (discovers the dub URL she'll need next)
+#   3. PLAY: "play the Liam/Noel clip, Thai dubbed version" ->
+#      cast_to_screen(action='play', screen=2, url=LLALMFmabV4-dub.mp4)
+#      — numbered vcast screen, NOT the TV; fabricated URLs are a fail
 #   4. STOP cleans up
 #
 # tier: full — actuates a real vcast display.
@@ -29,21 +30,11 @@ turns:
       timeout_s: 120
       settle_s: 4
 
-  - user: "Play the Liam and Noel clip on screen 2 — the Thai dubbed
-           version we made."
-    expect:
-      calls_any: [cast_to_screen]
-      # the dub is the only LLALMFmabV4 asset under /apps/yt-live/;
-      # casting a youtube watch URL instead of the local mp4 is a fail
-      result_contains_any: ["yt-live", "-dub", ".mp4"]
-      # must land on a numbered display — a TV/yt_cast call here is a fail
-      no_calls: [yt_cast, tv_action]
-      response_nonempty: true
-      timeout_s: 90
-      settle_s: 8
-
   - user: "What videos do we have cached right now?"
     expect:
+      # asked BEFORE the play turn so she must actually read the report —
+      # answering from turn-context after cms_read-ing is also fine, but
+      # with this ordering a fresh read is expected
       calls_any: [cms_read, cms_get_page]
       # bilingual-tolerant: "cached videos report"/เสียงพากย์/แคช all count
       response_contains_any: ["rick astley", "cached-videos",
@@ -52,6 +43,21 @@ turns:
       response_nonempty: true
       timeout_s: 60
       settle_s: 4
+
+  - user: "Play the Liam and Noel clip on screen 2 — the Thai dubbed
+           version we made."
+    expect:
+      calls_any: [cast_to_screen]
+      # the dub is the only LLALMFmabV4 asset under /apps/yt-live/; the
+      # report maps Liam+Noel -> LLALMFmabV4-dub.mp4 — any other URL
+      # (youtube watch, invented filename like liam_noel_thai_dub.mp4)
+      # is a fail
+      call_args_contain: {cast_to_screen: ["LLALMFmabV4-dub.mp4"]}
+      # must land on a numbered display — a TV/yt_cast call here is a fail
+      no_calls: [yt_cast, tv_action]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
 
   - user: "Stop it."
     expect:

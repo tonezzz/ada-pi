@@ -2713,10 +2713,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "yt",
                     "description": (
-                        "YouTube/media on the living-room TV — action='cast' plays a video "
-                        "(direct .mp4/.m3u8 URL or a search phrase), 'status'|'stop'|"
-                        "'transcript'. Dark screen -> tv_action. Not for fact lookups; a "
-                        "numbered vcast screen means cast_to_screen. Absorbs yt_cast*."
+                        "YouTube/media on the living-room TV — action='cast' PLAYS a video "
+                        "(.mp4/.m3u8 URL or search phrase) only on an explicit play request — "
+                        "'find a clip' is a lookup (web_search), never a cast. 'status'|'stop'|"
+                        "'transcript'. Dark screen -> tv_action; vcast screen -> cast_to_screen."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
