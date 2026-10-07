@@ -1,0 +1,71 @@
+name: speaker-profiles-merge
+# Card speaker-profile-tool (2026-10-07): 'kk re-enroll under wrong-name
+# profile' — Ada must identify the existing print, offer the merge, and
+# resolve it with the speaker_profiles tool instead of looping on the
+# enroll refusal.
+#
+# Flow: enroll the synthetic voice as 'merge-wrong-name' -> replay the
+# voice and ask to enroll under a second name -> the contamination guard
+# refuses naming merge-wrong-name -> Ada calls speaker_profiles
+# action='match' to confirm which profile the buffer scores as, says
+# "you're enrolled as merge-wrong-name — merge?" -> on the user's yes she
+# resolves via speaker_profiles (alias/rename or remove+re-enroll).
+#
+# AUDIO tier — real SpeakerSession buffers the PCM. Run on a live host:
+#   python3 scripts/scenario-live.py \
+#     tests/scenarios-live/speaker_profiles_merge.yaml \
+#     --url ws://127.0.0.1:8003/ws --api-key "$ADA_API_KEY" -v
+
+cleanup:
+  speaker_remove:
+    - "merge-wrong-name"
+    - "merge-right-name"
+    - "Merge Wrong Name"
+    - "Merge Right Name"
+
+turns:
+  # --- enroll the synthetic voice under the WRONG name -------------------
+  - audio: ../fixtures/voice-other.pcm
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+
+  - user: "Please enroll my voice — call me merge-wrong-name."
+    expect:
+      timeout_s: 90
+      settle_s: 8
+      calls: [ada_enroll_speaker]
+      result_contains: ["enrolled"]
+      result_not_contains: ["matches enrolled speaker"]
+
+  # --- same voice back in the buffer, then ask under a second name -------
+  - audio: ../fixtures/voice-other.pcm
+    expect:
+      timeout_s: 60
+      settle_s: 6
+
+  - user: "Actually, enroll my voice again but as merge-right-name this time."
+    expect:
+      timeout_s: 90
+      settle_s: 10
+      # The guard refuses AND names the matching profile — and Ada
+      # reaches for speaker_profiles (match/alias) instead of looping
+      # (the audited failure burned 14 enroll retries on this turn).
+      result_contains_any:
+        - "merge-wrong-name"
+        - "matched_profile"
+      calls_any: [speaker_profiles, ada_enroll_speaker]
+      max_calls: 4
+
+  # The offer was made; the user accepts the merge.
+  - user: "Yes — merge it into merge-right-name."
+    expect:
+      timeout_s: 90
+      settle_s: 10
+      calls_any: [speaker_profiles]
+      max_calls: 4
+      response_nonempty: true
+      response_not_contains:
+        - "I couldn't"
+        - "failed"

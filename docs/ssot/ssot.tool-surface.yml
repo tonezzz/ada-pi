@@ -19,7 +19,7 @@
 #                   NOT join this list (lint fails) — write a scenario for
 #                   the tool or move an existing entry out when it gains one.
 
-count_cap: 106          # 103 builtin + 3 tools.d at census 2026-10-04
+count_cap: 107          # 103 builtin + 4 tools.d (speaker_profiles, card speaker-profile-tool 2026-10-07)
 target_count: 38        # spec: docs/assessments/tool-consolidation-spec-2026-10-04.md
 # Description-size contract (card ada-tools-desc-slim, 2026-10-05): the
 # shipped schema description is a <=2-line routing blurb — operational

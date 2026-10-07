@@ -27,3 +27,13 @@ tools:
     policy: owner_only
     secondary_allowed: false
     timeout_s: 10
+  # speaker-profile-tool (2026-10-07): voiceprint admin — list/match are
+  # reads reachable on secondary turns (the wrong-name merge flow needs
+  # them while a non-owner voice is identified); remove/re-enroll/alias
+  # are gated in-module to full-access identities or the profile's own
+  # bound person (self-service).
+  speaker_profiles:
+    module: speaker_profiles
+    policy: read
+    secondary_allowed: true
+    timeout_s: 60

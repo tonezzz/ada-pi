@@ -1,0 +1,115 @@
+# SSOT Job: speaker_profiles tools.d tool — voiceprint admin
+# Card: speaker-profile-tool (kanban). Dispatch 20261007-160135.
+
+title: speaker_profiles tool — list|match|remove|re-enroll|alias
+subtitle: kills the enroll dead-end — a wrong-named existing print now surfaces as a merge offer, not a refusal loop
+
+planning:
+  goal: |
+    Add a drop-in tool (backend/tools.d/speaker_profiles.py) so Ada can
+    inspect and safely manage voiceprints mid-conversation. Driver:
+    audit session db02b97016 — KK re-enrolled under her own voice and
+    looped 14 calls / ~6 min; she was already enrolled as
+    'พรศิริ สุนทรประสิทธิ์' (52% match) but no tool could name that.
+    The same audit showed ada_forget bank=people deleting the people/kk
+    MEMORY doc while the voiceprint survived — model conflates memory
+    person-docs with speaker profiles.
+  context: |
+    Voiceprint store: backend/speaker_id.py, JSON at
+    ~/.local/share/ada-pi/speaker_profiles.json (ADA_SPEAKER_PROFILES
+    override). SpeakerSession buffers PCM (_recent ring + _pending_voice
+    accrual); enroll() already refused foreign-voice contamination but
+    with a flat ValueError string and no next step. tools.d contract:
+    module + manifest entry + DECLARATION + async run(runner, **args).
+    Manifest policy is flat ('read'), so per-action mutation gating
+    lives in-module (_may_mutate).
+  scope: |
+    In scope:
+      - speaker_id.py: EnrollConflict(matched, score), resolve_name
+        (slug/display_name/ha_person/aliases -> canonical key), rename
+        (old key kept as working alias), score_audio (ranked scores),
+        aliases persisted in metadata JSON, enroll resolves alias ->
+        canonical before the contamination guard, remove uses
+        resolve_name, SpeakerSession._buffer_pcm refactor +
+        match_buffer (best candidate below threshold still named)
+      - tools.d/speaker_profiles.py + manifest entry
+      - tool_runner/memory.py: ada_enroll_speaker refusal now returns
+        matched_profile + match_score + suggest; fixed missing
+        'return out' on the success path (pre-existing bug)
+      - memory_ops.forget: refuses speaker-profile-shaped keys
+        (speaker*/voiceprint*/voice* prefixes) up front; when a key has
+        no memory doc but resolves to an enrolled profile, redirects to
+        speaker_profiles remove instead of 'no such document'
+      - common.py: CONFIRM_TOKEN_TTL_S default 120 -> 300 (handoff
+        flows where session owner differs from speaker)
+      - tool_guide.yml, ssot.tool-surface.yml (cap 106 -> 107),
+        tests, live scenario
+    Out of scope:
+      - person-level merge of two profiles' PRINTS (alias/rename covers
+        the wrong-name case; a true embedding merge is separate work)
+      - http admin API for the same ops (speaker_profiles is the tool
+        surface; remove() is the shared store op)
+  success_criteria:
+    - 'match names the best enrolled profile + score even below threshold'
+    - 'alias binds person.kk <-> profile so both resolve to one identity'
+    - 'enroll refusal result names matched_profile explicitly'
+    - 'ada_forget refuses speaker-profile keys / redirects profile-name
+      keys to speaker_profiles'
+    - 'mutations denied for non-owners on foreign profiles and on
+      secondary-identified turns'
+    - 'live scenario resolves the wrong-name merge in <=3 turns'
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-07"
+  steps:
+    - id: 1
+      label: "speaker_id.py store extensions"
+      status: done
+      notes: "EnrollConflict subclasses ValueError (existing catches
+        still work). resolve_name: enrolled key -> slug -> ha_person ->
+        display_name -> aliases; None when ambiguous. rename moves
+        _enrolled/_prints/_metadata and seeds aliases with the old key.
+        enroll() resolves name to canonical first so enrolling under an
+        alias merges instead of self-conflicting."
+    - id: 2
+      label: "speaker_profiles tool + manifest"
+      status: done
+      notes: "Manifest policy 'read' + secondary_allowed (match must run
+        on a secondary speaker's turn — that IS the wrong-name flow).
+        Mutations gated in-module: full-access identity or the profile's
+        own bound person.*; secondary turns never mutate. re-enroll
+        resolves name to canonical and force-replaces only."
+    - id: 3
+      label: "refusal surfacing + forget redirect + TTL"
+      status: done
+      notes: "ada_enroll_speaker returns {error, matched_profile,
+        match_score, suggest} on EnrollConflict. ada_forget rejects
+        speaker*/voiceprint* keys and redirects enrolled-name misses.
+        CONFIRM_TOKEN_TTL_S default 120 -> 300 (env override kept)."
+    - id: 4
+      label: "tests + scenario + guidance"
+      status: done
+      notes: "58 tests pass (test_speaker_profiles_tool: 28 — tool
+        loading, all 5 actions, mutation gates, secondary ban, alias
+        roundtrip, forget redirect; genai stub for dep-less hosts).
+        Scenario speaker_profiles_merge.yaml covers the card flow with
+        max_calls:4 anti-loop assertion. tool_guide entry teaches the
+        match-then-merge playbook."
+
+invoke:
+  commands:
+    - "python3 -m pytest tests/test_speaker_profiles_tool.py tests/test_speaker_id.py -q"
+    - "python3 scripts/tool-lint.py"
+    - "python3 scripts/scenario-live.py tests/scenarios-live/speaker_profiles_merge.yaml --url ws://<host>:8003/ws --api-key $ADA_API_KEY -v"
+
+verification:
+  - "58 passed — tests/test_speaker_profiles_tool.py + tests/test_speaker_id.py"
+  - "tool-lint: speaker_profiles declared+scenario-covered; the 2 FAILs
+     (ada_track_device descsize, ada_device_acl coverage) are pre-existing
+     on base, verified via stash"
+  - "live scenario pending a host run — worktree box has no backend
+     service/mic path; runner command above"
+  - "manual: enroll voice as X, replay, 'enroll me as Y' -> refusal names
+     X -> speaker_profiles match -> alias person=/rename_to= resolves"
