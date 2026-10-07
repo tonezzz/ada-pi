@@ -1403,7 +1403,14 @@ async def run_turn(
     events: list[dict] = []
     t0 = time.monotonic()
     if text is not None:
-        await ws.send(json.dumps({"type": "text", "text": text}))
+        try:
+            await ws.send(json.dumps({"type": "text", "text": text}))
+        except Exception as exc:
+            events.append({
+                "type": "connection_closed",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            return events, [f"send failed (connection closed): {exc}"]
     if audio is not None:
         # ~50 ms frames — same cadence a real mic produces.
         frame = 1600
@@ -1432,6 +1439,15 @@ async def run_turn(
             raw = await asyncio.wait_for(ws.recv(), timeout=max(wait, 0.1))
         except asyncio.TimeoutError:
             break
+        except Exception as exc:
+            # Server closed mid-turn (forced reconnect, go_away, handler
+            # end) — score it as a failure, don't crash the scenario run.
+            events.append({
+                "type": "connection_closed",
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+            failures = [f"connection closed mid-turn: {exc}"]
+            return events, failures
         if isinstance(raw, bytes):
             continue  # audio
         try:
@@ -1843,6 +1859,9 @@ async def main() -> int:
                 for f in failures:
                     print(f"    - {f}")
                 print(f"    transcript: {transcript[:300]!r}")
+                if any(e.get("type") == "connection_closed" for e in events):
+                    print("  aborting scenario — websocket closed")
+                    break
             else:
                 print(f"  ok ({n_tools} tool calls) ada: {transcript[:140]!r}")
     except _InfraAbort as exc:
