@@ -2568,13 +2568,18 @@ class GeminiLiveProvider(RealtimeProvider):
             # trigger/target explicit (card ada-context-budget): unset defaults
             # let session d6cbf6e6e7 ride to ~78k input tokens/turn before any
             # compression — well past the point where output degenerates.
+            # Keep the pair GENTLE: the static baseline (instructions + tool
+            # decls) is ~19k tokens, so a trigger near it compresses almost
+            # every turn — observed 2026-10-07: trigger=24k/target=8k left the
+            # model unmoored mid-tool-sequence and it degenerated into
+            # tool-call storms. 32k/24k only fires once real history builds.
             "context_window_compression": types.ContextWindowCompressionConfig(
                 sliding_window=types.SlidingWindow(
                     target_tokens=int(os.environ.get(
-                        "ADA_CONTEXT_TARGET_TOKENS", "8000")),
+                        "ADA_CONTEXT_TARGET_TOKENS", "24000")),
                 ),
                 trigger_tokens=int(os.environ.get(
-                    "ADA_CONTEXT_TRIGGER_TOKENS", "24000")),
+                    "ADA_CONTEXT_TRIGGER_TOKENS", "32000")),
             ),
             "session_resumption": types.SessionResumptionConfig(
                 handle=resumption_handle,
