@@ -214,6 +214,92 @@ class ReadTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("couldn't reach", out["error"])
 
 
+class ReportLookupTest(unittest.IsolatedAsyncioTestCase):
+    """The opinion-loop lookup: action=read report=<slug> finds the
+    card whose report: field links a CMS page. Open cards outrank
+    done; among open ties the most recently updated wins."""
+
+    PAYLOAD = {
+        "cards": [
+            {"id": "open-new", "title": "newer open", "column": "doing",
+             "report": "dev-kanban", "updated": "2026-10-05 09:00"},
+            {"id": "open-old", "title": "older open", "column": "backlog",
+             "report": "dev-kanban", "updated": "2026-10-01 09:00"},
+            {"id": "done-card", "title": "finished", "column": "done",
+             "report": "dev-kanban", "updated": "2026-10-06 09:00"},
+            {"id": "done-only", "title": "done only", "column": "done",
+             "report": "flood-report", "updated": "2026-10-02 09:00"},
+            {"id": "plain", "title": "no report field",
+             "column": "doing", "updated": "2026-10-06 10:00"},
+        ],
+    }
+
+    def test_match_prefers_open_and_picks_most_recent(self):
+        m = board._match_report_card(self.PAYLOAD["cards"], "dev-kanban")
+        self.assertEqual([c["id"] for c in m["open"]],
+                         ["open-new", "open-old"])
+        self.assertEqual([c["id"] for c in m["done"]], ["done-card"])
+
+    def test_match_normalizes_slug(self):
+        m = board._match_report_card(self.PAYLOAD["cards"],
+                                     "  Dev-Kanban ")
+        self.assertEqual(m["open"][0]["id"], "open-new")
+        m = board._match_report_card(
+            [{"id": "c", "report": " Flood-Report ", "column": "todo"}],
+            "flood-report")
+        self.assertEqual(m["open"][0]["id"], "c")
+
+    def test_match_none_and_done_only(self):
+        m = board._match_report_card(self.PAYLOAD["cards"], "no-such")
+        self.assertEqual(m["open"], [])
+        self.assertEqual(m["done"], [])
+        m = board._match_report_card(self.PAYLOAD["cards"], "flood-report")
+        self.assertEqual(m["open"], [])
+        self.assertEqual([c["id"] for c in m["done"]], ["done-only"])
+
+    async def test_read_report_returns_best_open_card(self):
+        client = FakeClient({"/cards": FakeResp(200, dict(self.PAYLOAD))})
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(), action="read",
+                                  report="dev-kanban")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["report"], "dev-kanban")
+        self.assertEqual(out["card"]["id"], "open-new")
+        self.assertEqual(out["card"]["report"], "dev-kanban")
+        self.assertEqual(out["open_matches"], 2)
+        self.assertEqual(out["done_matches"], 1)
+        self.assertEqual(out["also"], ["open-old"])
+        self.assertIn("several open cards", out["note"])
+
+    async def test_read_report_done_only_surfaces_done_card(self):
+        client = FakeClient({"/cards": FakeResp(200, dict(self.PAYLOAD))})
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(), action="read",
+                                  report="flood-report")
+        self.assertEqual(out["card"]["id"], "done-only")
+        self.assertEqual(out["card"]["column"], "done")
+        self.assertEqual(out["open_matches"], 0)
+        self.assertIn("done", out["note"])
+        self.assertIn("create", out["note"])
+
+    async def test_read_report_no_match_offers_filing(self):
+        client = FakeClient({"/cards": FakeResp(200, dict(self.PAYLOAD))})
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(), action="read",
+                                  report="no-such-report")
+        self.assertIsNone(out["card"])
+        self.assertEqual(out["open_matches"], 0)
+        self.assertIn("create", out["note"])
+
+    async def test_read_listing_exposes_report_field(self):
+        client = FakeClient({"/cards": FakeResp(200, dict(self.PAYLOAD))})
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(), action="read")
+        by_id = {c["id"]: c for c in out["cards"]}
+        self.assertEqual(by_id["open-new"]["report"], "dev-kanban")
+        self.assertNotIn("report", by_id["plain"])
+
+
 class MiscTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_action(self):

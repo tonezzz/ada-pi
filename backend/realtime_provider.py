@@ -204,6 +204,16 @@ CMS_INSTRUCTIONS = (
     "writes need confirmed=true like other CMS writes. When the user asks to "
     "refresh a generated page, prefer cms_edit action='automate' op='run' over "
     "republishing."
+    "REPORT OPINION — when the user asks what you think of a report or CMS "
+    "page: cms_read action='get' the page first (never opine on a page you "
+    "have not read), then ada_board_write action='read' report=<slug> to "
+    "find the kanban card linked to it, then ada_board_write "
+    "action='comment' on that card with text starting '[opinion]' that "
+    "cites the slug and the updated timestamp you just read. Answer aloud "
+    "too — the comment is the durable record, the spoken take is for the "
+    "moment. If the read reports several open cards it picked the most "
+    "recently updated — say which card got the comment; if no card links "
+    "the report, answer aloud and offer to file one (action='create')."
 )
 
 # Same constant pattern as CALENDAR_TOOLS/CMS_TOOLS: lets ADA_EXCLUDED_TOOLS
