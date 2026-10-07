@@ -1,0 +1,41 @@
+name: dub-voice-consistency
+# YT voice-dub gate (card yt-voice-dub-scenarios, 2026-10-07) — THE
+# yt-voice-dub-cast regression gate: a speaker keeps exactly one voice
+# across every cue of the render. Canonical asset dub-v9-2voice.mp4 —
+# The Egg 2-speaker dialogue (Premwadee=God F, Niwat=man M), the first
+# cast-map render and still the reference 2-speaker artifact.
+#
+# Bars (dub-metrics/1 sidecar — see dub_cue_timing for the contract):
+#   - speakers            == 2   (the render's cast detection)
+#   - voices_per_speaker  == 1   (a speaker that flips voice mid-video
+#                                 fails — the exact defect this gates)
+#   - distinct_voices     == 2   (both speakers on ONE voice is also a
+#                                 fail — an undifferentiated dub)
+#   - voice_map names real edge-tts TH voices (Premwadee/Niwat — the
+#     only two that exist; a phantom voice name means the map is a lie)
+#
+# tier: full — served-artifact check; no Ada turn.
+tier: full
+
+preflight:
+  - {check: http_ok, url: "http://tony-dell.taila0626a.ts.net:8791/status",
+     label: yt-live-api}
+
+turns:
+  - http_check:
+      label: "dub-v9-2voice metrics — speaker/voice consistency"
+      url: "https://tony-dell.taila0626a.ts.net/apps/yt-live/dub-v9-2voice.metrics.json"
+      regex:
+        - '"schema"\s*:\s*"dub-metrics/1"'
+        - '"asset"\s*:\s*"dub-v9-2voice\.mp4"'
+        - '"speakers"\s*:\s*2(?![\d.])'
+        - '"voices_per_speaker"\s*:\s*1(?![\d.])'
+        - '"distinct_voices"\s*:\s*2(?![\d.])'
+      contains:
+        - "Premwadee"
+        - "Niwat"
+      capture:
+        speakers:            '"speakers"\s*:\s*(\d+)'
+        voices_per_speaker:  '"voices_per_speaker"\s*:\s*(\d+)'
+        distinct_voices:     '"distinct_voices"\s*:\s*(\d+)'
+        cues_synthesized:    '"cues_synthesized"\s*:\s*(\d+)'

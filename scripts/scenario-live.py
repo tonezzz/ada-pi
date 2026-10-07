@@ -141,13 +141,17 @@ Bridge-driver turns (GEV — no Ada ws needed):
       /apps/gev-live/ws" maps to calls_any + response_nonempty.
       Connect/greeting failure aborts the run as INFRA.
   - http_check: {url|page, status, contains, not_contains, regex,
-                 not_regex}
+                 not_regex, capture}
       HTTP guard turn — fetch a URL, or `page:` an HTML document and
       follow its first <script type="module" src> to fetch the served
       bundle; then assert status/contains/not_contains/regex/not_regex
       on the body (page_contains/page_regex/… assert on the HTML when
       `page:` is used). Used by the served-code guards: sw.js
       stale-cache regression and the GEV bundle mute-wiring invariant.
+      `capture: {name: "<regex>"}` lifts the first capture group of each
+      match into the turn's "metrics" in --events-json — scenario-benchmark
+      records them on the benchmark doc, so artifact metrics (e.g. the
+      dub-metrics/1 sidecars) are trended, not just pass/failed.
 
 Ada ws is opened lazily — a scenario whose turns are all driver-side
 (vcast_display / gev_bridge / http_check) never connects to /ws, so a
@@ -1016,13 +1020,17 @@ async def _gev_bridge_turn(spec: dict, expect: dict, verbose: bool):
             pass
 
 
-def _http_check(spec: dict) -> list[str]:
+def _http_check(spec: dict) -> tuple[list[str], dict[str, str]]:
     """HTTP guard turn — fetch `url` directly, or fetch `page` HTML and
     follow its first module <script src> to the served bundle. Assertions:
     status (default 200), contains/not_contains (substrings), regex /
     not_regex (must / must-not match). With `page:`, page_contains /
     page_not_contains / page_regex / page_not_regex assert on the HTML
-    and the plain fields assert on the bundle body."""
+    and the plain fields assert on the bundle body.
+    `capture: {name: regex}` lifts the first capture group per name out of
+    the asserted body into the turn's metrics (events-json -> benchmark
+    meta) — e.g. dub-metrics sidecar values for trend tracking.
+    Returns (failures, captured_metrics)."""
     import urllib.parse
     import urllib.request
     label = str(spec.get("label") or spec.get("url") or spec.get("page"))
@@ -1051,6 +1059,7 @@ def _http_check(spec: dict) -> list[str]:
                 out.append(f"{label}: {where} matched /{pat}/")
 
     failures: list[str] = []
+    captured: dict[str, str] = {}
     try:
         if spec.get("page"):
             status, html = fetch(str(spec["page"]))
@@ -1070,7 +1079,7 @@ def _http_check(spec: dict) -> list[str]:
             if not m:
                 failures.append(
                     f"{label}: no module script src in {spec['page']}")
-                return failures
+                return failures, captured
             bundle_url = urllib.parse.urljoin(str(spec["page"]),
                                               m.group(1))
             status, body = fetch(bundle_url)
@@ -1083,9 +1092,16 @@ def _http_check(spec: dict) -> list[str]:
             if status != want:
                 failures.append(f"{label}: HTTP {status} want {want}")
             check_body(body, spec, "body", failures)
+        # capture runs on the same body the assertions read — values are
+        # evidence, not pass/fail, so a missing field is not a failure here
+        for mname, pat in (spec.get("capture") or {}).items():
+            cm = re.search(str(pat), body)
+            if cm:
+                captured[str(mname)] = (cm.group(1) if cm.groups()
+                                        else cm.group(0))
     except Exception as exc:
         failures.append(f"{label}: {exc}")
-    return failures
+    return failures, captured
 
 
 def _subst_runtime(obj, rt: dict):
@@ -1627,6 +1643,7 @@ async def main() -> int:
                 await asyncio.sleep(float(turn["sleep_s"]))
             turn_t0 = time.time()
             kind, prompt = "text", ""
+            turn_metrics: dict[str, str] = {}
             if "gev_bridge" in turn:
                 # gev-gemini bridge probe — plays the GEV client's half
                 # of the voice protocol; events normalize into the
@@ -1653,8 +1670,10 @@ async def main() -> int:
                 print(f"turn {i + 1}: http_check {prompt}")
                 events = [{"type": "_note", "text": prompt}]
                 try:
-                    failures = await asyncio.to_thread(
+                    failures, turn_metrics = await asyncio.to_thread(
                         _http_check, hspec)
+                    if turn_metrics:
+                        print(f"      metrics: {turn_metrics}")
                 except Exception as exc:
                     failures = [f"http_check: {exc}"]
             elif "vcast_display" in turn:
@@ -1808,6 +1827,7 @@ async def main() -> int:
                 "transcript": transcript[:200],
                 "ok": not failures,
                 "failures": [str(f) for f in (failures or [])],
+                "metrics": turn_metrics,
             })
             if failures:
                 total_fail += len(failures)

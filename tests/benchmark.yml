@@ -144,6 +144,12 @@ policy:
     - cast_during_ha_restart
     - vcast_flap_recovery
     - gev_to_tv_live         # tv_action nav gev -> live workspace stream + verify
+    # dub program gate (card yt-voice-dub-scenarios, 2026-10-07) — the
+    # three dub_* metrics scenarios are http_check-only (no tool calls);
+    # the suite's two live-path entries actuate real surfaces
+    - yt_dub_liam_e2e        # cast_to_screen play on a numbered vcast display
+    - cast_dub_to_tv         # tv_action / ada_camera_snapshot on the
+                           # dark-panel verify turn
 
 # The standard — what a benchmark result is allowed to mean. Three clauses:
 # evidence contract, failure integrity, retention. Enforced by
@@ -185,6 +191,23 @@ standard:
     auto_report:       30d
     benchmark:         keep  # trend data; invalid runs stamped, not deleted
 
+# Tracked metrics — numbers a suite must surface on the benchmark doc.
+# Scenario http_check turns declare `capture:` regexes; scenario-benchmark
+# records the values as meta.metrics + a "Captured metrics" section, so
+# runs carry real numbers for trend diffs, not only pass/fail.
+metrics:
+  # dub program (card yt-voice-dub-scenarios) — source: the dub-metrics/1
+  # sidecar each published dub ships beside its mp4 under /apps/yt-live/
+  # (<basename>.metrics.json, emitted by yt-vtt-dub.py --metrics-json).
+  # Contract: docs/ssot/jobs/dub/2026-10-07-dub-metrics-contract.yml.
+  # The pass/fail bars live in the dub_* scenario regexes; this list is
+  # the canonical name -> meaning map for what the benchmark trends.
+  dub:
+    cue_overflow_pct:   "% of TTS segments ending past cue window + tolerance — gate <=10"
+    wer_vs_source:      "ASR WER of the dub track vs source captions — gate <=0.30"
+    voices_per_speaker: "max distinct voices any single speaker uses — gate ==1"
+    loudness_delta_db:  "dub-vs-original loudness gap during dub segments — gate [6,20] dB"
+
 # Usage plan — cadence that keeps Gemini grounded-search quota healthy.
 # MEASURED: free-tier quota is 20 grounded requests/day/project/model
 # (429 RESOURCE_EXHAUSTED, GenerateRequestsPerDayPerModel) — shared with
@@ -200,6 +223,9 @@ usage:
   tools:    weekly — Friday 03:30 (manual, on-request)
   full:     on-request only (~1h, can exceed the daily grounded quota —
             run when voice use is low; DDG fallback keeps results landing)
+  dub:      on-request / before closing yt-voice-dub-* cards — artifact
+            gates are driver-side http_check (no LLM, no quota); the two
+            live-path entries actuate the lab display + TV
   notes:
     - "429 → web_search auto-falls back to duckduckgo (free, no key).
       DDG needs SHORT keyword queries — prose queries return 0 results."
@@ -363,61 +389,18 @@ suites:
     - gev_to_tv_live
     - tool_merge_gev
 
-  # GEV regression gate (card gev-scenarios, 2026-10-06) — every gev_*
-  # scenario: the bridge/served-code probes (ws round-trip, tools.json
-  # regen, mute no-leak, sw stale-cache) plus the model-facing tour /
-  # interact / cast scenarios. Run before closing gev program cards.
-  gev:
-    - gev_ws_tool_roundtrip
-    - gev_tools_regen
-    - gev_mute_no_leak
-    - gev_sw_stale_cache
-    - gev_pane_honest_fail
-    - gev_cast_control
-    - gev_inspect
-    - gev_screen1_interact
-    - gev_real_screen_interact
-    - gev_layers_track
-    - gev_showcase
-    - gev_bkk_tour
-    - gev_th_tour
-    - gev_za_tour
-    - gev_za_windsurf
-    - gev_tour_report
-    - gev_eu_tour
-    - gev_bkk_pip
-    - gev_bkk_route_th
-    - gev_za_pip
-    - gev_za_tour_th
-    - tool_merge_gev
-
-  # GEV regression gate (card gev-scenarios, 2026-10-06) — every gev_*
-  # scenario: the bridge/served-code probes (ws round-trip, tools.json
-  # regen, mute no-leak, sw stale-cache) plus the model-facing tour /
-  # interact / cast scenarios. Run before closing gev program cards.
-  gev:
-    - gev_ws_tool_roundtrip
-    - gev_tools_regen
-    - gev_mute_no_leak
-    - gev_sw_stale_cache
-    - gev_pane_honest_fail
-    - gev_cast_control
-    - gev_inspect
-    - gev_screen1_interact
-    - gev_real_screen_interact
-    - gev_layers_track
-    - gev_showcase
-    - gev_bkk_tour
-    - gev_th_tour
-    - gev_za_tour
-    - gev_za_windsurf
-    - gev_tour_report
-    - gev_eu_tour
-    - gev_bkk_pip
-    - gev_bkk_route_th
-    - gev_za_pip
-    - gev_za_tour_th
-    - tool_merge_gev
+  # YT voice-dub program gate (card yt-voice-dub-scenarios, 2026-10-07).
+  # The three dub_* entries are artifact gates — http_check against the
+  # dub-metrics/1 sidecar each published render ships; they fail until the
+  # pipeline emits conforming metrics (that IS the gate). The two
+  # conversational entries cover the live find/play path end-to-end.
+  # Run before closing any yt-voice-dub-* card.
+  dub:
+    - dub_cue_timing
+    - dub_voice_consistency
+    - dub_duck_mix
+    - yt_dub_liam_e2e
+    - cast_dub_to_tv
 
   # Everything — the full picture (slow; expects ~1h+).
   full: '@all'

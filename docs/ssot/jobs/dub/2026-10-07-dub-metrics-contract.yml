@@ -1,0 +1,108 @@
+# SSOT Job: yt-voice-dub scenario gate + dub-metrics/1 contract
+# Card: yt-voice-dub-scenarios (kanban). Dispatch 20261007-133317, mn01.
+
+title: Dub program gate — dub_* scenarios + benchmark metric capture
+subtitle: dub-metrics/1 sidecar contract each published dub render must ship
+
+planning:
+  goal: |
+    Gate for the yt-voice-dub program (queued after yt-voice-dub-cast
+    landed 2026-10-05). Three scenarios-live entries assert the
+    measurable bars from the test/cast/cuefit card history on canonical
+    published renders, and benchmark.yml gains the metric registry the
+    card lists: cue overflow %, WER of dub vs source captions,
+    voices-per-speaker == 1, dub-vs-original loudness delta.
+  decisions: |
+    - Artifact gates, not conversational turns. Cue timing / voice
+      consistency / duck mix are properties of the rendered mp4, not of
+      Ada's dialogue — measured via http_check on a metrics sidecar
+      served next to the mp4 (gev_sw_stale_cache precedent: driver-side
+      guard, no Ada ws). The live play path stays covered by
+      yt_dub_liam_e2e + cast_dub_to_tv, both now in the dub suite.
+    - Missing sidecar = FAIL, not INFRA/UNIMPLEMENTED: the dub program
+      owns emitting it; a render without metrics is the gate working.
+      Only the yt-live-api preflight is INFRA (pipeline host down).
+    - The bar lives in ada-pi scenario regexes, not in renderer-emitted
+      pass flags — the gate must not let the thing under test grade
+      itself. Numbers are captured raw and trended on the benchmark doc.
+    - New http_check `capture:` field lifts regex groups into the
+      events-json turn log; scenario-benchmark.py records them as
+      meta.metrics + a Captured metrics section — "benchmark tracks
+      cue overflow % + voices-per-speaker" is literal, per card metric.
+    - Ada's yt tool has no voice= param (POST /cast sends q+lang only);
+      a conversational "cast with Thai dub" turn can't exist yet — noted
+      as a follow-up if voice-mode is ever meant to be voice-drivable.
+  contract: |
+    dub-metrics/1 — <basename>.metrics.json beside each published
+    /apps/yt-live/<basename>.mp4. Emitter: scripts/ops/yt-vtt-dub.py
+    --metrics-json (chaba), publish step copies it next to the mp4.
+
+    Required fields (asserted by the scenarios):
+      schema             "dub-metrics/1"
+      asset              the mp4 basename this metrics file describes
+      cue_overflow_pct   % of synthesized segments ending past
+                         cue_end + cue_tolerance_s            gate <=10
+      atempo_max         largest post-stretch factor applied   gate <=1.4
+      lag_s              residual tail lag after the last cue  gate <=5
+      wer_vs_source      ASR WER of dub track vs source caps   gate <=0.30
+      speakers           detected/cast speaker count           (per asset)
+      voices_per_speaker max distinct voices for one speaker   gate ==1
+      distinct_voices    distinct voice tokens in the render   ==speakers
+      voice_map          speaker -> edge-tts voice (real names)
+      loudness_delta_db  dub-vs-original gap during dub segs   [6,20] dB
+      recovery_s         original back to baseline after dub   gate <=2
+      ducked_pct         % runtime the original spends ducked  gate <=80
+                         (sidechain-keyed, not flat)
+      duck_db            attenuation applied while ducked      capture-only
+      rate_global        uniform rate factor                   capture-only
+      cues_synthesized   segments actually voiced              capture-only
+      cue_tolerance_s    tolerance used for overflow           capture-only
+  canonical_assets: |
+    dub_cue_timing        -> LLALMFmabV4-dub.mp4   (Liam+Noel, current
+                             pipeline, 166 TH cues — real-world clip)
+    dub_voice_consistency -> dub-v9-2voice.mp4     (The Egg 2-speaker map:
+                             Premwadee=God, Niwat=man — speakers==2,
+                             voices_per_speaker==1, distinct==2)
+    dub_duck_mix          -> dub-v16h-interview.mp4 (sidechain "ontime"
+                             render tagged best in dub-compare)
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-07"
+  steps:
+    - id: 1
+      label: "scenarios"
+      status: done
+      notes: "tests/scenarios-live/dub_{cue_timing,voice_consistency,
+        duck_mix}.yaml — http_check turns on <asset>.metrics.json with
+        bounded-number regexes (lookahead-guarded so 1.45 fails a <=1.4
+        bar), tier:full, yt-live-api http_ok preflight."
+    - id: 2
+      label: "harness: metric capture"
+      status: done
+      notes: "scenario-live.py http_check gains capture:{name:regex} ->
+        turn_log[].metrics -> events-json; scenario-benchmark.py folds
+        turn metrics into meta.metrics + a Captured metrics md section."
+    - id: 3
+      label: "benchmark.yml"
+      status: done
+      notes: "metrics: registry (the 4 card metrics), suites.dub (3
+        artifact gates + yt_dub_liam_e2e + cast_dub_to_tv), usage.dub,
+        write_allowed_in for the two live-path entries (cast_to_screen /
+        tv_action / ada_camera_snapshot are write_tools). Also collapsed
+        the gev suite which was pasted identically three times (YAML
+        last-wins had silently dropped gev_to_tv_live)."
+
+invoke:
+  commands:
+    - "python3 scripts/scenario-live.py tests/scenarios-live/dub_cue_timing.yaml --url ws://127.0.0.1:8002/ws --api-key $ADA_API_KEY"
+    - "python3 scripts/scenario-benchmark.py --suite dub --mddb http://100.74.146.0:11023/v1"
+    - "python3 scripts/scenario-benchmark.py --suite dub --dry-run  # no mddb writes"
+
+verification:
+  - "python3 -c 'import yaml; yaml.safe_load(open(\"tests/benchmark.yml\"))' "
+  - "scenario-live.py --help / py_compile clean on both edited scripts"
+  - "dub suite currently reports the three artifact gates FAIL (sidecars
+    not yet published) — expected until chaba emits dub-metrics/1
+    sidecars beside the canonical mp4s; live entries run as before"

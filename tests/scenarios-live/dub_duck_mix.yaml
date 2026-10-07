@@ -1,0 +1,41 @@
+name: dub-duck-mix
+# YT voice-dub gate (card yt-voice-dub-scenarios, 2026-10-07) — the mix
+# contract: original ducks while the dub speaks, recovers after. Canonical
+# asset dub-v16h-interview.mp4 — the "ontime" Graham Norton render, first
+# sidechain-ducked build tagged best (EN drops only while TH speaks).
+#
+# Bars (dub-metrics/1 sidecar):
+#   - loudness_delta_db in [6, 20]  — dub-vs-original gap during dub
+#     segments. <6dB and the dub fights the original; >20dB and the
+#     original is effectively muted (the flat-0.10 "barely there" defect)
+#   - recovery_s <= 2               — original returns to baseline after
+#     the last dub segment; a stuck duck means the tail of the video
+#     stays muffled
+#   - ducked_pct <= 80              — sidechain must be keyed to dub
+#     segments, not blanket-ducked; a flat mix was the pre-v16f defect
+#
+# tier: full — served-artifact check; no Ada turn.
+tier: full
+
+preflight:
+  - {check: http_ok, url: "http://tony-dell.taila0626a.ts.net:8791/status",
+     label: yt-live-api}
+
+turns:
+  - http_check:
+      label: "dub-v16h-interview metrics — duck/mix envelope"
+      url: "https://tony-dell.taila0626a.ts.net/apps/yt-live/dub-v16h-interview.metrics.json"
+      regex:
+        - '"schema"\s*:\s*"dub-metrics/1"'
+        - '"asset"\s*:\s*"dub-v16h-interview\.mp4"'
+        # 6..20 dB — 5.9 and 20.5 both correctly fail
+        - '"loudness_delta_db"\s*:\s*([6-9](\.\d+)?|1\d(\.\d+)?|20(\.0+)?)(?![\d.])'
+        # recovery <= 2s
+        - '"recovery_s"\s*:\s*([0-1](\.\d+)?|2(\.0+)?)(?![\d.])'
+        # sidechain not flat — original ducked on <=80% of runtime
+        - '"ducked_pct"\s*:\s*([0-7]?\d(\.\d+)?|80(\.0+)?)(?![\d.])'
+      capture:
+        duck_db:            '"duck_db"\s*:\s*([0-9.]+)'
+        loudness_delta_db:  '"loudness_delta_db"\s*:\s*([0-9.]+)'
+        recovery_s:         '"recovery_s"\s*:\s*([0-9.]+)'
+        ducked_pct:         '"ducked_pct"\s*:\s*([0-9.]+)'
