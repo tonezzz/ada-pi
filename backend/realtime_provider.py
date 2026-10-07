@@ -120,8 +120,11 @@ CALENDAR_INSTRUCTIONS = (
     "exact details (title, resolved date with weekday, time — never a bare 'tomorrow'/"
     "'พรุ่งนี้') and get an explicit yes, then call the tool with "
     "confirmed=true — writes are enforced server-side. "
-    "If a calendar tool reports an auth error, say the calendar provider needs re-authentication "
-    "and stop retrying. Event and task ids are provider-qualified (e.g. 'google:primary/abc') — "
+    "If a calendar tool result has ok=false or an 'error' field, the provider is unreachable "
+    "or unauthenticated — say that plainly (it needs re-authentication when the error mentions "
+    "auth/token) and stop retrying; never present a missing or empty events/tasks list as the "
+    "real schedule. A non-empty 'errors' list means a provider didn't answer — mention the view "
+    "is partial. Event and task ids are provider-qualified (e.g. 'google:primary/abc') — "
     "pass them back exactly as returned. "
     "When the session context lists pending suggestions from earlier conversations, offer each "
     "once, briefly and early in the conversation; if the user accepts, restate the details, call "
@@ -2132,6 +2135,15 @@ class GeminiLiveProvider(RealtimeProvider):
         except Exception as exc:
             logger.info("session=%s agenda prefetch failed: %r",
                         self.session_id, exc)
+            # google-token-loud-fail: a dead provider must not read as a
+            # quiet "no events today" — tell the model the agenda is
+            # unknown so it can say so instead of guessing.
+            parts.append(
+                "Today's agenda: unavailable — the calendar provider is "
+                f"unreachable ({exc}). If the user asks about their "
+                "schedule, say the calendar can't be reached right now "
+                "(re-authentication if the error mentions auth/token), "
+                "never claim the day is empty.")
         else:
             lines = ["Today's agenda (snapshot from session start; call "
                      "plan_day for a fresh view):"]

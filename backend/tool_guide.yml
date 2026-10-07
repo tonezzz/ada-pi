@@ -301,14 +301,20 @@ calendar_read: >-
   action='events' day/days range across all providers (query= text
   filter, calendar='provider:calendar_id' narrows) — FIRST call for
   schedule/free questions; 'calendars' lists providers incl. the default
-  write target; 'freebusy' busy slots for 'am I free X to Y'. Absorbs
+  write target; 'freebusy' busy slots for 'am I free X to Y'. ok=false or
+  an 'error' field means the provider is unreachable or unauthenticated —
+  relay that instead of reading a missing list as 'nothing scheduled'; a
+  non-empty 'errors' list means the view is partial. Absorbs
   calendar_list_events, calendar_list_calendars, calendar_freebusy.
 
 plan_day: >-
   period='today'/'tomorrow' = merged events + open tasks + session
   digest; 'week' = the weekly comparison (days= window, default 7).
   day= overrides the target ('yesterday', 'YYYY-MM-DD') — also the way
-  to recap a past day; refresh=true regenerates. Read-only — speak the
+  to recap a past day; refresh=true regenerates. ok=false or an 'error'
+  field means the provider is unreachable or unauthenticated — say so,
+  never read the day as empty; a non-empty 'errors' list means the view
+  is partial. Read-only — speak the
   plan, never create events without approval; offer cms_publish_page
   (confirmed) when the user wants the comparison kept. Absorbs
   ada_daily_summary (period='digest' internally), ada_weekly_comparison.
@@ -326,7 +332,9 @@ calendar_write: >-
 tasks: >-
   action='list' is a free read of open tasks; 'add' (title=, due=,
   notes=, task_list='provider:list_id'), 'done' and 'move' take
-  task_id= from a list result ('google:@default/abc123'). Writes are
+  task_id= from a list result ('google:@default/abc123'). ok=false or an
+  'error' on 'list' means the provider is unreachable or unauthenticated —
+  relay that, never 'no tasks'. Writes are
   confirmed-gated — restate task + resolved date, get a yes, then call.
   Absorbs tasks_list, tasks_add, tasks_complete, tasks_move.
 
