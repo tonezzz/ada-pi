@@ -39,6 +39,7 @@ from backend.document_check import DocumentCheckEngine
 from backend.document_check import decode_image as doc_decode_image
 from backend.memory_banks import get_registry
 from backend import auth
+from backend import board_client
 from backend import chaba_memory
 from backend.speaker_id import SpeakerIdentifier, SpeakerSession
 
@@ -154,6 +155,23 @@ def _require_api_key(request: Request) -> None:
         return
     if auth.caller_name(request) is None:
         raise HTTPException(status_code=401, detail="invalid or missing api key")
+
+
+def _require_dispatch(request: Request) -> str:
+    """Auth + the 'dispatch' key capability; returns the caller name.
+
+    401 when unauthenticated; 403 when the caller's file-issued key lacks
+    'dispatch' in its apps metadata (auth.key_can). Env/operator keys
+    have no apps metadata and pass."""
+    if not auth.configured():
+        return "anon"
+    name = auth.caller_name(request)
+    if name is None:
+        raise HTTPException(status_code=401, detail="invalid or missing api key")
+    if not auth.key_can(name, "dispatch"):
+        raise HTTPException(status_code=403,
+                            detail="key lacks the 'dispatch' capability")
+    return name
 
 
 @app.get("/api/health")
@@ -2142,6 +2160,75 @@ async def cms_edit_page(request: Request, slug: str) -> dict:
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="page not found")
     return result
+
+
+_CMS_SLUG_RE = re.compile(r"^[a-z0-9-]{1,80}$")
+
+
+@app.post("/api/cms/spawn")
+async def cms_spawn_session(request: Request) -> dict:
+    """Queue a Devin session on a CMS page (report→session loop §1b).
+
+    Reads the page for its title, then files an armed kanban card through
+    board-api POST /card (report:<slug>, action dispatch, queue:true,
+    on_exists:queue) — kanban-dispatch claims it like any queued card.
+    A second click on the same page re-queues or reports already-active
+    instead of duplicating.
+
+    Capability-gated on the 'dispatch' key capability: the shared
+    cms-viewer key is a READ key embedded in iframes (apps=['view']) and
+    must not gain dispatch power — it gets 403. Keys re-issued with
+    apps=[view, dispatch] via the pair flow, and unscoped env/operator
+    keys, may spawn.
+    """
+    caller = _require_dispatch(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid json body")
+    slug = str(body.get("slug") or "").strip()
+    if not _CMS_SLUG_RE.fullmatch(slug):
+        raise HTTPException(status_code=422,
+                            detail="slug must match [a-z0-9-] (1-80 chars)")
+    try:
+        page = await tool_runner.cms_get_page(slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if page is None:
+        raise HTTPException(status_code=404, detail="page not found")
+    title = str(page.get("title") or "").strip() or slug
+    status, data = await board_client.post("/card", {
+        "title": title,
+        "report": slug,
+        "action": {"type": "dispatch", "repo": "chaba"},
+        "queue": True,
+        "on_exists": "queue",
+        "tags": ["report-session-loop", "cms"],
+        "brief": (f"Spawned from CMS page '{slug}' — session keeps the "
+                  f"report updated; watch card comms."),
+        "from": "ada",
+        "text": (f"▶ Devin session spawned from CMS page '{slug}' "
+                 f"(key: {caller})"),
+    })
+    if status == 0:
+        raise HTTPException(status_code=502,
+                            detail=data.get("error") or "board unreachable")
+    if status >= 400:
+        raise HTTPException(
+            status_code=status,
+            detail=str(data.get("error") or f"board-api HTTP {status}"))
+    message = str(data.get("message") or "")
+    m = re.search(r"card ([a-z0-9-]+)", message)
+    return {
+        "ok": True,
+        "status": ("already_active"
+                   if re.search(r"already (running|queued|active)",
+                                message, re.I)
+                   else "queued"),
+        "card_id": m.group(1) if m else None,
+        "message": message,
+        "board_url": board_client.board_page_url(),
+    }
 
 
 static_dir = ROOT / "frontend"

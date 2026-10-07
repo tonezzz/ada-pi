@@ -100,6 +100,34 @@ class AuthTests(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_key_can_dispatch_capability(self):
+        import json
+        import tempfile
+        keys = {
+            "viewer": {"key": "v-key", "device": "*", "apps": ["view"]},
+            "tony": {"key": "t-key", "device": "*",
+                     "apps": ["view", "dispatch"]},
+            "legacy": {"key": "l-key", "device": "*"},  # apps absent
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(keys, f)
+            path = f.name
+        try:
+            env = {"ADA_KEYS_FILE": path, "ADA_API_KEY": "adm-key"}
+            with patch.dict(os.environ, env, clear=True):
+                # dispatch survives the apps cleaner and gates correctly
+                self.assertIn("dispatch", auth.VALID_KEY_APPS)
+                self.assertFalse(auth.key_can("viewer", "dispatch"))
+                self.assertTrue(auth.key_can("tony", "dispatch"))
+                # legacy default is voice+chat — no view, no dispatch
+                self.assertTrue(auth.key_can("legacy", "voice"))
+                self.assertFalse(auth.key_can("legacy", "view"))
+                self.assertFalse(auth.key_can("legacy", "dispatch"))
+                # env/operator keys are unscoped
+                self.assertTrue(auth.key_can("admin", "dispatch"))
+        finally:
+            os.unlink(path)
+
     def test_bind_device_preserves_apps(self):
         import json
         import tempfile

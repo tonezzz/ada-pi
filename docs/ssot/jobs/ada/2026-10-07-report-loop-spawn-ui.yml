@@ -1,0 +1,117 @@
+# SSOT Job: report-loop-spawn-ui — CMS "▶ Devin session" button +
+# /api/cms/spawn route (report-session-loop design §1b, ada-pi side).
+# Card: report-loop-spawn-ui (chaba kanban). Dispatch
+# 20261007-203220-design-docs-design-report-sess, runner tony-omen.
+
+title: 'Report loop: "Start Devin session" button on CMS pages + /api/cms/spawn'
+subtitle: >
+  CMS page toolbar button files an armed kanban card via board-api —
+  gated on a new 'dispatch' key capability so the shared cms-viewer read
+  key can't spawn work.
+
+planning:
+  goal: |
+    Implement docs/design/report-session-loop.md §1b in ada-pi: a
+    "▶ Devin session" button on every CMS page that POSTs
+    /api/cms/spawn {slug}; the route reads the page (title -> card
+    title) and files an armed dispatch card through board-api POST
+    /card. Same effect as asking Ada to dispatch a session on the
+    report, but card-first so the board tracks it.
+  scope: |
+    Delivered:
+      - backend/board_client.py (new) — shared board-api reach path:
+        base_url (ADA_BOARD_API_URL / tailnet default), request()
+        -> (data, err, status), post(), board_page_url()
+      - backend/tools.d/ada_board_write.py — delegates to board_client;
+        single client path, no second auth (board-api write auth is the
+        tailnet/loopback identity — no Ada key crosses it)
+      - backend/auth.py — 'dispatch' added to VALID_KEY_APPS (survives
+        _clean_apps at issue + read); key_can(name, app) capability
+        gate: file-issued keys need the capability listed, absent apps =
+        legacy [voice, chat] (no view/dispatch), env/operator keys
+        unscoped
+      - pwa_server.py — _require_dispatch() (401 unauthenticated / 403
+        no capability) + POST /api/cms/spawn {slug}
+      - pwa/cms/index.html — "▶ Devin session" button in the page
+        toolbar (always rendered; Regenerate stays generated_by-only);
+        toasts "card <id> queued" / "session already active" linking to
+        the board, clear 403 for view-only keys
+      - tests/test_cms_spawn.py (13 tests) + key_can case in test_auth
+    Not delivered (out of scope):
+      - deploy/restart (ada-pi AGENTS.md — deploy needs Tony approval)
+      - re-issuing Tony's keys with [view, dispatch] — operator step via
+        the existing pair flow on each ada-ha instance
+      - board-api /card field support — report-loop-spawn-api (chaba,
+        §1a); this route POSTs the §1a contract and degrades to today's
+        bare-card create until that lands
+  success_criteria:
+    - 'view-only key -> 403, board-api never called, page never read'
+    - 'dispatch key -> board-api POST /card with {title, report, action:
+      {type: dispatch, repo: chaba}, queue, on_exists: queue, tags,
+      brief} — asserted verbatim in unittest'
+    - 'already-active (409 or message) surfaces to the UI, not an error'
+    - 'unreachable board -> honest 502'
+  risks:
+    - 'Deploy ORDER matters: if ada-pi deploys before board-api §1a
+      lands, POST /card ignores the unknown fields and files a bare
+      backlog card (no action/queue) — button "works" but nothing
+      dispatches. Deploy report-loop-spawn-api first.'
+    - 'Card id is parsed from board-api message text ("card <id>
+      ...") — if §1a returns the id in a structured field instead,
+      card_id comes back null; the toast still links to the board.'
+    - 'Design doc says deep link /cms/?page=<slug> — WRONG. The viewer
+      routes pages by hash: /cms/#/<slug> (?tab= is the only page-adjacent
+      query param). §1a REPORT_SPAWN_TEMPLATE + card comms links must
+      use the hash form.'
+  resources:
+    - design: chaba docs/design/report-session-loop.md §1b
+    - sibling card: report-loop-spawn-api (chaba scripts/board/board-api.py)
+    - key schema: backend/auth.py VALID_KEY_APPS / _clean_apps / key_can
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-10-07"
+  steps:
+    - id: 1
+      label: "board_client shared path"
+      status: done
+      notes: "extracted ada_board_write's base-url + request helper into
+        backend/board_client.py (+status code, +post(), +board_page_url());
+        tool delegates — 12 existing board_write tests pass unchanged"
+    - id: 2
+      label: "dispatch capability"
+      status: done
+      notes: "VALID_KEY_APPS + 'dispatch'; auth.key_can(name, app) —
+        legacy [voice,chat] and [view] keys denied, env keys unscoped"
+    - id: 3
+      label: "route + button"
+      status: done
+      notes: "POST /api/cms/spawn {slug}: dispatch gate -> cms_get_page
+        -> board_client.post('/card', armed body); maps board errors
+        (0->502, 4xx pass-through), returns {ok,status,card_id,message,
+        board_url}; CMS toolbar button on every page"
+    - id: 4
+      label: "Tests"
+      status: done
+      notes: "tests/test_cms_spawn.py — 13 tests (401/403/404/422/502/
+        409/already_active/admin-unscoped/body assert/board_client);
+        44 tests in spawn+auth+board_write green; tools_loader +
+        frontend_contract green; node --check on viewer JS"
+
+invoke:
+  http:
+    - "POST /api/cms/spawn {\"slug\": \"<cms-slug>\"} — x-api-key with
+       apps containing 'dispatch'"
+  env:
+    ADA_BOARD_API_URL: "board-api base (default
+      https://tony-dell.taila0626a.ts.net/apps/board-api)"
+
+verification:
+  - ".venv/bin/python -m unittest tests.test_cms_spawn tests.test_auth
+     tests.test_board_write -v  # 44 tests OK"
+  - "manual smoke DEFERRED to deploy: ada deploys need Tony's approval
+     (ada-pi AGENTS.md); deploy order = report-loop-spawn-api first, then
+     ada-pi, then re-issue Tony's CMS keys with [view, dispatch] via the
+     pair flow"
