@@ -6,9 +6,9 @@ server). get/archive/print go through the service's REST API so the
 dedup + Drive-write logic stays in one place.
 
 Env:
-  DOC_ARCHIVE_URL    default http://100.74.146.0:11025
+  DOC_ARCHIVE_URL    default http://idc03.taila0626a.ts.net:11025
   DOC_ARCHIVE_API_KEY required for get/archive/print (X-API-Key)
-  MDDB_BASE          default http://100.74.146.0:11023
+  MDDB_BASE          default http://idc03.taila0626a.ts.net:11023
   DOC_PRINT_SSH      default tony-dell  (host with the CUPS queue)
   DOC_PRINT_QUEUE    default HP_DeskJet_2700
 """
@@ -25,9 +25,9 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 DOC_ARCHIVE_URL = os.environ.get(
-    "DOC_ARCHIVE_URL", "http://100.74.146.0:11025").rstrip("/")
+    "DOC_ARCHIVE_URL", "http://idc03.taila0626a.ts.net:11025").rstrip("/")
 DOC_ARCHIVE_API_KEY = os.environ.get("DOC_ARCHIVE_API_KEY", "")
-MDDB_BASE = os.environ.get("MDDB_BASE", "http://100.74.146.0:11023").rstrip("/")
+MDDB_BASE = os.environ.get("MDDB_BASE", "http://idc03.taila0626a.ts.net:11023").rstrip("/")
 MDDB_COLLECTION = os.environ.get("MDDB_DOC_COLLECTION", "documents")
 DOC_PRINT_SSH = os.environ.get("DOC_PRINT_SSH", "tony-dell")
 DOC_PRINT_QUEUE = os.environ.get("DOC_PRINT_QUEUE", "HP_DeskJet_2700")

@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backend.report_meta import validate_report_meta  # noqa: E402
 
-MDDB = "http://100.74.146.0:11023/v1"
+MDDB = "http://idc03.taila0626a.ts.net:11023/v1"
 NOW = datetime.now().astimezone()
 
 def probe(name, fn):
@@ -52,12 +52,12 @@ def is_active(unit):
         return False
 
 checks = [
-    probe("mddb", lambda: get("http://100.74.146.0:11023/health")),
+    probe("mddb", lambda: get("http://idc03.taila0626a.ts.net:11023/health")),
     probe("mddb-vector", lambda: get(MDDB + "/vector-search", 15, {
         "collection": "ada-cms-pages", "query": "health", "topK": 1})),
     probe("ada-ha-tony-http", lambda:
             urllib.request.urlopen("http://127.0.0.1:8002/", timeout=8).status),
-    probe("jev-student", lambda: get("http://100.74.146.0:8778/health")),
+    probe("jev-student", lambda: get("http://idc03.taila0626a.ts.net:8778/health")),
     probe("open-jev-4b-idc02", lambda: get("http://100.123.163.11:8777/v1/systemone", 30, {
         "state": "probe", "questions": {"q": {"type": "noul",
         "instructions": "x", "criteria": {"true": "t", "false": "f"}}}})),

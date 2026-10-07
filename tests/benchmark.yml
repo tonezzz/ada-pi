@@ -1,7 +1,7 @@
 # Ada benchmark & audit policy — canonical measurement of Ada's live
 # behavior over time. Run via scripts/scenario-benchmark.py:
 #
-#   scenario-benchmark.py --suite research --mddb http://100.74.146.0:11023/v1
+#   scenario-benchmark.py --suite research --mddb http://idc03.taila0626a.ts.net:11023/v1
 #
 # Each run writes one `kind: benchmark` doc to ada-ha-scenario-reports with
 # machine-readable meta (suite, score, per-scenario status, durations) —

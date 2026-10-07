@@ -50,7 +50,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--student", default="http://100.74.146.0:8778")
+parser.add_argument("--student", default="http://idc03.taila0626a.ts.net:8778")
 parser.add_argument("--heavy",   default="http://100.123.163.11:8777")
 parser.add_argument("--mddb", default="")
 parser.add_argument("--report-cms", action="store_true")

@@ -14,7 +14,7 @@ import sys
 import time
 import urllib.request
 
-MDDB = os.environ.get("ADA_MDDB", "http://100.74.146.0:11023")
+MDDB = os.environ.get("ADA_MDDB", "http://idc03.taila0626a.ts.net:11023")
 WEAVIATE = os.environ.get("WEAVIATE_URL", "http://100.68.142.13:8084")
 COLL = os.environ.get("BENCH_COLLECTION", "ada-ha-bank-general")
 

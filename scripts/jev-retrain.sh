@@ -53,8 +53,8 @@ fi
 
 echo "[4/5] deploy to $IDC01"
 scp -q "$WORK/ckpt.tgz" "$IDC01:/tmp/ckpt-$STAMP.tgz"
-ssh "$IDC01" "cd ~/jev-student && cp -r ckpt ckpt-bak-$STAMP 2>/dev/null; rm -rf ckpt && tar xzf /tmp/ckpt-$STAMP.tgz && systemctl --user restart jev-student && sleep 12 && curl -s http://100.74.146.0:8778/health"
+ssh "$IDC01" "cd ~/jev-student && cp -r ckpt ckpt-bak-$STAMP 2>/dev/null; rm -rf ckpt && tar xzf /tmp/ckpt-$STAMP.tgz && systemctl --user restart jev-student && sleep 12 && curl -s http://idc03.taila0626a.ts.net:8778/health"
 
 echo "[5/5] bench the new model"
-ssh "$IDC01" 'cd ~/CascadeProjects/ada-pi && timeout 300 .venv/bin/python tests/bench/jev-bench.py http://100.74.146.0:8778 --mddb http://100.74.146.0:11023/v1 --report-cms 2>&1 | tail -18'
+ssh "$IDC01" 'cd ~/CascadeProjects/ada-pi && timeout 300 .venv/bin/python tests/bench/jev-bench.py http://idc03.taila0626a.ts.net:8778 --mddb http://idc03.taila0626a.ts.net:11023/v1 --report-cms 2>&1 | tail -18'
 echo "done — $WORK"
