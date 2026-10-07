@@ -2953,7 +2953,9 @@ class GeminiLiveProvider(RealtimeProvider):
                                     "Search backend: 'auto' (default — grounded answer, free "
                                     "fallback on quota), 'gemini' (grounded, billed), or "
                                     "'duckduckgo' (free, no quota — use when asked for it or "
-                                    "when grounded quota is exhausted)."
+                                    "when grounded quota is exhausted). When the result carries "
+                                    "quota_exhausted/degraded, briefly tell the user live search "
+                                    "is degraded — never pass fallback hits off as grounded."
                                 ),
                             },
                         },

@@ -1,0 +1,105 @@
+# SSOT Job: web_search quota fallback — 429 from gemini auto-retries
+# duckduckgo once, result annotated, quota burn posted to the ops event
+# feed. Card: web-search-quota-fallback (chaba kanban).
+# Dispatch worktree: dispatch-wt-20261007-145921-ada-pi-web-search-on-a-429-quo.
+
+title: web_search quota fallback — annotated DDG retry + web_search_quota
+  ops event
+subtitle: a 429/quota-shaped gemini error now degrades loudly instead of
+  surfacing as a hard tool failure or an unmarked fallback
+
+planning:
+  goal: |
+    Audit 2026-10-07 (session db02b97016): web_search hard-failed on a
+    429 RESOURCE_EXHAUSTED (gemini-2.5-flash free-tier daily quota) and
+    Ada served a stale Oct-5 CMS page as "latest" — the user caught the
+    date mismatch. The provider='duckduckgo' seat existed but nothing
+    annotated a degraded answer, and quota burn was invisible until
+    zero. Card asks: auto-retry once against duckduckgo on a
+    429/quota-shaped error, annotate the result so Ada can say "live
+    search is degraded, using free fallback", and add the 429 signature
+    to the ops event feed.
+  context: |
+    - auto mode already fell back to DDG on ANY gemini exception; the
+      gap was annotation + ops visibility. Explicit provider='gemini'
+      stays strict (raises) — the tool description already tells the
+      model to pick duckduckgo when quota is exhausted — but its 429
+      still posts the ops event (burn is burn).
+    - Ops feed = docs posted to ada-ha-events-<instance> with
+      meta.kind=['ops-event'], surfaced by the hourly chaba report —
+      same shape as provider._emit_ops_event / write_outbox dead-letter
+      events, emitted runner-side so REST/deep-research callers count too.
+    - Free-tier grounded quota is ~20 req/day shared with benchmarks and
+      ada_ops research (tests/benchmark.yml usage notes) — a throttle is
+      required so a 429 storm can't flood the feed.
+  scope: |
+    - backend/tool_runner/web.py — _is_quota_error() (structured code/
+      status fields + 429|RESOURCE_EXHAUSTED|rate limit|quota text
+      signature); web_search annotates every result with provider_used +
+      quota_exhausted, fallback answers additionally carry degraded +
+      fallback_error; _emit_quota_ops_event posts type=web_search_quota
+      to ada-ha-events-<instance>, fire-and-forget, throttled to one per
+      ADA_QUOTA_EVENT_MIN_S (default 300s).
+    - backend/tool_runner/__init__.py — _web_quota_event_at throttle stamp.
+    - backend/realtime_provider.py — web_search declaration description
+      tells the model to say "live search is degraded" when
+      quota_exhausted/degraded is present.
+    - backend/tool_guide.yml — same contract on the error-path guide.
+    - tests/test_web_search.py — 14 tests: signature detection, fallback
+      annotation, ops-event shape + throttle, strict-gemini raise path,
+      chaba (mddb=None) path.
+  success_criteria:
+    - '429 in auto mode returns a DDG answer with quota_exhausted=True,
+      provider_used=duckduckgo, degraded text — never a bare failure'
+    - 'one web_search_quota ops doc per throttle window in
+      ada-ha-events-<instance> with meta.tool=web_search'
+    - 'pytest tests/test_web_search.py — 14 passed; no suite regression'
+
+processing:
+  status: done
+  started_at: "2026-10-07"
+  steps:
+    - id: 1
+      label: "fallback annotation + quota signature"
+      status: done
+      notes: "web.py keeps the any-error auto fallback (non-quota
+        failures still degrade, flagged quota_exhausted=False); quota-
+        shaped errors add degraded+fallback_error and emit the ops event
+        before retrying."
+    - id: 2
+      label: "ops event feed"
+      status: done
+      notes: "runner-side _emit_quota_ops_event mirrors the provider
+        emit shape (kind=ops-event, type=web_search_quota, instance,
+        tool, session_id, ts); throttled per-process via
+        _web_quota_event_at monotonic stamp — a 429 storm yields one
+        doc per 5 min, not one per call."
+    - id: 3
+      label: "tests + lint"
+      status: done
+      notes: "14 new tests pass; tests/test_tool_runner.py 201 pass;
+        test_ops_events/provider_events/tools_loader 51 pass. tool-lint
+        shows 3 PRE-EXISTING violations on tools.d ada_track_device /
+        ada_device_acl (unrelated files, baseline debt on this HEAD)."
+
+invoke:
+  commands:
+    - ".venv/bin/python -m pytest tests/test_web_search.py -q"
+    - ".venv/bin/python -m pytest tests/test_tool_runner.py -q"
+    - "python3 scripts/tool-lint.py"
+
+follow_ups:
+  - repo: ada-pi
+    task: "verify on idc03 after deploy: burn the daily grounded quota
+      (or ADA_QUOTA_EVENT_MIN_S=1 in a test shell) and confirm a
+      web_search_quota doc lands in ada-ha-events-tony and surfaces in
+      the next hourly digest"
+  - repo: ada-pi
+    task: "baseline debt: tools.d ada_track_device descsize + coverage,
+      ada_device_acl coverage — 3 pre-existing tool-lint violations"
+
+verification:
+  - ".venv/bin/python -m pytest tests/test_web_search.py -q  # 14 passed"
+  - ".venv/bin/python -m pytest tests/test_tool_runner.py -q  # 201 passed"
+  - "mddb search ada-ha-events-<instance> type=web_search_quota after a
+    live 429 — doc present with meta.tool=web_search"

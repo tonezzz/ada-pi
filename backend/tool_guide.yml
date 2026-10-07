@@ -241,7 +241,9 @@ web_search: >-
   or offer cms_publish_page). Answer yourself in 2-3 lines citing the
   source — never cast results to a screen instead. provider='auto'
   (default, billed grounding with free fallback) | 'gemini' | 'duckduckgo'
-  (free, no quota).
+  (free, no quota). Result carries provider_used + quota_exhausted;
+  degraded= means the grounded path failed and the free fallback
+  answered — briefly tell the user live search is degraded.
 
 ada_remember: >-
   'remember that…' or a fact worth keeping. Curated kinds
