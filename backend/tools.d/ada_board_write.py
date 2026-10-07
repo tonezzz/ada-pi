@@ -34,7 +34,16 @@ DECLARATION = {
         "properties": {
             "action": {
                 "type": "string",
-                "description": "'comment' (default), 'respond', or 'read'.",
+                "description": "'comment' (default), 'respond', 'create', "
+                               "or 'read'.",
+            },
+            "title": {
+                "type": "string",
+                "description": "Card title (action=create).",
+            },
+            "note": {
+                "type": "string",
+                "description": "One-line card note (action=create).",
             },
             "id": {
                 "type": "string",
@@ -124,6 +133,32 @@ async def _comment(args: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": err}
     return {"ok": True, "id": cid, "posted": text[:80],
             "message": (data or {}).get("message", "comment added")}
+
+
+async def _create(args: dict[str, Any]) -> dict[str, Any]:
+    """Drop a new card onto the board — the voice-side capture of the
+    request lifecycle. Any caller the tool's policy admits may create;
+    the card lands in backlog for triage, comms record 'ada'."""
+    title = str(args.get("title") or "").strip()
+    if not title:
+        return {"ok": False, "error": "a card title is required"}
+    body: dict[str, Any] = {"title": title[:_TITLE_MAX * 2],
+                            "from": "ada"}
+    note = str(args.get("note") or "").strip()
+    if note:
+        body["note"] = note[:_TEXT_MAX]
+        body["text"] = note[:_TEXT_MAX]
+    col = str(args.get("column") or "").strip().lower()
+    if col:
+        body["column"] = col
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        data, err = await _request(client, "POST", "/card", json=body)
+    if err:
+        return {"ok": False, "error": err}
+    return {"ok": True,
+            "message": (data or {}).get("message", "card created"),
+            "note": "the card is on the board in backlog — triage picks "
+                    "it up from there"}
 
 
 async def _respond(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
@@ -228,6 +263,8 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
         return await _comment(args)
     if action == "respond":
         return await _respond(runner, args)
+    if action == "create":
+        return await _create(args)
     return {"ok": False,
             "error": f"unknown action {action!r} — use comment, respond, "
-                     "or read"}
+                     "create, or read"}
