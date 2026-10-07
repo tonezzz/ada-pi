@@ -483,7 +483,7 @@ class TgRelay:
 
         async def send(request):
             """Outbound push API for Ada's chat_send tool — loopback only.
-            {chat_id?, text?, photo_url?, caption?}"""
+            {chat_id?, text?, photo_url|image_url?, caption?}"""
             try:
                 body = await request.json()
             except Exception:
@@ -497,15 +497,17 @@ class TgRelay:
             if not cid:
                 return JSONResponse({"ok": False,
                                      "error": "no target"}, status_code=400)
-            if not (body.get("text") or body.get("photo_url")):
+            # chat_send posts image_url; keep photo_url as the legacy alias.
+            photo = body.get("photo_url") or body.get("image_url")
+            if not (body.get("text") or photo):
                 return JSONResponse({"ok": False,
                                      "error": "nothing to send"},
                                     status_code=400)
             try:
                 if body.get("text"):
                     await self.send_text(cid, str(body["text"])[:4000])
-                if body.get("photo_url"):
-                    await self.send_photo(cid, str(body["photo_url"]),
+                if photo:
+                    await self.send_photo(cid, str(photo),
                                           str(body.get("caption") or ""))
                 return JSONResponse({"ok": True, "chat_id": cid})
             except Exception as exc:
