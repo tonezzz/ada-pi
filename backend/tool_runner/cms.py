@@ -45,8 +45,9 @@ class CmsMixin:
         # Provenance passthrough — generated pages carry these; the CMS
         # viewer uses generated_by to offer a Regenerate control. Report
         # fields too: Ada needs summary/updated/freshness BEFORE deciding
-        # to drill deeper (the report-first ritual).
-        for name in ("generated_by", "report_role", "parent",
+        # to drill deeper (the report-first ritual). kind lets a 'list'
+        # row be told apart (page vs report) now that reports list too.
+        for name in ("kind", "generated_by", "report_role", "parent",
                      "summary", "domain", "fresh_for", "confidence",
                      "supersedes", "timeline"):
             v = first(name)
@@ -69,8 +70,9 @@ class CmsMixin:
         self, action: str, key: str = "", slug: str = "",
         lang: str = "en", limit: int = 50,
     ) -> Any:
-        """Read the miniapp CMS. action='list' returns every page's
-        slug/title/format/updated; 'get' returns one page's full content
+        """Read the miniapp CMS. action='list' returns every page and
+        report's slug/kind/title/format/updated, most recently updated
+        first; 'get' returns one page's full content
         by key (the page slug) + lang; 'verify' re-reads a page and checks
         its content parses for the declared format. Free reads — no
         confirmation."""
@@ -86,10 +88,18 @@ class CmsMixin:
         return await self.cms_verify_page(k)
 
     async def cms_list_pages(self, limit: int = 50) -> list[dict[str, Any]]:
-        """List pages in the miniapp CMS collection, grouped by slug with
-        the language variants present (lang is a per-doc field in MDDB)."""
+        """List pages AND reports in the miniapp CMS collection, grouped
+        by slug with the language variants present (lang is a per-doc
+        field in MDDB), most recently updated first. kind=report docs
+        were invisible here until 2026-10-08 (ada-video-query-routing)
+        which left cached-videos-report undiscoverable."""
+        # Over-fetch: /search has no ordering, so fetching exactly `limit`
+        # raw docs returns an arbitrary subset — the cam-page flood (~300
+        # docs) would starve every other slug out of the grouped result.
+        fetch = max(limit * 8, 400)
         docs = await self.mddb.search_documents(
-            CMS_COLLECTION, filter_meta={"kind": ["page"]}, limit=limit
+            CMS_COLLECTION, filter_meta={"kind": ["page", "report"]},
+            limit=fetch,
         )
         # Lifecycle gate (2026-10-07): generated pages keep kind=page after
         # supersede — e.g. cam-wall-cms marks renamed cams status:superseded
@@ -116,7 +126,10 @@ class CmsMixin:
             by_slug[slug] = page
         for p in by_slug.values():
             p["langs"] = sorted(p["langs"])
-        return list(by_slug.values())
+        pages = sorted(by_slug.values(),
+                       key=lambda p: p.get("updated") or "",
+                       reverse=True)
+        return pages[:limit]
 
     async def cms_get_page(
         self, slug: str, lang: str = "en"
@@ -595,8 +608,10 @@ class CmsMixin:
         when 'updated' exceeds its fresh_for hint. Ada reads THIS to answer
         'what reports exist / what changed' without per-page cms_get_page."""
         try:
+            # Fetch past the raw-doc count — /search returns an arbitrary
+            # subset at the cap and the collection already exceeds 200.
             docs = await self.mddb.search_documents(
-                CMS_COLLECTION, limit=200)
+                CMS_COLLECTION, limit=600)
         except Exception as exc:
             logger.warning("reports-index list failed: %s", exc)
             return
@@ -612,7 +627,8 @@ class CmsMixin:
                 return (now - dt).total_seconds() > secs
             except Exception:
                 return False
-        rows = []
+        drop = {"superseded", "archived", "retracted", "expired"}
+        best: dict[str, dict[str, Any]] = {}
         for d in docs:
             meta = d.get("meta") or {}
             kind = (meta.get("kind") or [""])[0]
@@ -621,26 +637,40 @@ class CmsMixin:
             slug = (meta.get("slug") or [d.get("key") or "?"])[0]
             if slug == "reports-index":
                 continue
-            rows.append({
+            status = meta.get("status") or ""
+            status = status[0] if isinstance(status, list) and status else str(status)
+            if status in drop:
+                continue
+            row = {
                 "slug": slug,
+                "kind": kind,
                 "title": (meta.get("title") or [slug])[0],
                 "domain": (meta.get("domain") or ["-"])[0],
                 "summary": (meta.get("summary") or [""])[0],
                 "updated": (meta.get("updated") or ["-"])[0][:16],
                 "fresh": (meta.get("fresh_for") or ["-"])[0],
                 "stale": stale(meta),
-            })
-        rows.sort(key=lambda r: r["updated"], reverse=True)
+            }
+            prev = best.get(slug)
+            if prev is None or row["updated"] > prev["updated"]:
+                best[slug] = row
+        rows = sorted(best.values(), key=lambda r: r["updated"],
+                      reverse=True)
+        # Reports lead the index — it exists to enumerate them, and pure
+        # recency lets the cam-page refresh flood push every report past
+        # the row cap (observed 2026-10-07: zero video pages listed).
+        rows = ([r for r in rows if r["kind"] == "report"] +
+                [r for r in rows if r["kind"] != "report"])
         lines = [f"# Reports index — {now:%Y-%m-%d %H:%M}Z\n",
                  "Brief summaries of every report page — read the linked page",
                  "only when the summary isn't enough.\n",
-                 "| slug | domain | updated | fresh | summary |",
-                 "|---|---|---|---|---|"]
+                 "| slug | kind | domain | updated | fresh | summary |",
+                 "|---|---|---|---|---|---|"]
         for r in rows[:60]:
             flag = " ⚠STALE" if r["stale"] else ""
             summ = (r["summary"] or r["title"])[:80]
-            lines.append(f"| {r['slug']} | {r['domain']} | {r['updated']}"
-                         f"{flag} | {r['fresh']} | {summ} |")
+            lines.append(f"| {r['slug']} | {r['kind']} | {r['domain']} | "
+                         f"{r['updated']}{flag} | {r['fresh']} | {summ} |")
         md = "\n".join(lines)
         await self.mddb.add_document(
             CMS_COLLECTION, "reports-index", "en", md,

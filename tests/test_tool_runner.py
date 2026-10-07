@@ -397,6 +397,70 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         page = await self.runner.execute("cms_get_page", {"slug": "pool-notes"})
         self.assertEqual(page["content"], "# Pool")
 
+    async def test_list_includes_reports_sorted_deduped(self):
+        # ada-video-query-routing (2026-10-08): kind=report docs were
+        # invisible to 'list' (kind=page-only filter) and the raw-doc cap
+        # with no server ordering buried everything past the cam flood.
+        self.runner.mddb.search_documents.return_value = [
+            {"key": "cam-a", "lang": "en",
+             "meta": {"slug": ["cam-a"], "kind": ["page"],
+                      "title": ["Cam A"],
+                      "updated": ["2026-10-07T23:00:00+00:00"]}},
+            {"key": "cam-a", "lang": "th",
+             "meta": {"slug": ["cam-a"], "kind": ["page"],
+                      "title": ["Cam A TH"],
+                      "updated": ["2026-10-07T23:00:00+00:00"]}},
+            {"key": "cached-videos-report",
+             "meta": {"slug": ["cached-videos-report"], "kind": ["report"],
+                      "title": ["Cached Videos"],
+                      "updated": ["2026-10-07T23:05:00+00:00"]}},
+            {"key": "dead-page",
+             "meta": {"slug": ["dead-page"], "kind": ["page"],
+                      "status": ["superseded"], "title": ["Dead"],
+                      "updated": ["2026-10-07T23:10:00+00:00"]}},
+        ]
+        pages = await self.runner.execute("cms_list_pages", {})
+        out = pages["output"]
+        self.assertEqual([p["slug"] for p in out],
+                         ["cached-videos-report", "cam-a"])
+        self.assertEqual(out[0]["kind"], "report")
+        self.assertEqual(out[1]["langs"], ["en", "th"])
+        _, kwargs = self.runner.mddb.search_documents.await_args
+        self.assertEqual(kwargs["filter_meta"],
+                         {"kind": ["page", "report"]})
+        self.assertGreaterEqual(kwargs["limit"], 400)
+
+    async def test_reports_index_dedupes_and_leads_with_reports(self):
+        # Live index on 2026-10-07 was all cam-* rows — en/th dup rows +
+        # recency sort + row cap pushed every report out of the table.
+        self.runner.mddb.search_documents.return_value = [
+            {"key": "cam-a", "lang": "en",
+             "meta": {"slug": ["cam-a"], "kind": ["page"],
+                      "title": ["Cam A"],
+                      "updated": ["2026-10-07T23:02:00+00:00"]}},
+            {"key": "cam-a", "lang": "th",
+             "meta": {"slug": ["cam-a"], "kind": ["page"],
+                      "title": ["Cam A"],
+                      "updated": ["2026-10-07T23:02:00+00:00"]}},
+            {"key": "cached-videos-report",
+             "meta": {"slug": ["cached-videos-report"], "kind": ["report"],
+                      "title": ["Cached Videos"], "domain": ["media"],
+                      "summary": ["playable cached clips"],
+                      "updated": ["2026-10-07T11:00:00+00:00"]}},
+            {"key": "gone-page",
+             "meta": {"slug": ["gone-page"], "kind": ["page"],
+                      "status": ["superseded"],
+                      "updated": ["2026-10-07T23:03:00+00:00"]}},
+        ]
+        await self.runner._cms_reports_index()
+        args, _ = self.runner.mddb.add_document.await_args
+        md = args[3]
+        self.assertEqual(md.count("| cached-videos-report |"), 1)
+        self.assertEqual(md.count("| cam-a |"), 1)
+        self.assertNotIn("gone-page", md)
+        self.assertLess(md.index("| cached-videos-report |"),
+                        md.index("| cam-a |"))
+
     async def test_delete_requires_confirmed(self):
         with self.assertRaises(PermissionError):
             await self.runner.execute("cms_delete_page", {"slug": "pool-notes"})

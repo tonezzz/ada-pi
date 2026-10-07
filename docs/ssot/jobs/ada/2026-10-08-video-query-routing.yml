@@ -1,0 +1,106 @@
+# SSOT Job: Video/dub/cached query routing — voice-dub-demos + cached-videos-report
+# Card: ada-video-query-routing (chaba kanban). Dispatch 20261008-061050.
+# Incident: live e2e yt-dub-liam-e2e failed twice 2026-10-07 (sessions
+# ece770ccb0 17:55 + 6e5d59f738 18:34) — Ada answered "not in memory /
+# no cached videos" without ever cms_read'ing her own video pages.
+
+title: Route video/dub/cached queries to voice-dub-demos + cached-videos-report
+subtitle: reports visible to cms_read list again; reports-index leads with reports; both slugs named in the always-on prompt
+
+planning:
+  goal: |
+    Three discovery paths to the video pages were all broken, so a
+    dub/cached question degraded to a memory guess:
+      1. cms_read action='list' filtered kind=page only — every
+         kind=report doc (cached-videos-report et al.) was invisible,
+         and /search has no ordering so the ~300 cam-* docs starved the
+         grouped result under the raw limit=50 cap (voice-dub-demos is
+         kind=page but unreachable past the cap).
+      2. reports-index itself — en/th variants produced duplicate rows,
+         recency sort let the cam-* refresh flood push all reports past
+         the rows[:60] cap. Verified live 2026-10-08: the index table
+         contained zero video/report rows.
+      3. voice-dub-demos was named only in backend/tool_guide.yml,
+         which ToolRunner attaches ONLY to failed/denied tool results
+         — invisible in the shipped prompt until something already
+         went wrong.
+  scope: |
+    In scope:
+      - backend/tool_runner/cms.py — cms_list_pages: kind page+report,
+        over-fetch (max(limit*8,400)), group by slug, sort updated desc,
+        slice to limit; _cms_page_summary passes `kind` through;
+        _cms_reports_index: fetch 600, lifecycle-gate (superseded/
+        archived/retracted/expired dropped), dedupe by slug, reports
+        first then pages, `kind` column added.
+      - backend/realtime_provider.py — CMS_INSTRUCTIONS names both
+        slugs (cached-videos-report = every playable clip,
+        voice-dub-demos = demos + cast recipe) as the route for
+        video/dub/cached asks; 'get' cue for known slugs; shipped
+        cms_read + cast_to_screen descriptions carry the pointer
+        (188/267 chars, under the 300/4-line lint contract).
+      - backend/tool_guide.yml — cms_read entry synced (reports in
+        list, get-by-slug escape hatch, video-slug routing).
+      - tests/test_tool_runner.py — 2 new tests: list includes reports
+        sorted+deduped w/ over-fetch; index dedupes, drops superseded,
+        leads with reports.
+    Out of scope:
+      - Live CMS data edits (e.g. linking cached-videos-report ->
+        voice-dub-demos via meta.links) — the code routing fix ships
+        first; can be added by a cms_edit note if still wanted.
+      - Deploy to idc03 — deploy-ada.sh per AGENTS.md when Tony pulls.
+      - The 2 pre-existing tool-lint violations (ada_track_device
+        descsize, ada_device_acl coverage) — another in-flight session.
+  success_criteria:
+    - '"what videos do we have cached" -> cms_read reports-index or
+      cached-videos-report by slug; answer quotes the report'
+    - '"play the dubbed version" -> cms_read voice-dub-demos /
+      cached-videos-report -> cast_to_screen play /apps/yt-live/*.mp4,
+      never a YouTube watch URL'
+    - 'cms_read action=list returns cached-videos-report (kind=report)
+      in its rows'
+    - 'reports-index regeneration lists all kind=report slugs in its
+      first section regardless of cam-page refresh volume'
+  risks:
+    - 'over-fetch is still bounded (max(limit*8,400)); a collection
+      that outgrows the fetch cap can still hide slugs — mitigated by
+      the get-by-slug cue in both prompt layers.'
+    - 'reports-index reports-first ordering changes the page layout;
+      consumers are human/LLM readers only (no parser depends on the
+      table).'
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-10-08"
+  steps:
+    - id: 1
+      label: "cms_list_pages reaches reports"
+      status: done
+      notes: "filterMeta kind page+report (OR verified live: 337+17 docs); over-fetch 400 raw docs; group by slug; sort updated desc; kind exposed per row."
+    - id: 2
+      label: "reports-index dedupe + reports-first"
+      status: done
+      notes: "dedupe by slug (en/th dup rows gone), status lifecycle gate, kind=report rows lead the table, kind column, fetch 600."
+    - id: 3
+      label: "Prompt + schema + guide routing"
+      status: done
+      notes: "CMS_INSTRUCTIONS names both slugs w/ get-by-slug cue; cms_read desc names both slugs (188c); cast_to_screen desc points at cached-videos-report (267c); tool_guide cms_read synced."
+    - id: 4
+      label: "Tests + verify"
+      status: done
+      notes: "207/207 test_tool_runner green (2 new); tool-lint only the 2 known pre-existing violations; ast/yaml parse clean."
+
+invoke:
+  voice:
+    - '"what videos do we have cached" -> cms_read get cached-videos-report (or reports-index first)'
+    - '"play the Liam and Noel dub on screen 2" -> cms_read get voice-dub-demos -> cast_to_screen play /apps/yt-live/LLALMFmabV4-dub.mp4'
+  env:
+    ADA_CMS_COLLECTION: "ada-cms-pages (default)"
+    MDDB_BASE_URL: "default http://127.0.0.1:11023/v1"
+
+verification:
+  - "python3 -m pytest tests/test_tool_runner.py -k Cms  # 32 tests"
+  - "python3 scripts/tool-lint.py  # 2 pre-existing violations only"
+  - "live: cms_read action=list | grep cached-videos-report  # now present"
+  - "scenario-live: tests/scenarios-live/yt_dub_liam_e2e.yaml (needs deployed backend — rerun after deploy)"

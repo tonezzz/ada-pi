@@ -137,8 +137,10 @@ CALENDAR_INSTRUCTIONS = (
 
 CMS_INSTRUCTIONS = (
     " You maintain the user's miniapp — a small multi-page site whose pages you own. "
-    "cms_read action='list' lists existing pages with their language variants and "
-    "action='get' reads one by key (its page slug), "
+    "cms_read action='list' lists existing pages and reports (kind per row, most "
+    "recently updated first) with their language variants and "
+    "action='get' reads one by key (its page slug) — get reaches any slug you "
+    "know even when list truncates, "
     "cms_publish_page creates or fully replaces a page (slugs are lowercase, e.g. 'pool-notes'; "
     "en/th variants coexist — publish the user's language plus the other when asked), "
     "cms_edit action='note' appends a timeline note to an existing page without replacing content, and "
@@ -153,8 +155,10 @@ CMS_INSTRUCTIONS = (
     "'what pages do we have', 'which documents are in the archive' — read the 'reports-index' page first — it lists every "
     "report with a one-line summary and staleness flag; only cms_read action='get' the linked page when the "
     "summary isn't enough. "
-    "Thai voice dubs and playable cached clips live on the 'cached-videos-report' page — when the "
-    "user wants 'the dubbed version' or a clip we already have, cms_read it and cast the local "
+    "Video, dub, and cached-clip questions route to two pages you own: 'cached-videos-report' "
+    "lists every playable cached clip and 'voice-dub-demos' holds the dub demos with the exact "
+    "cast recipe — for 'the dubbed version', 'what videos do we have cached', or a dub-demo ask, "
+    "cms_read action='get' those slugs and cast the local "
     "/apps/yt-live/*.mp4 URL with cast_to_screen, never a YouTube watch URL. "
     "READ ORDER — most distilled first, outside last: reports-index (or cms_read action='list' / "
     "ada_memory_search bank='cms'), then the linked page, then memory banks, and only then an "
@@ -2777,8 +2781,9 @@ class GeminiLiveProvider(RealtimeProvider):
                     "name": "cast_to_screen",
                     "description": (
                         "Drive the numbered vcast displays (browser/PWA screens — NOT the TV; "
-                        "absorbs vcast_say/list/status/shortcut). Interrupting a busy screen "
-                        "or starting a camera capture needs confirmed=true after asking the user."
+                        "absorbs vcast_say/list/status/shortcut). Cached dubs: cms_read "
+                        "'cached-videos-report', play its local .mp4. Interrupting a busy "
+                        "screen or a camera capture needs confirmed=true after asking the user."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3757,9 +3762,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "cms_read",
                     "description": (
-                        "Read miniapp pages — action='list'|'get'|'verify' (absorbs "
-                        "cms_list_pages/get_page/verify_page). 'verify' re-checks a page "
-                        "after publishing since you cannot see the rendered site."
+                        "Read miniapp pages and reports — action='list'|'get'|'verify' "
+                        "(absorbs cms_list_pages/get_page/verify_page). 'get' reaches "
+                        "any slug directly, e.g. 'cached-videos-report'/'voice-dub-demos'."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3772,7 +3777,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "key": {
                                 "type": "string",
-                                "description": "Page slug, e.g. 'pool-notes' (required for get/verify; get the real slug from action='list' or reports-index).",
+                                "description": "Page or report slug, e.g. 'pool-notes'/'cached-videos-report' (required for get/verify; get the real slug from action='list' or reports-index).",
                             },
                             "lang": {
                                 "type": "string",
@@ -3781,7 +3786,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "limit": {
                                 "type": "integer",
-                                "description": "list: max pages to return (default 50).",
+                                "description": "list: max slugs to return, most recently updated first (default 50; raise for the long tail).",
                             },
                         },
                         "required": ["action"],
