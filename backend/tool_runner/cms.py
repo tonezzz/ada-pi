@@ -11,6 +11,122 @@ from __future__ import annotations
 from .common import *  # noqa: F401,F403
 
 
+# Listing window for list/search/index. MDDB /search returns an arbitrary
+# unordered subset with no sort — the collection outgrew small limits
+# (373 docs, liam-e2e 2026-10-07: a limit=10 list showed cam-* pages only
+# and the model wrongly concluded the page did not exist). Fetch a
+# bounded superset and order/filter locally instead.
+CMS_FETCH_WINDOW = int(os.environ.get("ADA_CMS_FETCH_WINDOW", "600"))
+
+# Reports-index shape: max rows rendered, and the per-domain cap that
+# stops one noisy domain flooding the index (cam-* took 59/60 rows and
+# pushed cached-videos-report off entirely — the same incident).
+CMS_INDEX_ROWS = int(os.environ.get("ADA_CMS_INDEX_ROWS", "60"))
+CMS_INDEX_DOMAIN_CAP = int(os.environ.get("ADA_CMS_INDEX_DOMAIN_CAP", "10"))
+
+# Lifecycle states a page keeps in meta after supersede/archive — dead
+# twins must not list or index (36 ghost rows observed, 2026-10-07).
+_CMS_DEAD_STATUS = {"superseded", "archived", "retracted", "expired"}
+
+
+def _cms_doc_status(doc: dict[str, Any]) -> str:
+    s = (doc.get("meta") or {}).get("status") or ""
+    return s[0] if isinstance(s, list) and s else str(s)
+
+
+def _meta_str(meta: dict[str, Any], name: str, default: str = "") -> str:
+    v = meta.get(name)
+    if isinstance(v, list):
+        return str(v[0]) if v else default
+    return str(v) if v is not None else default
+
+
+def cms_index_rows(
+    docs: list[dict[str, Any]],
+    now: datetime,
+    *,
+    max_rows: int = CMS_INDEX_ROWS,
+    domain_cap: int = CMS_INDEX_DOMAIN_CAP,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Shape CMS docs into reports-index rows.
+
+    Port of the chaba scripts/lib/cms_index.py index_rows() fixes
+    (2026-10-07): en/th variants dedupe to one row per slug, and a
+    per-domain cap keeps a flood domain (cam-*) from starving every
+    other report off the page. Returns (rows, overflow) where overflow
+    maps capped domains to their hidden-row counts."""
+    drop = _CMS_DEAD_STATUS
+
+    def stale(meta: dict) -> bool:
+        ff = _meta_str(meta, "fresh_for")
+        upd = _meta_str(meta, "updated")
+        secs = fresh_for_seconds(ff)
+        if secs is None or not upd:
+            return False
+        try:
+            dt = datetime.fromisoformat(upd.replace("Z", "+00:00"))
+            return (now - dt).total_seconds() > secs
+        except Exception:
+            return False
+
+    # Dedupe pass — one row per slug. The 'en' variant supplies
+    # title/summary (the index language); 'updated' takes the freshest
+    # variant so a th-only refresh still bumps the row.
+    by_slug: dict[str, dict[str, Any]] = {}
+    for d in docs:
+        meta = d.get("meta") or {}
+        kind = _meta_str(meta, "kind")
+        if kind not in ("report", "page"):
+            continue
+        if _cms_doc_status(d) in drop:
+            continue
+        slug = _meta_str(meta, "slug") or str(d.get("key") or "?")
+        if slug == "reports-index":
+            continue
+        lang = str(d.get("lang") or "en")
+        row = by_slug.get(slug)
+        if row is None:
+            row = {
+                "slug": slug,
+                "title": _meta_str(meta, "title") or slug,
+                "domain": _meta_str(meta, "domain") or "-",
+                "summary": _meta_str(meta, "summary"),
+                "updated": _meta_str(meta, "updated") or "-",
+                "fresh": _meta_str(meta, "fresh_for") or "-",
+                "stale": stale(meta),
+                "langs": [],
+            }
+            by_slug[slug] = row
+        if lang not in row["langs"]:
+            row["langs"].append(lang)
+        upd = _meta_str(meta, "updated")
+        if upd > (row["updated"] if row["updated"] != "-" else ""):
+            row["updated"] = upd
+            row["stale"] = stale(meta)
+            if _meta_str(meta, "fresh_for"):
+                row["fresh"] = _meta_str(meta, "fresh_for")
+        if lang == "en":
+            row["title"] = _meta_str(meta, "title") or row["title"]
+            row["summary"] = _meta_str(meta, "summary") or row["summary"]
+    rows = sorted(
+        by_slug.values(), key=lambda r: str(r["updated"]), reverse=True)
+    kept: list[dict[str, Any]] = []
+    overflow: dict[str, int] = {}
+    counts: dict[str, int] = {}
+    for r in rows[:max_rows]:
+        dom = str(r["domain"] or "-").lower()
+        if domain_cap > 0 and counts.get(dom, 0) >= domain_cap:
+            overflow[dom] = overflow.get(dom, 0) + 1
+            continue
+        counts[dom] = counts.get(dom, 0) + 1
+        kept.append(r)
+    # Rows beyond max_rows count as overflow for their domain too.
+    for r in rows[max_rows:]:
+        dom = str(r["domain"] or "-").lower()
+        overflow[dom] = overflow.get(dom, 0) + 1
+    return kept, overflow
+
+
 class CmsMixin:
 
     # -- Miniapp/CMS page tools: one MDDB document per page in CMS_COLLECTION --
@@ -67,56 +183,124 @@ class CmsMixin:
 
     async def cms_read(
         self, action: str, key: str = "", slug: str = "",
-        lang: str = "en", limit: int = 50,
+        lang: str = "en", limit: int = 50, query: str = "",
     ) -> Any:
         """Read the miniapp CMS. action='list' returns every page's
-        slug/title/format/updated; 'get' returns one page's full content
-        by key (the page slug) + lang; 'verify' re-reads a page and checks
-        its content parses for the declared format. Free reads — no
-        confirmation."""
+        slug/title/format/updated, newest first; 'search' finds pages by
+        query text over slug/title/summary; 'get' returns one page's full
+        content by key (the page slug) + lang; 'verify' re-reads a page and
+        checks its content parses for the declared format. Free reads —
+        no confirmation."""
         action = (action or "").strip().lower()
-        if action not in ("get", "list", "verify"):
+        if action not in ("get", "list", "search", "verify"):
             raise ValueError(
-                f"invalid action {action!r}: expected get|list|verify")
+                f"invalid action {action!r}: expected get|list|search|verify")
         if action == "list":
             return await self.cms_list_pages(limit=limit)
+        if action == "search":
+            # The term sometimes lands in key/slug instead of query —
+            # accept it from any of them; free text, not slug-validated.
+            q = str(query or key or slug or "").strip()
+            return await self._cms_search_pages(q, limit=limit)
         k = self._cms_slug(key or slug)
         if action == "get":
             return await self.cms_get_page(k, lang=lang)
         return await self.cms_verify_page(k)
 
-    async def cms_list_pages(self, limit: int = 50) -> list[dict[str, Any]]:
-        """List pages in the miniapp CMS collection, grouped by slug with
-        the language variants present (lang is a per-doc field in MDDB)."""
+    async def _cms_pages(self) -> list[dict[str, Any]]:
+        """All live pages, deduped by slug and ordered by updated desc.
+
+        MDDB's listing is an unordered arbitrary subset — the fetch
+        window must exceed the collection or the newest pages silently
+        never enter it."""
         docs = await self.mddb.search_documents(
-            CMS_COLLECTION, filter_meta={"kind": ["page"]}, limit=limit
+            CMS_COLLECTION, filter_meta={"kind": ["page"]},
+            limit=CMS_FETCH_WINDOW,
         )
         # Lifecycle gate (2026-10-07): generated pages keep kind=page after
         # supersede — e.g. cam-wall-cms marks renamed cams status:superseded
         # until the archive pass flips kind. Listing without this check
         # shows dead twins of every live page (36 ghost rows observed).
-        drop = {"superseded", "archived", "retracted", "expired"}
-
-        def _status(d: dict[str, Any]) -> str:
-            s = (d.get("meta") or {}).get("status") or ""
-            return s[0] if isinstance(s, list) and s else str(s)
-
-        docs = [d for d in docs if _status(d) not in drop]
         by_slug: dict[str, dict[str, Any]] = {}
         for d in docs:
+            if _cms_doc_status(d) in _CMS_DEAD_STATUS:
+                continue
             page = self._cms_page_summary(d)
             slug = page["slug"]
             dlang = d.get("lang") or "en"
             if slug in by_slug:
-                by_slug[slug]["langs"].add(dlang)
-                by_slug[slug].setdefault("titles", {})[dlang] = page["title"]
+                cur = by_slug[slug]
+                cur["langs"].add(dlang)
+                cur.setdefault("titles", {})[dlang] = page["title"]
+                if dlang == "en":
+                    cur["title"] = page["title"]
+                # The freshest variant wins the row's updated stamp; its
+                # summary carries the current one-line brief too.
+                if str(page.get("updated") or "") > str(
+                        cur.get("updated") or ""):
+                    cur["updated"] = page["updated"]
+                    if page.get("summary"):
+                        cur["summary"] = page["summary"]
                 continue
             page["langs"] = {dlang}
             page["titles"] = {dlang: page["title"]}
             by_slug[slug] = page
-        for p in by_slug.values():
+        pages = list(by_slug.values())
+        for p in pages:
             p["langs"] = sorted(p["langs"])
-        return list(by_slug.values())
+        pages.sort(key=lambda p: str(p.get("updated") or ""), reverse=True)
+        return pages
+
+    async def cms_list_pages(self, limit: int = 50) -> list[dict[str, Any]]:
+        """List pages in the miniapp CMS collection, grouped by slug with
+        the language variants present (lang is a per-doc field in MDDB),
+        newest first."""
+        return (await self._cms_pages())[: int(limit)]
+
+    async def _cms_search_pages(
+        self, query: str, limit: int = 50
+    ) -> dict[str, Any]:
+        """Find pages by free text over slug/title/summary — the discovery
+        path for 'does a page about X exist' when list's newest-N window
+        doesn't reach it."""
+        q = str(query or "").strip()
+        if not q:
+            raise ValueError("search requires a query")
+        pages = await self._cms_pages()
+        tokens = [
+            t for t in re.split(r"[^\wก-๙]+", q.lower()) if len(t) >= 2
+        ]
+        hits: list[tuple[float, dict[str, Any]]] = []
+        for p in pages:
+            hay = " ".join(filter(None, [
+                str(p.get("slug") or ""),
+                str(p.get("title") or ""),
+                " ".join(str(t) for t in (p.get("titles") or {}).values()),
+                str(p.get("summary") or ""),
+                str(p.get("domain") or ""),
+            ])).lower()
+            matched = sum(1 for t in tokens if t in hay)
+            if matched:
+                hits.append((matched / len(tokens) if tokens else 0.0, p))
+        hits.sort(key=lambda h: (
+            h[0], str(h[1].get("updated") or "")), reverse=True)
+        out = []
+        for score, p in hits[: int(limit)]:
+            row = {k: v for k, v in p.items() if k != "titles"}
+            row["match"] = round(score, 2)
+            out.append(row)
+        result: dict[str, Any] = {
+            "query": q,
+            "count": len(out),
+            "total_pages": len(pages),
+            "pages": out,
+        }
+        if not out:
+            result["note"] = (
+                "no page matched — try broader terms, cms_read "
+                "action='list' for the newest pages, or the "
+                "'reports-index' page for report inventory")
+        return result
 
     async def cms_get_page(
         self, slug: str, lang: str = "en"
@@ -596,51 +780,29 @@ class CmsMixin:
         'what reports exist / what changed' without per-page cms_get_page."""
         try:
             docs = await self.mddb.search_documents(
-                CMS_COLLECTION, limit=200)
+                CMS_COLLECTION, limit=CMS_FETCH_WINDOW)
         except Exception as exc:
             logger.warning("reports-index list failed: %s", exc)
             return
         now = datetime.now(timezone.utc)
-        def stale(meta: dict) -> bool:
-            ff = (meta.get("fresh_for") or [""])[0]
-            upd = (meta.get("updated") or [""])[0]
-            secs = fresh_for_seconds(ff)
-            if secs is None or not upd:
-                return False
-            try:
-                dt = datetime.fromisoformat(upd.replace("Z", "+00:00"))
-                return (now - dt).total_seconds() > secs
-            except Exception:
-                return False
-        rows = []
-        for d in docs:
-            meta = d.get("meta") or {}
-            kind = (meta.get("kind") or [""])[0]
-            if kind not in ("report", "page"):
-                continue
-            slug = (meta.get("slug") or [d.get("key") or "?"])[0]
-            if slug == "reports-index":
-                continue
-            rows.append({
-                "slug": slug,
-                "title": (meta.get("title") or [slug])[0],
-                "domain": (meta.get("domain") or ["-"])[0],
-                "summary": (meta.get("summary") or [""])[0],
-                "updated": (meta.get("updated") or ["-"])[0][:16],
-                "fresh": (meta.get("fresh_for") or ["-"])[0],
-                "stale": stale(meta),
-            })
-        rows.sort(key=lambda r: r["updated"], reverse=True)
+        rows, overflow = cms_index_rows(docs, now)
         lines = [f"# Reports index — {now:%Y-%m-%d %H:%M}Z\n",
                  "Brief summaries of every report page — read the linked page",
                  "only when the summary isn't enough.\n",
                  "| slug | domain | updated | fresh | summary |",
                  "|---|---|---|---|---|"]
-        for r in rows[:60]:
+        for r in rows:
             flag = " ⚠STALE" if r["stale"] else ""
             summ = (r["summary"] or r["title"])[:80]
-            lines.append(f"| {r['slug']} | {r['domain']} | {r['updated']}"
+            lines.append(f"| {r['slug']} | {r['domain']} | {r['updated'][:16]}"
                          f"{flag} | {r['fresh']} | {summ} |")
+        if overflow:
+            more = ", ".join(
+                f"+{n} {dom}" for dom, n in
+                sorted(overflow.items(), key=lambda kv: -kv[1]))
+            lines.append(
+                f"\n_Not shown: {more} — "
+                "cms_read action='search' finds any page by name._")
         md = "\n".join(lines)
         await self.mddb.add_document(
             CMS_COLLECTION, "reports-index", "en", md,

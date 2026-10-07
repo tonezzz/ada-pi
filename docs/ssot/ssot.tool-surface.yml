@@ -61,7 +61,7 @@ families:
   # into cms_edit.
   cms_read:
     merge_card: tools-merge-cms
-    canonical: cms_read            # list/get/verify -> action=, page slug in key=
+    canonical: cms_read            # list/search/get/verify -> action=, page slug in key=, term in query=
     scenario: tool_merge_cms
     absorbed:
       - cms_list_pages

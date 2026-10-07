@@ -231,10 +231,12 @@ ada_session_recall: >-
 ada_memory_search: >-
   First tool for factual lookup — stored facts, preferences, people,
   procedures, notes, and test/scenario/benchmark/report results; unsure
-  which bank -> bank='all'. scope='banks' restricts to bank=;
-  'sessions' searches session summaries; 'guest' public guest memories
-  (absorbs guest_recall). Returns document keys for ada_remember
-  (correct) or ada_forget (retract).
+  which bank -> bank='all' (bulk archives like devin/* session dumps are
+  demoted there — name the bank explicitly, e.g. bank='devin', to dig
+  them). scope='banks' restricts to bank=; 'sessions' searches session
+  summaries; 'guest' public guest memories (absorbs guest_recall).
+  Returns document keys for ada_remember (correct) or ada_forget
+  (retract).
 
 web_search: >-
   Current public facts — news, prices, forecasts. FALLBACK not first
@@ -364,11 +366,14 @@ tasks: >-
   Absorbs tasks_list, tasks_add, tasks_complete, tasks_move.
 
 cms_read: >-
-  'list' every page's slug/title/format/updated (limit= default 50);
-  'get' one page's content by key=slug (+lang=en|th) — read before
-  updating; 'verify' re-reads and checks the content parses for its
-  format — call after publishing since you cannot see the rendered site.
-  Absorbs cms_list_pages, cms_get_page, cms_verify_page.
+  'list' pages newest-first — slug/title/format/updated (limit= default
+  50; it is a recency window, not the whole collection); 'search' finds
+  pages by query= over slug/title/summary — use it for 'does a page
+  about X exist' instead of paging list; 'get' one page's content by
+  key=slug (+lang=en|th) — read before updating; 'verify' re-reads and
+  checks the content parses for its format — call after publishing
+  since you cannot see the rendered site. Absorbs cms_list_pages,
+  cms_get_page, cms_verify_page.
 
 cms_publish_page: >-
   Call FIRST to register the pending request, then tell the user

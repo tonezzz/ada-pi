@@ -1,0 +1,108 @@
+# SSOT Job: cms_read discovery + reports-index flood + memory-search pollution
+# Card: ada-cms-discovery-fixes (chaba kanban). Dispatch
+# 20261008-060641-ada-pi-cms-read-discovery-repo. liam-e2e fallout,
+# session ece770ccb0.
+
+title: CMS discovery — search action, newest-first list, index dedupe/cap, devin-dump demotion
+subtitle: Ada could not find the Liam dub though all infra was green — three ada-pi-side fixes
+
+planning:
+  goal: |
+    yt-dub-liam-e2e live pass 2026-10-07 (transcript ece770ccb0): Ada
+    could not find the Liam dub. Diagnosis (chaba
+    docs/ssot/jobs/yt-dub/2026-10-07-yt-dub-liam-e2e-pass1-diagnosis.yml)
+    found three ada-pi-side gaps: (1) cms_read action=list returns an
+    unordered arbitrary subset — 373 docs, a limit=10 call showed cam-*
+    pages only and the model wrongly concluded the page did not exist;
+    (2) _cms_reports_index lacked the chaba cms_index.py index_rows()
+    fixes (per-domain cap + en/th dedupe) — the index rendered 59/60 cam
+    rows and pushed cached-videos-report off entirely; (3)
+    ada_memory_search bank='all' hits were all devin/* session dumps —
+    synced transcripts match any topical query by sheer size.
+  decisions: |
+    - MDDB /v1/search has no ordering — fix at the tool: cms_read now
+      fetches a bounded window (CMS_FETCH_WINDOW=600, env
+      ADA_CMS_FETCH_WINDOW) and orders/filters locally. action='list'
+      returns pages sorted by meta.updated desc so limit=N is the N
+      NEWEST pages, not an arbitrary N. Backward compatible — the result
+      is still a bare list.
+    - New action='search' (query=, falls back to key/slug for
+      model-misrouted args): token match over slug/title/summary/domain
+      across every live page; returns {query, count, total_pages,
+      pages[{...,match}]} — total_pages tells the model the search is
+      exhaustive, killing the 'page does not exist' misread.
+    - _cms_reports_index refactored onto module-level cms_index_rows()
+      — the port of chaba's index_rows(): en/th variants dedupe to one
+      row per slug (en supplies title/summary, freshest variant wins
+      updated), dead-status pages drop, and CMS_INDEX_DOMAIN_CAP=10
+      (env ADA_CMS_INDEX_DOMAIN_CAP) bounds each domain; hidden rows are
+      reported in a '_Not shown: +N <domain>' footer pointing at
+      action='search'. Fetch window raised 200 -> CMS_FETCH_WINDOW.
+    - memory_ops.memory_search bank='all': hits whose key starts with a
+      bulk-archive prefix (ADA_MEMORY_DEMOTE_PREFIXES, default 'devin/')
+      sort below real hits regardless of score and are tagged
+      archive:true. Explicit bank='devin'/'reports' searches are
+      unfiltered — dispatch forensics stays reachable, it just can't
+      crowd out memory.
+    - Provider surface: cms_read schema gains 'search' in the action
+      enum + a query= param; descriptions steer 'does a page exist'
+      toward search; CMS_INSTRUCTIONS, tool_guide.yml and the
+      ada_memory_search bank= description document the new shapes.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-08"
+  steps:
+    - id: 1
+      label: "cms_read search + ordered list"
+      status: done
+      notes: "backend/tool_runner/cms.py — CMS_FETCH_WINDOW window,
+        _cms_pages() dedupe/sort core shared by cms_list_pages and
+        _cms_search_pages; cms_read gains query= and action='search'."
+    - id: 2
+      label: "reports-index dedupe + domain cap"
+      status: done
+      notes: "module-level cms_index_rows() (the chaba index_rows()
+        port); _cms_reports_index renders capped rows + overflow footer."
+    - id: 3
+      label: "memory all-merge demotion"
+      status: done
+      notes: "backend/memory_ops.py — ADA_ALL_DEMOTE_KEY_PREFIXES +
+        _demoted_in_all; demoted hits tagged archive:true and sorted
+        last in the 'all' merge."
+    - id: 4
+      label: "declared surface + guide"
+      status: done
+      notes: "realtime_provider.py schema/description/CMS_INSTRUCTIONS,
+        tool_guide.yml cms_read + ada_memory_search entries,
+        ssot.tool-surface.yml canonical comment."
+    - id: 5
+      label: "regression tests"
+      status: done
+      notes: "tests/test_tool_runner.py CmsDiscoveryTests (9 tests:
+        ordering, search incl. key/slug fallback + empty query, index
+        dedupe/cap/dead-drop, rendered overflow note);
+        tests/test_memory_recall_extras.py AllMergeDemotionTests
+        (demotion + named-bank escape)."
+
+invoke:
+  commands:
+    - "python3 -m pytest tests/test_tool_runner.py tests/test_memory_recall_extras.py -q"
+    - "python3 scripts/tool-lint.py --json"
+    - "python3 -c \"from backend.tool_runner.cms import cms_index_rows; print(cms_index_rows)\""
+
+verification:
+  - "tests.test_tool_runner: 214 passed incl. 9 new CmsDiscoveryTests —
+    list is newest-first over the wide window, search finds pages beyond
+    the list window, index dedupes en/th and caps domains"
+  - "tests.test_memory_recall_extras: 17 passed incl. demotion — a
+    lower-scoring real memory leads while devin/* hits sort last tagged
+    archive:true; bank='devin' returns them unfiltered"
+  - "tool-lint: no new findings (2 pre-existing errors — ada_track_device
+    descsize, ada_device_acl coverage — verified identical on the clean
+    tree; same pair noted in 2026-10-07-dead-turn-guard.yml)"
+  - "live verify (post-deploy): cms_read action='search' query='liam'
+    surfaces voice-dub-demos; reports-index shows <=10 cam rows +
+    cached-videos-report and a '_Not shown: +N cam' footer; an 'all'
+    memory search for a dub topic ranks curated memory above devin dumps"

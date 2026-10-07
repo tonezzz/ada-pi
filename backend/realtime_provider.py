@@ -137,7 +137,8 @@ CALENDAR_INSTRUCTIONS = (
 
 CMS_INSTRUCTIONS = (
     " You maintain the user's miniapp — a small multi-page site whose pages you own. "
-    "cms_read action='list' lists existing pages with their language variants and "
+    "cms_read action='list' lists existing pages newest-first with their language variants, "
+    "action='search' finds a page by free text (query=) when you don't know its slug, and "
     "action='get' reads one by key (its page slug), "
     "cms_publish_page creates or fully replaces a page (slugs are lowercase, e.g. 'pool-notes'; "
     "en/th variants coexist — publish the user's language plus the other when asked), "
@@ -3197,7 +3198,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "bank": {
                                 "type": "string",
-                                "description": "Memory bank name ({banks}), or 'all' to search every bank — default when unsure.",
+                                "description": "Memory bank name ({banks}), or 'all' to search every bank — default when unsure. 'all' demotes bulk archives (devin session dumps); name a bank explicitly to dig them.",
                             },
                             "query": {
                                 "type": "string",
@@ -3754,9 +3755,10 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "cms_read",
                     "description": (
-                        "Read miniapp pages — action='list'|'get'|'verify' (absorbs "
-                        "cms_list_pages/get_page/verify_page). 'verify' re-checks a page "
-                        "after publishing since you cannot see the rendered site."
+                        "Read miniapp pages — action='list'|'search'|'get'|'verify' (absorbs "
+                        "cms_list_pages/get_page/verify_page). 'list' is newest-N only; "
+                        "'search' query= matches slug/title/summary — the way to find a "
+                        "page without its slug."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3764,12 +3766,16 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["get", "list", "verify"],
+                                "enum": ["get", "list", "search", "verify"],
                                 "description": "Read operation.",
                             },
                             "key": {
                                 "type": "string",
-                                "description": "Page slug, e.g. 'pool-notes' (required for get/verify; get the real slug from action='list' or reports-index).",
+                                "description": "Page slug, e.g. 'pool-notes' (required for get/verify; get the real slug from action='search' or reports-index).",
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "search: free text matched over slug/title/summary — the way to find a page without knowing its slug.",
                             },
                             "lang": {
                                 "type": "string",

@@ -74,6 +74,25 @@ ADA_OPS_LISTING_MIN_SCORE = float(
 # and KB pages are much bigger; Ada gets an excerpt + key, not the blob.
 ADA_HIT_MAX_CHARS = int(os.environ.get("ADA_HIT_MAX_CHARS", "2000"))
 
+# Bulk-archive doc-key prefixes demoted in bank='all' merges. Devin
+# session dumps (devin/session-summary/*, devin/report/* — synced
+# transcripts) match nearly any topical query by sheer size and once
+# filled every hit slot (liam-e2e, session ece770ccb0). They still count
+# — they just sort below real memory hits, and an explicit bank='devin'
+# (or 'reports') search returns them unfiltered.
+ADA_ALL_DEMOTE_KEY_PREFIXES = tuple(
+    p.strip()
+    for p in os.environ.get("ADA_MEMORY_DEMOTE_PREFIXES", "devin/").split(",")
+    if p.strip()
+)
+
+
+def _demoted_in_all(hit: dict[str, Any]) -> bool:
+    """True when a hit is bulk-archive exhaust that must not crowd out
+    real memory in the bank='all' merge."""
+    key = str(hit.get("key") or "")
+    return any(key.startswith(p) for p in ADA_ALL_DEMOTE_KEY_PREFIXES)
+
 # How each recorded outcome nudges a doc's confidence (clamped 0.05..1.0).
 # Good outcomes also bump last_verified — the verify stage of the knowledge
 # circle. "skipped" is neutral: the check ran but was never exercised.
@@ -526,8 +545,14 @@ async def memory_search(
                 record_use_bg(mddb, b.mddb_collection, used)
         # Writable memory banks win score ties over read-only KB banks —
         # a same-scoring cms doc must not bury a people/ general fact.
+        # Bulk-archive hits (devin/* session dumps) sort below everything
+        # real regardless of score — tagged so the model can say so.
         writable_banks = {b.name for b in banks if b.writable}
-        hits.sort(key=lambda h: (float(h.get("score") or 0),
+        for h in hits:
+            if _demoted_in_all(h):
+                h["archive"] = True
+        hits.sort(key=lambda h: (not h.get("archive"),
+                                 float(h.get("score") or 0),
                                  h.get("bank") in writable_banks),
                   reverse=True)
         hits = hits[: int(limit)]
