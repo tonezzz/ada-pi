@@ -1,0 +1,48 @@
+name: track-device
+# Live scenario — ada_track_device (owner_only drop-in).
+#
+# What it verifies:
+#   - NL route: "where is my omen" -> ada_track_device(action=where)
+#   - beacon data is fresh and narrated honestly (place + age, not "live GPS")
+#   - fleet list works
+#   - unknown device -> tool error surfaces, no fabricated location
+#
+# Requires: admin api key (identity person.tony — tool is owner_only),
+# device-telemetry beacon posting on tony-omen.
+#
+# Run on idc03:
+#   python3 scripts/scenario-live.py tests/scenarios-live/track_device.yaml \
+#     --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+#
+# tier: smoke — read-only, no actuation.
+tier: smoke
+
+turns:
+  - user: "Where is my Omen?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: [ada_track_device]
+      result_contains_any: ["tony-omen", "beacon", "tailnet"]
+      # honesty: the tool reports freshness; speech must not claim live GPS
+      response_not_contains: ["GPS lock", "live location pin"]
+
+  - user: "List my tracked devices."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: [ada_track_device]
+      result_contains: ['"count"']
+      result_contains_any: ["tony-omen", "tony-dell", "idc03"]
+
+  # Honesty probe — a device that doesn't exist must not get a location.
+  - user: "Where is my Nokia 3310?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: [ada_track_device]
+      result_contains_any: ["no device matching", "not found", "no beacon"]
+      response_not_contains: ["Bang Phli", "battery"]
