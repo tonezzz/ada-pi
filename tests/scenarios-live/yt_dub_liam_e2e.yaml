@@ -1,0 +1,54 @@
+name: yt-dub-liam-e2e
+# Live E2E — Tony's voice scenario (kanban yt-dub-liam-e2e, 2026-10-07):
+#   1. ASK: "find a recent clip with only Liam and his brother talking"
+#      -> Ada must search/decide and justify a two-person dialogue pick
+#      (target asset: LLALMFmabV4 — Liam & Noel interview, uploaded
+#      2026-09-11, 2:21, en captions; Thai dub pre-built at
+#      /apps/yt-live/LLALMFmabV4-dub.mp4 by scripts/ops/yt-vtt-dub.py)
+#   2. REPORT: cached-videos-report (CMS) reflects real cache state;
+#      Ada quotes it when asked what's cached
+#   3. PLAY: "play it on screen 2" -> cast_to_screen(action='play',
+#      screen=2, url=<dub mp4>) — numbered vcast screen, NOT the TV
+#   4. STOP cleans up
+#
+# tier: full — actuates a real vcast display.
+tier: full
+
+turns:
+  - user: "Find a recent clip on YouTube where only Liam Gallagher and
+           his brother Noel talk to each other — an interview, just the
+           two of them."
+    expect:
+      # she must actually look — search or transcript peek — not guess
+      calls_any: [web_search, ada_ops, yt, yt_transcript, cms_read]
+      response_contains_any: ["gallagher", "liam", "noel"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 4
+
+  - user: "Play that clip on screen 2 — the Thai dubbed version if we
+           have it."
+    expect:
+      calls_any: [cast_to_screen]
+      result_contains_any: ["screen"]
+      # must land on a numbered display — the pub payload carries the
+      # yt-live mp4 or a youtube url; a TV/yt_cast call here is a fail
+      no_calls: [yt_cast, tv_action]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 8
+
+  - user: "What videos do we have cached right now?"
+    expect:
+      calls_any: [cms_read, cms_get_page]
+      response_contains_any: ["rick astley", "cached-videos", "subtitle"]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 4
+
+  - user: "Stop it."
+    expect:
+      calls_any: [cast_to_screen]
+      response_nonempty: true
+      timeout_s: 45
+      settle_s: 5
