@@ -364,11 +364,16 @@ tasks: >-
   Absorbs tasks_list, tasks_add, tasks_complete, tasks_move.
 
 cms_read: >-
-  'list' every page's slug/title/format/updated (limit= default 50);
-  'get' one page's content by key=slug (+lang=en|th) — read before
-  updating; 'verify' re-reads and checks the content parses for its
-  format — call after publishing since you cannot see the rendered site.
-  Absorbs cms_list_pages, cms_get_page, cms_verify_page.
+  'list' every page and report's slug/kind/title/format/updated, most
+  recently updated first (limit= default 50 — raise it for the long
+  tail; reports like cached-videos-report are included); 'get' one
+  page's content by key=slug (+lang=en|th) — works for any slug you
+  know even when 'list' truncates; read before updating; 'verify'
+  re-reads and checks the content parses for its format — call after
+  publishing since you cannot see the rendered site. Video/dub/cached
+  asks -> 'get' 'cached-videos-report' (every playable clip) or
+  'voice-dub-demos' (demos + cast recipe). Absorbs cms_list_pages,
+  cms_get_page, cms_verify_page.
 
 cms_publish_page: >-
   Call FIRST to register the pending request, then tell the user
