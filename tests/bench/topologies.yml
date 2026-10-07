@@ -142,7 +142,8 @@ topologies:
         min_n: 15
         edges:
           - {when: 'kind:tool', to: dec_hard}
-          - {when: 'kind:bank', to: dec_hard}
+          - {when: 'kind:bank', to: dec_easy}   # must exercise L1 or its
+                                               # stats can never warm
           - {when: 'feat:code_switch', to: dec_hard}
           - {when: 'feat:embedded', to: dec_hard}
           - {when: 'feat:imperative', to: dec_hard}
