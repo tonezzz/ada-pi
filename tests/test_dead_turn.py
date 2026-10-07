@@ -65,6 +65,11 @@ class _PlateQuestionSession:
                 types.FunctionCall(
                     id="ms-1", name="ada_memory_search",
                     args={"query": "ทะเบียนรถ KK"})]))
+        # Real wire shape: each tool-call batch ends its own segment with
+        # turn_complete (the results continue the turn). That boundary must
+        # NOT be judged dead — the model is waiting on results.
+        yield types.LiveServerMessage(
+            server_content=types.LiveServerContent(turn_complete=True))
         yield types.LiveServerMessage(
             server_content=types.LiveServerContent(
                 output_transcription=types.Transcription(text="response:"),

@@ -4514,6 +4514,10 @@ class GeminiLiveProvider(RealtimeProvider):
         input_done_ts = 0.0  # last input_transcription chunk ≈ end of user speech
         n_tools_this_turn = 0
         budget_nudged = False
+        # A turn_complete that lands right after function calls were
+        # dispatched is a segment boundary, not the answer — results go back
+        # and generation continues. The dead-turn guard must not judge it.
+        segment_tool_pending = False
 
         while not self._closed:
             async for message in self._session.receive():
@@ -4532,6 +4536,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     return
                 tool_call = message.tool_call
                 if tool_call and tool_call.function_calls:
+                    segment_tool_pending = True
                     function_responses = []
                     camera_frames: list[tuple[str, bytes, str]] = []
                     for call in tool_call.function_calls:
@@ -5182,6 +5187,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     budget_hit = False
                     budget_nudged = False
                     turn_tool_results = []
+                    segment_tool_pending = False
                     self._dead_retried = False
                     self._leak_active = False
                     self._artifact_hold = ""
@@ -5240,6 +5246,8 @@ class GeminiLiveProvider(RealtimeProvider):
                             yield ProviderEvent("audio", {"pcm16": inline_data.data})
 
                 if content.turn_complete:
+                    tools_pending = segment_tool_pending
+                    segment_tool_pending = False
                     transcript = input_transcript.strip()
                     if transcript:
                         if barge_pending and _looks_like_noise(transcript):
@@ -5305,8 +5313,14 @@ class GeminiLiveProvider(RealtimeProvider):
                     # result itself.
                     _dead_evidence = (
                         transcript or self._turn_open
-                        or n_tools_this_turn or self._response_active)
-                    _dead = _dead_evidence and (
+                        or n_tools_this_turn or self._response_active
+                        or turn_tool_results)
+                    # A boundary that dispatched tool calls is mid-task —
+                    # the model is waiting on results, not silent. Judging
+                    # it "dead" there synthesized "Ada is now neutral" from
+                    # every set_facial_expression result and poisoned the
+                    # transcript (scenario run 2026-10-07).
+                    _dead = _dead_evidence and not tools_pending and (
                         _dead_turn_text(assistant_turn_text)
                         if assistant_turn_text.strip()
                         else response_audio_bytes == 0)
@@ -5355,7 +5369,10 @@ class GeminiLiveProvider(RealtimeProvider):
                         self.conversation.add_assistant(fallback)
                         assistant_turn_text = ""
                     self._dead_retried = False
-                    turn_tool_results = []
+                    if not tools_pending:
+                        # Keep results across a mid-task boundary so a dead
+                        # FINAL segment can still speak them as the fallback.
+                        turn_tool_results = []
                     if assistant_turn_text.strip():
                         self.conversation.add_assistant(assistant_turn_text)
                         assistant_turn_text = ""
@@ -5377,7 +5394,11 @@ class GeminiLiveProvider(RealtimeProvider):
                         yield ProviderEvent("response_completed", {})
                     input_done_ts = 0.0
                     self._response_active = False
-                    self._turn_open = False
+                    if not tools_pending:
+                        # The user's turn stays open across a mid-task
+                        # boundary — the final segment still needs it as
+                        # dead-turn evidence.
+                        self._turn_open = False
                     # A notification queued mid-turn — deliver it now that
                     # the response finished, as its own turn.
                     if self._pending_notifications:
