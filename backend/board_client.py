@@ -39,7 +39,15 @@ async def request(client: httpx.AsyncClient, method: str, path: str,
 
     status 0 means the board was unreachable — err carries a short
     reason and data is None. On HTTP >= 400 err holds the server's
-    'error' field (or a synthesized message)."""
+    'error' field (or a synthesized message).
+
+    Tailscale-User-Login labels the caller 'ada' — it's the write gate's
+    identity label, not a credential: the Caddy route only reaches
+    board-api from tailnet peers, and every comms line lands under
+    'ada' regardless. Without it non-GET 403s at the edge."""
+    headers = dict(kw.pop("headers", None) or {})
+    headers["Tailscale-User-Login"] = "ada"
+    kw["headers"] = headers
     try:
         resp = await client.request(method, f"{base_url()}{path}", **kw)
     except (httpx.HTTPError, TimeoutError) as exc:

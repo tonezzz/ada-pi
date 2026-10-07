@@ -36,7 +36,20 @@ DECLARATION = {
             "action": {
                 "type": "string",
                 "description": "'comment' (default), 'respond', 'create', "
-                               "or 'read'.",
+                               "'move', or 'read'.",
+            },
+            "column": {
+                "type": "string",
+                "description": "Target column for action=move "
+                               "(backlog|doing|review|done).",
+            },
+            "evidence": {
+                "type": "string",
+                "description": "Required for action=move column=done — "
+                               "the checkable fact you verified "
+                               "(e.g. 'service active', 'page live'). "
+                               "Logged as a comment so the audit trail "
+                               "shows why it closed.",
             },
             "title": {
                 "type": "string",
@@ -263,6 +276,68 @@ def _report_lookup(cards: list[dict[str, Any]], slug: str
     return out
 
 
+_COLUMNS = {"backlog", "doing", "review", "done"}
+_DOING_CAP = 2  # same soft cap as agent sessions
+
+
+async def _move(args: dict[str, Any]) -> dict[str, Any]:
+    """action=move — triage authority, not judgment. Ada may move
+    backlog<->doing and close with evidence; priority:high and
+    review_kind:decide stay Tony's."""
+    cid = _card_id(args)
+    col = str(args.get("column") or "").strip().lower()
+    evidence = str(args.get("evidence") or "").strip()
+    if not cid:
+        return {"ok": False, "error": "a valid card id is required"}
+    if col not in _COLUMNS:
+        return {"ok": False,
+                "error": f"column must be one of {sorted(_COLUMNS)}"}
+    if col == "done" and not evidence:
+        return {"ok": False,
+                "error": "closing needs evidence — what did you verify "
+                         "(service live, page rendered, test passed)? "
+                         "If nothing is checkable, comment instead"}
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        data, err = await _request(client, "GET", "/cards")
+        if err:
+            return {"ok": False, "error": err}
+        assert data is not None
+        cards = data.get("cards") or []
+        card = next((c for c in cards if c.get("id") == cid), None)
+        if not card:
+            return {"ok": False, "error": f"no card {cid}"}
+        if card.get("priority") == "high":
+            return {"ok": False,
+                    "error": "priority:high cards stay Tony's — "
+                             "comment your finding instead"}
+        if card.get("review_kind") == "decide":
+            return {"ok": False,
+                    "error": "review_kind:decide cards need Tony's "
+                             "judgment — comment instead"}
+        if col == "doing":
+            doing = sum(1 for c in cards
+                        if c.get("column") == "doing" and c.get("id") != cid)
+            if doing >= _DOING_CAP:
+                return {"ok": False,
+                        "error": f"{doing} cards already doing — the "
+                                 f"cap is {_DOING_CAP}; finish or hold "
+                                 "one first"}
+        if evidence:
+            cdata, cerr = await _request(
+                client, "POST", "/comment",
+                json={"id": cid, "from": "ada",
+                      "text": f"verified: {evidence[:400]}"})
+            if cerr:
+                return {"ok": False, "error": cerr}
+        data, err = await _request(
+            client, "POST", "/action",
+            json={"id": cid, "do": "move", "column": col, "from": "ada"})
+    if err:
+        return {"ok": False, "error": err}
+    return {"ok": True, "id": cid, "column": col,
+            "message": (data or {}).get("message", f"moved to {col}")}
+
+
 async def _read(args: dict[str, Any]) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=10.0) as client:
         data, err = await _request(client, "GET", "/cards")
@@ -314,6 +389,8 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
         return await _respond(runner, args)
     if action == "create":
         return await _create(args)
+    if action == "move":
+        return await _move(args)
     return {"ok": False,
             "error": f"unknown action {action!r} — use comment, respond, "
-                     "create, or read"}
+                     "create, move, or read"}
