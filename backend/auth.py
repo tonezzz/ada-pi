@@ -32,9 +32,13 @@ def _keys_file() -> str:
     )
 
 
-# Apps a key can be paired into: voice PWA, text chat page, cms viewer.
-# None/absent on a key means the legacy default ["voice", "chat"].
-VALID_KEY_APPS = ("voice", "chat", "view")
+# Apps/capabilities a key can carry: voice PWA, text chat page, cms
+# viewer — and 'dispatch', which lets the key spawn Devin sessions via
+# POST /api/cms/spawn. dispatch is a capability, not a UI: read-only
+# viewer keys (e.g. the shared cms-viewer key embedded in iframes) must
+# NOT carry it. None/absent on a key means the legacy default
+# ["voice", "chat"] — which has neither view nor dispatch.
+VALID_KEY_APPS = ("voice", "chat", "view", "dispatch")
 
 
 def _clean_apps(apps: Any) -> list[str] | None:
@@ -112,8 +116,9 @@ def create_key(name: str, apps: Any = None,
                ha_person: str | None = None) -> str | None:
     """Issue a new named user key, persisted to the keys file. None if taken.
 
-    `apps` optionally restricts which UIs the key pairs into ("voice",
-    "chat", "view"); unset/empty means the default voice+chat.
+    `apps` optionally restricts which UIs/capabilities the key carries
+    ("voice", "chat", "view", "dispatch"); unset/empty means the default
+    voice+chat.
     ha_person optionally binds the key to a Home Assistant person entity
     (e.g. 'person.kk') — sessions authenticated with this key inherit that
     identity for memory/persona routing until a voiceprint overrides it."""
@@ -183,6 +188,20 @@ def issued_key_details() -> dict[str, dict]:
     return {n: {"issued": e["issued"], "device": e["device"],
                 "apps": e.get("apps"), "ha_person": e.get("ha_person")}
             for n, e in _key_entries().items()}
+
+
+def key_can(name: str, app: str) -> bool:
+    """True when caller `name`'s key carries `app` in its apps metadata.
+
+    Env-configured keys (ADA_API_KEY 'admin', ADA_API_KEYS pairs) are
+    operator keys — they have no apps metadata and are unrestricted.
+    File-issued keys need `app` listed; absent apps is the legacy
+    ["voice", "chat"] default, which carries neither 'view' nor
+    'dispatch'."""
+    entry = _key_entries().get(name)
+    if entry is None:
+        return True
+    return app in (entry["apps"] or ["voice", "chat"])
 
 
 def ha_person_for_key(name: str) -> str | None:

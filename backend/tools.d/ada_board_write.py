@@ -17,11 +17,12 @@ Policy split (manifest policy can't vary per action):
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any
 
 import httpx
+
+from backend import board_client
 
 DECLARATION = {
     "name": "ada_board_write",
@@ -79,17 +80,11 @@ DECLARATION = {
     },
 }
 
-_BASE_URL_ENV = "ADA_BOARD_API_URL"
-_DEFAULT_BASE_URL = "https://tony-dell.taila0626a.ts.net/apps/board-api"
 _CARD_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,80}$", re.IGNORECASE)
 _READ_LIMIT_DEFAULT = 12
 _READ_LIMIT_MAX = 40
 _TEXT_MAX = 480  # server truncates comms/answers at 500
 _TITLE_MAX = 80
-
-
-def _base_url() -> str:
-    return (os.environ.get(_BASE_URL_ENV) or _DEFAULT_BASE_URL).rstrip("/")
 
 
 def _is_owner(runner: Any) -> bool:
@@ -108,20 +103,9 @@ def _card_id(args: dict[str, Any]) -> str | None:
 
 async def _request(client: httpx.AsyncClient, method: str, path: str,
                    **kw: Any) -> tuple[dict[str, Any] | None, str | None]:
-    try:
-        resp = await client.request(method, f"{_base_url()}{path}", **kw)
-    except (httpx.HTTPError, TimeoutError) as exc:
-        return None, f"I couldn't reach the board ({exc.__class__.__name__})"
-    try:
-        data = resp.json()
-    except Exception:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-    if resp.status_code >= 400:
-        return None, str(data.get("error") or
-                         f"the board returned HTTP {resp.status_code}")
-    return data, None
+    data, err, _status = await board_client.request(
+        client, method, path, **kw)
+    return data, err
 
 
 async def _comment(args: dict[str, Any]) -> dict[str, Any]:
