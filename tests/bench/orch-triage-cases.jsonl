@@ -1,0 +1,30 @@
+{"text": "fix the camwall 500 error on tile click", "kind": "triage", "label": "code", "set": "triage", "slice": "clear-code"}
+{"text": "refactor tool_runner.py, it's over 4000 lines", "kind": "triage", "label": "code", "set": "triage", "slice": "clear-code"}
+{"text": "the pre-commit hook fires on focus-inbox writes, tighten the pattern", "kind": "triage", "label": "code", "set": "triage", "slice": "clear-code"}
+{"text": "write a failing test for the timezone bug then fix it", "kind": "triage", "label": "code", "set": "triage", "slice": "clear-code"}
+{"text": "add retry logic to the mddb client", "kind": "triage", "label": "code", "set": "triage", "slice": "clear-code"}
+{"text": "update the idc03 runbook with the new caddy routes", "kind": "triage", "label": "docs", "set": "triage", "slice": "clear-docs"}
+{"text": "write an SSOT entry for the xmeye VMS move", "kind": "triage", "label": "docs", "set": "triage", "slice": "clear-docs"}
+{"text": "document how the corpus-in/corpus-out loop works", "kind": "triage", "label": "docs", "set": "triage", "slice": "clear-docs"}
+{"text": "draft the weekly ops report page", "kind": "triage", "label": "docs", "set": "triage", "slice": "clear-docs"}
+{"text": "add a kanban card for the UPS battery replacement", "kind": "triage", "label": "docs", "set": "triage", "slice": "boundary"}
+{"text": "restart michael-dev, the card bundle 404s", "kind": "triage", "label": "ops", "set": "triage", "slice": "clear-ops"}
+{"text": "check which units are failed on tony-dell", "kind": "triage", "label": "ops", "set": "triage", "slice": "clear-ops"}
+{"text": "deploy the new bundle to michael-ha", "kind": "triage", "label": "ops", "set": "triage", "slice": "clear-ops"}
+{"text": "rotate the ha-mcp token, it leaked in a log", "kind": "triage", "label": "ops", "set": "triage", "slice": "clear-ops"}
+{"text": "the orch-bench timer didn't fire, check systemctl", "kind": "triage", "label": "ops", "set": "triage", "slice": "clear-ops"}
+{"text": "ซ่อมระบบวนภาพกล้องวงจรปิดบน TV", "kind": "triage", "label": "ops", "set": "triage", "slice": "boundary"}
+{"text": "why did the 03:00 session fail yesterday", "kind": "triage", "label": "research", "set": "triage", "slice": "clear-research"}
+{"text": "compare gemma-3-1b vs phi3 for the kanban brief", "kind": "triage", "label": "research", "set": "triage", "slice": "clear-research"}
+{"text": "what's the current dispatch capacity", "kind": "triage", "label": "research", "set": "triage", "slice": "clear-research"}
+{"text": "how do cascades perform on the hard set", "kind": "triage", "label": "research", "set": "triage", "slice": "clear-research"}
+{"text": "list the cards blocked on me", "kind": "triage", "label": "research", "set": "triage", "slice": "clear-research"}
+{"text": "run the bench and tell me if the cascade is winning", "kind": "triage", "label": "research", "set": "triage", "slice": "boundary"}
+{"text": "find out why the timer failed and add a card for the fix", "kind": "triage", "label": "research", "set": "triage", "slice": "boundary"}
+{"text": "fix the thing from before", "kind": "triage", "label": "clarify", "set": "triage", "slice": "clear-clarify"}
+{"text": "deploy it", "kind": "triage", "label": "clarify", "set": "triage", "slice": "clear-clarify"}
+{"text": "make it faster", "kind": "triage", "label": "clarify", "set": "triage", "slice": "clear-clarify"}
+{"text": "update that dashboard", "kind": "triage", "label": "clarify", "set": "triage", "slice": "clear-clarify"}
+{"text": "can you look at the thing KK mentioned", "kind": "triage", "label": "clarify", "set": "triage", "slice": "clear-clarify"}
+{"text": "if the tests pass, deploy it", "kind": "triage", "label": "ops", "set": "triage", "slice": "boundary"}
+{"text": "check whether the migration is done, and if so pull the checkout", "kind": "triage", "label": "ops", "set": "triage", "slice": "boundary"}

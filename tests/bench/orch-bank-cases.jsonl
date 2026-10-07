@@ -1,0 +1,36 @@
+{"text": "the wifi password is on the fridge", "kind": "bank", "label": "general", "set": "bank", "slice": "clear-general"}
+{"text": "our landline number is 02-555-1234", "kind": "bank", "label": "general", "set": "bank", "slice": "clear-general"}
+{"text": "the rice cooker is in the second cabinet", "kind": "bank", "label": "general", "set": "bank", "slice": "clear-general"}
+{"text": "the devin-dispatch lane cap on mn01 is 2", "kind": "bank", "label": "general", "set": "bank", "slice": "clear-general"}
+{"text": "the plumber's number is 081-234-5678", "kind": "bank", "label": "general", "set": "bank", "slice": "clear-general"}
+{"text": "รหัส wifi บ้านอยู่บนตู้เย็น", "kind": "bank", "label": "general", "set": "bank", "slice": "clear-general"}
+{"text": "the front door camera goes offline at night", "kind": "bank", "label": "home", "set": "bank", "slice": "clear-home"}
+{"text": "the pool pump timer is set to run at 6am", "kind": "bank", "label": "home", "set": "bank", "slice": "clear-home"}
+{"text": "the UPS battery model is APC RBC17", "kind": "bank", "label": "home", "set": "bank", "slice": "clear-home"}
+{"text": "the guest room AC leaks when set below 23", "kind": "bank", "label": "home", "set": "bank", "slice": "clear-home"}
+{"text": "the solar battery hit 20% at 6pm yesterday", "kind": "bank", "label": "home", "set": "bank", "slice": "clear-home"}
+{"text": "กล้องวงจรปิดบนทีวีภาพไม่วน", "kind": "bank", "label": "home", "set": "bank", "slice": "clear-home"}
+{"text": "พรุ่งนี้ช่างมาซ่อมเครื่องซักผ้า", "kind": "bank", "label": "home", "set": "bank", "slice": "clear-home"}
+{"text": "KK's birthday is in March", "kind": "bank", "label": "people", "set": "bank", "slice": "clear-people"}
+{"text": "Nat prefers her coffee without sugar", "kind": "bank", "label": "people", "set": "bank", "slice": "clear-people"}
+{"text": "KK asked me to remind her about the dentist appointment", "kind": "bank", "label": "people", "set": "bank", "slice": "clear-people"}
+{"text": "dad's flight lands at 22:40 on Sunday", "kind": "bank", "label": "people", "set": "bank", "slice": "clear-people"}
+{"text": "KK ชอบกาแฟไม่หวาน", "kind": "bank", "label": "people", "set": "bank", "slice": "clear-people"}
+{"text": "buy more laundry detergent from Lotus's", "kind": "bank", "label": "purchase", "set": "bank", "slice": "clear-purchase"}
+{"text": "the car needs new tires, quoted 12000 baht at the shop", "kind": "bank", "label": "purchase", "set": "bank", "slice": "clear-purchase"}
+{"text": "the repairman said the compressor part costs 3500", "kind": "bank", "label": "purchase", "set": "bank", "slice": "clear-purchase"}
+{"text": "order more cat food, the brand KK likes", "kind": "bank", "label": "purchase", "set": "bank", "slice": "clear-purchase"}
+{"text": "we spent 45000 on the new heat pump", "kind": "bank", "label": "purchase", "set": "bank", "slice": "clear-purchase"}
+{"text": "ซื้ออะไหล่เครื่องซักผ้าจาก Shopee", "kind": "bank", "label": "purchase", "set": "bank", "slice": "clear-purchase"}
+{"text": "I take metformin every morning", "kind": "bank", "label": "personal", "set": "bank", "slice": "clear-personal"}
+{"text": "my bank account ends in 4421", "kind": "bank", "label": "personal", "set": "bank", "slice": "clear-personal"}
+{"text": "my LINE id is tonezzzz", "kind": "bank", "label": "personal", "set": "bank", "slice": "clear-personal"}
+{"text": "the meeting with the insurance agent is Thursday 2pm", "kind": "bank", "label": "personal", "set": "bank", "slice": "clear-personal"}
+{"text": "I get headaches when the aircon is above 25", "kind": "bank", "label": "personal", "set": "bank", "slice": "boundary"}
+{"text": "Tony's blood type is O", "kind": "bank", "label": "personal", "set": "bank", "slice": "boundary"}
+{"text": "the gate code is 8842", "kind": "bank", "label": "personal", "set": "bank", "slice": "boundary"}
+{"text": "the living room TV remote needs new batteries", "kind": "bank", "label": "home", "set": "bank", "slice": "boundary"}
+{"text": "the washing machine repairman comes Friday", "kind": "bank", "label": "home", "set": "bank", "slice": "boundary"}
+{"text": "remember that KK's sister is visiting next month", "kind": "bank", "label": "people", "set": "bank", "slice": "boundary"}
+{"text": "the new router we ordered hasn't arrived yet", "kind": "bank", "label": "purchase", "set": "bank", "slice": "boundary"}
+{"text": "รหัสประตูบ้านคือ 4321", "kind": "bank", "label": "personal", "set": "bank", "slice": "boundary"}

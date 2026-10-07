@@ -155,7 +155,8 @@ def render(runs, topos, now):
         nodes = t.get("nodes") or []
         chain = " → ".join(f"{n.get('level','?')}/{n.get('role','?')}"
                            for n in nodes)
-        status = "benchable" if t.get("impl") == "builtin" else "design"
+        status = ("benchable" if t.get("impl") in ("builtin", "chain")
+                  else "design")
         lines.append(f"| {name} | {t.get('way','-')} | {chain} | {status} |")
     lines += ["", BLOCK_END]
     return "\n".join(lines)

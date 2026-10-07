@@ -1,0 +1,20 @@
+{"text": "remember to turn off the lights at 10pm", "kind": "tool", "label": "remember", "set": "toolx", "slice": "remember-vs-control"}
+{"text": "remind KK the car is ready Friday", "kind": "tool", "label": "remember", "set": "toolx", "slice": "remember-vs-control"}
+{"text": "note that the plumber's number is 081-234-5678", "kind": "tool", "label": "remember", "set": "toolx", "slice": "remember-vs-control"}
+{"text": "จำไว้ว่า KK ไม่กินเผ็ด", "kind": "tool", "label": "remember", "set": "toolx", "slice": "remember-vs-control"}
+{"text": "what did I buy last week at HomePro", "kind": "tool", "label": "recall", "set": "toolx", "slice": "recall-vs-search"}
+{"text": "what was the name of that restaurant we liked in Phuket", "kind": "tool", "label": "recall", "set": "toolx", "slice": "recall-vs-search"}
+{"text": "what does the kanban card say about the UPS", "kind": "tool", "label": "recall", "set": "toolx", "slice": "recall-vs-search"}
+{"text": "เมื่อวานผมบอกอะไรเกี่ยวกับแบตเตอรี่ไว้นะ", "kind": "tool", "label": "recall", "set": "toolx", "slice": "recall-vs-search"}
+{"text": "lower the aircon in my room", "kind": "tool", "label": "control", "set": "toolx", "slice": "clear-control"}
+{"text": "play some jazz on the living room speaker", "kind": "tool", "label": "control", "set": "toolx", "slice": "clear-control"}
+{"text": "open the gate for the delivery guy", "kind": "tool", "label": "control", "set": "toolx", "slice": "clear-control"}
+{"text": "ปิดไฟหน้าบ้าน", "kind": "tool", "label": "control", "set": "toolx", "slice": "clear-control"}
+{"text": "who won the 1998 world cup", "kind": "tool", "label": "answer", "set": "toolx", "slice": "answer-vs-search"}
+{"text": "how many kilometers to Chiang Mai", "kind": "tool", "label": "answer", "set": "toolx", "slice": "answer-vs-search"}
+{"text": "how do you spell bureaucracy", "kind": "tool", "label": "answer", "set": "toolx", "slice": "answer-vs-search"}
+{"text": "what time is it in London right now", "kind": "tool", "label": "answer", "set": "toolx", "slice": "answer-vs-search"}
+{"text": "what's the current bitcoin price", "kind": "tool", "label": "search", "set": "toolx", "slice": "answer-vs-search"}
+{"text": "did it rain this morning", "kind": "tool", "label": "search", "set": "toolx", "slice": "answer-vs-search"}
+{"text": "is there a firmware update for the router", "kind": "tool", "label": "search", "set": "toolx", "slice": "answer-vs-search"}
+{"text": "are the shops still open now", "kind": "tool", "label": "search", "set": "toolx", "slice": "answer-vs-search"}

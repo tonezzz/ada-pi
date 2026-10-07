@@ -12,10 +12,12 @@
 #   router    — feature router picks ONE node per input
 #   verifier  — node decides, auditor may veto
 #
-# Each entry maps to an orch-bench structure today; entries with
-# `impl: chain` are graph-configurations for the future executor —
-# keep them here so the bench and the report see the same registry.
-
+# impl: builtin  → orch-bench --structure <name> hand-coded path
+# impl: chain    → graph executor (chain.py). Nodes carry edges:
+#                    - {when: <pred>, to: <node-id|accept>}
+#                  predicates: else, kind:<k>, feat:<f>, yes, no,
+#                  in_band, veto, uphold — first match wins.
+#
 # Live fleet (2026-10-07) — same model on multiple lanes lets shards
 # run parallel and lets 'parallel' actually parallelize:
 #   student  jev-student distilbert  idc03:8778   systemd (prod confirm gate)
@@ -66,26 +68,91 @@ topologies:
       - {level: L2, role: auditor, audits: [yes-decisions, tool-choices]}
     note: asymmetry — only expensive-to-be-wrong answers get audited
 
-  # --- future chains (impl: chain — for the graph executor card) ---
+  # --- executable chains (impl: chain — the graph executor) ------------
   nest-2l-router:
     impl: chain
     way: router+series
+    entry: route
     note: >-
-      L0 route -> domain students (confirm-jev / tool-pick / triage) ->
-      L2 escalate in-band. The kanban-brief tier model generalized.
+      L0 route -> domain experts -> L2 escalate in-band. The kanban-brief
+      tier model generalized: every kind gets an L1 first pass, choice
+      kinds and hard-featured confirms go straight to L2, gray-band and
+      low-confidence answers escalate. Zero extra calls to route.
     nodes:
-      - {level: L0, role: router}
-      - {level: L1, role: domain-expert, of: [confirm, tool, triage]}
-      - {level: L2, role: fallback}
+      - id: route
+        level: L0
+        role: router
+        edges:
+          - {when: 'kind:tool', to: dec_hard}      # student stub: no real choice head
+          - {when: 'kind:bank', to: dec_easy}      # measure whether L1 can route banks
+          - {when: 'kind:triage', to: dec_easy}
+          - {when: 'feat:code_switch', to: dec_hard}
+          - {when: 'feat:embedded', to: dec_hard}
+          - {when: 'feat:imperative', to: dec_hard}
+          - {to: dec_easy}
+      - id: dec_easy
+        level: L1
+        role: decider
+        edges:
+          - {when: in_band, to: dec_hard}
+          - {to: accept}
+      - id: dec_hard
+        level: L2
+        role: decider
 
   nest-3l-verify:
     impl: chain
     way: series+verifier
+    entry: dec1
     note: >-
-      cascade decide -> L2 audit of YES -> L3 arbiter only when L1/L2
-      disagree. The fullest trust ladder; measures whether escalation
-      depth pays for itself.
+      cascade decide -> L2 audit of affirmative/commit decisions -> L3
+      arbiter only when the auditor vetoes. The fullest trust ladder;
+      measures whether escalation depth pays for itself. L3 falls back
+      to --heavy until a Gemini-backed systemone lane exists.
     nodes:
-      - {level: L1, role: decider}
-      - {level: L2, role: auditor}
-      - {level: L3, role: arbiter, when: disagree}
+      - id: dec1
+        level: L1
+        role: decider
+        edges:
+          - {when: 'yes', to: audit}
+          - {to: accept}
+      - id: audit
+        level: L2
+        role: auditor
+        edges:
+          - {when: veto, to: arbitrate}
+          - {to: accept}
+      - id: arbitrate
+        level: L3
+        role: arbiter
+
+  nest-learned-router:
+    impl: chain
+    way: router+series
+    entry: route
+    note: >-
+      Learned router — routes by per-featsig accuracy accumulated in the
+      --stats-out corpus; cold signatures fall back to the feature
+      predicates (the same edges as nest-2l-router). min_n before a
+      signature is trusted: 15 node rows per level.
+    nodes:
+      - id: route
+        level: L0
+        role: learned_router
+        min_n: 15
+        edges:
+          - {when: 'kind:tool', to: dec_hard}
+          - {when: 'kind:bank', to: dec_hard}
+          - {when: 'feat:code_switch', to: dec_hard}
+          - {when: 'feat:embedded', to: dec_hard}
+          - {when: 'feat:imperative', to: dec_hard}
+          - {to: dec_easy}
+      - id: dec_easy
+        level: L1
+        role: decider
+        edges:
+          - {when: in_band, to: dec_hard}
+          - {to: accept}
+      - id: dec_hard
+        level: L2
+        role: decider
