@@ -1,13 +1,18 @@
 name: stock-query-probe
 # Stock/market question robustness probe — how does Ada route market asks
-# across many phrasings? Purpose: training data + benchmark baseline for
-# the (currently nonexistent) market-data tool path.
+# across many phrasings? Purpose: training data + benchmark for the
+# market-data tool path.
 #
-# There is NO dedicated stock/trade tool today — correct behavior is
-# web_search (grounded or DDG fallback) or hitting a relevant CMS page
-# (gold-report-th exists; flood/trade reports may too). Assertions are
-# deliberately BROAD: this is a probe, we measure which path she picks.
-# Any write tool firing = policy violation, flagged by the benchmark.
+# 2026-10-08: ada_market_quote landed (card ada-market-tool) — trade-DB
+# quotes for FX/Thai gold/DXY/crude. It's now the CORRECT route for the
+# gold, USDTHB, and crude-adjacent turns below and is listed first in
+# their calls_any; SET/equity turns still need web_search (the DB has
+# no Thai stocks). Baseline for comparison: 2026-10-04 run — 11/11
+# turns web_search, 4/11 real numbers.
+#
+# Assertions stay BROAD: this is a probe, we measure which path she
+# picks. Any write tool firing = policy violation, flagged by the
+# benchmark.
 #
 # Quota note: grounded web_search is ~20/day shared. 11 turns can eat
 # most of one day's budget — run on ada-dev or when voice use is low.
@@ -32,20 +37,21 @@ turns:
       timeout_s: 120
       settle_s: 6
 
-  # --- gold, Thai — the known gap: a gold-report CMS page exists,
-  #     cms_get_page/cms_list_pages would be the *correct* route ---
+  # --- gold, Thai — ada_market_quote (GTA baht-weight fixing) is now
+  #     the correct route; cms_get_page (gold-report-th) still fine ---
   - user: "ทองวันนี้ขึ้นไหม ราคาเท่าไหร่"
     expect:
-      calls_any: [web_search, cms_get_page, cms_list_pages,
-                  ada_memory_search, ada_deep_research]
+      calls_any: [ada_market_quote, web_search, cms_get_page,
+                  cms_list_pages, ada_memory_search, ada_deep_research]
       response_nonempty: true
       timeout_s: 120
       settle_s: 6
 
-  # --- FX, English ---
+  # --- FX, English — ada_market_quote {kind: fx, currency: THB} ---
   - user: "What's the dollar to baht rate right now?"
     expect:
-      calls_any: [web_search, cms_get_page, ada_memory_search]
+      calls_any: [ada_market_quote, web_search, cms_get_page,
+                  ada_memory_search]
       response_nonempty: true
       timeout_s: 120
       settle_s: 6
@@ -91,10 +97,13 @@ turns:
       timeout_s: 120
       settle_s: 6
 
-  # --- commodity edge: Thai diesel price ---
+  # --- commodity edge: Thai diesel — pump diesel is NOT collected;
+  #     ada_market_quote (WTI/Brent) is an acceptable honest partial,
+  #     web_search for the real pump number ---
   - user: "ราคาน้ำมันดีเซลวันนี้เท่าไหร่"
     expect:
-      calls_any: [web_search, cms_get_page, ada_memory_search]
+      calls_any: [ada_market_quote, web_search, cms_get_page,
+                  ada_memory_search]
       response_nonempty: true
       timeout_s: 120
       settle_s: 6

@@ -1,0 +1,115 @@
+# SSOT Job: ada_market_quote tools.d tool — gold/FX/DXY from trade DB
+# Card: ada-market-tool (kanban). Dispatch 20261008-060842.
+
+title: ada_market_quote — market prices from the trade PostgreSQL
+subtitle: gold/FX/DXY/crude questions stop burning web_search quota —
+  trade-api answers instantly from our own data
+
+planning:
+  goal: |
+    Add a drop-in tool (backend/tools.d/ada_market_quote.py) so Ada
+    answers "ทองเท่าไหร่ / dollar-baht / dollar index / crude" from the
+    trade database instead of web_search. Driver: stock-query-probe
+    2026-10-04 on ada-dev — 11/11 turns routed to web_search, 4/11
+    returned real numbers, Thai-market specifics failed honestly, and
+    grounded search can't do Thai market data anyway (plus eats the
+    ~20/day Gemini grounding budget).
+  context: |
+    Data lives in the trade stack (~/CascadeProjects/trade, docs-trade
+    kb/trade-containerized-postgres): trade-api (FastAPI,
+    127.0.0.1:9002->9000 on tony-dell, also proxied by Caddy at
+    /apps/trade/api over LAN :80 and tailnet https) reads the `trade`
+    database on chaba-postgres-16 — exchange_rates (USD->24 ccy),
+    dollar_index, commodity_prices (GOLD both XAU-THB GTA fixing and
+    USD oz, OIL WTI+BRENT, SILVER, COPPER, NATURAL_GAS).
+    The /latest endpoints pick one symbol, so Thai gold needs a
+    start_date range query + client-side symbol filter. Data is daily
+    closes with real staleness (THB -6d, DXY/XAU-THB -10d at build time)
+    — every quote carries as_of/age_days/stale and the model is told to
+    say the date aloud.
+  scope: |
+    In scope:
+      - tools.d/ada_market_quote.py + manifest entry (policy read,
+        secondary_allowed — gold/FX asks come from any speaker)
+      - tool_guide.yml usage entry, .env.example ADA_TRADE_API_URL
+      - ssot.tool-surface.yml count_cap 107 -> 108
+      - tests/test_market_quote.py (12 tests, faked httpx)
+      - tests/scenarios-live/market_quote.yaml (new routing scenario)
+      - stock_query_probe.yaml calls_any updated where the tool is now
+        the correct route (gold/USDTHB/diesel-adjacent) + baseline note
+    Out of scope:
+      - SET/equity quotes (needs settrade/yahoo feed — the DB has none)
+      - pump diesel retail price (not collected; crude is the proxy)
+      - refreshing the trade automation (series staleness is a trade-
+        stack issue, reported honestly via age_days/stale)
+  success_criteria:
+    - 'kind=gold returns thai_gold_bar (XAU-THB baht-weight) + gold_spot'
+    - 'kind=fx currency= quotes USD->ccy with prev-day change_pct'
+    - 'dxy/oil/silver/copper/natural_gas quote latest + delta'
+    - 'every quote carries as_of + age_days; stale>4d flagged'
+    - 'unreachable API / empty data -> honest ok:false, never a guess'
+    - 'tool referenced by a live scenario (lint coverage)'
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-08"
+  steps:
+    - id: 1
+      label: "probe live trade-api + DB schema"
+      status: done
+      notes: "Verified on tony-dell: trade-api at localhost:9002 and via
+        Caddy /apps/trade/api (LAN + tailnet). DB `trade` on
+        chaba-postgres-16: exchange_rates 24 ccy (USD base), dollar_index,
+        commodity_prices. XAU-THB Thai gold rows (source
+        gta-official-api, unit baht) reachable only via date-range query
+        — /latest returns the USD-oz GOLD row. Staleness observed: THB
+        10-02, most commodities/DXY 09-28, some ccy stuck 08-03."
+    - id: 2
+      label: "tools.d module + manifest + guide + env"
+      status: done
+      notes: "One file per the ada-tool-dev contract. kind= fx|gold|dxy|
+        oil|silver|copper|natural_gas; currency= for fx (default THB).
+        One range fetch (21d) per call -> latest + prev -> change_pct;
+        one retry on transport errors (api flakes on cold psycopg2
+        pool). Decl ≤300 chars; ops detail in tool_guide.yml."
+    - id: 3
+      label: "tests + lint + live sanity"
+      status: done
+      notes: "12 unit tests pass (faked httpx: quote paths, deltas,
+        stale flag, honest errors, manifest wiring). tool-lint: only
+        pre-existing FAILs remain (ada_memory_search/ada_track_device
+        descsize, ada_device_acl coverage — same on baseline, verified).
+        Live calls against localhost:9002 return real quotes e.g.
+        thai_gold_bar 66,050 THB/baht (as_of 2026-09-28, -2.51% d/d)."
+    - id: 4
+      label: "scenarios + probe update"
+      status: done
+      notes: "market_quote.yaml: 5 turns assert the tool is picked
+        (gold TH, USDTHB, DXY, JPY, crude) + 2 honesty turns (SET
+        equity, diesel — tool-or-search acceptable, fabrication is
+        not). stock_query_probe.yaml: ada_market_quote added to
+        calls_any on gold/FX/diesel turns, listed first; header keeps
+        the 2026-10-04 baseline for the benchmark delta."
+
+invoke:
+  commands:
+    - "python3 -m pytest tests/test_market_quote.py -q"
+    - "python3 scripts/tool-lint.py"
+    - "python3 scripts/scenario-live.py tests/scenarios-live/market_quote.yaml --url ws://<host>:8003/ws --api-key $ADA_API_KEY -v"
+    - "python3 scripts/scenario-live.py tests/scenarios-live/stock_query_probe.yaml --url ws://<host>:8003/ws --api-key $ADA_API_KEY -v"
+
+verification:
+  - "12 passed — tests/test_market_quote.py (with faked httpx)"
+  - "tool-lint: ada_market_quote declared (42 surface < cap 108) and
+     scenario-covered; remaining 3 FAILs are pre-existing baseline
+     debt, not this change"
+  - "live API sanity (worktree host): gold/fx/dxy/oil all return real
+     quotes with as_of/stale flags — see step 3"
+  - "live scenario runs pending deploy — worktree box has no ada
+     backend session; commands above. Card benchmark = rerun
+     stock_query_probe post-deploy vs the 2026-10-04 baseline
+     (11/11 web_search, 4/11 real numbers)"
+  - "watch: trade automation staleness — THB feed lagged 6d, DXY/GTA
+     gold 10d at build time; the tool surfaces it but the feed itself
+     may need a kick on the trade stack"

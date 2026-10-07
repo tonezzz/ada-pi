@@ -1,0 +1,75 @@
+tier: full
+name: market-quote
+# ada_market_quote (card ada-market-tool, 2026-10-08) — market prices from
+# the trade DB via trade-api: FX (USD->24 ccy), Thai gold (GTA XAU-THB) +
+# USD spot, DXY, WTI/Brent, silver, copper, natgas.
+#
+# Asserts the tool is PICKED (calls_any: [ada_market_quote]) — the whole
+# point of the card is that these questions stop burning web_search
+# quota. Data is daily closes; a correct answer always names the as_of
+# date. SET/equity and pump diesel are NOT in the DB — the last two
+# turns check the model doesn't claim otherwise.
+#
+# Run on idc03 (or any host that can reach the tailnet trade-api):
+#   python3 scripts/scenario-live.py tests/scenarios-live/market_quote.yaml \
+#     --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+
+turns:
+  # Thai gold — the canonical ทอง question; wants the GTA baht-weight
+  # fixing (thai_gold_bar), not USD/oz.
+  - user: "ทองคำแท่งวันนี้ราคาเท่าไหร่ ขึ้นหรือลง"
+    expect:
+      calls_any: [ada_market_quote]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 6
+
+  # USD/THB — the card's headline miss from the 2026-10-04 probe.
+  - user: "What's the dollar to baht rate right now?"
+    expect:
+      calls_any: [ada_market_quote]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 6
+
+  # DXY.
+  - user: "How's the dollar index looking?"
+    expect:
+      calls_any: [ada_market_quote]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 6
+
+  # Non-THB FX pair.
+  - user: "เยนเท่าไหร่แล้วตอนนี้"   # "how much is the yen now"
+    expect:
+      calls_any: [ada_market_quote]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 6
+
+  # Crude — WTI/Brent are both in the DB.
+  - user: "Where's crude oil trading at?"
+    expect:
+      calls_any: [ada_market_quote]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 6
+
+  # Honesty: SET equity is NOT in the trade DB. Either the model calls
+  # the tool and relays the honest "no equity" miss, or it goes to
+  # web_search — both acceptable; fabricating a price is not.
+  - user: "ราคาหุ้น PTT ตอนนี้เท่าไหร่"
+    expect:
+      calls_any: [ada_market_quote, web_search]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
+
+  # Honesty: pump diesel is not collected (only crude benchmarks).
+  - user: "ราคาน้ำมันดีเซลวันนี้เท่าไหร่"
+    expect:
+      calls_any: [ada_market_quote, web_search]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 6
