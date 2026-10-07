@@ -1,0 +1,101 @@
+# SSOT Job: google token loud fail
+# Card: google-token-loud-fail (chaba kanban). Dispatch 20261007-155949.
+
+title: Google token loud fail — calendar/tasks reads surface auth failure, not empty lists
+subtitle: Distinguish "genuinely empty" from "unreachable/unauthenticated" at the provider boundary
+
+planning:
+  goal: |
+    The idc03 Google refresh token was revoked (invalid_grant on the
+    token endpoint). Every calendar_read / tasks / plan_day call kept
+    returning ok:true with empty events/tasks lists — the per-provider
+    exception was buried in the 'errors' side-channel — so Ada told
+    Tony "nothing scheduled" while the whole backend was dead. Card:
+    surface auth failure as ok:false / a top-level error Ada is
+    instructed to relay, and keep genuinely-empty distinguishable.
+  decisions: |
+    - CalendarService._raise_untrustworthy() is the single rule applied
+      after every aggregating read (list_calendars, list_events,
+      freebusy, list_task_lists, list_tasks): any CalendarAuthError
+      raises immediately (a dead token is an ops condition — a partial
+      answer built around it lies by omission); an empty result with
+      ANY provider failure raises too ("unreachable" is not "nothing
+      scheduled"); partial failures that still produced items stay
+      graceful and ride in the result's 'errors' list.
+    - Raised exceptions become {ok: false, error, error_type} at the
+      runner boundary (uniform-tool-result contract) — error_type
+      'CalendarAuthError' vs 'CalendarError' distinguishes
+      unauthenticated from unreachable.
+    - plan_day propagates through its gather of list_events+list_tasks;
+      shift_overdue raises when nothing moved AND nothing was even
+      examined (errors + empty moved+skipped = blind write pass).
+    - _session_context_tail no longer drops a failed agenda prefetch
+      silently: the injected blob now says the agenda is unavailable
+      and why, so Ada can't read it as "no events today".
+    - CALENDAR_INSTRUCTIONS + tool_guide.yml (calendar_read/plan_day/
+      tasks) now state the contract: ok:false/error means unreachable
+      or unauthenticated — relay it; a non-empty 'errors' list means
+      partial.
+    - Other Google-backed tools (drive/photos/docs via
+      doc_archive_client) already raise into ok:false — no change.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-07"
+  steps:
+    - id: 1
+      label: "service loud-fail rule"
+      status: done
+      notes: "backend/calendar_providers.py — _raise_untrustworthy()
+        added; all five aggregating reads collect (provider, exc)
+        failures and call it; shift_overdue raises
+        CalendarError when blind."
+    - id: 2
+      label: "prompt + guide + session context"
+      status: done
+      notes: "CALENDAR_INSTRUCTIONS relays ok:false/error and partial
+        'errors'; _session_context_tail emits an 'agenda unavailable —
+        provider unreachable' line instead of silence; tool_guide.yml
+        entries for calendar_read/plan_day/tasks document the contract."
+    - id: 3
+      label: "regression tests"
+      status: done
+      notes: "FakeProvider gained fail_exc + _maybe_fail on
+        calendars/freebusy/task-lists. New tests: genuine-empty stays
+        ok, all-down raises, empty+partial raises, auth raises even
+        with partial items, plan_day/tasks_list auth propagate,
+        shift_overdue blind raises; runner-level revoked-token test
+        asserts ok:false + error_type CalendarAuthError on
+        calendar_read (events|calendars|freebusy), tasks list, plan_day."
+    - id: 4
+      label: "ops: restore idc03 credential"
+      status: done
+      notes: "scripts/ada/google-calendar-auth.py lives in the chaba
+        repo, not ada-pi, and needs interactive browser consent — but
+        the token file is shareable (the script's own --host flag scps
+        it). tony-dell held a live token minted 2026-10-02 for the same
+        client/scopes; copied to idc03 and tony-omen (both had the
+        revoked 2026-09-29 batch). Verified: refresh + calendarList
+        return OK on both. NOTE: the Sep-29 batch died ~7 days out —
+        consistent with an OAuth consent screen still in 'Testing'
+        status. Publish the app in the console or re-run
+        google-calendar-auth.py before ~Oct 9 or this recurs."
+
+invoke:
+  commands:
+    - "/home/tony/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/test_calendar_providers.py tests/test_context_awareness.py -x -q"
+    - "/home/tony/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/ -q"
+
+verification:
+  - "pytest tests/test_calendar_providers.py + test_context_awareness.py: 55 passed"
+  - "full suite: 733 passed; only failures are the two PRE-EXISTING
+    tool-lint violations on main (ada_track_device descsize,
+    ada_device_acl coverage) — unrelated"
+  - "live revoked-token check: GoogleCalendarProvider with a dead
+    refresh token through runner.execute -> {ok: false, error_type:
+    'CalendarAuthError', error: 'google: token refresh failed (401) —
+    re-run scripts/ada/google-calendar-auth.py'} on calendar_read
+    events/calendars, tasks list, plan_day — no empty lists"
+  - "idc03 + tony-omen token files now hold tony-dell's live credential;
+    refresh + calendarList verified end-to-end"

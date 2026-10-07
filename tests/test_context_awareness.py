@@ -145,7 +145,11 @@ class AgendaContextTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(cm, "pending_action_proposals",
                           new=AsyncMock(return_value=[])):
             tail = await self._provider(svc)._session_context_tail()
-        self.assertEqual(tail, "")
+        # google-token-loud-fail: a dead provider is named in context so
+        # Ada can say the calendar is unreachable — silence would read as
+        # 'no events today'.
+        self.assertIn("unavailable", tail)
+        self.assertIn("provider down", tail)
 
     async def test_pending_proposals_listed(self):
         svc = MagicMock()

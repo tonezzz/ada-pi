@@ -241,6 +241,33 @@ class CalendarService:
 
     # -- reads ---------------------------------------------------------------
 
+    @staticmethod
+    def _raise_untrustworthy(
+        failures: list[tuple[str, BaseException]], item_count: int
+    ) -> None:
+        """Provider failures must never masquerade as 'genuinely empty'
+        (kanban google-token-loud-fail).
+
+        A CalendarAuthError is always loud — a dead/revoked token is an
+        ops condition, and a partial answer built around it lies by
+        omission. Otherwise an empty result with any provider failure is
+        'unreachable', not 'nothing scheduled' — raising turns the tool
+        result into {ok: False, error} instead of ok:true + an empty
+        list. Partial failures that still produced items stay graceful
+        and ride in the result's 'errors' list."""
+        if not failures:
+            return
+        for _name, exc in failures:
+            if isinstance(exc, CalendarAuthError):
+                raise exc
+        if item_count:
+            return
+        if len(failures) == 1 and isinstance(failures[0][1], CalendarError):
+            raise failures[0][1]
+        raise CalendarError(
+            "calendar read incomplete — providers failed: "
+            + "; ".join(f"{name}: {exc}" for name, exc in failures))
+
     def _read_providers(self) -> list[Any]:
         if self.read != "aggregate":
             provider = self.providers.get(self.read)
@@ -260,20 +287,22 @@ class CalendarService:
 
     async def list_calendars(self) -> dict[str, Any]:
         calendars: list[dict[str, Any]] = []
-        errors: list[str] = []
+        failures: list[tuple[str, BaseException]] = []
         results = await asyncio.gather(
             *(p.list_calendars() for p in self.providers.values()),
             return_exceptions=True,
         )
         for name, res in zip(self.providers, results):
             if isinstance(res, Exception):
-                errors.append(f"{name}: {res}")
+                failures.append((name, res))
             else:
                 for cal in res:
                     cal["provider"] = name
                     cal["qualified"] = f"{name}{PROVIDER_SEP}{cal['id']}"
                     calendars.append(cal)
-        return {"calendars": calendars, "default_write": self.write, "errors": errors}
+        self._raise_untrustworthy(failures, len(calendars))
+        return {"calendars": calendars, "default_write": self.write,
+                "errors": [f"{n}: {e}" for n, e in failures]}
 
     async def list_events(
         self,
@@ -292,46 +321,50 @@ class CalendarService:
             targets = [(p, calendar) for p in self.providers.values()]
 
         events: list[dict[str, Any]] = []
-        errors: list[str] = []
+        failures: list[tuple[str, BaseException]] = []
         results = await asyncio.gather(
             *(p.list_events(start, end, query=query) for p, _ in targets),
             return_exceptions=True,
         )
         for (p, cal), res in zip(targets, results):
             if isinstance(res, Exception):
-                errors.append(f"{p.name}: {res}")
+                failures.append((p.name, res))
                 continue
             for ev in res:
                 if cal is not None and ev.calendar != cal:
                     continue
                 ev.id = _qualify(p.name, ev.id)
                 events.append(asdict(ev))
+        self._raise_untrustworthy(failures, len(events))
         events.sort(key=lambda e: (e["start"], e["title"]))
         return {
             "start": start.isoformat(),
             "end": end.isoformat(),
             "timezone": str(self.tz),
             "events": events,
-            "errors": errors,
+            "errors": [f"{n}: {e}" for n, e in failures],
         }
 
     async def freebusy(self, day: str | None = "today", days: int = 1) -> dict[str, Any]:
         start, end = day_range(parse_day(day, self.tz), days, self.tz)
         providers = self._read_providers()
         busy: list[dict[str, Any]] = []
-        errors: list[str] = []
+        failures: list[tuple[str, BaseException]] = []
         results = await asyncio.gather(
             *(p.freebusy(start, end) for p in providers),
             return_exceptions=True,
         )
         for p, res in zip(providers, results):
             if isinstance(res, Exception):
-                errors.append(f"{p.name}: {res}")
+                failures.append((p.name, res))
             else:
                 for item in res:
                     item["provider"] = p.name
                     busy.append(item)
-        return {"start": start.isoformat(), "end": end.isoformat(), "busy": busy, "errors": errors}
+        self._raise_untrustworthy(failures, len(busy))
+        return {"start": start.isoformat(), "end": end.isoformat(),
+                "busy": busy,
+                "errors": [f"{n}: {e}" for n, e in failures]}
 
     async def plan_day(self, day: str | None = "today") -> dict[str, Any]:
         events, tasks = await asyncio.gather(
@@ -385,7 +418,7 @@ class CalendarService:
 
     async def list_task_lists(self) -> dict[str, Any]:
         lists: list[dict[str, Any]] = []
-        errors: list[str] = []
+        failures: list[tuple[str, BaseException]] = []
         providers = self._task_providers()
         results = await asyncio.gather(
             *(p.list_task_lists() for p in providers),
@@ -393,30 +426,34 @@ class CalendarService:
         )
         for p, res in zip(providers, results):
             if isinstance(res, Exception):
-                errors.append(f"{p.name}: {res}")
+                failures.append((p.name, res))
             else:
                 for tl in res:
                     tl["provider"] = p.name
                     lists.append(tl)
-        return {"task_lists": lists, "errors": errors}
+        self._raise_untrustworthy(failures, len(lists))
+        return {"task_lists": lists,
+                "errors": [f"{n}: {e}" for n, e in failures]}
 
     async def list_tasks(self, task_list: str | None = None) -> dict[str, Any]:
         providers = self._task_providers()
         tasks: list[dict[str, Any]] = []
-        errors: list[str] = []
+        failures: list[tuple[str, BaseException]] = []
         results = await asyncio.gather(
             *(p.list_tasks(task_list=task_list) for p in providers),
             return_exceptions=True,
         )
         for p, res in zip(providers, results):
             if isinstance(res, Exception):
-                errors.append(f"{p.name}: {res}")
+                failures.append((p.name, res))
                 continue
             for t in res:
                 t.id = _qualify(p.name, t.id)
                 tasks.append(asdict(t))
+        self._raise_untrustworthy(failures, len(tasks))
         tasks.sort(key=lambda t: (t.get("due") or "9999", t["title"]))
-        return {"tasks": tasks, "errors": errors}
+        return {"tasks": tasks,
+                "errors": [f"{n}: {e}" for n, e in failures]}
 
     async def add_task(
         self, title: str, due: str | None = None, notes: str | None = None,
@@ -550,6 +587,12 @@ class CalendarService:
         except Exception as exc:
             errors.append(f"tasks: {exc}")
 
+        # Same loud-fail rule as the reads (google-token-loud-fail):
+        # nothing moved and nothing examined means the provider was
+        # unreachable or unauthenticated — not 'no overdue items'.
+        if errors and not moved and not skipped:
+            raise CalendarError(
+                "shift_overdue made no progress — " + "; ".join(errors))
         return {"target": target.isoformat(), "moved": moved,
                 "skipped": skipped, "errors": errors,
                 "moved_count": len(moved)}

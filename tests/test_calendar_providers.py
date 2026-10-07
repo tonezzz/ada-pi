@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from backend.calendar_providers import (
+    CalendarAuthError,
     CalendarError,
     CalendarEvent,
     CalendarService,
@@ -38,20 +39,24 @@ def _write_registry(spec):
 class FakeProvider:
     """In-memory CalendarProvider + TasksProvider for service tests."""
 
-    def __init__(self, name, events=None, tasks=None, fail=False):
+    def __init__(self, name, events=None, tasks=None, fail=False, fail_exc=None):
         self.name = name
         self.events = events or []
         self.tasks = tasks or []
         self.fail = fail
+        self.fail_exc = fail_exc
         self.deleted = []
         self.created = []
         self.completed = []
 
     async def _maybe_fail(self):
+        if self.fail_exc is not None:
+            raise self.fail_exc
         if self.fail:
             raise CalendarError(f"{self.name} is down")
 
     async def list_calendars(self):
+        await self._maybe_fail()
         return [{"id": "primary", "title": f"{self.name} cal", "primary": True}]
 
     async def list_events(self, start, end, query=None):
@@ -70,9 +75,11 @@ class FakeProvider:
         self.deleted.append(raw_id)
 
     async def freebusy(self, start, end):
+        await self._maybe_fail()
         return [{"calendar": "primary", "start": start.isoformat(), "end": end.isoformat()}]
 
     async def list_task_lists(self):
+        await self._maybe_fail()
         return [{"id": "@default", "title": "Tasks"}]
 
     async def list_tasks(self, task_list=None, due_before=None):
@@ -187,6 +194,65 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(out["events"]), 1)
         self.assertEqual(len(out["errors"]), 1)
         self.assertIn("icloud", out["errors"][0])
+
+    # -- google-token-loud-fail: empty must mean empty, not unreachable --
+
+    async def test_genuinely_empty_stays_ok(self):
+        svc = CalendarService({"google": FakeProvider("google")}, tz=TZ)
+        out = await svc.list_events(day="2026-09-22")
+        self.assertEqual(out["events"], [])
+        self.assertEqual(out["errors"], [])
+
+    async def test_all_providers_down_raises_not_empty(self):
+        svc = CalendarService(
+            {"google": FakeProvider("google", fail=True)}, tz=TZ)
+        with self.assertRaises(CalendarError):
+            await svc.list_events(day="2026-09-22")
+
+    async def test_empty_plus_partial_failure_raises(self):
+        # One provider answered 'no events', the other is down — the
+        # empty result cannot be trusted, so this must be loud.
+        svc = CalendarService(
+            {"google": FakeProvider("google"),
+             "icloud": FakeProvider("icloud", fail=True)}, tz=TZ)
+        with self.assertRaises(CalendarError):
+            await svc.list_events(day="2026-09-22")
+
+    async def test_auth_failure_raises_even_when_partial(self):
+        # A revoked token is an ops condition — loud even when another
+        # provider still returns items.
+        svc = CalendarService(
+            {"google": FakeProvider(
+                "google", fail_exc=CalendarAuthError(
+                    "google: token refresh failed (400)")),
+             "icloud": FakeProvider(
+                 "icloud", events=[_ev("x", "2026-09-22T09:00:00+07:00")])},
+            tz=TZ)
+        with self.assertRaises(CalendarAuthError):
+            await svc.list_events(day="2026-09-22")
+
+    async def test_plan_day_propagates_auth_failure(self):
+        svc = CalendarService(
+            {"google": FakeProvider(
+                "google", fail_exc=CalendarAuthError("google: revoked"))},
+            tz=TZ)
+        with self.assertRaises(CalendarAuthError):
+            await svc.plan_day("2026-09-22")
+
+    async def test_tasks_list_auth_failure_raises(self):
+        svc = CalendarService(
+            {"google": FakeProvider(
+                "google", fail_exc=CalendarAuthError("google: revoked"))},
+            tz=TZ)
+        with self.assertRaises(CalendarAuthError):
+            await svc.list_tasks()
+
+    async def test_shift_overdue_loud_when_blind(self):
+        svc = CalendarService(
+            {"google": FakeProvider("google", fail=True)},
+            write="google", tz=TZ)
+        with self.assertRaises(CalendarError):
+            await svc.shift_overdue("tomorrow")
 
     async def test_read_pinning(self):
         a = FakeProvider("google", events=[_ev("g", "2026-09-22T09:00:00+07:00")])
@@ -460,6 +526,54 @@ class CalendarGateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("calendars", out)
         out = await runner.execute("plan_day", {"day": "2026-09-22"})
         self.assertIn("events", out)
+
+    async def test_revoked_token_is_ok_false_not_empty(self):
+        # google-token-loud-fail regression: a dead credential must
+        # surface as {ok: False, error_type: CalendarAuthError} on every
+        # calendar/tasks read — never ok:true with an empty list.
+        runner = self._runner()
+        runner._calendar = CalendarService(
+            {"google": FakeProvider(
+                "google", fail_exc=CalendarAuthError(
+                    "google: token refresh failed (400) — "
+                    "re-run scripts/ada/google-calendar-auth.py"))},
+            tz=TZ)
+        runner._calendar_loaded = True
+        for tool, args in [
+            ("calendar_read", {"action": "events"}),
+            ("calendar_read", {"action": "calendars"}),
+            ("calendar_read", {"action": "freebusy"}),
+            ("tasks", {"action": "list"}),
+            ("plan_day", {"day": "2026-09-22"}),
+        ]:
+            out = await runner.execute(tool, args)
+            self.assertFalse(out["ok"], tool)
+            self.assertEqual(
+                out["error_type"], "CalendarAuthError", tool)
+            self.assertNotIn("events", out)
+            self.assertNotIn("tasks", out)
+
+    async def test_unreachable_provider_is_ok_false_not_empty(self):
+        runner = self._runner()
+        runner._calendar = CalendarService(
+            {"google": FakeProvider("google", fail=True)}, tz=TZ)
+        runner._calendar_loaded = True
+        out = await runner.execute(
+            "calendar_read", {"action": "events"})
+        self.assertFalse(out["ok"])
+        self.assertIn("google", out["error"])
+        self.assertNotIn("events", out)
+
+    async def test_genuinely_empty_day_is_ok_true(self):
+        runner = self._runner()
+        runner._calendar = CalendarService(
+            {"google": FakeProvider("google")}, tz=TZ)
+        runner._calendar_loaded = True
+        out = await runner.execute(
+            "calendar_read", {"action": "events"})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["events"], [])
+        self.assertEqual(out["errors"], [])
 
 
 if __name__ == "__main__":
