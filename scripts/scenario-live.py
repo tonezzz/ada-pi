@@ -1820,8 +1820,14 @@ async def main() -> int:
                         if (not transcript_now.strip()
                                 and expects_speech and text is not None):
                             print("      empty turn — retrying once")
-                            events, failures = await run_turn(
+                            retry_events, _ = await run_turn(
                                 ws, text, expect, args.verbose)
+                            # Score the union — a live-API interrupt can eat
+                            # a transcript whose tool calls were real; merging
+                            # keeps calls_any honest without hiding attempt-1
+                            # behavior (banned calls still count).
+                            events = events + retry_events
+                            failures = check_turn(events, expect)
                             if not failures:
                                 events = events + [{
                                     "type": "_note",
