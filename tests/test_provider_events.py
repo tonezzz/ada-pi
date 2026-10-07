@@ -1,9 +1,10 @@
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from google.genai import types
 
-from backend.realtime_provider import GeminiLiveProvider
+from backend.realtime_provider import GeminiLiveProvider, _phantom_claim
 
 
 class InterruptedSession:
@@ -299,6 +300,66 @@ class UserConfirmedGateTests(unittest.TestCase):
         # "yes" opens the turn; the trailing "don't" is commentary.
         self.assertTrue(self.provider._user_confirmed(
             "Yes, replace it — I don't need the wall right now."))
+
+
+class ConfirmRetryPendingTests(unittest.TestCase):
+    """2026-10-07 ada_remember flake: the model resends confirmed=true on
+    the identical denied call instead of replaying confirm_token. When a
+    live token covers that exact call the resend IS the replay — the
+    provider passes confirmed through instead of stripping it."""
+
+    def test_envelope_keys_filtered_before_fingerprint(self) -> None:
+        runner = MagicMock()
+        runner.pending_confirm.return_value = True
+        provider = GeminiLiveProvider(tool_runner=runner)
+        args = {"bank": "personal", "text": "x", "subject": "s",
+                "confirmed": True, "confirm_token": "cfm-abc",
+                "_verified_affirm": True}
+        self.assertTrue(provider._confirm_retry_pending("ada_remember", args))
+        runner.pending_confirm.assert_called_once_with(
+            "ada_remember",
+            {"bank": "personal", "text": "x", "subject": "s"})
+
+    def test_no_pending_token_means_strip_path(self) -> None:
+        runner = MagicMock()
+        runner.pending_confirm.return_value = False
+        provider = GeminiLiveProvider(tool_runner=runner)
+        self.assertFalse(provider._confirm_retry_pending(
+            "ada_remember", {"bank": "personal", "text": "x"}))
+
+    def test_no_runner_or_runner_error_fails_closed(self) -> None:
+        provider = GeminiLiveProvider()
+        self.assertFalse(provider._confirm_retry_pending(
+            "ada_remember", {"bank": "personal"}))
+        runner = MagicMock()
+        runner.pending_confirm.side_effect = RuntimeError("boom")
+        provider = GeminiLiveProvider(tool_runner=runner)
+        self.assertFalse(provider._confirm_retry_pending(
+            "ada_remember", {"bank": "personal"}))
+
+
+class PhantomClaimRegexTests(unittest.TestCase):
+    """Write-claim detection must catch the exact verbs Ada narrated over
+    failed results ('saved', 'บันทึกแล้ว') — the 2026-10-07 flake narrated
+    success on six NOT-EXECUTED ada_remember denials undetected."""
+
+    def test_save_verbs_are_claims(self) -> None:
+        for text in (
+            "Done — I saved it to your personal bank.",
+            "It's stored under gate-remote now.",
+            "บันทึกแล้วครับ",
+            "จำไว้แล้ว",
+        ):
+            self.assertTrue(_phantom_claim(text), text)
+
+    def test_negated_save_is_not_a_claim(self) -> None:
+        self.assertFalse(_phantom_claim(
+            "I couldn't get it saved — the write was refused."))
+        self.assertFalse(_phantom_claim(
+            "I can't save it right now."))
+
+    def test_present_tense_intent_is_not_a_claim(self) -> None:
+        self.assertFalse(_phantom_claim("I'll save that for you now."))
 
 
 if __name__ == "__main__":

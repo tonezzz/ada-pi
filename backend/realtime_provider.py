@@ -220,10 +220,14 @@ DEVIN_TOOLS = {
 # registered/recorded/noted but made ZERO tool calls in the turn —
 # observed failure mode when tool results fail silently upstream.
 _PHANTOM_CLAIM_RE = re.compile(
-    r"(?i)\b(registered|registration|recorded|queued|written down|noted down)"
+    r"(?i)\b(registered|registration|recorded|queued|written down|noted down"
+    # 2026-10-07 confirm-gate flake: Ada narrated "saved" over six
+    # NOT-EXECUTED ada_remember denials — the write-claim wordset was
+    # missing the exact verb the model reaches for.
+    r"|saved|stored|memori[sz]ed|jotted down|kept (?:a )?note)"
     r"|\b(?:is|are|now)\s+(?:showing|displayed|playing|up)\s+on\s+(?:the\s+)?screen\b"
     r"|\bon screen (?:now|\d)\b"
-    r"|จดไว้|บันทึกไว้|รับทราบ"
+    r"|จดไว้|บันทึกไว้|บันทึกแล้ว|จำไว้|เก็บไว้|รับทราบ"
     # display/cast completion claims in Thai — "แสดงผล...แล้ว", "ขึ้นจอ 3 แล้ว"
     r"|(?:แสดงผล|ขึ้น(?:ที่)?จอ|บนจอ|ส่ง(?:ไป)?(?:ที่)?จอ)[^.\n]{0,40}(?:แล้ว|เรียบร้อย)"
 )
@@ -1272,6 +1276,24 @@ class GeminiLiveProvider(RealtimeProvider):
         # Whichever stance opens the turn wins: "yes — but don't worry"
         # is consent with commentary, "no, uh-huh" is a denial.
         return not (neg and neg.start() < aff.start())
+
+    def _confirm_retry_pending(self, tool: str,
+                               args: dict[str, Any]) -> bool:
+        """True when this exact gated call was already denied once in this
+        process and its minted confirm_token is still live — the model's
+        confirmed=true resend of the identical call IS the replay the
+        denial asked for (observed: Gemini resends confirmed=true, never
+        the token spelling — 2026-10-07 ada_remember flake)."""
+        runner = self.tool_runner
+        if runner is None:
+            return False
+        gate_args = {k: v for k, v in dict(args or {}).items()
+                     if k not in ("confirmed", "confirm_token",
+                                  "_verified_affirm")}
+        try:
+            return bool(runner.pending_confirm(tool, gate_args))
+        except Exception:
+            return False
 
     def note_client_noul(self, p: float, ms: int) -> None:
         """Edge-tier verdict from the browser student. Advisory only —
@@ -4221,6 +4243,11 @@ class GeminiLiveProvider(RealtimeProvider):
         response_audio_chunks = 0
         response_audio_bytes = 0
         tool_calls_this_turn = 0
+        # Results that came back ok:false this turn (gate denials,
+        # tool errors) — feeds the phantom_write_claim honesty check so
+        # "saved" narrated over a NOT-EXECUTED result surfaces as an
+        # ops event, not just zero-tool-call phantoms.
+        failed_results_this_turn = 0
         tool_budget = int(os.environ.get("ADA_TOOL_CALL_BUDGET", "20"))
         actuations_this_turn = 0
         actuation_budget = int(os.environ.get("ADA_ACTUATION_BUDGET", "6"))
@@ -4687,7 +4714,34 @@ class GeminiLiveProvider(RealtimeProvider):
                                     if call_args.get("confirmed"):
                                         _src = self._confirm_source_text(input_transcript)
                                         _affirmed = self._user_confirmed(input_transcript)
-                                        if not _affirmed:
+                                        if not _affirmed and self._confirm_retry_pending(
+                                                str(call.name), call_args):
+                                            # The denial already proposed
+                                            # this exact call and minted a
+                                            # bound token — the resend is
+                                            # the replay, just spelled
+                                            # confirmed=true instead of
+                                            # confirm_token (the model's
+                                            # actual behavior, 2026-10-07
+                                            # flake). The gate still forced
+                                            # the propose → deny → retry
+                                            # protocol; let it through.
+                                            logger.info(
+                                                "session=%s %s confirmed=true "
+                                                "retry of a pending proposal — "
+                                                "accepting (token pending, no "
+                                                "voice affirmation detected)",
+                                                self.session_id, call.name)
+                                            self._emit_ops_event(
+                                                "confirm_retry_accept",
+                                                f"Accepted confirmed=true "
+                                                f"retry of the pending "
+                                                f"{call.name} proposal — "
+                                                "identical args already had a "
+                                                "live confirm_token; no user "
+                                                "affirmation detected.",
+                                                tool=str(call.name))
+                                        elif not _affirmed:
                                             logger.warning(
                                                 "session=%s %s self-asserted confirmed=true "
                                                 "without user affirmation — stripping",
@@ -4742,6 +4796,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         # honesty checks (event log below, scenario-live
                         # no_failed_result) rely on it.
                         result = normalize_tool_result(result)
+                        if result.get("ok") is False:
+                            failed_results_this_turn += 1
                         self.conversation.log_event(
                             "tool_call", tool=str(call.name),
                             dur_ms=int((time.monotonic() - tool_t0) * 1000),
@@ -4860,6 +4916,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     )
                     self._response_active = False
                     tool_calls_this_turn = 0
+                    failed_results_this_turn = 0
                     actuations_this_turn = 0
                     budget_hit = False
                     budget_nudged = False
@@ -4937,14 +4994,25 @@ class GeminiLiveProvider(RealtimeProvider):
                     barge_pending = False
                     input_transcript = ""
                     n_tools_this_turn = tool_calls_this_turn
-                    if (tool_calls_this_turn == 0
-                            and _phantom_claim(assistant_turn_text)):
+                    # A write claim is honest only when a tool ran and
+                    # nothing it touched failed — claiming "saved" over a
+                    # NOT-EXECUTED result is the same phantom class as
+                    # claiming one with no call at all (2026-10-07 flake).
+                    if _phantom_claim(assistant_turn_text) and (
+                            tool_calls_this_turn == 0
+                            or failed_results_this_turn):
+                        _claim_basis = (
+                            "no tool call this turn"
+                            if tool_calls_this_turn == 0 else
+                            f"{failed_results_this_turn} failed tool "
+                            "result(s) this turn")
                         self._emit_ops_event(
                             "phantom_write_claim",
-                            "assistant claimed a write with no tool call this "
-                            f"turn: {assistant_turn_text.strip()[:160]!r}",
+                            f"assistant claimed a write with {_claim_basis}: "
+                            f"{assistant_turn_text.strip()[:160]!r}",
                         )
                     tool_calls_this_turn = 0
+                    failed_results_this_turn = 0
                     actuations_this_turn = 0
                     budget_hit = False
                     budget_nudged = False

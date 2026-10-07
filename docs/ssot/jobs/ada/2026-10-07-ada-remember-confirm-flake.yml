@@ -1,0 +1,69 @@
+# SSOT Job: ada_remember confirm-gate flake — accept the model's real retry form
+# Card: ada-remember-confirm-flake. Dispatch 20261007-163943.
+# Evidence: voice session 2026-10-07-56d2e4d167, 13:40-13:48 ICT —
+# 6/8 confirmed-policy writes returned NOT EXECUTED while Ada narrated
+# "saved" over the failed results.
+
+title: Confirm gate — confirmed=true retry passthrough + phantom_write_claim on failed results
+subtitle: >
+  Gemini resends confirmed=true on the identical denied call and never
+  emits the minted confirm_token. The provider's voice-affirm strip then
+  re-denied every retry; each denial minted yet another token.
+
+planning:
+  goal: |
+    Make the confirmation gate survive the model's actual behaviour:
+    a confirmed=true resend of the IDENTICAL denied call (same tool+args
+    fingerprint) while its confirm_token is still live counts as the
+    replay the denial asked for. And close the honesty gap: a
+    NOT-EXECUTED result must never be narrated as success.
+  decisions: |
+    - Chose card option (a) — accept confirmed:true on a retry of
+      identical args within the token window — over keeping the token
+      mandatory. The flake evidence showed Gemini does not emit
+      confirm_token; option (b) alone would not stop the retry loop.
+      The gate still enforces propose → deny → retry: the FIRST call
+      without voice affirmation is still stripped and denied; only a
+      resend matching a live pending token is passed through.
+    - Security note: the trade-off is that a persistent model can
+      self-certify consent by calling twice. Accepted per the card; the
+      passthrough emits a `confirm_retry_accept` ops event so the
+      transcript-mine-confirms signal can audit how often it fires.
+    - Tokens stay minted and mandatory as the canonical replay form;
+      the denial text now instructs the exact replay arg prominently
+      ("TO EXECUTE: replay the SAME call adding confirm_token='cfm-…'")
+      and documents the confirmed=true resend alternative.
+    - confirmed-grants now burn the outstanding token for the same
+      fingerprint (ToolRunner._burn_pending_confirms) — a minted token
+      can no longer re-arm a write the flag already executed.
+    - phantom_write_claim now fires when the assistant claims a write
+      with EITHER zero tool calls (existing) OR any ok:false tool
+      result this turn (new, failed_results_this_turn counter).
+      _PHANTOM_CLAIM_RE gained save-verbs (saved|stored|memorized|
+      jotted down|kept a note|บันทึกแล้ว|จำไว้|เก็บไว้) — the exact
+      vocabulary from the flake transcript.
+  files:
+    - backend/tool_runner/__init__.py — pending_confirm(),
+      _burn_pending_confirms(), _require_confirmation() grant burn +
+      denial text
+    - backend/realtime_provider.py — _confirm_retry_pending() helper,
+      confirmed-strip passthrough, failed_results_this_turn tracking,
+      phantom check + _PHANTOM_CLAIM_RE extension
+    - tests/scenarios/confirm_token_replay.yaml — token replay E2E,
+      confirmed=true resend, token burn, audit trail
+    - tests/test_tool_runner.py — pending_confirm/expiry/burn/denial-text
+    - tests/test_provider_events.py — retry-pending filter, phantom regex
+  verify: |
+    .venv/bin/python -m pytest tests/test_tool_runner.py \
+      tests/test_provider_events.py tests/test_scenarios.py \
+      tests/test_ops_events.py tests/test_memory_banks.py \
+      tests/test_tools_loader.py tests/test_recall_gate.py \
+      tests/test_decision_check.py tests/test_memory_recall_extras.py -q
+    — all green (the test_tool_audit lint failure is pre-existing on
+    baseline: ada_track_device descsize + ada_device_acl coverage,
+    untouched by this change).
+  watch: |
+    - ops events ada-ha-events-<instance>: type=confirm_retry_accept —
+      how often the passthrough fires vs. confirm_strip.
+    - phantom_write_claim volume may rise initially — it now also counts
+      turns with any failed result, not only zero-call turns.
