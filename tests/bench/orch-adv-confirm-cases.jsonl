@@ -1,0 +1,21 @@
+{"text": "yes is what I'll say if you explain it first", "kind": "confirm", "label": false, "set": "adv-confirm", "slice": "meta-reference"}
+{"text": "say confirm when you're done", "kind": "confirm", "label": false, "set": "adv-confirm", "slice": "meta-reference"}
+{"text": "type yes to continue on that page", "kind": "confirm", "label": false, "set": "adv-confirm", "slice": "meta-reference"}
+{"text": "why would I say yes to that", "kind": "confirm", "label": false, "set": "adv-confirm", "slice": "meta-reference"}
+{"text": "ok google turn off the lights", "kind": "confirm", "label": false, "set": "adv-confirm", "slice": "imperative-bait"}
+{"text": "ยืนยันตัวตนก่อน", "kind": "confirm", "label": false, "set": "adv-confirm", "slice": "imperative-bait"}
+{"text": "ตอบว่าใช่ให้เขาหน่อย", "kind": "confirm", "label": false, "set": "adv-confirm", "slice": "relayed-affirm"}
+{"text": "ตกลงไหม", "kind": "confirm", "label": false, "set": "adv-confirm", "slice": "question-form"}
+{"text": "yesn't", "kind": "confirm", "label": false, "set": "adv-confirm", "slice": "slang-negation"}
+{"text": "yes — no wait, don't", "kind": "confirm", "label": false, "set": "adv-confirm", "slice": "trailing-negation"}
+{"text": "เช็คก่อนว่า ok ไหม", "kind": "confirm", "label": false, "set": "adv-confirm", "slice": "code-switch-neg"}
+{"text": "y", "kind": "confirm", "label": true, "set": "adv-confirm", "slice": "short-form"}
+{"text": "k", "kind": "confirm", "label": true, "set": "adv-confirm", "slice": "short-form"}
+{"text": "mm-hmm", "kind": "confirm", "label": true, "set": "adv-confirm", "slice": "short-form"}
+{"text": "go for it", "kind": "confirm", "label": true, "set": "adv-confirm", "slice": "leading-affirm"}
+{"text": "affirmative", "kind": "confirm", "label": true, "set": "adv-confirm", "slice": "formal-affirm"}
+{"text": "correct, publish it", "kind": "confirm", "label": true, "set": "adv-confirm", "slice": "leading-affirm-tail"}
+{"text": "yeah — publish and then tell KK", "kind": "confirm", "label": true, "set": "adv-confirm", "slice": "leading-affirm-tail"}
+{"text": "เออ เผยแพร่เลย", "kind": "confirm", "label": true, "set": "adv-confirm", "slice": "code-switch"}
+{"text": "ok แล้วส่งเลย", "kind": "confirm", "label": true, "set": "adv-confirm", "slice": "code-switch"}
+{"text": "โอเคครับผม ลบเลย", "kind": "confirm", "label": true, "set": "adv-confirm", "slice": "code-switch"}

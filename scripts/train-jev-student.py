@@ -14,7 +14,7 @@ from transformers import (AutoTokenizer, AutoModelForSequenceClassification,
 
 random.seed(7); np.random.seed(7); torch.manual_seed(7)
 MODEL = "distilbert-base-multilingual-cased"
-OUT = os.path.expanduser("~/jev-student/ckpt")
+OUT = os.path.expanduser(os.environ.get("JEV_OUT", "~/jev-student/ckpt"))
 
 data = json.load(open(os.environ.get("JEV_CORPUS", "/tmp/jev-all.json")))
 texts = [d["text"].strip() for d in data if d["text"].strip()]
