@@ -164,6 +164,9 @@ class Chain:
                             st["prob"] = pa
                     break
             else:  # decider / arbiter / fallback
+                if node.level not in ("L1", "L2", "L3"):
+                    hops.append(f"{nid}:no-endpoint")
+                    break
                 a = call(node.level, _state(doms, case),
                          _decide_q(doms, case))
                 st["decision"], st["prob"], st["band"] = _decision(
