@@ -1038,6 +1038,11 @@ class GeminiLiveProvider(RealtimeProvider):
         # flushes it through the sanitizer.
         self._artifact_hold = ""
         self._artifact_logged = False
+        # Client-edge verdict: the PWA's in-browser student scores each
+        # user_transcript and reports p/ms back over the socket. Stashed
+        # here; _jev_confirm_probe folds it into the corpus row when a
+        # gated call happens shortly after.
+        self._client_noul = None      # (p, ms, monotonic_ts)
         # Jev advisory probe — set ADA_JEV_URL to the systemone service
         # (e.g. http://tony-omen:8777) to measure regex-vs-Jev divergence
         # on confirm-gate decisions. Advisory only: the regex enforces.
@@ -1258,6 +1263,11 @@ class GeminiLiveProvider(RealtimeProvider):
         # is consent with commentary, "no, uh-huh" is a denial.
         return not (neg and neg.start() < aff.start())
 
+    def note_client_noul(self, p: float, ms: int) -> None:
+        """Edge-tier verdict from the browser student. Advisory only —
+        stored so the next corpus row can carry client_p."""
+        self._client_noul = (p, ms, time.monotonic())
+
     def _jev_confirm_probe(self, transcript: str, regex_says: bool,
                            tool: str) -> None:
         """Advisory-only: score the same confirmation question with Jev
@@ -1316,6 +1326,11 @@ class GeminiLiveProvider(RealtimeProvider):
                     "text": transcript[:300], "regex": bool(regex_says),
                     "jev": round(score, 4), "diverged": diverged,
                 }
+                # Edge-tier verdict — attach if the browser student scored
+                # this turn recently (120s freshness window).
+                cn = getattr(self, "_client_noul", None)
+                if cn and time.monotonic() - cn[2] < 120:
+                    row["client_p"], row["client_ms"] = cn[0], cn[1]
                 with open(os.path.join(corpus_dir, "jev-corpus.jsonl"), "a") as fh:
                     fh.write(json.dumps(row, ensure_ascii=False) + "\n")
             except Exception as exc:

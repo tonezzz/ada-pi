@@ -938,6 +938,20 @@ async def voice_socket(ws: WebSocket) -> None:
                                 # real speech attempts arm the stall nudge.
                                 if burst and time.monotonic() - burst >= 0.5:
                                     speech_state["pending_at"] = time.monotonic()
+                        elif control.get("type") == "client_noul":
+                            # Browser-side student verdict (edge tier).
+                            # Advisory: stashed on the provider so the
+                            # jev corpus row can carry client_p alongside
+                            # the server-side regex/jev scores.
+                            try:
+                                p = float(control.get("p"))
+                                ms = int(control.get("ms") or 0)
+                                note = getattr(provider_ref[0],
+                                               "note_client_noul", None)
+                                if note:
+                                    note(p, ms)
+                            except (TypeError, ValueError):
+                                pass
                         elif control.get("type") == "register" and CHABA_MODE:
                             # Guest name registration: binds name to this
                             # session for memory writes and queues a pending
@@ -2132,5 +2146,14 @@ async def cms_edit_page(request: Request, slug: str) -> dict:
 
 static_dir = ROOT / "frontend"
 pwa_dir = ROOT / "pwa"
+# Client-side model artifacts (browser AI lanes — int8 ONNX students,
+# later CAM++/YOLO). Models stay out-of-band like every other model
+# in the stack; the dir is rsynced to the host, not committed.
+pwa_models_dir = Path(os.environ.get(
+    "ADA_PWA_MODELS",
+    os.path.expanduser("~/.local/share/ada-pi/pwa-models")))
+if pwa_models_dir.is_dir():
+    app.mount("/models", StaticFiles(directory=pwa_models_dir),
+              name="pwa-models")
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/", StaticFiles(directory=pwa_dir, html=True), name="pwa")

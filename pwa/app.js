@@ -246,6 +246,11 @@ function handleControl(event) {
       break;
     case "user_transcript":
       logLine(`You: ${event.text}`);
+      // Edge-tier shadow: score the turn in-browser with the quantized
+      // student and report the verdict — advisory only, regex still gates.
+      window.jevClient?.onTranscript(event.text, (v) => {
+        try { socket?.send(JSON.stringify(v)); } catch (_) {}
+      });
       break;
     case "assistant_transcript_delta":
       if (!assistantEntry) assistantEntry = event.text;
