@@ -435,6 +435,9 @@ drive: >-
   drive_search, drive_get, drive_show, drive_update.
 
 ada_board_write: >-
-  'comment' posts text= on a card id=; 'respond' answers a card's open
-  request (id= + request_id= + answer=); 'read' compact board state
-  (column=, limit= filters) for finding card ids and open requests.
+  'comment' posts text= on a card id= (prefix '[opinion]' for report
+  takes — the durable record of a report opinion); 'respond' answers a
+  card's open request (id= + request_id= + answer=); 'read' compact
+  board state (column=, limit= filters) for finding card ids and open
+  requests — report=<slug> instead returns the card whose report:
+  field links that CMS page.

@@ -1,0 +1,31 @@
+# Report opinion loop — when Tony asks Ada's take on a CMS report page
+# she reads the page first (never opines unread), finds the kanban card
+# whose report: field links the slug via ada_board_write action=read
+# report=<slug>, and posts her take as an '[opinion]'-prefixed comment
+# on that card while also answering aloud. Card: report-loop-ada-opinion;
+# design: chaba docs/design/report-session-loop.md §3b/§4a.
+#
+# The fixture card 'scenario-report-opinion' (report: dev-kanban) is the
+# comms sink — [opinion] entries there are scenario output, not real
+# review input.
+#
+# Run on idc03:
+#   python3 scripts/scenario-live.py tests/scenarios-live/report_opinion_loop.yaml \
+#     --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+name: report_opinion_loop
+tier: full
+turns:
+  - user: >-
+      Ada, what's your opinion of the dev-kanban report page? Read it
+      first and tell me what you think.
+    expect:
+      timeout_s: 120
+      settle_s: 8
+      response_nonempty: true
+      # The loop: cms_read the page, then ada_board_write (read for the
+      # linked card + comment with the [opinion] prefix).
+      calls: [cms_read, ada_board_write]
+cleanup:
+  # Intentional: the [opinion] comment stays on scenario-report-opinion —
+  # the fixture card is the designed comms sink for this scenario.
+  mddb_delete: []

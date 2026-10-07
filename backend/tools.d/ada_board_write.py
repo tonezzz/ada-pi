@@ -69,6 +69,12 @@ DECLARATION = {
                 "type": "integer",
                 "description": "Max cards for action=read (default 12).",
             },
+            "report": {
+                "type": "string",
+                "description": "CMS page slug for action=read — returns "
+                               "the card whose 'report' field links it "
+                               "(the report-opinion lookup).",
+            },
         },
     },
 }
@@ -201,6 +207,8 @@ def _compact_card(c: dict[str, Any]) -> dict[str, Any]:
     }
     if c.get("updated"):
         row["updated"] = c["updated"]
+    if c.get("report"):
+        row["report"] = str(c["report"])
     if open_reqs:
         row["open_requests"] = len(open_reqs)
         row["requests"] = [
@@ -217,12 +225,69 @@ def _compact_card(c: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _match_report_card(cards: list[dict[str, Any]], slug: str
+                       ) -> dict[str, Any]:
+    """Opinion-loop lookup: find the kanban cards whose `report` field
+    links a CMS page slug. Open (non-'done' column) cards outrank done
+    ones; within each tier the most recently `updated` wins. Returns
+    {'open': [...], 'done': [...]}, each sorted updated-desc."""
+    want = slug.strip().lower()
+    open_, done = [], []
+    for c in cards:
+        if str(c.get("report") or "").strip().lower() != want:
+            continue
+        col = str(c.get("column") or "backlog")
+        (done if col == "done" else open_).append(c)
+    key = lambda c: str(c.get("updated") or "")
+    open_.sort(key=key, reverse=True)
+    done.sort(key=key, reverse=True)
+    return {"open": open_, "done": done}
+
+
+def _report_lookup(cards: list[dict[str, Any]], slug: str
+                   ) -> dict[str, Any]:
+    """action=read report=<slug> — returns the single best card linking
+    the slug plus counts so the model can narrate ambiguity aloud or
+    offer to file a card when nothing links it."""
+    match = _match_report_card(cards, slug)
+    open_, done = match["open"], match["done"]
+    out: dict[str, Any] = {
+        "ok": True,
+        "report": slug.strip().lower(),
+        "open_matches": len(open_),
+        "done_matches": len(done),
+    }
+    if open_:
+        out["card"] = _compact_card(open_[0])
+        if len(open_) > 1:
+            out["also"] = [str(c.get("id")) for c in open_[1:]]
+            out["note"] = (
+                "several open cards link this report — the most "
+                "recently updated was picked; say which card got the "
+                "comment")
+    elif done:
+        out["card"] = _compact_card(done[0])
+        out["note"] = (
+            "only done cards link this report — the comment still "
+            "lands on it, or offer to file a fresh card "
+            "(action='create')")
+    else:
+        out["card"] = None
+        out["note"] = (
+            "no card links this report — answer aloud and offer to "
+            "file one (action='create')")
+    return out
+
+
 async def _read(args: dict[str, Any]) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=10.0) as client:
         data, err = await _request(client, "GET", "/cards")
     if err:
         return {"ok": False, "error": err}
     assert data is not None
+    slug = str(args.get("report") or "").strip()
+    if slug:
+        return _report_lookup(data.get("cards") or [], slug)
     want_col = str(args.get("column") or "").strip().lower()
     try:
         limit = int(args.get("limit") or _READ_LIMIT_DEFAULT)

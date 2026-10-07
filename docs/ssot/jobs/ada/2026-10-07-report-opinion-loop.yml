@@ -1,0 +1,92 @@
+# SSOT Job: Report opinion loop — Ada's [opinion] comments on report cards
+# Card: report-loop-ada-opinion (chaba kanban). Dispatch 20261007-202420.
+# Design: chaba docs/design/report-session-loop.md §3b (contract);
+# convention: chaba docs/ssot/infrastructure/ssot.ada-participation.yml
+# (t1_comment .opinion_convention).
+
+title: Report opinion loop — [opinion] kanban comments on report-linked cards
+subtitle: CMS_INSTRUCTIONS stanza + ada_board_write read report=<slug> lookup; comment action is the designed path (no new tool)
+
+planning:
+  goal: |
+    When Tony asks Ada's opinion of a report/CMS page, she reads the
+    page (never opines unread), finds the kanban card whose report:
+    field equals the slug, and posts her take as a comment starting
+    '[opinion]' citing slug + read timestamp — while also answering
+    aloud. The comment is the durable record; the spoken take is for
+    the moment. Design doc §6 explains why this rides action=comment
+    with a prefix instead of a dedicated kanban_opinion tool.
+  scope: |
+    In scope:
+      - backend/realtime_provider.py — REPORT OPINION stanza appended
+        to CMS_INSTRUCTIONS (read → lookup → comment → answer aloud;
+        no linked card → offer action='create').
+      - backend/tools.d/ada_board_write.py — _compact_card exposes the
+        card `report` field; _match_report_card helper (open/non-done
+        cards outrank done, most-recently-updated wins a tie);
+        action=read report=<slug> returns {card, open_matches,
+        done_matches, also[], note} — deterministic matching instead of
+        asking the model to scan the listing.
+      - backend/tool_guide.yml — ada_board_write entry documents the
+        report= read filter and the [opinion] comment prefix.
+      - tests/test_board_write.py — ReportLookupTest (7 tests): helper
+        semantics + read report= paths + compact-payload field.
+      - tests/scenarios-live/report_opinion_loop.yaml — live scenario;
+        [opinion] comms land on the 'scenario-report-opinion' fixture
+        card (report: dev-kanban), the designed comms sink.
+    Out of scope:
+      - A separate kanban_opinion tool — design §6: action=comment +
+        '[opinion]' prefix keeps one comms surface; no new tool.
+      - board-api changes (chaba repo) — /cards already emits `report`
+        (verified live: scenario-report-opinion → dev-kanban).
+      - Deploy to idc03 — needs Tony's approval per ada-pi AGENTS.md.
+  success_criteria:
+    - '"what do you think of the dev-kanban report" → cms_read get →
+      ada_board_write read report= → comment [opinion] on the linked
+      card + spoken answer'
+    - 'read report=<slug> picks the most recently updated non-done
+      card; ambiguity surfaced via also[]/note'
+    - 'no linked card → card:null + note offering action=create'
+    - 'compact read payload carries report when the card has one'
+  risks:
+    - 'only done cards link a slug: lookup returns the done card with a
+      note offering comment-or-file — spec says "none → offer to file";
+      surfaced rather than hidden so Ada can decide (comment on done
+      cards is still the durable record).'
+    - 'slug normalization is case/space-insensitive on both sides;
+      report field values that differ beyond that will not match.'
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-10-07"
+  steps:
+    - id: 1
+      label: "Tool: report field + match helper + read lookup"
+      status: done
+      notes: "ada_board_write.py — _compact_card carries report; _match_report_card open-over-done updated-desc; _read report=<slug> returns card/open_matches/done_matches/also/note."
+    - id: 2
+      label: "Instructions + guide"
+      status: done
+      notes: "REPORT OPINION stanza in CMS_INSTRUCTIONS (realtime_provider.py ~L207); tool_guide.yml ada_board_write updated."
+    - id: 3
+      label: "Tests + scenario"
+      status: done
+      notes: "21/21 test_board_write green (7 new). report_opinion_loop.yaml scenario targets the scenario-report-opinion fixture card."
+    - id: 4
+      label: "Verify"
+      status: done
+      notes: "ast.parse clean; tool-lint shows only 2 pre-existing violations (ada_track_device descsize, ada_device_acl coverage — same on base); live _report_lookup against 127.0.0.1:8787/cards resolves dev-kanban → scenario-report-opinion."
+
+invoke:
+  voice:
+    - '"what do you think of the <slug> report" -> cms_read get, ada_board_write read report=<slug>, comment [opinion] <take>'
+  env:
+    ADA_BOARD_API_URL: "board-api base (default https://tony-dell.taila0626a.ts.net/apps/board-api)"
+
+verification:
+  - "python3 -m unittest tests.test_board_write -v  # 21 tests"
+  - "python3 -c \"import ast; ast.parse(open('backend/realtime_provider.py').read())\""
+  - "python3 scripts/tool-lint.py  # 2 pre-existing violations only"
+  - "scenario-live: tests/scenarios-live/report_opinion_loop.yaml (needs deployed backend)"
