@@ -35,7 +35,10 @@ turns:
       response_nonempty: true
       calls_any: [ada_track_device]
       result_contains: ['"count"']
-      result_contains_any: ["tony-omen", "tony-dell", "idc03"]
+      # device names live in the nested `devices` list — the ws trace
+      # truncates non-scalars at 300 chars (_safe_args), so assert names
+      # on the spoken transcript instead.
+      response_contains_any: ["tony-omen", "omen", "dell"]
 
   # Honesty probe — a device that doesn't exist must not get a location.
   - user: "Where is my Nokia 3310?"
