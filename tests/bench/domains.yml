@@ -1,0 +1,131 @@
+# Orch-bench domain registry — one entry per case `kind`.
+#
+# A domain binds a case kind to its /v1/systemone surface:
+#   state     entry text, `{turn}` = case text
+#   question  noul or choice question (criteria keys = label space)
+#   audit     optional auditor question; `{decision}` interpolates the
+#             decision under audit (noul → "yes"/"no", choice → the pick)
+#
+# confirm/tool wording is identical to jev-bench.py (production-parity
+# questions). New domains need only a block here + a
+# tests/bench/orch-<set>-cases.jsonl file whose rows carry kind: <name>.
+
+domains:
+  confirm:
+    state: >-
+      Ada, a voice assistant, asked the user to confirm a memory write.
+      The user turn was: "{turn}"
+    question:
+      type: noul
+      instructions: >-
+        Did the user explicitly affirm or confirm? The turn counts as
+        affirmation only when it is a standalone short affirmation (like
+        yes, ok, confirm, go ahead, ยืนยัน) or begins with an affirmation.
+        An approval word embedded inside a longer request does NOT count.
+      criteria:
+        true: the whole turn is a short affirmation, or it leads with one
+        false: >-
+          no affirmation present, or an affirmative word is buried inside
+          a longer request
+    audit:
+      type: noul
+      instructions: >-
+        You are auditing a voice-confirmation decision. Another model said
+        the user affirmed. Vetoes happen when the turn is actually an
+        instruction that happens to contain 'ok', 'confirm', 'yes' as part
+        of a command — e.g. 'turn off the TV ok', 'save this to memory
+        please', 'confirm delete the old page' are instructions, not
+        confirmations. Is this a real confirmation?
+      criteria:
+        true: genuinely an affirmative response to a pending question
+        false: an imperative/instruction containing an approval word
+
+  tool:
+    state: >-
+      Voice assistant Ada received user speech. Pick the single best
+      action. User said: "{turn}"
+    question:
+      type: choice
+      instructions: Choose the action Ada should take first.
+      criteria:
+        remember: store the information in long-term memory
+        recall: search memory / past sessions to answer
+        control: act on a smart-home device (switch, scene, media)
+        answer: no tool needed — just speak the answer
+        search: search the web for current information
+    audit:
+      type: noul
+      instructions: >-
+        You are auditing a tool-routing decision. Another model chose the
+        action '{decision}' for this user turn. Is that the right first
+        action, given the options remember/recall/control/answer/search?
+      criteria:
+        true: the chosen action is the best first step
+        false: a different action fits better
+
+  # --- domains beyond the confirm gate ---------------------------------
+  bank:
+    state: >-
+      Voice assistant Ada is about to store a memory note. Pick the memory
+      bank it belongs to. The note is: "{turn}"
+    question:
+      type: choice
+      instructions: Choose the single memory bank for this note.
+      criteria:
+        general: >-
+          shared household knowledge — wifi, addresses, schedules, how-to,
+          anything any speaker may need
+        home: >-
+          smart-home state and devices — entity quirks, automations,
+          dashboard details, hardware around the house
+        people: >-
+          facts about a person — preferences, birthdays, relationships,
+          what someone said or asked for
+        purchase: >-
+          shopping and spending — things to buy, orders, prices,
+          warranties, repair parts
+        personal: >-
+          private to the speaker — health, finances, accounts,
+          anything not for other speakers
+    audit:
+      type: noul
+      instructions: >-
+        You are auditing a memory-bank routing decision. Another model
+        filed the note under '{decision}'. Given the banks
+        general/home/people/purchase/personal, is that the right bank?
+      criteria:
+        true: the chosen bank matches the note's sensitivity and topic
+        false: a different bank fits better
+
+  triage:
+    state: >-
+      A task dispatcher read an operator request for the chaba/home-infra
+      board. Pick the lane the work belongs to. The request was: "{turn}"
+    question:
+      type: choice
+      instructions: Choose the lane this request should be dispatched to.
+      criteria:
+        code: >-
+          change code in a repo — fix a bug, build a feature, refactor,
+          add tests
+        docs: >-
+          write or update documentation — SSOT entries, runbooks,
+          kanban cards, reports
+        ops: >-
+          operate the infrastructure — deploy, restart, check health,
+          triage failed units, rotate secrets
+        research: >-
+          investigate and report — answer a question, compare options,
+          read logs, no file changes wanted
+        clarify: >-
+          ambiguous or missing key information — park it and ask the
+          operator before doing anything
+    audit:
+      type: noul
+      instructions: >-
+        You are auditing a task-triage decision. Another model routed the
+        request to '{decision}'. Given the lanes
+        code/docs/ops/research/clarify, is that the right lane?
+      criteria:
+        true: the chosen lane matches what the request actually needs
+        false: a different lane fits better

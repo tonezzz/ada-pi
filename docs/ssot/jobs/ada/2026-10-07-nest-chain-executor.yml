@@ -1,0 +1,100 @@
+# SSOT Job: Nest chain executor + multi-domain bench (card 'nest-collective-bench')
+# Handoff: devin-dispatch 2026-10-07 — iterate topologies: graph executor
+# for impl:chain entries, case domains beyond confirm-gate, learned
+# router mechanics, scheduled cadence.
+
+title: Nest chain executor — declarative topologies + bank/triage/toolx domains
+subtitle: topologies.yml impl:chain entries now executable; misses feed a router-stats corpus
+icon: graph-outline
+
+planning:
+  goal: |
+    Make impl:chain entries in tests/bench/topologies.yml executable so
+    new compound-AI topologies are YAML, not code; extend the case space
+    beyond confirm-gate (memory-bank routing, kanban-triage, harder
+    tool-selection); and close the corpus-in/corpus-out loop so a learned
+    router can replace the feature router once the corpus is big enough.
+  scope: |
+    In scope:
+      - tests/bench/chain.py — graph executor: nodes {id, level, role,
+        edges[{when,to}]}, roles router/learned_router/decider/auditor/
+        arbiter/fallback, predicates else|kind:|feat:|yes|no|in_band|
+        veto|uphold
+      - tests/bench/domains.yml — per-kind question registry (state,
+        question, audit). confirm/tool wording identical to jev-bench.py
+      - tests/bench/orch-bank-cases.jsonl (36), orch-triage-cases.jsonl
+        (30), orch-toolx-cases.jsonl (20) — hand-labeled, EN+TH
+      - orch-bench.py — --arbiter/--domains/--topologies/--stats-out,
+        generalized --sets (auto-discovers orch-*-cases.jsonl), domain-
+        driven builtins (any kind works), per-node trace output
+      - topologies.yml — nest-2l-router + nest-3l-verify made executable,
+        nest-learned-router added (reads the stats corpus; cold
+        signatures fall back to feature edges)
+      - nest-bench-update.py — chain impl counted as 'benchable'
+      - systemd unit (chaba repo): --corpus-out/--stats-out flags so the
+        weekly run feeds the router corpus
+    Out of scope:
+      - A real L3 lane (Gemini-backed /v1/systemone) — --arbiter defaults
+        to --heavy until one exists
+      - Training a model router head — the stats corpus is the training
+        data; nest-learned-router is the mechanism, not a trained model
+      - Installing the updated systemd unit (deploy = operator action)
+  success_criteria:
+    - 'all impl:chain registry entries run via --structure all against
+      stub and live endpoints'
+    - 'new domain sets load and score (bank 36, triage 30, toolx 20)'
+    - 'learned router demonstrably routes by accumulated stats
+      (route~L2 in detail trace once a signature warms)'
+  risks:
+    - 'per-level stats have selection bias — levels only see cases routed
+      to them; fine for routing, not for headline accuracy claims'
+    - 'YAML 1.1 parses bare yes/no as bool — executor normalizes, but
+      quote predicates in new entries anyway'
+    - 'bank labels encode the access-posture rule that general+home are
+      guest-visible — credential-ish notes are labeled personal; revisit
+      if the bank taxonomy changes'
+  resources:
+    - student/heavy: open-jev on tony-omen :8778/:8777 (gemma-3-1b/4b)
+    - L3 arbiter: --arbiter flag, currently aliases --heavy
+    - corpus: ~/.local/share/ada/orch-corpus.jsonl (jev-retrain feed),
+      orch-router-stats.jsonl (learned router feed)
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-10-07"
+  steps:
+    - id: 1
+      label: "Executor + domains"
+      status: done
+      notes: "chain.py (DAG walk, edge predicates, learned_router stats lookup) + domains.yml (confirm/tool/bank/triage + audit templates)"
+    - id: 2
+      label: "Case files"
+      status: done
+      notes: "bank 36 rows (banks general/home/people/purchase/personal), triage 30 (lanes code/docs/ops/research/clarify), toolx 20 (remember/recall/control/answer/search edge cases)"
+    - id: 3
+      label: "Harness wiring"
+      status: done
+      notes: "orch-bench.py: chains join --structure all; --sets all auto-discovers; stats-out writes case+node rows; corpus-out keeps jev-corpus contract"
+    - id: 4
+      label: "Verify"
+      status: done
+      notes: "py_compile + deterministic stub (8 structures, 139 cases): chains walk route→dec_easy→dec_hard and dec1→audit(veto)→arbitrate; seeded stats prove learned-route hits (route~L2). Live run on open-jev endpoints posted bench/orch-* doc"
+
+invoke:
+  shell:
+    - ".venv/bin/python tests/bench/orch-bench.py --student http://100.75.102.88:8778 --heavy http://100.75.102.88:8777"
+    - "add --arbiter URL to give L3 nodes a real endpoint"
+    - "add --stats-out ~/.local/share/ada/orch-router-stats.jsonl to feed the learned router"
+    - "add --mddb http://100.102.134.91:11023/v1 --report-cms to publish"
+  flags:
+    --structure: "'all' = 5 builtins + every impl:chain registry entry"
+    --sets: "'all' = golden,tool + every orch-*-cases.jsonl discovered"
+    --stats-out: "JSONL corpus of case+node outcome rows; learned_router reads it back"
+    --arbiter: "L3 endpoint; defaults to --heavy (stand-in until Gemini lane)"
+
+verification:
+  - "stub run: all 8 structures × 139 cases, traces show expected node paths"
+  - "seeded stats: nest-learned-router routes 'confirm:short' to L2 (route~L2 in detail)"
+  - "live run: bench/orch-* doc in ada-ha-scenario-reports, nest-bench CMS page shows chain rows"
