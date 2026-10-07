@@ -523,10 +523,27 @@ class MemoryMixin:
                                "speaker still gets matched to you, they "
                                "may need to re-enroll.")
         except ValueError as exc:
-            return {"error": str(exc)}
+            # EnrollConflict (speaker_id) carries the profile the buffered
+            # voice actually matches — surface it so the model can offer
+            # "you're enrolled as X — merge?" instead of re-trying the
+            # same refused enroll in a loop.
+            refusal: dict[str, Any] = {"error": str(exc)}
+            matched = getattr(exc, "matched", None)
+            if matched:
+                refusal["matched_profile"] = matched
+                refusal["match_score"] = round(
+                    float(getattr(exc, "score", 0.0) or 0.0), 3)
+                refusal["suggest"] = (
+                    f"the buffered voice already scores as '{matched}' — "
+                    "call speaker_profiles action='match' to confirm, say "
+                    f"they're enrolled as '{matched}', and offer the merge "
+                    "(speaker_profiles action='alias' with person=/"
+                    "rename_to=). Do NOT retry the same enroll.")
+            return refusal
         except Exception as exc:
             logger.warning("voice enrollment failed: %s", exc)
             return {"error": f"enrollment failed: {exc}"}
+        return out
 
     # -- Chaba guest tools (CHABA_MEMORY=1 instances only) ------------------
     # File-backed public memory under ~/.local/share/chaba/. No MDDB, no

@@ -309,7 +309,11 @@ _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 #     the exact tool + args fingerprint, so a 'yes' can only arm the action it
 #     was shown — not a rephrased or unrelated retry — and cannot be replayed.
 _CONFIRM_TRUE = frozenset({"true", "1", "yes", "y", "confirm", "confirmed"})
-CONFIRM_TOKEN_TTL_S = float(os.environ.get("ADA_CONFIRM_TOKEN_TTL_S", "120"))
+# 300s (speaker-profile-tool, 2026-10-07): handoff flows — where the
+# session owner differs from the speaker being confirmed (e.g. Ada asks
+# the owner to approve a guest's profile fix) — need the token to
+# outlive a multi-turn spoken exchange; 120s expired mid-handoff.
+CONFIRM_TOKEN_TTL_S = float(os.environ.get("ADA_CONFIRM_TOKEN_TTL_S", "300"))
 _CONFIRM_TOKEN_MAX = 64
 _CONFIRM_AUDIT_MAX = 200
 

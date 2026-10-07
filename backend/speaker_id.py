@@ -148,6 +148,19 @@ def _keep_audio() -> bool:
 AUDIO_TTL_DAYS = float(os.environ.get("ADA_SPEAKER_AUDIO_TTL_DAYS", "14"))
 
 
+class EnrollConflict(ValueError):
+    """enroll() refusal where the audio already matches ANOTHER enrolled
+    profile — carries the profile name + score so the tool layer can name
+    it explicitly and offer a merge (speaker_profiles match/alias)
+    instead of looping on the same refusal."""
+
+    def __init__(self, message: str, matched: str | None = None,
+                 score: float = 0.0) -> None:
+        super().__init__(message)
+        self.matched = matched
+        self.score = score
+
+
 def _centroid(prints: list[np.ndarray]) -> np.ndarray:
     """L2-normalized mean of per-sample prints — same geometry as the
     historical running-average merge."""
@@ -374,6 +387,9 @@ class SpeakerIdentifier:
                 }
                 if entry.get("media"):
                     meta["media"] = True
+                if entry.get("aliases"):
+                    meta["aliases"] = [
+                        str(a) for a in entry["aliases"] if str(a).strip()]
                 self._metadata[name] = meta
         logger.info("loaded %d enrolled speaker profiles from %s", len(self._enrolled), self._profiles_path)
 
@@ -416,6 +432,8 @@ class SpeakerIdentifier:
                 entry["audio"] = meta["audio"]
             if meta.get("media"):
                 entry["media"] = True
+            if meta.get("aliases"):
+                entry["aliases"] = list(meta["aliases"])
             data[name] = entry
         self._profiles_path.write_text(json.dumps(data, indent=2))
 
@@ -432,6 +450,9 @@ class SpeakerIdentifier:
                 "ha_person": self._metadata.get(name, {}).get("ha_person"),
                 "display_name": self._metadata.get(name, {}).get("display_name"),
                 "samples": self._metadata.get(name, {}).get("samples") or 1,
+                "media": bool(self._metadata.get(name, {}).get("media")),
+                "aliases": list(
+                    self._metadata.get(name, {}).get("aliases") or []),
             }
             for name in sorted(self._enrolled)
         ]
@@ -446,13 +467,17 @@ class SpeakerIdentifier:
 
     def set_metadata(self, name: str, ha_person: str | None = None,
                      display_name: str | None = None,
-                     media: bool | None = None) -> bool:
-        """Update HA person mapping, display name, or media flag for an
-        enrolled speaker. ``media`` marks a non-person source (TV/video/
-        podcast voice) so the pipeline steers Ada to ignore its content
-        instead of answering it."""
-        if name not in self._enrolled:
+                     media: bool | None = None,
+                     aliases: list[str] | None = None) -> bool:
+        """Update HA person mapping, display name, media flag, or aliases
+        for an enrolled speaker. ``media`` marks a non-person source
+        (TV/video/podcast voice) so the pipeline steers Ada to ignore its
+        content instead of answering it. ``aliases`` replaces the extra
+        name list — every alias keeps resolving to this profile."""
+        resolved = self.resolve_name(name)
+        if resolved is None:
             return False
+        name = resolved
         meta = self._metadata.setdefault(name, {})
         if ha_person is not None:
             meta["ha_person"] = ha_person or None
@@ -460,11 +485,91 @@ class SpeakerIdentifier:
             meta["display_name"] = display_name or None
         if media is not None:
             meta["media"] = bool(media)
+        if aliases is not None:
+            meta["aliases"] = [
+                str(a).strip() for a in aliases if str(a).strip()]
         self._save_enrolled()
         logger.info("updated metadata for '%s': ha_person=%s display_name=%s media=%s",
                     name, meta.get("ha_person"), meta.get("display_name"),
                     meta.get("media"))
         return True
+
+    def resolve_name(self, token: str | None) -> str | None:
+        """Resolve any handle for an enrolled speaker — profile key, slug
+        spelling, display_name, ha_person entity, or a recorded alias —
+        to the canonical profile key. None when unknown or ambiguous."""
+        text = str(token or "").strip()
+        if not text:
+            return None
+        if text in self._enrolled:
+            return text
+        want = self._name_slug(text)
+        hits = [n for n in self._enrolled if self._name_slug(n) == want]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            return None
+        for name, meta in self._metadata.items():
+            if name not in self._enrolled:
+                continue
+            if meta.get("ha_person") == text:
+                return name
+            dn = meta.get("display_name")
+            if dn and self._name_slug(dn) == want:
+                return name
+            if any(self._name_slug(a) == want
+                    for a in meta.get("aliases") or []):
+                return name
+        return None
+
+    def rename(self, old: str, new: str) -> str | None:
+        """Rename an enrolled profile's key, keeping prints/metadata/audio
+        — the wrong-name fix ('พรศิริ' -> 'KK'). The old key is recorded
+        in aliases so it still resolves to this profile. Returns the new
+        key, or None when old is unknown/ambiguous or new is taken or a
+        placeholder."""
+        src = self.resolve_name(old)
+        new = str(new or "").strip()
+        if (src is None or not new or new in self._enrolled
+                or new.strip().lower() in RESERVED_NAMES
+                or _PLACEHOLDER_PATTERN.search(new)):
+            return None
+        self._enrolled[new] = self._enrolled.pop(src)
+        if src in self._prints:
+            self._prints[new] = self._prints.pop(src)
+        meta = self._metadata.pop(src, {})
+        aliases = meta.setdefault("aliases", [])
+        if self._name_slug(src) != self._name_slug(new) \
+                and src not in aliases:
+            aliases.append(src)
+        self._metadata[new] = meta
+        self._save_enrolled()
+        logger.info("renamed speaker profile '%s' -> '%s'", src, new)
+        try:
+            from backend.event_log import log_event
+            log_event("speaker-renamed", new, "voice", f"was={src}")
+        except Exception:
+            pass
+        return new
+
+    def score_audio(self, pcm16: bytes,
+                    sample_rate: int = SAMPLE_RATE) -> list[dict[str, Any]]:
+        """Ranked cosine scores of one audio chunk against every enrolled
+        profile — the raw material behind identify(), surfaced for the
+        speaker_profiles 'match' action so a sub-threshold best candidate
+        is still visible (name + score) instead of a bare miss."""
+        emb = self._compute_embedding(pcm16, sample_rate)
+        mode = os.environ.get("ADA_SPEAKER_SCORE", "centroid")
+        rows = [
+            {
+                "name": name,
+                "score": round(self._speaker_score(name, emb, ref, mode), 3),
+                "media": self.is_media(name),
+            }
+            for name, ref in self._enrolled.items()
+        ]
+        rows.sort(key=lambda r: r["score"], reverse=True)
+        return rows
 
     def is_media(self, name: str) -> bool:
         """True when the profile is flagged as a media/device voice."""
@@ -490,6 +595,12 @@ class SpeakerIdentifier:
                 f"'{name}' is a placeholder, not a real name — ask the "
                 "speaker for their name first, then enroll under that."
             )
+        # Alias/person/spelling handles resolve to the canonical key —
+        # enrolling under an alias ('พรศิริ' for 'KK') must extend that
+        # profile, not collide with it in the contamination guard.
+        resolved = self.resolve_name(name)
+        if resolved is not None:
+            name = resolved
         emb = self._compute_embedding(pcm16, sample_rate)
         if not force:
             # Contamination guard: match against EVERY stored print of every
@@ -504,10 +615,14 @@ class SpeakerIdentifier:
                     if score > best_other_score:
                         best_other, best_other_score = other, score
             if best_other is not None and best_other_score >= DEFAULT_THRESHOLD:
-                raise ValueError(
+                raise EnrollConflict(
                     f"this voice matches enrolled speaker '{best_other}' "
                     f"({best_other_score:.0%}) — refusing to enroll it as '{name}'. "
-                    "Confirm who is actually speaking, or remove the stale profile first."
+                    "Tell the speaker they're already enrolled as "
+                    f"'{best_other}' and offer to merge or rename that "
+                    "profile (speaker_profiles action='match'/'alias') "
+                    "instead of retrying the same enroll.",
+                    matched=best_other, score=best_other_score,
                 )
         prev = self._metadata.get(name, {})
         if force:
@@ -632,16 +747,10 @@ class SpeakerIdentifier:
         return "".join(c if c.isalnum() else " " for c in name.lower()).strip()
 
     def remove(self, name: str) -> bool:
-        if name not in self._enrolled:
-            # Slug-tolerant lookup — callers pass 'guest-tester',
-            # 'guest tester', 'Guest_Tester' for the same profile; an
-            # unambiguous normalized match is enough.
-            want = self._name_slug(name)
-            hits = [n for n in self._enrolled if self._name_slug(n) == want]
-            if len(hits) == 1:
-                name = hits[0]
-            else:
-                return False
+        resolved = self.resolve_name(name)
+        if resolved is None:
+            return False
+        name = resolved
         del self._enrolled[name]
         self._prints.pop(name, None)
         meta = self._metadata.pop(name, {})
@@ -982,17 +1091,53 @@ class SpeakerSession:
             return None
         return time.monotonic() - self._last_hit_at
 
+    def _buffer_pcm(self, seconds: float) -> bytes:
+        """Trailing PCM for buffer-based identify/enroll/match —
+        pending_voice (unrecognized-speaker accrual) when it has a full
+        chunk, else the _recent ring."""
+        want = int(seconds * SAMPLE_RATE * 2)
+        src = self._pending_voice if len(self._pending_voice) >= MIN_CHUNK_BYTES else self._recent
+        take = min(len(src), want)
+        return bytes(src[-take:])
+
     def identify_buffer(self, seconds: float = 15.0) -> tuple[str | None, float]:
         """Identify the voice in the enroll buffer WITHOUT enrolling —
         used by the owner-enrollment carve-out to prove the buffered
         voice isn't the currently-identified secondary speaker."""
-        want = int(seconds * SAMPLE_RATE * 2)
-        src = self._pending_voice if len(self._pending_voice) >= MIN_CHUNK_BYTES else self._recent
-        take = min(len(src), want)
-        pcm16 = bytes(src[-take:])
+        pcm16 = self._buffer_pcm(seconds)
         if len(pcm16) < MIN_CHUNK_BYTES // 2:
             return None, 0.0
         return self._identifier.identify(pcm16, SAMPLE_RATE)
+
+    def match_buffer(self, seconds: float = 15.0) -> dict[str, Any]:
+        """Score the buffered voice against every enrolled profile —
+        identify-without-verdict for the speaker_profiles 'match' action.
+        The best person candidate surfaces with its score even below
+        threshold, so a wrong-name enrollment offer ("you're enrolled as
+        พรศิริ — merge into KK?") is made on evidence, not a guess."""
+        pcm16 = self._buffer_pcm(seconds)
+        out: dict[str, Any] = {
+            "buffered_s": round(len(pcm16) / (SAMPLE_RATE * 2), 1),
+            "threshold": DEFAULT_THRESHOLD,
+            "match": None,
+            "score": 0.0,
+        }
+        if len(pcm16) < MIN_CHUNK_BYTES // 2:
+            out["reason"] = "not enough speech captured in the buffer"
+            return out
+        rows = self._identifier.score_audio(pcm16, SAMPLE_RATE)
+        out["candidates"] = rows[:3]
+        best = next((r for r in rows if not r.get("media")), None)
+        if best is not None:
+            out["best"] = best["name"]
+            out["score"] = best["score"]
+            if best["score"] >= DEFAULT_THRESHOLD:
+                out["match"] = best["name"]
+            out["ha_person"] = self._identifier.get_ha_person(best["name"])
+        media = next((r for r in rows if r.get("media")), None)
+        if media is not None and media["score"] >= DEFAULT_THRESHOLD:
+            out["media_match"] = media["name"]
+        return out
 
     def enroll_from_buffer(
         self,
@@ -1012,10 +1157,7 @@ class SpeakerSession:
 
         Returns the enroll result dict from SpeakerIdentifier.enroll().
         """
-        want = int(seconds * SAMPLE_RATE * 2)
-        src = self._pending_voice if len(self._pending_voice) >= MIN_CHUNK_BYTES else self._recent
-        take = min(len(src), want)
-        pcm16 = bytes(src[-take:])
+        pcm16 = self._buffer_pcm(seconds)
         if len(pcm16) < MIN_CHUNK_BYTES // 2:
             fed_s = self._fed_bytes / (SAMPLE_RATE * 2)
             voiced_s = self._voiced_bytes / (SAMPLE_RATE * 2)

@@ -824,6 +824,26 @@ async def remember(
     return out
 
 
+# Keys shaped like speaker-profile paths (speaker/kk, voiceprint/พรศิริ)
+# never name memory docs — voiceprints live in the speaker profile store
+# (backend/speaker_id.py), which ada_forget cannot reach. Redirecting
+# beats a confusing "no such document" or, worse, a wrong guess.
+_SPEAKER_PROFILE_KEY_RE = re.compile(
+    r"^\s*(?:speaker_?profiles?|speakers?|voice_?prints?|voices?)\s*[/_.:\-]",
+    re.IGNORECASE)
+
+
+def _enrolled_profile_named(key: str) -> str | None:
+    """Resolve a memory key to an enrolled speaker profile name, or None.
+    Only consulted when no doc exists for the key — a real memory doc
+    always wins over the lookalike check."""
+    try:
+        from backend.speaker_id import SpeakerIdentifier
+        return SpeakerIdentifier.get().resolve_name(key)
+    except Exception:
+        return None
+
+
 async def forget(
     mddb: MddbClient,
     registry: MemoryBankRegistry,
@@ -837,6 +857,13 @@ async def forget(
 
     When *person_entity* is set and bank is 'personal', the retraction
     targets the speaker's person-scoped bank."""
+    if _SPEAKER_PROFILE_KEY_RE.match(str(key or "")):
+        raise ValueError(
+            f"'{key}' is a speaker-profile path, not a memory key — "
+            "voiceprints live in the speaker profile store, not memory "
+            "banks. Use the speaker_profiles tool (action='list' to see "
+            "profiles, action='remove' name=... to delete one) instead "
+            "of ada_forget.")
     if str(bank) == "personal" and person_entity:
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
@@ -844,6 +871,14 @@ async def forget(
     _check_person_scope_write(b, person_entity)
     doc = await mddb.get_document(b.mddb_collection, str(key))
     if doc is None:
+        profile = _enrolled_profile_named(str(key))
+        if profile is not None:
+            raise ValueError(
+                f"no memory doc {key!r} in bank '{b.name}' — but '{key}' "
+                f"resolves to enrolled voiceprint '{profile}'. "
+                "Voiceprints are not memory docs; use the "
+                "speaker_profiles tool (action='remove' name=...) "
+                "instead of ada_forget.")
         raise ValueError(f"no such document {key!r} in bank '{b.name}'")
     meta = dict(doc.get("meta") or {})
     meta["status"] = ["retracted"]

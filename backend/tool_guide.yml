@@ -295,7 +295,27 @@ ada_enroll_speaker: >-
   no separate recording. Pass the speaker's real name, never 'Guest'; if
   it matches an HA person ('KK' -> 'person.kk') pass ha_person so
   identity and memory banks follow. who='guest' registers a visitor
-  name for later admin promotion.
+  name for later admin promotion. On a 'matches enrolled speaker'
+  refusal the result carries matched_profile — call speaker_profiles
+  action='match' to confirm, then offer the merge aloud; do NOT retry
+  the same enroll.
+
+speaker_profiles: >-
+  Voiceprint store admin (the speaker_profiles.json store — NOT a memory
+  bank; ada_forget can't reach it). 'list' shows enrolled name,
+  ha_person, display_name, samples, media, aliases. 'match' scores the
+  session's buffered voice against every profile and returns the best
+  candidate + score even under threshold — the right follow-up when
+  ada_enroll_speaker refuses with a matched_profile: say "you're
+  enrolled as <name> — merge into <person>?" instead of re-calling
+  enroll. 'remove' name=<profile|alias|person.x> deletes the print.
+  're-enroll' name=<profile> force-replaces it with the current buffer
+  (the stale/poisoned-print fix). 'alias' name=<profile> person=<name|
+  person.x> binds the profile to an HA person so both names resolve to
+  one identity; display_name= sets a friendly name, rename_to=<new>
+  renames the profile key (the old name stays a working alias).
+  Mutations need a full-access identity, or the profile already bound to
+  the caller's own person.* — never fire on a secondary speaker's turn.
 
 calendar_read: >-
   action='events' day/days range across all providers (query= text
