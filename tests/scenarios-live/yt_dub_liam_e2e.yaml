@@ -19,8 +19,9 @@ turns:
            his brother Noel talk to each other — an interview, just the
            two of them."
     expect:
-      # she must actually look — search or transcript peek — not guess
-      calls_any: [web_search, ada_ops, yt, yt_transcript, cms_read]
+      # she must actually look — search or transcript peek — not guess;
+      # bare `yt` excluded: action='cast' with a query is a TV play, not a find
+      calls_any: [web_search, ada_ops, yt_transcript, cms_read]
       # bilingual-tolerant: Thai replies name the show, not the surnames
       response_contains_any: ["gallagher", "liam", "noel", "norton",
                               "สัมภาษณ์", "แกลลาเกอร์"]
@@ -44,7 +45,10 @@ turns:
   - user: "What videos do we have cached right now?"
     expect:
       calls_any: [cms_read, cms_get_page]
-      response_contains_any: ["rick astley", "cached-videos", "subtitle"]
+      # bilingual-tolerant: "cached videos report"/เสียงพากย์/แคช all count
+      response_contains_any: ["rick astley", "cached-videos",
+                              "cached videos", "subtitle",
+                              "เสียงพากย์", "แคช", "วิดีโอ"]
       response_nonempty: true
       timeout_s: 60
       settle_s: 4
