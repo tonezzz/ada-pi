@@ -157,3 +157,124 @@ topologies:
       - id: dec_hard
         level: L2
         role: decider
+
+# ---------------------------------------------------------------------------
+# Model registry — the checkpoints behind the specialists (card
+# nest-micro-training). One entry per trained/deployed model.
+#
+#   task       domains.yml kind it answers (or 'generic /v1/systemone')
+#   specialist suites.yml key it defends (may be null for bench models)
+#   checkpoint where the weights live (host:path or hf repo)
+#   corpus     corpus version it was trained on (merge stats/iteration)
+#   bench      last recorded suite scores (golden/hard/adversarial)
+#   status     train | shadow | prod | retired
+#
+# Lifecycle: the train loop (chaba scripts/ada/nest-train-loop.py) benches
+# a candidate against the incumbent across suites.yml tiers; when the
+# gate passes it posts a board request and the entry lands here as
+# status: shadow. Live divergence metrics (jev_advisory events,
+# client_noul agreement) decide prod promotion — same posture as the
+# CAM++ speaker shadow and the client_noul edge lane.
+
+models:
+  jev-student-v5:
+    task: confirm
+    specialist: confirm-gate
+    arch: distilbert-base-multilingual-cased seq-cls (2-label, thr 0.70)
+    checkpoint: idc03:~/jev-student/ckpt        # deployed 2026-10-04
+    serves: http://idc03.taila0626a.ts.net:8778
+    corpus: 'jev-corpus i5 — live+mined+reviewed+augment merge'
+    bench:
+      at: 2026-10-07
+      golden: '10/10'
+      hard: '27/35'
+      adv-confirm: '12/21'
+      p50_s: 0.07
+      misses: >-
+        hard/{code-switch,ok-nonconfirm} + adv-confirm/{meta-reference,
+        imperative-bait,relayed-affirm,slang-negation,trailing-negation}
+        false-fires and short-form ('y','k','mm-hmm','affirmative')
+        under-fires — the v6 target list
+    status: prod
+    note: >-
+      Fifth corpus iteration; replaced the zero-shot gemma-1b gate
+      (56% -> 100% golden). Prior snapshots on idc03:
+      ckpt-v1-20260930, ckpt-v2-20261002, ckpt-v0-deployed-20261004.
+      Tool-routing head is a stub — returns 'answer' for choice calls;
+      the tool-routing suite is the open specialist lane.
+
+  gemma-3-1b-zeroshot:
+    task: generic /v1/systemone
+    specialist: null
+    arch: gemma-3-1b-it zero-shot LM-head (open-jev scorer)
+    checkpoint: open-jev models/ (unsloth ungated mirror)
+    serves:
+      - http://tony-omen.taila0626a.ts.net:8778   # open-jev-student
+      - http://idc03.taila0626a.ts.net:8779       # openjev:cpu quadlet
+    corpus: none                                 # zero-shot
+    bench:
+      golden: '56% (first bench, pre-student baseline)'
+    status: prod                                 # L1 lane in topologies
+    note: >-
+      First upgrade candidate for a real multi-question student —
+      LoRA/QLoRA tune keeps choice+score working (recipe:
+      CMS jev-unsloth-finetune).
+
+  gemma-3-4b-zeroshot:
+    task: generic /v1/systemone
+    specialist: null
+    arch: gemma-3-4b-it zero-shot LM-head (open-jev scorer)
+    checkpoint: open-jev models/ (unsloth ungated mirror)
+    serves:
+      - http://idc02:8777                        # prod jev-advisory
+      - http://tony-omen.taila0626a.ts.net:8777  # open-jev
+    corpus: none
+    bench: {}
+    status: prod                                 # L2 lane in topologies
+    note: teacher/bench role — 6-12 s/decision on CPU, uncalibrated.
+
+  jev-gemma-head-v1:
+    task: confirm
+    specialist: confirm-gate
+    arch: jevlike attention head over frozen gemma-3-1b hidden states
+    checkpoint: open-jev features/ head (torch port of MLX path)
+    serves: null                                 # bench-only
+    corpus: 'jev-corpus (shared merge)'
+    bench: {}
+    status: train
+    note: >-
+      noul-only head — cannot serve choice/score; kept as a training
+      experiment, not a promotion candidate (see jev-unsloth-finetune).
+
+# ---------------------------------------------------------------------------
+# Training lanes — where candidates get built (recipe: CMS page
+# jev-unsloth-finetune; loop owner: chaba scripts/ada/nest-train-loop.py).
+lanes:
+  tony-omen-gtx1650:
+    host: tony-omen
+    gpu: 'GTX 1650 4GB (sm_75), torch 2.14.0+cu130 in ~/CascadeProjects/open-jev/.venv'
+    good_for: >-
+      distilbert seq-cls FT (~11 min/4 epochs) — the proven jev-student
+      path; gemma-3-1b/270m LoRA via 4-bit bitsandbytes (~1-2 GB VRAM)
+    watch: >-
+      no fast flash-attn path on sm_75; 4b QLoRA sits at the VRAM edge
+      (batch=1, seq<=256, grad checkpointing) — prefer colab for that
+    cadence: nightly/burst, GPU is shared with dev work — keep runs short
+  colab-burst:
+    host: 'Google Colab via colab-mcp'
+    good_for: >-
+      bigger runs — 4b QLoRA, multi-epoch distill, anything over ~3 GB
+      VRAM or long schedulable epochs
+    notebooks:
+      - scripts/jev/jev-student-colab.ipynb
+      - scripts/jev/jev-4b-qlora-colab.ipynb
+    corpus_in: 'scripts/jev-corpus-export.py -> jev-corpus-out/{train,eval}.jsonl'
+  idc01-cold:
+    host: idc01
+    good_for: >-
+      cold batch — corpus mining, eval sweeps, embedding jobs, anything
+      latency-tolerant. Retired from ada-prod 2026-10-05: no ada
+      services, no mddb writes from here.
+    corpus_archive: >-
+      ~/.local/share/ada/jev-corpus{,-mined,-reviewed}.jsonl — the
+      pre-migration archive the loop still merges from

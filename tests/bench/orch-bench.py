@@ -34,6 +34,9 @@ Usage:
                 [--corpus-out PATH] [--stats-out PATH] [--json-out PATH]
                 [--mddb URL] [--report-cms]
 
+  --suite NAME  specialist key in suites.yml — expands to that suite's
+                non-spec tier sets (golden/hard/adversarial); unions
+                with --sets if both are given
   --corpus-out  append confirm-kind misses as jev-corpus rows (feeds the
                 retrain loop's merge-corpus.py)
   --stats-out   append per-case AND per-node outcome rows (JSONL). The
@@ -47,6 +50,8 @@ Usage:
 import argparse, ast, glob, json, sys, time, urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+
+import yaml
 
 import chain as ch
 
@@ -65,6 +70,11 @@ parser.add_argument("--structure", default="all",
                     help="comma list of builtin + chain names, or 'all'")
 parser.add_argument("--sets", default="all",
                     help="comma list of case sets, or 'all'")
+parser.add_argument("--suite", default="",
+                    help="specialist key in --suites (suites.yml) — "
+                         "adds its non-spec tier sets to --sets")
+parser.add_argument("--suites", default="",
+                    help="suite registry path (default suites.yml)")
 parser.add_argument("--cases", default="",
                     help="override path to the hard-case JSONL")
 parser.add_argument("--domains", default="",
@@ -93,6 +103,22 @@ TOPO_PATH = Path(ARGS.topologies) if ARGS.topologies else \
 
 DOMS = ch.load_domains(DOMAINS_PATH)
 GRAY = (ARGS.gray_lo, ARGS.gray_hi)
+SUITES_PATH = Path(ARGS.suites) if ARGS.suites else _HERE / "suites.yml"
+
+
+def _suite_sets() -> list[str]:
+    """Expand --suite <specialist> to its non-spec tier set names."""
+    if not ARGS.suite:
+        return []
+    data = yaml.safe_load(SUITES_PATH.read_text()) or {}
+    suites = data.get("suites") or {}
+    spec = suites.get(ARGS.suite)
+    if spec is None:
+        print(f"unknown suite '{ARGS.suite}' — pick from {sorted(suites)}",
+              file=sys.stderr)
+        sys.exit(2)
+    return [cfg["set"] for cfg in (spec.get("tiers") or {}).values()
+            if isinstance(cfg, dict) and cfg.get("set")]
 
 
 def state_for(case: dict) -> str:
@@ -137,6 +163,9 @@ def _jsonl_sets() -> list[str]:
 
 def load_cases() -> list[dict]:
     wanted = {s.strip() for s in ARGS.sets.split(",") if s.strip()}
+    if ARGS.suite and wanted == {"all"}:
+        wanted = set()          # --suite narrows the default 'all'
+    wanted |= set(_suite_sets())
     if "all" in wanted:
         wanted = {"golden", "tool", *_jsonl_sets()}
     cases = []

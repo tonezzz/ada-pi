@@ -5,7 +5,7 @@ import torch
 from fastapi import FastAPI
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-CKPT = os.path.expanduser("~/jev-student/ckpt")
+CKPT = os.path.expanduser(os.environ.get("JEV_CKPT", "~/jev-student/ckpt"))
 tok = AutoTokenizer.from_pretrained(CKPT)
 model = AutoModelForSequenceClassification.from_pretrained(CKPT).eval()
 THR = float((getattr(model.config, "custom_params", None) or {}).get("noul_threshold", 0.70))

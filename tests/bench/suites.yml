@@ -1,0 +1,148 @@
+# Bench suite registry — per-specialist labeled case sets.
+# (card nest-micro-training, 2026-10-07)
+#
+# A SPECIALIST is the micro-model that owns one decision surface — the
+# case `kind`s in domains.yml. Each specialist's bench has three tiers:
+#
+#   golden       frozen regression — hand-labeled, card-reviewed to
+#                change; NEVER trained on. A candidate must match or
+#                beat the incumbent here.
+#   hard         hard/OOD — rotates IN from corpus harvest (diverged
+#                jev-corpus rows, orch-bench misses, scenario fails)
+#                once labeled. The set that catches "better on golden,
+#                worse in the wild".
+#   adversarial  attack-shaped cases — embedded affirmations, code-
+#                switch baits, phrasing mimicking golden positives.
+#                Frozen like golden; a regression here blocks promotion
+#                even when golden is clean.
+#
+# `set` names resolve through orch-bench --sets: golden/tool are
+# AST-loaded from jev-bench.py constants, the rest map to
+# tests/bench/orch-<set>-cases.jsonl. `orch-bench.py --suite <name>`
+# expands one specialist's tier sets. Tiers marked `spec` are declared
+# but have no cases yet — dead-code rule: don't bench them, fill them.
+#
+# Promotion gate + training lanes: `gate`/`lanes` below; the loop owner
+# (chaba scripts/ada/nest-train-loop.py) executes them.
+
+suites:
+  confirm-gate:
+    domain: confirm              # domains.yml kind
+    incumbent: jev-student-v5    # models: key in topologies.yml
+    serves: L1                   # topology level this specialist defends
+    tiers:
+      golden:
+        set: golden
+        source: jev-bench.py::CONFIRM_CASES
+        frozen: true
+        cases: 10
+      hard:
+        set: hard
+        source: orch-hard-cases.jsonl
+        rotates: corpus-harvest  # diverged rows -> labeled -> appended
+        cases: 35
+      adversarial:
+        set: adv-confirm
+        source: orch-adv-confirm-cases.jsonl
+        frozen: true
+        cases: 21
+
+  tool-routing:
+    domain: tool
+    incumbent: null              # student returns a stub 'answer' —
+                               # first open specialist lane
+    serves: L1
+    tiers:
+      golden:
+        set: tool
+        source: jev-bench.py::TOOL_CASES
+        frozen: true
+        cases: 8
+      hard:
+        set: toolx
+        source: orch-toolx-cases.jsonl
+        rotates: corpus-harvest
+        cases: 20
+      adversarial:
+        set: adv-tool
+        source: orch-adv-tool-cases.jsonl
+        frozen: true
+        cases: 14
+
+  memory-bank:
+    domain: bank
+    incumbent: null
+    serves: L1
+    tiers:
+      golden: {status: spec}     # promote stable hard rows into a frozen
+                                 # jev-bench list when a specialist lands
+      hard:
+        set: bank
+        source: orch-bank-cases.jsonl
+        rotates: corpus-harvest
+        cases: 36
+      adversarial: {status: spec}
+
+  dispatch-triage:
+    domain: triage
+    incumbent: null
+    serves: L1
+    tiers:
+      golden: {status: spec}
+      hard:
+        set: triage
+        source: orch-triage-cases.jsonl
+        rotates: corpus-harvest
+        cases: 30
+      adversarial: {status: spec}
+
+# ---------------------------------------------------------------------------
+rotation:
+  into_hard: >-
+    The loop's corpus harvest (diverged jev-corpus rows, orch-bench
+    --corpus-out misses, scenario fails) proposes candidates; a labeling
+    pass (human or arbiter-model + spot check) appends them to the
+    matching orch-<set>-cases.jsonl tagged slice: 'harvest-<date>'.
+    Unlabeled diverged rows never train — merge-corpus.py already drops
+    them.
+  into_golden: >-
+    A hard case that vetoes a candidate (champ passes, candidate fails)
+    is promoted into the golden list — it proved discriminating power.
+    Golden edits need a card note; golden is eval-only forever.
+  into_adversarial: >-
+    Live attacks (regex false-fires that reached prod, injection-shaped
+    turns, ASR-mangled affirmations) get an adversarial copy even when
+    they also enter hard — adversarial measures brittleness, not just
+    accuracy.
+
+gate:
+  # What the loop checks before asking Tony to promote a candidate.
+  # All per-set comparisons come from the same orch-bench run pair
+  # (champ endpoint vs candidate endpoint, identical case order).
+  promote_candidate_when:
+    golden: 'candidate_ok >= champ_ok'        # parity is enough to pass
+    hard: 'candidate_ok >= champ_ok'          # no hard-set regression
+    adversarial: 'candidate_ok >= champ_ok'   # no adversarial regression
+    tiebreak: 'higher hard+adversarial margin, then lower cpu_per_call'
+  on_meet: >-
+    The loop publishes a bench/train-* doc, sets the candidate's
+    registry status to shadow-pending, and posts a board request on the
+    owning card. The human gate (T1/T3) is the shadow deploy: the
+    candidate serves a parallel advisory endpoint and divergences land
+    in jev-corpus — live divergence metrics (jev_advisory ops events,
+    client_noul agreement) decide the final promotion.
+  posture: >-
+    Same as the CAM++ speaker shadow (parallel encoder, agree/disagree
+    stats, primary path untouched) and the client_noul edge lane
+    (browser student scores, reports p, regex still enforces): a new
+    scorer observes and reports but never enforces until promoted.
+
+bench:
+  runner: tests/bench/orch-bench.py
+  example: >-
+    orch-bench.py --suite confirm-gate --structure student
+    --student http://127.0.0.1:8878 --json-out /tmp/cand.json
+  suite_flag: >-
+    --suite <specialist> expands to that suite's non-spec tier set
+    names (suites.yml); combine with --structure student to compare a
+    candidate endpoint against the incumbent.

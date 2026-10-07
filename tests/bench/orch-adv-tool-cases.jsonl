@@ -1,0 +1,14 @@
+{"text": "search my memory for the wifi password", "kind": "tool", "label": "recall", "set": "adv-tool", "slice": "recall-vs-search"}
+{"text": "google what I told you yesterday about the router", "kind": "tool", "label": "recall", "set": "adv-tool", "slice": "recall-vs-search"}
+{"text": "look up when the repairman came last time", "kind": "tool", "label": "recall", "set": "adv-tool", "slice": "recall-vs-search"}
+{"text": "look up the meaning of ตกลง online", "kind": "tool", "label": "search", "set": "adv-tool", "slice": "search-vs-recall"}
+{"text": "check the news about the flooding", "kind": "tool", "label": "search", "set": "adv-tool", "slice": "search-vs-recall"}
+{"text": "save the answer to memory after you look it up", "kind": "tool", "label": "search", "set": "adv-tool", "slice": "multistep-first"}
+{"text": "play that on the speaker and remember the volume", "kind": "tool", "label": "control", "set": "adv-tool", "slice": "multistep-first"}
+{"text": "forget the memory about the gate code", "kind": "tool", "label": "remember", "set": "adv-tool", "slice": "memory-op"}
+{"text": "note that tomorrow's meeting is cancelled", "kind": "tool", "label": "remember", "set": "adv-tool", "slice": "memory-op"}
+{"text": "tell the TV to turn itself off", "kind": "tool", "label": "control", "set": "adv-tool", "slice": "control-bait"}
+{"text": "จำไว้ว่าเดี๋ยวต้องปิดไฟ", "kind": "tool", "label": "remember", "set": "adv-tool", "slice": "code-switch"}
+{"text": "เอารูปเมื่อวานขึ้นจอ", "kind": "tool", "label": "control", "set": "adv-tool", "slice": "code-switch"}
+{"text": "remember me to your mother", "kind": "tool", "label": "answer", "set": "adv-tool", "slice": "no-tool-bait"}
+{"text": "control yourself", "kind": "tool", "label": "answer", "set": "adv-tool", "slice": "no-tool-bait"}
