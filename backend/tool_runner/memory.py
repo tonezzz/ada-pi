@@ -11,6 +11,32 @@ from __future__ import annotations
 from .common import *  # noqa: F401,F403
 
 
+# Hard cap on a single search hit's content at the tool boundary (card
+# ada-dead-turn-guard, session 56d2e4d167): memory hits once returned
+# entire 30-50KB docs — a 5-hit bank='all' search injected 100KB+ into the
+# live context and drove turns to 27-33k input tokens, a likely contributor
+# to the dead "response:" turns. memory_ops._doc_to_hit already excerpts
+# bank hits; this cap is the boundary guarantee covering every scope
+# (banks/sessions/guest) regardless of what the source returns.
+MEMORY_HIT_CONTENT_MAX = int(
+    os.environ.get("ADA_MEMORY_HIT_MAX_CHARS", "2048"))
+
+
+def _cap_hit_content(hit: dict[str, Any]) -> dict[str, Any]:
+    """Bound one hit's `content` to MEMORY_HIT_CONTENT_MAX, keeping
+    key/subject/score/meta fields intact — the key is always there to
+    fetch the full doc."""
+    content = hit.get("content")
+    if isinstance(content, str) and len(content) > MEMORY_HIT_CONTENT_MAX:
+        hit["content"] = (
+            content[:MEMORY_HIT_CONTENT_MAX].rstrip()
+            + f"\n… [truncated — {len(content)} chars; "
+              "fetch the key for the full doc]"
+        )
+        hit["content_truncated"] = True
+    return hit
+
+
 class MemoryMixin:
 
     # -- Memory bank tools (curated memory; see ssot.apps.ada-memory-*.yml) --
@@ -67,7 +93,7 @@ class MemoryMixin:
                     "content": h.get("text"), "at": h.get("at"),
                 })
         hits.sort(key=lambda h: float(h.get("score") or 0), reverse=True)
-        hits = hits[: int(limit)]
+        hits = [_cap_hit_content(h) for h in hits[: int(limit)]]
         return {
             "bank": bank if scope_s == "banks" else scope_s,
             "scope": scope_s,

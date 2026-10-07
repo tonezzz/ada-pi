@@ -1,0 +1,100 @@
+# SSOT Job: Dead-turn guard + tool-call text sanitizer + memory-hit cap
+# Card: ada-dead-turn-guard (chaba kanban). Dispatch 20261007-180359.
+
+title: Realtime-provider guards — dead turns, spoken tool-call leaks, memory-hit size
+subtitle: Session 56d2e4d167 — bare "response:" answers over a search that already had the plate
+
+planning:
+  goal: |
+    Transcript audit 2026-10-07 (session 56d2e4d167): user asked
+    "รถ KK ทะเบียนอะไร" twice at 13:41; ada_memory_search had ALREADY
+    returned the answer (plate 5ขว 6249 in hits) but Ada emitted the
+    literal "response:" both times — the user heard nothing. Same
+    session carried tool-call leak WARNs, and hits were returning whole
+    docs (27-33k input tokens/turn). Three guards land together.
+  decisions: |
+    - Dead-turn detector (_dead_turn_text): degenerate = whitespace-only,
+      a bare scaffold prefix (response:/answer:/output:/assistant:/text:/
+      transcript:, plus Thai คำตอบ/ตอบ/ผลลัพธ์), or lone structural
+      tags/punctuation. A scaffold prefix followed by real words is NOT
+      dead. Empty transcript counts as dead only when zero audio played —
+      a transcript outage over real audio must not cause double-speak.
+    - Turn gating: the guard only fires when the turn was owed an answer
+      (user transcript, open turn, tool calls, or response activity) —
+      stray/notification turn_completes can't self-trigger retries.
+    - On dead turn: dead_turn ops event; the scaffold is never written to
+      the conversation transcript; ONE deterministic retry reopens the
+      model turn via send_client_content with the question restated plus
+      a digest of the turn's tool results (the model is handed the
+      answer). The dead bubble gets a response_completed first so the
+      retry renders as its own reply, not appended to "response:".
+    - If the retry also lands dead (or the send fails): synthesize the
+      fallback — ada_memory_search hits produce "พบแล้วค่ะ <first line of
+      top hit>" and a degraded search stays announced as degraded
+      ("โหมดสำรอง (degraded)"); other results fall back to a compact
+      output/error line; a result-less dead turn gets an honest
+      retry-ask. Emitted as assistant_transcript_delta + transcript write
+      + normal response_completed.
+    - Tool-call text sanitizer: _strip_tool_leak now ORs the
+      declared-name regex with _GENERIC_TOOL_LEAK_RE — any
+      `identifier{key:value`/`key=value` shape, so hallucinated or
+      undeclared names are caught too. Ops event renamed
+      transcript_tool_leak -> leak_detected (the card's name; the feed is
+      keyed by meta.type so dashboards see the new type).
+    - Memory-hit cap: MEMORY_HIT_CONTENT_MAX (env
+      ADA_MEMORY_HIT_MAX_CHARS, default 2048) applied in
+      tool_runner/memory.py ada_memory_search at the runner boundary —
+      covers banks/sessions/guest scopes regardless of upstream caps.
+      content_truncated=True marker added; key/subject/score/meta
+      untouched; 'degraded' flag preserved.
+    - Confirm-gate behavior untouched — no changes to the
+      confirmed=true/pending_confirm paths.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-07"
+  steps:
+    - id: 1
+      label: "dead-turn detector + retry/fallback"
+      status: done
+      notes: "backend/realtime_provider.py — _dead_turn_text,
+        _first_speakable_line, _dead_turn_digest, _dead_turn_fallback,
+        _send_dead_turn_retry; events() captures turn_tool_results,
+        handles dead turns at turn_complete, resets on interrupt."
+    - id: 2
+      label: "generic tool-call sanitizer"
+      status: done
+      notes: "_GENERIC_TOOL_LEAK_RE OR'd into _strip_tool_leak; ops event
+        leak_detected."
+    - id: 3
+      label: "memory-hit cap"
+      status: done
+      notes: "tool_runner/memory.py MEMORY_HIT_CONTENT_MAX=2048 +
+        _cap_hit_content applied to merged hits in ada_memory_search."
+    - id: 4
+      label: "regression test"
+      status: done
+      notes: "tests/test_dead_turn.py — 13 tests: plate-question replay
+        (retry path + double-dead fallback + degraded announcement),
+        _dead_turn_text shapes, sanitizer strips, hit cap per scope."
+
+invoke:
+  commands:
+    - "python3 -m unittest discover -s tests -k dead -v"
+    - "python3 -m pytest tests/ -q"
+    - "grep -rn 'leak_detected' backend/realtime_provider.py"
+    - "grep -rn 'truncat\\|2048' backend/tool_runner/memory.py"
+
+verification:
+  - "tests.test_dead_turn: 13/13 pass — retry yields the plate, double-dead
+    falls back to 'พบแล้วค่ะ … 5ขว 6249', degraded stays announced, the
+    literal 'response:' is never persisted as the answer"
+  - "affected modules (provider_events, ops_events, speech_sanitize,
+    memory_banks, tool_runner, recall_gate, dead_turn): 348 passed"
+  - "full suite: 799 passed, 2 failed — both pre-existing tool-lint
+    violations (ada_track_device descsize, ada_device_acl coverage),
+    verified failing on the clean tree"
+  - "live verify (post-deploy): a turn that produces a bare 'response:'
+    emits a dead_turn ops event and the retry/fallback carries the tool
+    answer aloud"

@@ -251,6 +251,59 @@ def _phantom_claim(text: str) -> bool:
         m = _PHANTOM_CLAIM_RE.search(text, m.end())
     return False
 
+
+# Dead-turn detector (card ada-dead-turn-guard — session 56d2e4d167,
+# 2026-10-07): the model twice ended a turn having emitted only the
+# literal scaffold "response:" while the memory tool already held the
+# answer — the user heard nothing and had to repeat the question.
+# Degenerate = whitespace-only, a bare scaffold prefix, or lone
+# structural tags/punctuation. A scaffold prefix followed by real words
+# ("response: พบแล้วค่ะ…") is NOT dead — the lead strip only fires when
+# nothing speakable remains.
+_DEAD_SCAFFOLD_WORDS = (
+    r"response|answer|reply|output|result|assistant|transcript|text"
+    r"|คำตอบ|ตอบ|ผลลัพธ์"
+)
+_DEAD_SCAFFOLD_RE = re.compile(
+    rf"^\s*(?:{_DEAD_SCAFFOLD_WORDS})\s*[:：]?\s*$", re.IGNORECASE)
+_DEAD_LEAD_RE = re.compile(
+    rf"^\s*(?:{_DEAD_SCAFFOLD_WORDS})\s*[:：]", re.IGNORECASE)
+_DEAD_TAG_RE = re.compile(r"<[^>\n]{0,80}>")
+_DEAD_JUNK_RE = re.compile(r"[^\wก-๙]+", re.UNICODE)
+
+
+def _dead_turn_text(text: str) -> bool:
+    """True when an assistant turn's accumulated text carries nothing
+    speakable — empty, a bare 'response:' scaffold, or only structural
+    tags/punctuation."""
+    t = (text or "").strip()
+    if not t or _DEAD_SCAFFOLD_RE.match(t):
+        return True
+    t = _DEAD_LEAD_RE.sub("", t, count=1)
+    t = _DEAD_TAG_RE.sub(" ", t)
+    return not _DEAD_JUNK_RE.sub("", t)
+
+
+def _first_speakable_line(text: Any, limit: int = 160) -> str:
+    """First non-empty line of `text`, de-marked-up and capped — the piece
+    of a tool result a dead-turn fallback can say out loud."""
+    for line in str(text or "").splitlines():
+        line = line.strip().lstrip("#*>-• ").strip()
+        if line:
+            return line[:limit].rstrip()
+    return ""
+
+
+# Tool-call-shaped text the leak filter must catch even when the name is
+# NOT one of the declared tools (hallucinated names, aliases that slipped
+# the declaration set): `identifier{key:value`, `identifier{key=value`,
+# `identifier {"key": …`. The braces never occur in spoken Thai/English
+# transcription, so a match is always a leak.
+_GENERIC_TOOL_LEAK_RE = re.compile(
+    r"\b[A-Za-z_][A-Za-z0-9_]{1,39}\s*\{\s*[\"']?"
+    r"[A-Za-z_][A-Za-z0-9_]{0,39}\s*[:=]")
+
+
 ACTUATING_TOOLS = frozenset({
     # tools-merge-ha (2026-10-05): control_cover/control_media_player/
     # press_button collapsed into control_entity — the canonical name
@@ -1048,6 +1101,11 @@ class GeminiLiveProvider(RealtimeProvider):
         self._tool_leak_re = None
         self._tool_leaks_stripped = 0
         self._leak_active = False
+        # Dead-turn guard (card ada-dead-turn-guard): True while the one
+        # allowed retry of a degenerate turn is in flight — a second dead
+        # turn falls through to the synthesized tool-result fallback
+        # instead of looping. Cleared when a turn lands a real answer.
+        self._dead_retried = False
         # Markup-artifact scrubber for the output transcript (&nbsp;, '][',
         # markdown links — transcript 519088cb6d spoke them aloud). Deltas
         # can split a token mid-way ("&nbs" | "p;"), so the possible
@@ -1161,12 +1219,19 @@ class GeminiLiveProvider(RealtimeProvider):
         expression:...}') instead of emitting a real function_call. The
         fake call is malformed/unterminated and swallows the rest of the
         utterance, so once triggered we suppress deltas until the turn
-        ends (_leak_active is reset on turn_complete/interrupt)."""
+        ends (_leak_active is reset on turn_complete/interrupt).
+
+        Two detectors: the declared-name list built at connect
+        (_tool_leak_re) and _GENERIC_TOOL_LEAK_RE for the
+        `name{key:value,…}` shape with ANY identifier — hallucinated tool
+        names don't appear in the declaration set but still leak the same
+        way (card ada-dead-turn-guard)."""
         if self._leak_active:
             return ""
-        if self._tool_leak_re is None:
-            return text
-        m = self._tool_leak_re.search(text)
+        m = (
+            self._tool_leak_re.search(text)
+            if self._tool_leak_re is not None else None
+        ) or _GENERIC_TOOL_LEAK_RE.search(text)
         if not m:
             return text
         self._leak_active = True
@@ -1176,9 +1241,9 @@ class GeminiLiveProvider(RealtimeProvider):
             self.session_id, text[m.start():m.start() + 60],
         )
         self._emit_ops_event(
-            "transcript_tool_leak",
+            "leak_detected",
             f"stripped spoken tool call from transcript: {m.group(0)!r}",
-            tool=m.group(0).rstrip("{").strip(),
+            tool=m.group(0).split("{", 1)[0].strip() or None,
         )
         return text[:m.start()]
 
@@ -1216,6 +1281,92 @@ class GeminiLiveProvider(RealtimeProvider):
         tail = sanitize_speech(self._artifact_hold)
         self._artifact_hold = ""
         return tail
+
+    def _dead_turn_digest(self, results: list[tuple[str, dict]]) -> str:
+        """Compact digest of this turn's tool results for the retry nudge
+        — the model gets the answer handed to it, so the retried turn
+        cannot degenerate the same way (card ada-dead-turn-guard)."""
+        parts: list[str] = []
+        for name, res in results[:4]:
+            if not isinstance(res, dict):
+                continue
+            if name == "ada_memory_search":
+                hits = res.get("hits") or []
+                if hits:
+                    top = hits[0]
+                    line = _first_speakable_line(top.get("content"))
+                    parts.append(
+                        f"ada_memory_search top hit "
+                        f"({top.get('key')}): {line}")
+                if res.get("degraded"):
+                    parts.append(
+                        "the memory search ran degraded — mention that "
+                        "briefly")
+                continue
+            line = _first_speakable_line(
+                res.get("output") or res.get("error"), limit=120)
+            if line:
+                parts.append(f"{name}: {line}")
+        return "; ".join(parts)[:600]
+
+    def _dead_turn_fallback(self, results: list[tuple[str, dict]]) -> str:
+        """Deterministic user-facing line spoken in place of a dead turn —
+        built from the tool result the turn swallowed ('พบแล้วค่ะ
+        ทะเบียน 5ขว 6249' shape). A degraded search stays announced as
+        degraded; a dead turn with no usable result gets an honest
+        retry-ask rather than silence."""
+        for name, res in results:
+            if name != "ada_memory_search" or not isinstance(res, dict):
+                continue
+            hits = res.get("hits") or []
+            snippet = _first_speakable_line(
+                hits[0].get("content")) if hits else ""
+            if snippet:
+                out = f"พบแล้วค่ะ {snippet}"
+                if res.get("degraded"):
+                    out += " — การค้นหาอยู่ในโหมดสำรอง (degraded) นะคะ"
+                return out
+        for name, res in results:
+            if not isinstance(res, dict):
+                continue
+            line = _first_speakable_line(
+                res.get("output") or res.get("error"))
+            if line:
+                return (
+                    f"ได้ผลแล้วค่ะ {line}" if res.get("ok", True)
+                    else f"เจอปัญหาค่ะ {line}")
+        return "ขอโทษค่ะ คำตอบไม่ออกมา ลองถามอีกครั้งนะคะ"
+
+    async def _send_dead_turn_retry(self, results: list[tuple[str, dict]],
+                                    user_text: str) -> bool:
+        """Send the one deterministic retry for a dead turn: reopen the
+        model turn with the question restated plus the tool-result digest
+        it must speak. Returns False when the send itself failed (the
+        caller then falls back to the synthesized line)."""
+        digest = self._dead_turn_digest(results)
+        ask = (user_text or "").strip() or "the user's last question"
+        nudge = (
+            "[system] Your reply just now reached the user as a bare "
+            "scaffold fragment (literally 'response:') — they heard "
+            "nothing. Answer the question now, out loud, in one short "
+            "sentence in the session language — no tools, no markup, no "
+            f"scaffold words. The question was: {ask[:200]!r}. "
+            + (f"The tool already returned the answer: {digest} — say it "
+               "plainly."
+               if digest else "Answer directly from what you know."))
+        try:
+            async with self._send_lock:
+                await self._session.send_client_content(
+                    turns=types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=nudge)],
+                    ),
+                    turn_complete=True,
+                )
+            return True
+        except Exception:
+            logger.debug("dead-turn retry send failed", exc_info=True)
+            return False
 
     # An affirmation is a consent utterance, not a content word: it must
     # either lead the user's turn ("yes, save it") or the turn must be
@@ -4260,6 +4411,10 @@ class GeminiLiveProvider(RealtimeProvider):
         # "saved" narrated over a NOT-EXECUTED result surfaces as an
         # ops event, not just zero-tool-call phantoms.
         failed_results_this_turn = 0
+        # (name, normalized result) pairs this turn — the dead-turn
+        # guard's retry nudge and synthesized fallback read the answer
+        # back out of these when the model emits nothing speakable.
+        turn_tool_results: list[tuple[str, dict]] = []
         tool_budget = int(os.environ.get("ADA_TOOL_CALL_BUDGET", "20"))
         actuations_this_turn = 0
         actuation_budget = int(os.environ.get("ADA_ACTUATION_BUDGET", "6"))
@@ -4810,6 +4965,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         result = normalize_tool_result(result)
                         if result.get("ok") is False:
                             failed_results_this_turn += 1
+                        turn_tool_results.append((str(call.name), result))
                         self.conversation.log_event(
                             "tool_call", tool=str(call.name),
                             dur_ms=int((time.monotonic() - tool_t0) * 1000),
@@ -4932,6 +5088,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     actuations_this_turn = 0
                     budget_hit = False
                     budget_nudged = False
+                    turn_tool_results = []
+                    self._dead_retried = False
                     self._leak_active = False
                     self._artifact_hold = ""
                     self._artifact_logged = False
@@ -5040,6 +5198,71 @@ class GeminiLiveProvider(RealtimeProvider):
                         self._artifact_hold = ""
                     self._leak_active = False
                     self._artifact_logged = False
+                    # Dead-turn guard (card ada-dead-turn-guard, session
+                    # 56d2e4d167): the model twice ended a turn on the
+                    # literal "response:" while memory_search already held
+                    # the plate — the user heard silence and repeated the
+                    # question. A degenerate turn (bare scaffold prefix,
+                    # whitespace, lone structural tags — or nothing at all
+                    # when zero audio played) is never written to the
+                    # transcript as the answer: emit a dead_turn ops event,
+                    # deterministically retry ONCE with the tool-result
+                    # digest handed to the model, and if the retry also
+                    # lands dead, synthesize the fallback that speaks the
+                    # result itself.
+                    _dead_evidence = (
+                        transcript or self._turn_open
+                        or n_tools_this_turn or self._response_active)
+                    _dead = _dead_evidence and (
+                        _dead_turn_text(assistant_turn_text)
+                        if assistant_turn_text.strip()
+                        else response_audio_bytes == 0)
+                    if _dead:
+                        self._emit_ops_event(
+                            "dead_turn",
+                            f"turn produced no speakable answer "
+                            f"(raw={assistant_turn_text.strip()[:80]!r}, "
+                            f"audio_bytes={response_audio_bytes}, tools="
+                            f"{[n for n, _ in turn_tool_results]}) — "
+                            + ("retrying once"
+                               if not self._dead_retried
+                               else "synthesizing fallback"))
+                        if (not self._dead_retried
+                                and await self._send_dead_turn_retry(
+                                    turn_tool_results, transcript)):
+                            # The retry opens a fresh model turn. Close
+                            # the dead bubble first — the retry's answer
+                            # must not append onto the visible scaffold
+                            # fragment. Keep turn_tool_results for the
+                            # fallback if the retry lands dead too.
+                            if self._response_active:
+                                yield ProviderEvent("response_completed", {})
+                            self._response_active = False
+                            response_audio_chunks = 0
+                            response_audio_bytes = 0
+                            response_started_at = 0.0
+                            self._dead_retried = True
+                            assistant_turn_text = ""
+                            input_done_ts = 0.0
+                            continue
+                        fallback = self._dead_turn_fallback(
+                            turn_tool_results)
+                        logger.warning(
+                            "session=%s dead turn — synthesized fallback %r",
+                            self.session_id, fallback[:120])
+                        if not self._response_active:
+                            # Pure-silence dead turn — the fallback still
+                            # gets the normal started/delta/completed frame
+                            # so the UI renders it like any reply.
+                            self._response_active = True
+                            response_started_at = time.monotonic()
+                            yield ProviderEvent("response_started", {})
+                        yield ProviderEvent(
+                            "assistant_transcript_delta", {"text": fallback})
+                        self.conversation.add_assistant(fallback)
+                        assistant_turn_text = ""
+                    self._dead_retried = False
+                    turn_tool_results = []
                     if assistant_turn_text.strip():
                         self.conversation.add_assistant(assistant_turn_text)
                         assistant_turn_text = ""
