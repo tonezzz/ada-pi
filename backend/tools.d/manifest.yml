@@ -22,3 +22,8 @@ tools:
     policy: owner_only
     secondary_allowed: false
     timeout_s: 20
+  ada_device_acl:
+    module: ada_device_acl
+    policy: owner_only
+    secondary_allowed: false
+    timeout_s: 10

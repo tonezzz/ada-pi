@@ -292,6 +292,45 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(reg.control_allowed("switch.plug_tv", "testo"))
         self.assertTrue(reg.control_allowed("switch.fan", "testo"))
 
+    def test_control_policy_allow_entities(self):
+        # allow_entities = exact whitelist inside the domain rules
+        spec = self._acl_spec()
+        spec["control_policies"] = {
+            "testo": {"allow_domains": ["light", "switch"],
+                      "allow_entities": ["light.kk_room", "switch.fan"]},
+        }
+        reg = _registry(instance="tony", spec=spec)
+        self.assertTrue(reg.control_allowed("light.kk_room", "testo"))
+        self.assertTrue(reg.control_allowed("switch.fan", "testo"))
+        self.assertFalse(reg.control_allowed("light.kitchen", "testo"))
+        self.assertFalse(reg.control_allowed("cover.gate", "testo"))
+
+    def test_control_policy_grant_overlay(self):
+        # device-grants.json grants bypass allowlists but not denies
+        import backend.memory_banks as mb
+        spec = self._acl_spec()
+        spec["control_policies"] = {
+            "testo": {"allow_domains": ["light"],
+                      "deny_entities": ["light.never"]},
+        }
+        grants = {"testo": {"cover.gate": {"by": "person.tony"},
+                          "light.never": {"by": "person.tony"}}}
+        reg = _registry(instance="tony", spec=spec)
+        import tempfile, json as _json
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+            _json.dump(grants, f)
+            f.flush()
+            orig_path, orig_cache = mb.GRANTS_PATH, mb._grants_cache
+            try:
+                mb.GRANTS_PATH = mb.Path(f.name)
+                mb._grants_cache = (0.0, {})
+                self.assertTrue(reg.control_allowed("cover.gate", "testo"))
+                self.assertFalse(reg.control_allowed("light.never", "testo"))
+                self.assertFalse(reg.control_allowed("switch.tv", "testo"))
+                self.assertTrue(reg.control_allowed("light.hall", "testo"))
+            finally:
+                mb.GRANTS_PATH, mb._grants_cache = orig_path, orig_cache
+
     def test_effective_status_lazy_expiry(self):
         doc = {"meta": {"status": ["active"], "valid_until": ["2020-01-01"]}}
         self.assertEqual(doc_effective_status(doc, today="2026-01-01"), "expired")

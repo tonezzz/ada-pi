@@ -84,9 +84,25 @@ def _chat_callers() -> dict[int, str]:
     return out
 
 
-def _key_for_chat(chat_id: int) -> str:
-    """API key for this chat: mapped caller's issued key, else the default."""
-    name = _chat_callers().get(chat_id)
+def _user_callers() -> dict[int, str]:
+    """TELEGRAM_USER_CALLERS='<tg_uid>:<key-name>,...' — per-SENDER map for
+    group rooms. A group's chat_id is shared by every member, so identity
+    must resolve on message.from.id, not the chat. Senders absent from the
+    map are refused (with their id echoed) — there is no admin fallback in
+    a room, because that would hand the owner key to every member."""
+    out: dict[int, str] = {}
+    for part in os.environ.get("TELEGRAM_USER_CALLERS", "").split(","):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        uid, name = part.split(":", 1)
+        if uid.strip().lstrip("-").isdigit() and name.strip():
+            out[int(uid)] = name.strip()
+    return out
+
+
+def _key_by_name(name: str | None) -> str:
+    """Issued API key for a caller name, else the admin default."""
     if not name:
         return ADA_API_KEY
     try:
@@ -95,11 +111,18 @@ def _key_for_chat(chat_id: int) -> str:
         key = entry.get("key")
         if key:
             return key
-        logger.warning("chat %s caller %r has no issued key — using default",
-                       chat_id, name)
+        logger.warning("caller %r has no issued key — using default", name)
     except Exception as exc:
         logger.warning("keys file read failed (%s) — using default", exc)
     return ADA_API_KEY
+
+
+def _key_for_chat(chat_id: int) -> str:
+    """API key for this chat: mapped caller's issued key, else the default."""
+    return _key_by_name(_chat_callers().get(chat_id))
+
+
+_REFUSAL_GAP_S = 3600  # don't spam a room — one refusal per sender per hour
 
 
 def _images_from(results: list[dict]) -> list[tuple[str, str]]:
@@ -129,10 +152,13 @@ def _allowed_chats() -> set[int]:
 
 
 class ChatSession:
-    """One Telegram chat <-> one Ada WS session."""
+    """One Telegram peer <-> one Ada WS session. In a group room the peer
+    is (chat_id, sender_id) — each member gets their own caller key."""
 
-    def __init__(self, chat_id: int, relay: "TgRelay") -> None:
+    def __init__(self, chat_id: int, relay: "TgRelay",
+                 caller: str | None = None) -> None:
         self.chat_id = chat_id
+        self.caller = caller  # None = chat-scoped default key
         self.relay = relay
         self.ws: Any = None
         self.last_active = time.monotonic()
@@ -143,7 +169,9 @@ class ChatSession:
     async def ensure(self) -> None:
         if self.ws is not None:
             return
-        url = f"{ADA_WS_URL}?api_key={_key_for_chat(self.chat_id)}"
+        key = (_key_by_name(self.caller) if self.caller
+               else _key_for_chat(self.chat_id))
+        url = f"{ADA_WS_URL}?api_key={key}"
         self.ws = await websockets.connect(
             url, max_size=8 * 1024 * 1024, ping_interval=20)
         self._rx_task = asyncio.create_task(self._reader())
@@ -230,7 +258,8 @@ class ChatSession:
 
 class TgRelay:
     def __init__(self) -> None:
-        self.sessions: dict[int, ChatSession] = {}
+        self.sessions: dict[Any, ChatSession] = {}
+        self._refused: dict[tuple[int, int], float] = {}
         self.http: httpx.AsyncClient | None = None
         self.offset = self._load_offset()
 
@@ -256,12 +285,16 @@ class TgRelay:
             raise RuntimeError(f"telegram {method} failed: {data}")
         return data.get("result")
 
-    async def send_text(self, chat_id: int, text: str) -> None:
+    async def send_text(self, chat_id: int, text: str,
+                        reply_to: int | None = None) -> None:
         if not text:
             return
+        params: dict[str, Any] = {"chat_id": chat_id}
+        if reply_to:
+            params["reply_to_message_id"] = reply_to
         for i in range(0, len(text), REPLY_CHUNK):
-            await self.tg("sendMessage", chat_id=chat_id,
-                          text=text[i:i + REPLY_CHUNK])
+            await self.tg("sendMessage",
+                          **{**params, "text": text[i:i + REPLY_CHUNK]})
 
     async def send_photo(self, chat_id: int, url: str, caption: str) -> None:
         """Fetch image bytes (tailnet-reachable) and sendPhoto them."""
@@ -300,19 +333,46 @@ class TgRelay:
         msg = upd.get("message") or upd.get("edited_message") or {}
         chat = msg.get("chat") or {}
         chat_id = chat.get("id")
+        chat_type = chat.get("type") or "private"
+        from_id = (msg.get("from") or {}).get("id")
+        msg_id = msg.get("message_id")
         text = (msg.get("text") or "").strip()
         photos = msg.get("photo") or []
         if chat_id is None:
             return
-        if photos:
-            allowed = _allowed_chats()
-            if chat_id not in allowed:
-                await self.send_text(
-                    chat_id,
-                    f"Not authorized. Your chat_id is {chat_id}.")
+        is_group = chat_type in ("group", "supergroup")
+        if chat_id not in _allowed_chats():
+            logger.info("unauthorized chat %s", chat_id)
+            await self.send_text(
+                chat_id,
+                f"Not authorized. Your chat_id is {chat_id} — ask the owner "
+                "to add it to TELEGRAM_ALLOWED_CHAT_IDS.")
+            return
+        # Group rooms: identity is the SENDER, not the chat. No admin
+        # fallback — unmapped senders are refused (their id is echoed once
+        # per hour so the owner can whitelist via TELEGRAM_USER_CALLERS).
+        caller: str | None = None
+        skey: Any = chat_id
+        reply_to = msg_id if is_group else None
+        if is_group:
+            caller = _user_callers().get(from_id)
+            if caller is None:
+                if from_id is None:
+                    return  # no sender (channel post etc.) — ignore
+                last = self._refused.get((chat_id, from_id), 0.0)
+                if time.monotonic() - last > _REFUSAL_GAP_S:
+                    self._refused[(chat_id, from_id)] = time.monotonic()
+                    await self.send_text(
+                        chat_id,
+                        f"Not authorized in this room. Telegram user id: "
+                        f"{from_id} — the owner can whitelist it in "
+                        "TELEGRAM_USER_CALLERS.",
+                        reply_to=reply_to)
                 return
+            skey = (chat_id, from_id)
+        if photos:
             sess = self.sessions.setdefault(
-                chat_id, ChatSession(chat_id, self))
+                skey, ChatSession(chat_id, self, caller=caller))
             try:
                 await self.tg("sendChatAction", chat_id=chat_id,
                               action="upload_photo")
@@ -332,7 +392,8 @@ class TgRelay:
                 reply, images = (
                     "Couldn't pass that photo to Ada — try again.", [])
             try:
-                await self.send_text(chat_id, reply or "(no reply)")
+                await self.send_text(chat_id, reply or "(no reply)",
+                                     reply_to=reply_to)
             except Exception as exc:
                 logger.warning("chat %s reply send failed: %s",
                                chat_id, exc)
@@ -344,16 +405,8 @@ class TgRelay:
         if text == "/start":
             await self.send_text(chat_id, f"Ada relay online. chat_id={chat_id}")
             return
-        allowed = _allowed_chats()
-        if chat_id not in allowed:
-            logger.info("unauthorized chat %s", chat_id)
-            await self.send_text(
-                chat_id,
-                f"Not authorized. Your chat_id is {chat_id} — ask the owner "
-                "to add it to TELEGRAM_ALLOWED_CHAT_IDS.")
-            return
         sess = self.sessions.setdefault(
-            chat_id, ChatSession(chat_id, self))
+            skey, ChatSession(chat_id, self, caller=caller))
         try:
             await self.tg("sendChatAction", chat_id=chat_id, action="typing")
         except Exception:
@@ -364,12 +417,12 @@ class TgRelay:
             logger.warning("chat %s turn failed: %s", chat_id, exc)
             reply, images = ("Ada didn't answer that turn — her session "
                              "dropped. Try again."), []
-            sess = ChatSession(chat_id, self)
-            self.sessions[chat_id] = sess
+            sess = ChatSession(chat_id, self, caller=caller)
+            self.sessions[skey] = sess
         if not reply:
             reply = "(no reply)"
         try:
-            await self.send_text(chat_id, reply)
+            await self.send_text(chat_id, reply, reply_to=reply_to)
         except Exception as exc:
             logger.warning("chat %s reply send failed: %s", chat_id, exc)
         for url, cap in images[:3]:

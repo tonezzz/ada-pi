@@ -30,6 +30,33 @@ from backend.instance import ada_instance_id
 logger = logging.getLogger("memory.banks")
 
 DEFAULT_REGISTRY_PATH = os.path.expanduser("~/.config/ada/memory-banks.json")
+
+# Runtime device-ACL grants — owner tools write here; control_allowed()
+# merges them on top of the registry's control_policies without a
+# registry re-render or service restart. Shape:
+#   {"person.kk": {"light.bedroom": {"granted_at": iso, "by": "person.tony"}}}
+GRANTS_PATH = Path(os.environ.get(
+    "ADA_DEVICE_GRANTS_FILE",
+    str(Path.home() / ".config" / "ada" / "device-grants.json")))
+_grants_cache: tuple[float, dict[str, dict[str, Any]]] = (0.0, {})
+
+
+def device_grants() -> dict[str, dict[str, dict[str, Any]]]:
+    """{identity: {entity_id: {...}}} — reloaded on file mtime change."""
+    global _grants_cache
+    try:
+        mtime = GRANTS_PATH.stat().st_mtime
+    except OSError:
+        _grants_cache = (0.0, {})
+        return {}
+    if mtime != _grants_cache[0]:
+        try:
+            data = json.loads(GRANTS_PATH.read_text())
+            _grants_cache = (mtime, data if isinstance(data, dict) else {})
+        except Exception as exc:
+            logger.warning("device-grants read failed: %s", exc)
+            _grants_cache = (mtime, {})
+    return _grants_cache[1]
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
@@ -310,9 +337,11 @@ class MemoryBankRegistry:
 
     def control_allowed(self, entity_id: str, person_entity: str | None) -> bool:
         """Whether this identity may actuate entity_id under control_policies.
-        {full: true} bypasses; else allow_domains whitelists and
-        deny_domains/deny_entities always deny. The global danger-pattern
-        floor still applies on top — this is subtractive only."""
+        {full: true} bypasses; else deny_domains/deny_entities always deny,
+        an explicit admin grant (device-grants.json overlay) allows, a
+        non-empty allow_entities whitelists exact entities, and a non-empty
+        allow_domains whitelists domains. The global danger-pattern floor
+        still applies on top — this is subtractive only."""
         policy = self.control_policy_for(person_entity)
         if not policy or policy.get("full"):
             return True
@@ -320,6 +349,12 @@ class MemoryBankRegistry:
         if entity_id in set(policy.get("deny_entities") or []):
             return False
         if domain in set(policy.get("deny_domains") or []):
+            return False
+        granted = (device_grants().get(person_entity or "") or {})
+        if entity_id in granted:
+            return True
+        allow_entities = set(policy.get("allow_entities") or [])
+        if allow_entities and entity_id not in allow_entities:
             return False
         allow = set(policy.get("allow_domains") or [])
         if allow and domain not in allow:
