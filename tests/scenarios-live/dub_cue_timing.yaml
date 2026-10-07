@@ -1,0 +1,53 @@
+name: dub-cue-timing
+# YT voice-dub gate (card yt-voice-dub-scenarios, 2026-10-07) — cue-fit
+# metrics on the canonical real-world render LLALMFmabV4-dub.mp4
+# (Liam+Noel interview, 166 TH cues over EN source, current pipeline).
+#
+# Contract (docs/ssot/jobs/dub/2026-10-07-dub-metrics-contract.yml):
+# every published dub ships <basename>.metrics.json beside the mp4 in the
+# served yt-live dir, schema dub-metrics/1. This turn fetches the sidecar
+# and asserts the cue-fit bars — the 2026-10-04 listen-test defects were
+# all timing: unbounded atempo (~3.3x speed), TH text ~1.4x the EN window,
+# rolling-caption overlap. The landed fixes' numbers are the bar:
+#   - cue_overflow_pct <= 10   (segments ending past cue+tolerance)
+#   - atempo_max       <= 1.4  (post-stretch cap, never unbounded again)
+#   - lag_s            <= 5    (residual tail lag — cuefit card's bar)
+#   - wer_vs_source    <= 0.30 (dub ASR vs source captions — gibberish tripwire)
+#
+# A missing/garbled sidecar is a FAIL, not infra — the dub program owns
+# emitting it; an empty metrics contract is exactly the regression this
+# gate exists to catch. yt-live-api down is INFRA (pipeline host issue).
+#
+# tier: full — reads a served artifact; no Ada turn (the live play path
+# is covered by yt_dub_liam_e2e + cast_dub_to_tv in the same suite).
+tier: full
+
+preflight:
+  - {check: http_ok, url: "http://tony-dell.taila0626a.ts.net:8791/status",
+     label: yt-live-api}
+
+turns:
+  - http_check:
+      label: "LLALMFmabV4-dub metrics — cue window fit"
+      url: "https://tony-dell.taila0626a.ts.net/apps/yt-live/LLALMFmabV4-dub.metrics.json"
+      regex:
+        # contract version + asset identity
+        - '"schema"\s*:\s*"dub-metrics/1"'
+        - '"asset"\s*:\s*"LLALMFmabV4-dub\.mp4"'
+        # cue overflow <= 10%  (10.5 must NOT match — lookahead guards)
+        - '"cue_overflow_pct"\s*:\s*(0(\.\d+)?|[1-9](\.\d+)?|10(\.0+)?)(?![\d.])'
+        # atempo cap 1.4x — 1.45 correctly fails (1.40* allows "1.40")
+        - '"atempo_max"\s*:\s*(0|0?\.\d+|1|1\.[0-3]\d*|1\.40*)(?![\d.])'
+        # residual lag <= 5s
+        - '"lag_s"\s*:\s*([0-4](\.\d+)?|5(\.0+)?)(?![\d.])'
+        # dub-track WER vs source captions <= 0.30
+        - '"wer_vs_source"\s*:\s*(0\.[0-2]\d*|0\.30*|0)(?![\d.])'
+      # raw values lifted into the benchmark doc meta — this is what makes
+      # "benchmark tracks cue overflow %" literal across runs
+      capture:
+        cue_overflow_pct: '"cue_overflow_pct"\s*:\s*([0-9.]+)'
+        atempo_max:       '"atempo_max"\s*:\s*([0-9.]+)'
+        lag_s:            '"lag_s"\s*:\s*([0-9.]+)'
+        wer_vs_source:    '"wer_vs_source"\s*:\s*([0-9.]+)'
+        rate_global:      '"rate_global"\s*:\s*([0-9.]+)'
+        cues_synthesized: '"cues_synthesized"\s*:\s*(\d+)'

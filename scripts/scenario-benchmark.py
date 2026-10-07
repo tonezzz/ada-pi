@@ -284,6 +284,7 @@ def main() -> int:
     write_allowed = set(policy.get("write_allowed_in") or [])
 
     rows, violations = [], []
+    run_metrics: dict[str, str] = {}
     for name in _expand(args.suite, bench):
         path = _slug_file(name)
         if not os.path.exists(path):
@@ -296,6 +297,12 @@ def main() -> int:
         n_tools = sum(len(t.get("tools") or []) for t in turns)
         dur = float((events or {}).get("duration_s") or 0)
         rows.append((name, status, len(turns), n_tools, dur))
+        # http_check `capture:` values (e.g. dub-metrics sidecars) —
+        # trended on the benchmark doc, so the suite tracks real numbers
+        # (cue_overflow_pct, voices_per_speaker) not just pass/fail
+        for t in turns:
+            for mk, mv in (t.get("metrics") or {}).items():
+                run_metrics[f"{name}.{mk}"] = str(mv)
         print(f"== {name}: {status} ({runs} runs, {n_tools} tool calls, "
               f"{dur:.0f}s)")
         if name in required and status != "pass":
@@ -334,6 +341,10 @@ def main() -> int:
           f"{sum(1 for _,s,*_ in rows if s=='unimplemented')} unimplemented)\n\n"
           f"| scenario | status | turns | tool calls | dur |\n"
           f"|---|---|---|---|---|\n{table}\n")
+    if run_metrics:
+        md += ("\n## Captured metrics\n\n"
+               + "\n".join(f"- `{k}` = {v}"
+                           for k, v in sorted(run_metrics.items())) + "\n")
     if not run_valid:
         md += (f"\n> **Invalid run** — {invalid_reason}. Excluded from "
                "trend/baseline comparisons.\n")
@@ -356,6 +367,8 @@ def main() -> int:
                                         if invalid_reason else []),
                      "violations": violations or ["none"],
                      "ts": [now.isoformat(timespec="seconds")],
+                     "metrics": [f"{k}={v}"
+                                 for k, v in sorted(run_metrics.items())],
                      "scenarios": [f"{n}:{s}" for n, s, *_ in rows]},
         })
         if args.report_cms:
