@@ -314,6 +314,17 @@ _GENERIC_TOOL_LEAK_RE = re.compile(
     r"\b[A-Za-z_][A-Za-z0-9_]{1,39}\s*\{\s*[\"']?"
     r"[A-Za-z_][A-Za-z0-9_]{0,39}\s*[:=]")
 
+# Role-marker leak (card ada-context-budget — session d6cbf6e6e7,
+# 2026-10-07): when the context window saturates, the model degenerates
+# into raw transcript continuation and emits the scaffold's role tags —
+# 'ยืนยัน—user\nบันทึกเลยmodel' was spoken as one assistant turn, meaning
+# the model fabricated the user's reply inside its own output. The tag
+# must sit at a boundary AND terminate a chunk (em-dash/newline before,
+# newline-or-end after): mid-sentence 'model'/'user' stays speakable.
+_ROLE_LEAK_RE = re.compile(
+    r"(?:^|[—–\n\r])\s*(?:user|model|system|assistant)\s*(?=\n|$)",
+    re.IGNORECASE)
+
 
 ACTUATING_TOOLS = frozenset({
     # tools-merge-ha (2026-10-05): control_cover/control_media_player/
@@ -1117,6 +1128,16 @@ class GeminiLiveProvider(RealtimeProvider):
         # turn falls through to the synthesized tool-result fallback
         # instead of looping. Cleared when a turn lands a real answer.
         self._dead_retried = False
+        # Context budget (card ada-context-budget — session d6cbf6e6e7
+        # hit ~78k input tokens/turn, 1.5M cumulative in 12min and the
+        # model degenerated into emitting role tags). When a single turn's
+        # input exceeds the budget, schedule a clean session rotate once
+        # the turn lands — a fresh connect drops the saturated context
+        # (resumption handle cleared) while ConversationMemory survives
+        # the provider swap, so continuity is server-side not token-side.
+        self._context_turn_budget = int(
+            os.environ.get("ADA_CONTEXT_TURN_BUDGET", "45000"))
+        self._rotate_scheduled = False
         # Markup-artifact scrubber for the output transcript (&nbsp;, '][',
         # markdown links — transcript 519088cb6d spoke them aloud). Deltas
         # can split a token mid-way ("&nbs" | "p;"), so the possible
@@ -1242,7 +1263,7 @@ class GeminiLiveProvider(RealtimeProvider):
         m = (
             self._tool_leak_re.search(text)
             if self._tool_leak_re is not None else None
-        ) or _GENERIC_TOOL_LEAK_RE.search(text)
+        ) or _GENERIC_TOOL_LEAK_RE.search(text) or _ROLE_LEAK_RE.search(text)
         if not m:
             return text
         self._leak_active = True
@@ -1792,6 +1813,24 @@ class GeminiLiveProvider(RealtimeProvider):
             await self.close()
         except Exception as exc:
             logger.warning("session=%s voice-switch close failed: %s", self.session_id, exc)
+
+    async def _context_rotate_when_idle(self) -> None:
+        """Same reconnect seam as a voice switch: wait for the current
+        turn to land, then drop the live session so the reconnect builds
+        a fresh context window (card ada-context-budget). Clearing the
+        resumption handle is what resets the token window — a resumed
+        session keeps the saturated context. ConversationMemory is shared
+        across provider instances, so the transcript and pending work
+        survive; the reconnect directive handles the greeting."""
+        await self._wait_for_idle(timeout=30.0)
+        await asyncio.sleep(0.5)
+        self.resumption_handle = None
+        try:
+            await self.close()
+        except Exception as exc:
+            logger.warning(
+                "session=%s context-rotate close failed: %s",
+                self.session_id, exc)
 
     @staticmethod
     def _frame_followup_note(hint: str = "people, water, weather, vehicles, anything notable") -> str:
@@ -2439,6 +2478,24 @@ class GeminiLiveProvider(RealtimeProvider):
             self.usage_input_tokens, self.usage_output_tokens,
             self.usage_input_by_modality, self.usage_output_by_modality,
         )
+        # Context budget: a saturated window degrades into role-tag
+        # continuation (card ada-context-budget). Rotate the live session
+        # once, when the turn settles — not mid-generation.
+        if in_tokens > self._context_turn_budget and not self._rotate_scheduled:
+            self._rotate_scheduled = True
+            self._emit_ops_event(
+                "context_rotate",
+                f"turn input {in_tokens} exceeded budget "
+                f"{self._context_turn_budget} — rotating session when idle",
+            )
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                task = loop.create_task(self._context_rotate_when_idle())
+                self._bg_tasks.add(task)
+                task.add_done_callback(self._bg_tasks.discard)
 
     def usage_summary(self) -> dict[str, Any]:
         return {
