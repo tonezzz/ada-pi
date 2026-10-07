@@ -1,0 +1,77 @@
+# SSOT Job: report_opinion_loop live scenario + report-opinion corpus miner
+# Card: report-loop-bench (chaba kanban; umbrella report-session-loop,
+# design docs/design/report-session-loop.md §4). Dispatch 20261007-202820.
+
+title: report_opinion_loop live scenario + report-opinion seed miner
+subtitle: smoke-tier guard for the read-report -> post-[opinion] loop; corpus miner seeds the bench domain
+
+planning:
+  goal: |
+    §4a: install the staged live scenario that catches regressions in
+    Ada's read-report -> post-[opinion]-to-linked-card loop.
+    §4b: seed the report-opinion bench domain corpus (declared
+    status: spec in chaba ssot.nest-bench.yml) with a cheap miner for
+    real [opinion] comms on report-linked cards.
+  scope: |
+    In scope:
+      - tests/scenarios-live/report_opinion_loop.yaml (new) — installed
+        from chaba scenarios-staging/, adapted to ada-pi conventions:
+        flat asserts -> expect: blocks; url/key_name dropped (default
+        ADA_API_KEY + ws://127.0.0.1:8002 is ada-ha-tony; user-tony is
+        NOT in ada-ha-tony-keys.json — it would SKIP every batch run).
+      - turn 2 hardened beyond the staged spec: call_args_contain
+        {ada_board_write: [scenario-report-opinion]} — the first live
+        run showed a bare calls_any passing while Ada posted the opinion
+        to report-loop-ada-opinion by title match. A write to the wrong
+        card is a broken loop, not a pass.
+      - tests/bench/report-opinion-mine.py (new) — stdlib-only miner:
+        GET board /cards -> report-linked cards -> from=ada comms
+        matching ^\[opinion\] -> append orch-report-opinion-cases.jsonl
+        rows (kind: report-opinion; labels null until a scorer exists).
+        --snapshot fetches the CURRENT ada-cms-pages doc via MDDB /get.
+    Out of scope:
+      - orch-bench/nest topologies for the opinion-forming step —
+        deferred by the card until the corpus exists (dead-code rule).
+      - A scorer — same rule; no corpus yet.
+      - Deploy to idc03 (deploy-only; needs Tony's approval).
+  success_criteria:
+    - 'scenario file parses and runs under scenario-live.py'
+    - 'tier: smoke -> hourly batch picks it up via @smoke expansion'
+    - 'miner runs, dedupes on (card, at), writes valid jsonl rows'
+  risks:
+    - 'Hourly smoke will show this scenario red until report-loop-ada-opinion
+      (§3b stanza + board read report=<slug> lookup) deploys — intended:
+      the scenario IS the regression tripwire for that feature.'
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-10-07"
+  steps:
+    - id: 1
+      label: "Install scenario"
+      status: done
+      notes: "tests/scenarios-live/report_opinion_loop.yaml — 2 turns, smoke tier, no cleanup (probe comms accumulate by design)."
+    - id: 2
+      label: "Live run vs ada-ha-tony (idc03 :8002)"
+      status: done
+      notes: "Run 1: T1 FAIL (answered from ada_memory_search, no page read), T2 pass-but-wrong-card (posted to report-loop-ada-opinion). Run 2 (tightened): T1 PASS (cms_get_page fired), T2 FAIL (home_search flail — board read report= lookup not deployed). Fails are the undeployed §3b path, not scenario bugs."
+    - id: 3
+      label: "Seed miner"
+      status: done
+      notes: "tests/bench/report-opinion-mine.py — verified vs board: 0 [opinion] comms today (tag convention ships with §3b); corpus accrues live."
+    - id: 4
+      label: "Topology deferral"
+      status: done
+      notes: "Recorded on card — no orch-bench/nest topologies until corpus exists."
+
+invoke:
+  env:
+    ADA_BOARD_API_URL: "board-api base (default https://tony-dell.taila0626a.ts.net/apps/board-api)"
+    MDDB_BASE_URL: "mddb /v1 base for --snapshot (default http://127.0.0.1:11023/v1)"
+
+verification:
+  - "python3 scripts/scenario-live.py tests/scenarios-live/report_opinion_loop.yaml  # on idc03, ADA_API_KEY from ~/.config/secrets/ada-ha-tony.env"
+  - "python3 tests/bench/report-opinion-mine.py --dry-run"
+  - "python3 tests/bench/report-opinion-mine.py --snapshot  # seeds orch-report-opinion-cases.jsonl"
