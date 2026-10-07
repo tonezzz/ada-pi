@@ -37,3 +37,12 @@ tools:
     policy: read
     secondary_allowed: true
     timeout_s: 60
+  # ada-market-tool (2026-10-08): market quotes from the trade DB via
+  # trade-api — FX (24 ccy), Thai gold + USD spot, DXY, WTI/Brent.
+  # Read-only lookups; gold/FX questions come from any identified
+  # speaker, so secondary turns may call it too.
+  ada_market_quote:
+    module: ada_market_quote
+    policy: read
+    secondary_allowed: true
+    timeout_s: 20

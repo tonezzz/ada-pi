@@ -448,3 +448,12 @@ ada_board_write: >-
   board state (column=, limit= filters) for finding card ids and open
   requests — report=<slug> instead returns the card whose report:
   field links that CMS page.
+
+ada_market_quote: >-
+  kind='fx' needs currency= (3-letter, USD base — 'THB' for dollar-baht,
+  24 supported). 'gold' returns BOTH thai_gold_bar (GTA fixing, THB per
+  baht-weight — what a Thai question means) and gold_spot (USD/oz);
+  'oil' returns WTI + Brent. Data is daily closes — ALWAYS say the
+  as_of date; a 'stale' flag means the trade automation is days behind
+  (say the date, don't call it today's price). No SET/equity quotes and
+  no pump diesel — for those answer honestly or use web_search.
