@@ -270,6 +270,41 @@ def _draft_visible(bank: MemoryBank, doc: dict[str, Any], instance: str) -> bool
     return 0 <= age.days <= ADA_DRAFT_MAX_AGE_DAYS
 
 
+# Transcript-shaped content (card ada-memory-hit-shape-guard,
+# context-growth debug run 2026-10-07 ~21:39): the 'devin' bank indexes
+# Devin session dumps — literal '=== MESSAGE 1 - System ===' chat
+# exports. When that shape reaches the live model as ordinary context
+# it pattern-matches the roles as the conversation it is IN and starts
+# executing the transcript's tool calls (the tool storms). Detection is
+# shape-based, not bank-based: a pasted transcript in any bank carries
+# the same hazard. Two headers minimum — a doc quoting the format once
+# is not a transcript.
+TRANSCRIPT_HEADER_RE = re.compile(
+    r"^[ \t]*={2,}\s*(?:MESSAGE|MSG|USER|ASSISTANT|SYSTEM|HUMAN|AI|"
+    r"TOOL|MODEL|AGENT)\b[^\n]*$",
+    re.IGNORECASE | re.MULTILINE)
+
+# Meta kinds / key segments that mark archived transcripts even when a
+# truncated excerpt shows fewer than two message headers.
+ARCHIVAL_KINDS = {
+    "session-dump", "session-transcript", "transcript", "chat-log",
+    "conversation-dump",
+}
+ARCHIVAL_KEY_SEGMENTS = ("/session-dump/", "/transcript/", "/chat-log/")
+
+
+def is_transcript_shaped(
+    content: Any, kind: Any = None, key: Any = None
+) -> bool:
+    """True when content/meta looks like a raw chat or session dump
+    rather than a curated memory."""
+    if str(kind or "").strip().lower() in ARCHIVAL_KINDS:
+        return True
+    if any(seg in str(key or "").lower() for seg in ARCHIVAL_KEY_SEGMENTS):
+        return True
+    return len(TRANSCRIPT_HEADER_RE.findall(str(content or ""))) >= 2
+
+
 def _doc_to_hit(
     bank: MemoryBank,
     doc: dict[str, Any],
@@ -1230,6 +1265,13 @@ async def session_prime_text(
             for doc in docs or []:
                 body = str(doc.get("contentMd") or doc.get("content_md") or "").strip()
                 key = str(doc.get("key") or "")
+                meta = doc.get("meta") or {}
+                # Transcript dumps must never be injected as "apply
+                # these directly" guidance — same steer-the-model
+                # hazard as the search-hit path.
+                if is_transcript_shaped(
+                        body, kind=_meta_first(meta, "kind"), key=key):
+                    continue
                 if body and key not in prime_seen:
                     prime_seen.add(key)
                     rules.append(body[:max_chars])
@@ -1254,6 +1296,10 @@ async def session_prime_text(
             for doc in docs or []:
                 body = str(doc.get("contentMd") or doc.get("content_md") or "").strip()
                 key = str(doc.get("key") or "")
+                meta = doc.get("meta") or {}
+                if is_transcript_shaped(
+                        body, kind=_meta_first(meta, "kind"), key=key):
+                    continue
                 if body and key not in prime_seen:
                     prime_seen.add(key)
                     facts.append(body[:max_chars])

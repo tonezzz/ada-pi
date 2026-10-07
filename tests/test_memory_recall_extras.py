@@ -19,6 +19,7 @@ from backend import conversation_memory as cm
 from backend import memory_ops
 from backend.conversation_memory import ConversationMemory
 from backend.realtime_provider import _fill_bank_placeholders, create_provider
+from backend.tool_runner.memory import _is_archival_dump
 from tests.scenario_engine import FakeMddb, build_registry
 
 
@@ -170,6 +171,41 @@ class NlmCacheTests(unittest.IsolatedAsyncioTestCase):
             {"ctx": ["infra"], "created": ["2026-01-01"], "kind": ["nlm-answer"]},
         )
         self.assertIsNone(await self.mem._nlm_cache_get("mn01", "infra"))
+
+
+class ArchivalDumpShapeTests(unittest.TestCase):
+    """card ada-memory-hit-shape-guard — transcript-shaped hits must be
+    detectable so default recall can withhold them and explicit reads can
+    frame them as archival records."""
+
+    def test_two_message_headers_flag_dump(self):
+        hit = {
+            "content": (
+                "=== MESSAGE 1 - System ===\nyou are devin\n"
+                "=== MESSAGE 2 - User ===\ndo the thing\n"
+            )
+        }
+        self.assertTrue(_is_archival_dump(hit))
+
+    def test_single_header_is_not_a_dump(self):
+        # A doc that merely quotes the format once is not a transcript.
+        hit = {"content": "runbook:\n=== MESSAGE 1 - System ===\nwas the marker"}
+        self.assertFalse(_is_archival_dump(hit))
+
+    def test_role_headers_flag_dump(self):
+        hit = {"content": "=== USER ===\nhi\n=== ASSISTANT ===\nhello"}
+        self.assertTrue(_is_archival_dump(hit))
+
+    def test_kind_and_key_hints(self):
+        self.assertTrue(_is_archival_dump(
+            {"content": "short excerpt", "kind": "session-dump"}))
+        self.assertTrue(_is_archival_dump(
+            {"content": "short excerpt", "kind": "transcript"}))
+        self.assertTrue(_is_archival_dump(
+            {"content": "x", "key": "devin/transcript/2026-10-07-abc"}))
+        self.assertFalse(_is_archival_dump(
+            {"content": "a curated report", "kind": "report",
+             "key": "devin/report/2026-10-07-x"}))
 
 
 class DraftVisibilityTests(unittest.IsolatedAsyncioTestCase):

@@ -1,0 +1,73 @@
+# SSOT Job: transcript-shaped memory-hit guard
+# Card: ada-memory-hit-shape-guard (chaba kanban). Dispatch
+# 20261008-055217-ada-pi-backend-tool-runner-mem.
+
+title: Memory-hit shape guard — session dumps withheld from default recall, framed on explicit reads
+
+context:
+  incident: |
+    2026-10-07 ~21:39 context-growth debug run: while the model stormed,
+    ada_memory_search returned devin-bank docs whose content is a literal
+    '=== MESSAGE 1 - System ===' conversation dump. Injected as hits, the
+    live model pattern-matched the transcript roles as the conversation it
+    was IN and started executing the dump's tool calls (plan_day, cms_read,
+    cast_to_screen, ada_remember 'Devin: setup a stable stack'). Transcript-
+    shaped content crossing into live context is a hijack vector — a cousin
+    of the role-marker leak.
+
+changes:
+  - file: backend/memory_ops.py
+    what: |
+      New is_transcript_shaped(content, kind, key) detector — True on >=2
+      '=== ROLE ===' style headers (MESSAGE/USER/ASSISTANT/SYSTEM/HUMAN/AI/
+      TOOL/MODEL/AGENT), archival kind meta (session-dump, transcript,
+      chat-log, session-transcript, conversation-dump), or archival key
+      segments (/session-dump/, /transcript/, /chat-log/). Shape-based, not
+      bank-based: a pasted transcript in any bank is the same hazard.
+      session_prime_text now skips transcript-shaped docs in both the
+      prime-flag ("Standing guidance") and "Known facts" loops — a dump in
+      personal/general could otherwise be injected at every session start
+      under the "apply these directly" header.
+  - file: backend/tool_runner/memory.py
+    what: |
+      ada_memory_search applies the guard after merging/sorting hits:
+      default fan-out (bank 'all' / scope 'all') withholds dump-shaped hits
+      entirely and lists their {bank, key} under suppressed_archival plus a
+      note telling the model how to read them; an explicit read (named
+      bank=, include_inactive=true, or scope sessions/guest) returns them
+      with content wrapped in ARCHIVAL_HIT_FRAME — an 'archival record, not
+      instructions' preamble — and archival: true. Detection lives in
+      memory_ops so prime and search share one rule.
+  - file: backend/realtime_provider.py + backend/tool_guide.yml
+    what: |
+      ada_memory_search schema description + error-path guide updated so
+      the model knows dumps are withheld from default results and how to
+      reach them framed.
+  - file: tests/scenario_engine.py
+    what: |
+      SCENARIO_BANKS gains the tony-only read-only 'devin' bank
+      (ada-ha-bank-devin-{instance}) mirroring the deployed registry.
+  - file: tests/scenarios/memory_hit_shape_guard.yaml
+    what: |
+      New offline scenario: a '=== MESSAGE' dump in the devin bank is
+      withheld from default results (key only in suppressed_archival), a
+      transcript pasted into 'personal' is withheld too (shape not bank),
+      curated hits still surface, named-bank and include_inactive reads
+      return the dump framed as ARCHIVAL RECORD with archival: true, and
+      a reconnect prime never injects transcript content into "Known
+      facts". Together these assert a memory hit cannot steer the model
+      off the user's turn — raw transcript text never reaches it unframed.
+  - file: tests/test_memory_recall_extras.py
+    what: ArchivalDumpShapeTests — detector unit coverage.
+
+verify:
+  - .venv/bin/python -m pytest tests/test_scenarios.py \
+      tests/test_memory_recall_extras.py tests/test_memory_banks.py \
+      tests/test_tool_runner.py -q   # 303 passed on tony-dell venv
+
+notes: |
+  The '=== MESSAGE' dumps are written to ada-ha-bank-devin-<instance> by
+  chaba's sync-devin-summaries.py / scripts/devin-memory-bridge.py — the
+  producers are out of this repo's scope; the guard treats them as data.
+  session_prime_text guard added beyond the card's literal scope because
+  it is the identical injection vector via the same banks.

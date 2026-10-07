@@ -81,6 +81,17 @@ SCENARIO_BANKS: dict[str, Any] = {
             "allowed_tools": [],
             "status": "active",
         },
+        "devin": {
+            "title": "Devin session archive",
+            "scope": "instance",
+            "instances": ["tony"],
+            "mddb_collection": "ada-ha-bank-devin-{instance}",
+            "kinds": ["report", "session-dump", "session-summary", "note"],
+            "writable": False,
+            "write_policy": "confirmed",
+            "allowed_tools": [],
+            "status": "active",
+        },
         "infrastructure-ssot": {
             "title": "Infrastructure SSOT",
             "scope": "shared",
