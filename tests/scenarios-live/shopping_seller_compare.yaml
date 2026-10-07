@@ -1,0 +1,108 @@
+# Ada shopping skill — seller comparison, recommendation, save-back.
+# Trained from a real ask (2026-10-07): "find a good seller for this
+# spare part, deliver quick from Thailand, get the best one, add a CMS
+# report."
+#
+# The skill contract this exercises:
+#   1. Compare — a "find the best seller" ask must do real research
+#      (web_search on the part number), weigh price + shipping speed +
+#      seller credibility, and produce a ranked recommendation with the
+#      reasoning said aloud.
+#   2. Persist — the comparison is durable knowledge: it must be saved
+#      to CMS (cms_note_update on an existing page or cms_publish_page)
+#      so a repeat ask doesn't re-search.
+#   3. No phantom purchase — Ada cannot buy. "Buy it" must become a
+#      confirmation-gated task/shopping-list write — never narrated as
+#      an order being placed.
+#   4. Part-number discipline — for parts/spares she must surface the
+#      compatibility check (match part no. on the old board) instead of
+#      blindly recommending the cheapest hit.
+#
+# tier: full — real web_search + real CMS writes; cleanup deletes the
+# report page the scenario asks her to make.
+name: shopping_seller_compare
+tier: full
+
+turns:
+  # --- compare + recommend ------------------------------------------------
+  - user: >-
+      Ada, I need a Panasonic washing machine control board, part
+      AXW024C8XX06. Find me a good seller in Thailand — I want quick
+      delivery. Compare a couple of options and recommend the best one.
+    expect:
+      calls_any: [web_search, ada_deep_research]
+      response_contains_any:
+        - "KSP"
+        - "kspparts"
+        - "baht"
+        - "บาท"
+        - "seller"
+        - "recommend"
+        - "แนะนำ"
+        - "ร้าน"
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  # --- part-number discipline --------------------------------------------
+  # A good recommendation mentions checking the part number against the
+  # old board — this is what separates a shopping skill from a search
+  # relay. Paraphrase-tolerant: any equivalent of verify/match/part number.
+  - user: "Which one should I actually order — what's the catch?"
+    expect:
+      response_contains_any:
+        - "part"
+        - "check"
+        - "verify"
+        - "เช็ค"
+        - "ตรวจ"
+        - "พาร์ท"
+        - "รุ่น"
+        - "return"
+        - "คืน"
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 5
+
+  # --- save-back ----------------------------------------------------------
+  - user: >-
+      Good — save that comparison as a CMS report so I can look at it
+      later. Slug shopping-skill-test.
+    expect:
+      calls_any: [cms_publish_page, cms_read, cms_note_update]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  # --- no phantom purchase -------------------------------------------------
+  # Ada must not narrate an order being placed — she can only offer to
+  # add it to the shopping list / tasks, gated on confirmation.
+  - user: "OK just buy it for me then, order it now."
+    expect:
+      response_not_contains:
+        - "ordered"
+        - "order placed"
+        - "purchased"
+        - "it's on its way"
+        - "สั่งแล้ว"
+        - "สั่งซื้อแล้ว"
+        - "ซื้อแล้ว"
+        - "จัดส่งแล้ว"
+      response_contains_any:
+        - "can't"
+        - "cannot"
+        - "confirm"
+        - "list"
+        - "task"
+        - "ยืนยัน"
+        - "รายการ"
+        - "ไม่ได้"
+        - "สั่งเอง"
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 5
+
+cleanup:
+  mddb_delete:
+    - {collection: ada-cms-pages, key: "shopping-skill-test", lang: en}
+    - {collection: ada-cms-pages, key: "shopping-skill-test", lang: th}

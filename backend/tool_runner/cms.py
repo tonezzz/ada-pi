@@ -91,6 +91,17 @@ class CmsMixin:
         docs = await self.mddb.search_documents(
             CMS_COLLECTION, filter_meta={"kind": ["page"]}, limit=limit
         )
+        # Lifecycle gate (2026-10-07): generated pages keep kind=page after
+        # supersede — e.g. cam-wall-cms marks renamed cams status:superseded
+        # until the archive pass flips kind. Listing without this check
+        # shows dead twins of every live page (36 ghost rows observed).
+        drop = {"superseded", "archived", "retracted", "expired"}
+
+        def _status(d: dict[str, Any]) -> str:
+            s = (d.get("meta") or {}).get("status") or ""
+            return s[0] if isinstance(s, list) and s else str(s)
+
+        docs = [d for d in docs if _status(d) not in drop]
         by_slug: dict[str, dict[str, Any]] = {}
         for d in docs:
             page = self._cms_page_summary(d)
