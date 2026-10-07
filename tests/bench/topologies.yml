@@ -16,6 +16,13 @@
 # `impl: chain` are graph-configurations for the future executor —
 # keep them here so the bench and the report see the same registry.
 
+# Live fleet (2026-10-07) — same model on multiple lanes lets shards
+# run parallel and lets 'parallel' actually parallelize:
+#   student  jev-student distilbert  idc03:8778   systemd (prod confirm gate)
+#   student  gemma-3-1b              tony-omen:8778  systemd (open-jev-student)
+#   student  gemma-3-1b              idc03:8779   quadlet openjev:cpu container
+#   heavy    gemma-3-4b              idc02:8777   venv (prod jev-advisory)
+#   heavy    gemma-3-4b              tony-omen:8777  systemd (open-jev)
 student_endpoint: http://100.75.102.88:8778   # gemma-3-1b-it (open-jev)
 heavy_endpoint:   http://100.75.102.88:8777   # gemma-3-4b-it (open-jev)
 
