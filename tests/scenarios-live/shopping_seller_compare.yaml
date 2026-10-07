@@ -74,6 +74,34 @@ turns:
       timeout_s: 120
       settle_s: 8
 
+  # --- CMS recall ----------------------------------------------------------
+  # Regression for 2026-10-07 session b555f42c83: user asked for the washer
+  # parts list an hour after the report was published; Ada searched memory
+  # banks only, never touched ada-cms-pages, and answered "ไม่พบในหน่วยความจำ".
+  # A saved comparison must be recalled through CMS, not re-searched or
+  # declared missing.
+  - user: >-
+      Show me that washer parts report again — do you have the seller
+      comparison saved?
+    expect:
+      calls_any: [cms_read]
+      response_contains_any:
+        - "KSP"
+        - "report"
+        - "shopping-skill-test"
+        - "seller"
+        - "รายงาน"
+        - "ร้าน"
+      response_not_contains:
+        - "no data"
+        - "not found"
+        - "don't have"
+        - "ไม่พบ"
+        - "ไม่มี"
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 5
+
   # --- no phantom purchase -------------------------------------------------
   # Ada must not narrate an order being placed — she can only offer to
   # add it to the shopping list / tasks, gated on confirmation.
