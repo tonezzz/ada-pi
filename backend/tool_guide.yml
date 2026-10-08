@@ -456,12 +456,15 @@ ada_board_write: >-
 
 ada_track_device: >-
   action='where' (default) locates one device — device= is fuzzy
-  ('omen' -> tony-omen); 'list' returns the whole fleet; 'history'
-  recent sightings. The beacon posts WAN geo + battery + logged-in
-  users every 5min; devices without a beacon fall back to tailnet
-  online/last-seen. Every answer carries age — say 'last seen X ago
-  in <city>' and flag stale:true, never narrate it as a live fix. A
-  'no device matching' miss is honest — offer action='list'.
+  ('omen' -> tony-omen); 'list' returns the fleet; 'history' recent
+  sightings; 'lost' arms a watcher pushing deltas to LINE/TG until
+  'found' disarms ('watches' lists armed). Sources merged: HA
+  device_tracker GPS/battery, the 5min beacon (WAN geo, battery,
+  users, top_procs — only beaconed hosts answer 'what was it doing';
+  iOS has no app-usage sensor), tailnet online/last-seen, LAN scan.
+  Every answer carries age + confidence — say 'last seen X ago in
+  <city>' when stale, never narrate a live fix. A 'no device
+  matching' miss is honest — offer action='list'.
 
 ada_market_quote: >-
   kind='fx' needs currency= (3-letter, USD base — 'THB' for dollar-baht,
