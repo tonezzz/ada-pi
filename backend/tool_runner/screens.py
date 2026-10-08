@@ -35,8 +35,9 @@ class ScreensMixin:
     ) -> dict[str, Any]:
         """YouTube surface — tools-merge-yt (2026-10-05) consolidated
         yt_cast / yt_cast_status / yt_cast_stop / yt_transcript into one
-        action= tool. Ungated: cast/stop actuate the TV but the old names
-        were never confirm-gated; status/transcript are reads."""
+        action= tool (plus list = cast-ready cached library). Ungated:
+        cast/stop actuate the TV but the old names were never
+        confirm-gated; status/list/transcript are reads."""
         action = (action or "status").strip().lower()
         if action == "cast":
             return await self.yt_cast(query=query or url, language=language)
@@ -44,11 +45,13 @@ class ScreensMixin:
             return await self.yt_cast_status()
         if action == "stop":
             return await self.yt_cast_stop()
+        if action == "list":
+            return await self.yt_cached_list()
         if action == "transcript":
             return await self.yt_transcript(url=url or query,
                                             language=language)
         raise ValueError(
-            f"invalid action {action!r}: expected cast|status|stop|transcript")
+            f"invalid action {action!r}: expected cast|status|stop|list|transcript")
 
     async def yt_cast(self, query: str, language: str = "th") -> dict[str, Any]:
         """Cast a YouTube video to the living-room TV with translated
@@ -84,6 +87,15 @@ class ScreensMixin:
         """Stop the currently casting YouTube video on the TV."""
         import asyncio
         return await asyncio.to_thread(self._yt_api, "/stop", {})
+
+    async def yt_cached_list(self) -> dict[str, Any]:
+        """List cast-ready dubbed/cached videos in the yt-live library.
+        Each entry has `name` and a LAN `url` ready for
+        yt(action='cast', url=...). When the user asks to 'play the <name>
+        video on TV', call this first to resolve the file, then cast its
+        url."""
+        import asyncio
+        return await asyncio.to_thread(self._yt_api, "/list")
 
     # -- YouTube transcript (yt-dlp on mn01 — Thai news sites block scrapers,
     #    YouTube auto-captions are the open lane) --
