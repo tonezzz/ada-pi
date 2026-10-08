@@ -899,7 +899,12 @@ class GeminiLiveProvider(RealtimeProvider):
                  session_id: str | None = None,
                  conversation: ConversationMemory | None = None,
                  caller_name: str | None = None,
-                 caller_person: str | None = None) -> None:
+                 caller_person: str | None = None,
+                 channel: str | None = None) -> None:
+        # Relay channels (telegram/line) are text-only sessions: no TTS
+        # synthesis, no avatar tools — the reply ships as plain text.
+        self.channel = channel
+        self.text_only = bool(channel)
         # Speaker ID state — initialized before tool_runner so the sync below works
         self.current_speaker: str | None = None
         self.current_speaker_ha_person: str | None = None
@@ -949,15 +954,22 @@ class GeminiLiveProvider(RealtimeProvider):
             "Your name is Ada (เอด้า in Thai). KK calls you แก้วตา as a "
             "nickname — acknowledge it warmly if she uses it, but introduce "
             "yourself as Ada and never invent other names; if asked your name "
-            "repeatedly, answer Ada every time. You have a visible animated face. Use the "
-            "set_facial_expression tool to select the expression that best matches "
-            "your response and attitude. Call it once per reply — if you need a memory "
-            "or device tool to answer, run that tool first and set the expression "
-            "while composing the reply instead of before it. You may update it again only if your tone changes "
-            "materially. Prefer neutral for ordinary replies; "
-            "use alert only for genuine urgency or warnings. Never describe or announce "
-            "the tool call to the user."
-            " Camera frames provide your current visual context. When the user asks "
+            "repeatedly, answer Ada every time."
+            + ("" if self.text_only else
+               " You have a visible animated face. Use the "
+               "set_facial_expression tool to select the expression that best matches "
+               "your response and attitude. Call it once per reply — if you need a memory "
+               "or device tool to answer, run that tool first and set the expression "
+               "while composing the reply instead of before it. You may update it again only if your tone changes "
+               "materially. Prefer neutral for ordinary replies; "
+               "use alert only for genuine urgency or warnings. Never describe or announce "
+               "the tool call to the user.")
+            + ("" if not self.text_only else
+               f" This is a text chat session over {self.channel}: the user "
+               "reads your replies as chat messages — answer in plain concise "
+               "text, no speech fillers, and call only the tools needed to "
+               "answer.")
+            + " Camera frames provide your current visual context. When the user asks "
             "what you see, ground the answer only in the newest clear frame. Do not "
             "guess an object's identity from an ambiguous or blurred view; briefly "
             "ask the user to hold it steady or move it closer instead."
@@ -2533,7 +2545,10 @@ class GeminiLiveProvider(RealtimeProvider):
 
         self._client = genai.Client(api_key=self.api_key)
         config = {
-            "response_modalities": ["AUDIO"],
+            # Text-channel sessions (telegram/line relays) run TEXT modality —
+            # no TTS synthesis, no audio turn cost; reply text arrives in
+            # model_turn parts.
+            "response_modalities": ["TEXT" if self.text_only else "AUDIO"],
             "media_resolution": (
                 types.MediaResolution.MEDIA_RESOLUTION_HIGH
                 if self.video_resolution == "high"
@@ -4224,6 +4239,17 @@ class GeminiLiveProvider(RealtimeProvider):
                 }]
             }],
         }
+        if self.text_only:
+            # No audio in or out on relay channels — speech/voice config is
+            # meaningless (and output_audio_transcription has nothing to
+            # transcribe). Avatar tools and the audio-input VAD likewise.
+            for k in ("speech_config", "output_audio_transcription",
+                      "input_audio_transcription", "realtime_input_config"):
+                config.pop(k, None)
+            config["tools"][0]["function_declarations"] = [
+                fd for fd in config["tools"][0]["function_declarations"]
+                if fd.get("name") != "set_facial_expression"
+            ]
         if os.environ.get("DISABLE_GET_HOME_STATE") == "true":
             config["tools"][0]["function_declarations"] = [
                 fd for fd in config["tools"][0]["function_declarations"]
@@ -5251,6 +5277,26 @@ class GeminiLiveProvider(RealtimeProvider):
                 model_turn = content.model_turn
                 if model_turn:
                     for part in model_turn.parts or []:
+                        part_text = getattr(part, "text", None)
+                        if part_text:
+                            # TEXT-modality sessions (telegram/line relays):
+                            # reply text arrives inline — same delta path as
+                            # output_audio_transcription on voice sessions.
+                            if not self._response_active:
+                                self._response_active = True
+                                response_started_at = time.monotonic()
+                                response_audio_chunks = 0
+                                response_audio_bytes = 0
+                                yield ProviderEvent("response_started", {})
+                            clean = self._strip_tool_leak(part_text)
+                            if clean:
+                                clean = self._strip_speech_artifacts(clean)
+                            if clean:
+                                assistant_turn_text += clean
+                                yield ProviderEvent(
+                                    "assistant_transcript_delta",
+                                    {"text": clean},
+                                )
                         inline_data = part.inline_data
                         if inline_data and inline_data.data:
                             if not self._response_active:
@@ -5458,7 +5504,8 @@ def create_provider(instructions: str | None = None, tool_runner: Any = None,
                     session_id: str | None = None,
                     conversation: ConversationMemory | None = None,
                     caller_name: str | None = None,
-                    caller_person: str | None = None) -> RealtimeProvider:
+                    caller_person: str | None = None,
+                    channel: str | None = None) -> RealtimeProvider:
     return GeminiLiveProvider(
         instructions=instructions,
         tool_runner=tool_runner,
@@ -5468,4 +5515,5 @@ def create_provider(instructions: str | None = None, tool_runner: Any = None,
         conversation=conversation,
         caller_name=caller_name,
         caller_person=caller_person,
+        channel=channel,
     )

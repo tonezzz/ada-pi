@@ -673,6 +673,9 @@ async def voice_socket(ws: WebSocket) -> None:
         if guest_name:
             kind = "user" if chaba.user_file(guest_name).exists() else "guest"
             chaba.set_identity(session_id, kind, guest_name)
+    # Relay channels (?channel=telegram|line) run text-only Gemini Live
+    # sessions — no TTS, no avatar tools.
+    channel = (ws.query_params.get("channel") or "").strip().lower() or None
     # One ConversationMemory per websocket session, shared across provider
     # reconnects so the transcript survives a Gemini session swap.
     conversation = ConversationMemory(session_id)
@@ -682,6 +685,7 @@ async def voice_socket(ws: WebSocket) -> None:
         ha_person=tool_runner.session_caller_ha_person,
         owner=tool_runner.session_owner_identity,
         client=ws.client.host if ws.client else None,
+        channel=channel,
     )
     # Fallback identity for memory routing/extraction until speaker ID
     # identifies the voice (then _on_speaker updates this).
@@ -701,6 +705,7 @@ async def voice_socket(ws: WebSocket) -> None:
         tool_runner=tool_runner, session_id=session_id, conversation=conversation,
         caller_name=tool_runner.session_caller_name,
         caller_person=tool_runner.session_caller_ha_person,
+        channel=channel,
     )]
     # Keep the ref (not the instance) so provider swaps on Gemini reconnect
     # stay visible to /api/notify.
@@ -1157,6 +1162,7 @@ async def voice_socket(ws: WebSocket) -> None:
                             conversation=conversation,
                             caller_name=tool_runner.session_caller_name,
                             caller_person=tool_runner.session_caller_ha_person,
+                            channel=channel,
                         )
                         await new_provider.connect(resumption_handle=handle)
                         provider_ref[0] = new_provider

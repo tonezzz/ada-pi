@@ -127,7 +127,7 @@ class ChatSession:
     async def ensure(self) -> None:
         if self.ws is not None:
             return
-        url = f"{ADA_WS_URL}?api_key={_key_for_user(self.user_id)}"
+        url = f"{ADA_WS_URL}?api_key={_key_for_user(self.user_id)}&channel=line"
         self.ws = await websockets.connect(
             url, max_size=8 * 1024 * 1024, ping_interval=20)
         self._rx_task = asyncio.create_task(self._reader())

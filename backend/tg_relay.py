@@ -209,7 +209,7 @@ class ChatSession:
             return
         key = (_key_by_name(self.caller) if self.caller
                else _key_for_chat(self.chat_id))
-        url = f"{ADA_WS_URL}?api_key={key}"
+        url = f"{ADA_WS_URL}?api_key={key}&channel=telegram"
         self.ws = await websockets.connect(
             url, max_size=8 * 1024 * 1024, ping_interval=20)
         self._rx_task = asyncio.create_task(self._reader())
