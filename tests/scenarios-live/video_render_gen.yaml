@@ -1,0 +1,26 @@
+# Video render gen, live: text prompt -> ada_render_video -> playable
+# mp4 clip URL minted through the input-bridge /frame asset hop.
+# Asserts the tool is called and the result carries the /frame URL shape.
+# tier: manual — every run bills real Veo quota and takes ~1-3 minutes;
+# not for the hourly smoke sweep.
+name: video-render-gen
+tier: manual
+needs_tools: [ada_render_video]
+turns:
+  - user: "make a short video clip — a paper boat floating down a rainy
+          gutter at dusk, cinematic, 4 seconds"
+    expect:
+      response_nonempty: true
+      calls_any: [ada_render_video]
+      result_contains:
+        - "input-bridge/frame?"
+      response_contains_any:
+        - "video"
+        - "clip"
+        - "boat"
+        - "วิดีโอ"
+        - "เรือ"
+      # submit + bounded poll + download can run past 2 min on a slow
+      # render; a pending result still satisfies calls_any on the wire.
+      timeout_s: 240
+      settle_s: 5

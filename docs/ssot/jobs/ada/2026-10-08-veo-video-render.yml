@@ -1,0 +1,128 @@
+# SSOT Job: ada_render_video — Veo predictLongRunning drop-in tool
+# Card: veo-video-render (kanban). Dispatch
+# 20261008-152538-ada-render-video-prompt-ref-ur. Same 'render' tool
+# group as ada_render_image (card nano-banana-image, sibling dispatch
+# 20261006-111525 — merges independently; both generalize
+# traffic_camera.publish_relay with the same mime=/prefix= signature).
+
+title: ada_render_video — prompt/ref -> Veo predictLongRunning ->
+  relay asset URL, playable mp4 clip
+subtitle: tools.d drop-in; REST submit + bounded poll + download +
+  publish through the shared input-bridge /frame hop
+
+planning:
+  goal: |
+    ada_render_video(prompt, ref_url?, secs, aspect) renders a short
+    clip via Veo's REST predictLongRunning on generativelanguage —
+    async op, bounded ~120s poll until done, mp4 download, then the
+    same artifact->URL hop ada_render_image uses so the returned
+    video_url is a playable clip URL.
+  decisions: |
+    - Seat: tools.d drop-in (one file + manifest line), same group as
+      ada_render_image — no tool_runner/realtime_provider edits, per
+      the ada-tool-dev contract.
+    - Wire: POST {ADA_GEMINI_API_BASE}/v1beta/models/{model}:
+      predictLongRunning {instances:[{prompt, image?}],
+      parameters:{aspectRatio, durationSeconds}} -> {name}; poll GET
+      /v1beta/{name} until done -> response.generateVideoResponse.
+      generatedSamples[0].video.uri; download with x-goog-api-key +
+      redirect follow. Plain REST, not the genai SDK — same as the
+      image tool.
+    - Long-poll shape: bounded wait inside run() (card allows
+      "background task or bounded wait ~60-120s"): poll every
+      ADA_RENDER_VIDEO_POLL_S (6s) up to ADA_RENDER_VIDEO_WAIT_S
+      (120s). On timeout -> ok:false + pending + operation name, and
+      an operation= param resumes the same op without re-billing —
+      Veo can take 1-6 min, so a hard drop would strand paid renders.
+      Manifest timeout_s=220 covers wait+download+publish.
+    - Artifact: saved under ADA_RENDER_DIR (render-vid-*.mp4), then
+      traffic_camera.publish_relay(data, slug, 'video/mp4', 'render')
+      — literally shared code with the image tool's hop.
+    - Return shape: video_url (NOT image_url/cast_url/url — the tg/line
+      relays auto-fetch those fields and would upload an mp4 as a
+      broken photo; relay video delivery isn't implemented yet).
+      cast_to_screen(action='play', url=video_url) is the display path.
+    - aspect: Veo only does 16:9/9:16 (+ aliases); 'square' errors
+      honestly. secs: 4|6|8, default 8.
+    - KNOWN GAP (chaba-side, flagged): input-bridge GET /frame sniffs
+      only png/wav magic and labels everything else image/jpeg — the
+      mp4 clip serves 200 with correct bytes but a wrong content-type.
+      <video> elements sniff the container and play it; direct browser
+      nav shows broken-image. Proper fix: input-bridge stores the
+      declared data-URI mime (or sniffs ftyp) — a stacks/web card, out
+      of this worktree's scope.
+    - /api/tools unions tools.d names (same fix the sibling needed) so
+      scenario needs_tools gating sees drop-ins.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-08"
+  steps:
+    - id: 1
+      label: "tool module + manifest"
+      status: done
+      notes: "backend/tools.d/ada_render_video.py + manifest entry
+        (read, secondary_allowed=false, timeout_s=220). prompt or
+        operation required; ref_url three shapes via shared
+        document_check engine; honest ok:false throughout."
+    - id: 2
+      label: "shared publish hop"
+      status: done
+      notes: "traffic_camera.publish_relay(jpeg, slug, mime, prefix):
+        backwards-compatible generalization identical to the sibling
+        render branch — merges clean. Video publishes
+        render:<slug>-<ts> as video/mp4."
+    - id: 3
+      label: "surface bookkeeping"
+      status: done
+      notes: "ssot.tool-surface.yml count_cap 108->109;
+        tool_guide.yml ada_render_video entry (pending/resume contract);
+        .env.example documents ADA_RENDER_VIDEO_MODEL/WAIT_S/POLL_S,
+        ADA_RENDER_DIR, ADA_SELF_URL; /api/tools unions tools.d."
+    - id: 4
+      label: "scenarios + tests"
+      status: done
+      notes: "tests/scenarios-live/video_render_gen.yaml — tier
+        manual (billed quota + 1-3min renders, not hourly smoke),
+        needs_tools-gated, calls_any + result_contains
+        'input-bridge/frame?'. tests/test_render_video.py: 22 tests."
+
+invoke:
+  commands:
+    - "python3 -m pytest tests/test_render_video.py -x -q"
+    - "python3 scripts/tool-lint.py"
+    - "python3 scripts/scenario-live.py tests/scenarios-live/video_render_gen.yaml --url ws://<host>:8003/ws --api-key $ADA_API_KEY -v"
+
+verification:
+  - "tests/test_render_video.py: 22/22 — stubbed submit/poll/download/
+    publish; request shape, aspect/secs map, ref intake-key+http
+    resolution, operation resume, pending timeout, op error, filtered
+    reasons, download/publish failures, manifest wiring"
+  - "tool-lint.py: clean — 43 declared (37 builtin + 6 tools.d), cap
+    109, ada_render_video scenario-covered"
+  - "related suites: test_tools_loader + test_traffic_camera —
+    36/36 pass with the publish_relay signature change"
+  - "live publish hop verified on tony-omen: run() with stubbed Veo
+    calls minted https://tony-dell.../api/input-bridge/frame?screen=0&
+    token=render:… — GET returns 200 with the mp4 bytes (ftyp intact)"
+  - "live Veo call NOT exercised here: both GEMINI_API_KEYs on
+    tony-omen return 401 invalid-credentials (expired keys, same env
+    gap the image card hit with 429s). The billed idc03 ada-ha-* key
+    exercises the happy path via the manual video-render-gen scenario
+    post-deploy."
+  - "content-type caveat: /frame serves the clip labelled image/jpeg
+    (input-bridge only sniffs png/wav) — <video> tags play it, direct
+    nav doesn't. Follow-up suggested: honor declared mime or sniff
+    ftyp in chaba stacks/web/input-bridge."
+
+followups:
+  - "input-bridge: store+serve the declared data-URI mime (or ftyp
+    sniff -> video/mp4) so clip URLs are playable on direct nav too"
+  - "tg_relay/line_relay: video delivery (sendVideo / LINE video
+    message) — today only image/* fields are auto-attached, which is
+    why the result exposes video_url not image_url/cast_url"
+  - "merge order note: ada_render_image lives on sibling branch
+    dispatch/20261006-111525 — both add the same publish_relay params
+    (clean merge); whoever lands second also adds /api/documents/
+    {key}/image (image tool only)"

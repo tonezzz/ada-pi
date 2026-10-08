@@ -217,20 +217,25 @@ def snap(cam: dict, timeout: float = 20) -> tuple[bytes, str]:
     raise ValueError("camera returned no usable frame (may be offline)")
 
 
-def publish_relay(jpeg: bytes, slug: str) -> str | None:
-    """POST the frame as a screen-0 relay asset; returns cast URL."""
+def publish_relay(jpeg: bytes, slug: str, mime: str = "image/jpeg",
+                  prefix: str = "traffic") -> str | None:
+    """POST bytes as a screen-0 relay asset; returns the public
+    cast URL. This is the shared asset hop — camera frames and rendered
+    media (ada_render_image / ada_render_video, prefix='render') land on
+    the same /frame?screen=0&token= URL shape the LINE/Telegram relays
+    fetch."""
     base = os.environ.get(
         "VCAST_API", "https://tony-dell.taila0626a.ts.net/api/input-bridge")
     pub = os.environ.get(
         "VCAST_PUBLIC_API",
         "https://tony-dell.taila0626a.ts.net/api/input-bridge")
-    token = f"traffic:{slug}-{int(time.time())}"
+    token = f"{prefix}:{slug}-{int(time.time())}"
     try:
         req = urllib.request.Request(
             base + "/frame",
             data=json.dumps({
                 "screen": 0, "token": token,
-                "data": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode(),
+                "data": f"data:{mime};base64," + base64.b64encode(jpeg).decode(),
                 "state": "asset"}).encode(),
             headers={"Content-Type": "application/json"})
         urllib.request.urlopen(req, timeout=10)
