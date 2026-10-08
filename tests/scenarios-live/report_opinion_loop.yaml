@@ -40,7 +40,7 @@ turns:
   # landing spot: the first live run (pre-§3b deploy) passed a bare
   # calls_any while Ada posted to report-loop-ada-opinion by title match
   # — a write to the wrong card is a broken loop, not a pass.
-  - user: "Post that opinion on the kanban card linked to that report"
+  - user: "Post that opinion to the linked kanban card now — use ada_board_write to comment it"
     expect:
       calls_any: [ada_board_write]
       call_args_contain:
