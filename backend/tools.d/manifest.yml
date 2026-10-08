@@ -21,7 +21,7 @@ tools:
     module: ada_track_device
     policy: owner_only
     secondary_allowed: false
-    timeout_s: 20
+    timeout_s: 30
   ada_device_acl:
     module: ada_device_acl
     policy: owner_only

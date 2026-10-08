@@ -1,0 +1,168 @@
+name: device-track-merge
+instance: tony
+# Card device-tracking: "Ada, where is my <device>" answers with
+# last-seen location + freshness + battery merged from HA trackers,
+# the device-telemetry beacon, tailnet, and the LAN scan digest.
+persons:
+  - {entity_id: person.tony, name: Tony}
+banks:
+  banks:
+    personal:
+      title: Personal
+      scope: instance
+      instances: [tony]
+      mddb_collection: ada-ha-bank-personal-{instance}
+      kinds: [fact, note]
+      writable: true
+      write_policy: confirmed
+      allowed_tools: [ada_remember]
+      status: active
+  person_policies:
+    person.tony: {full: true}
+env:
+  # tailscale status --json — iOS nodes report HostName 'localhost'; the
+  # merge must key on DNSName (iphone-15), never HostName.
+  ADA_TRACK_TAILSCALE_JSON: '{"Self":{"DNSName":"tony-dell.taila0626a.ts.net.","HostName":"tony-dell","Online":true,"TailscaleIPs":["100.68.142.13"],"LastSeen":"0001-01-01T00:00:00Z","OS":"linux"},"Peer":{"p1":{"DNSName":"iphone-15.taila0626a.ts.net.","HostName":"localhost","Online":true,"TailscaleIPs":["100.85.88.100"],"LastSeen":"0001-01-01T00:00:00Z","OS":"iOS"},"p2":{"DNSName":"tony-ipad.taila0626a.ts.net.","HostName":"localhost","Online":false,"TailscaleIPs":["100.119.138.61"],"LastSeen":"__NOWISO_M_3600__","OS":"iOS"},"p3":{"DNSName":"tony-omen.taila0626a.ts.net.","HostName":"tony-omen","Online":true,"TailscaleIPs":["100.75.102.88"],"LastSeen":"0001-01-01T00:00:00Z","OS":"linux"}}}'
+  # LAN digest — iphone-15's row carries only its registry MAC (phones
+  # often publish no hostname), proving the MAC-registry match path.
+  ADA_TRACK_LANSCAN_JSON: '{"discovered_at":"__NOWISO_M_120__","network":"192.168.2.0/24","hosts":[{"ip":"192.168.2.70","mac":null,"hostname":"tony-omen","vendor":"Intel Corporate","source":"nmap"},{"ip":"192.168.2.88","mac":"f2:10:aa:bb:cc:dd","hostname":null,"vendor":"Apple, Inc.","source":"arp"}]}'
+  ADA_TRACK_PUSH_DRYRUN: "1"
+ha_raw_states:
+  - entity_id: device_tracker.tony_ip
+    state: home
+    last_changed: "__NOWISO_M_120__"
+    last_updated: "__NOWISO_M_120__"
+    attributes:
+      friendly_name: TONY-IP
+      source_type: gps
+      latitude: 13.6107
+      longitude: 100.7173
+      gps_accuracy: 8.5
+      battery_level: 80
+  - entity_id: sensor.tony_ip_battery_level
+    state: "55"
+    last_changed: "__NOWISO_M_60__"
+    attributes: {friendly_name: TONY-IP Battery Level, device_class: battery}
+  - entity_id: sensor.tony_ip_battery_state
+    state: Not Charging
+    last_changed: "__NOWISO_M_60__"
+  - entity_id: sensor.tony_ip_ssid
+    state: TONY-WIFI_2.4G
+    last_changed: "__NOWISO_M_60__"
+  - entity_id: sensor.tony_ip_geocoded_location
+    state: "304/72 Moo 12, Bang Phli District, Thailand"
+    last_changed: "__NOWISO_M_60__"
+  - entity_id: person.tony
+    state: home
+    last_changed: "__NOWISO_M_300__"
+    attributes:
+      friendly_name: Tony
+      device_trackers: [device_tracker.tony_ip]
+ha_logbook:
+  device_tracker.tony_ip:
+    - {when: __NOW_M_7200__, name: TONY-IP, message: "was detected away", entity_id: device_tracker.tony_ip}
+    - {when: __NOW_M_3600__, name: TONY-IP, message: "was detected at home", entity_id: device_tracker.tony_ip}
+seed:
+  # Beacon: tony-omen phoned home 5min ago; one history row 10min ago.
+  - collection: device-telemetry
+    key: tony-omen/latest
+    text: '{"device":"tony-omen","ts":__NOW_M_300__,"wan":{"ip":"58.8.117.102","city":"Bang Phli","region":"Samut Prakan","country":"TH","loc":"13.6068,100.7120"},"battery":{"pct":50,"status":"Not charging"},"users":["tony"],"top_procs":["python","chrome"]}'
+    meta: {device: [tony-omen], kind: [telemetry], ts: ["__NOW_M_300__"]}
+  - collection: device-telemetry
+    key: tony-omen/__NOW_M_600__
+    text: '{"device":"tony-omen","ts":__NOW_M_600__,"wan":{"ip":"58.8.117.102","city":"Bang Phli","country":"TH"}}'
+    meta: {device: [tony-omen], kind: [telemetry], ts: ["__NOW_M_600__"]}
+  # MAC registry doc — same markdown-wrapped-yaml shape sync-ssot-to-mddb
+  # writes; iphone-15's MAC is how the LAN scan row resolves.
+  - collection: infrastructure-ssot
+    key: infrastructure-ssot.mac-address-registry.tony
+    text: |
+      # Tony MAC Address Registry
+
+      ```yaml
+      config:
+        mac_registry:
+          - device_id: tony-omen
+            local_ids: {hostname: tony-omen}
+            interfaces:
+              - {interface_id: eno1, mac: "b0:22:7a:f0:73:cd", status: active}
+          - device_id: iphone-15
+            local_ids: {hostname: TONY-IP}
+            interfaces:
+              - {interface_id: wlan0, mac: "f2:10:aa:bb:cc:dd", status: active}
+      ```
+steps:
+  - set: {session_owner_identity: person.tony}
+
+  # Fleet: canon names merged from every source — iphone-15 resolves
+  # from the DNSName despite HostName 'localhost'.
+  - tool: ada_track_device
+    args: {action: list}
+    expect:
+      no_error: true
+      output_contains: ["iphone-15", "tony-omen", "tony-ipad"]
+      output_not_contains: ["localhost"]
+
+  # HA GPS fix wins — fresh, high confidence, battery + wifi corroborate.
+  - tool: ada_track_device
+    args: {device: iphone-15}
+    expect:
+      no_error: true
+      output_contains: ["gps", "home", "high", "battery", "tailnet online",
+                        "on LAN at 192.168.2.88"]
+      output_not_contains: ["STALE"]
+
+  # The freshest battery reading wins — the companion sensor (55%,
+  # 1min ago) beats the tracker attribute (80%, 2min ago).
+  - tool: ada_track_device
+    args: {device: iphone-15}
+    expect: {output_contains: ["battery 55%"]}
+
+  # Beacon host: city geo + LAN presence + tailnet online merge.
+  - tool: ada_track_device
+    args: {device: tony-omen}
+    expect:
+      no_error: true
+      output_contains: ["home LAN", "tailnet online", "Bang Phli",
+                        "battery 50%"]
+
+  # Offline tailnet-only device degrades honestly: last-seen, low conf.
+  - tool: ada_track_device
+    args: {device: tony-ipad}
+    expect:
+      no_error: true
+      output_contains: ["last-seen", "STALE", "low"]
+
+  # History: beacon keys + HA logbook for the matched tracker.
+  - tool: ada_track_device
+    args: {device: tony-omen, action: history}
+    expect:
+      no_error: true
+      output_contains: ["tony-omen/"]
+  - tool: ada_track_device
+    args: {device: iphone-15, action: history}
+    expect:
+      no_error: true
+      output_contains: ["was detected at home"]
+
+  # Lost-mode: arm, list armed, disarm.
+  - tool: ada_track_device
+    args: {device: iphone-15, action: lost, interval_s: 60, channel: line}
+    expect:
+      no_error: true
+      output_contains: ["armed", "iphone-15"]
+  - tool: ada_track_device
+    args: {action: watches}
+    expect:
+      no_error: true
+      output_contains: ["iphone-15"]
+  - tool: ada_track_device
+    args: {device: iphone-15, action: found}
+    expect:
+      no_error: true
+      output_contains: ["iphone-15"]
+
+  # Unknown device errors helpfully.
+  - tool: ada_track_device
+    args: {device: "smart-fridge"}
+    expect: {error_contains: "no device matching"}

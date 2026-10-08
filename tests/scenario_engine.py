@@ -41,7 +41,7 @@ import re
 import tempfile
 import time
 import unittest.mock
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -312,7 +312,21 @@ def check_expect(result: Any, expect: dict[str, Any]) -> list[str]:
 
 async def run_scenario(path: str | Path) -> dict[str, Any]:
     """Execute one scenario file offline; returns a report dict."""
-    data = yaml.safe_load(Path(path).read_text())
+    raw_text = Path(path).read_text()
+    # `__NOW__`/`__NOW_M_<secs>__` placeholders inline the current epoch —
+    # freshness-sensitive fixtures (beacon ts, tracker last_changed ISO
+    # is covered by __NOWISO__/variants below) need 'now', not literals.
+    now_i = int(time.time())
+    raw_text = re.sub(r"__NOW_M_(\d+)__",
+                      lambda m: str(now_i - int(m.group(1))), raw_text)
+    raw_text = raw_text.replace("__NOW__", str(now_i))
+    now_dt = datetime.now(timezone.utc)
+    raw_text = re.sub(
+        r"__NOWISO_M_(\d+)__",
+        lambda m: (now_dt - timedelta(
+            seconds=int(m.group(1)))).isoformat(), raw_text)
+    raw_text = raw_text.replace("__NOWISO__", now_dt.isoformat())
+    data = yaml.safe_load(raw_text)
     instance = str(data.get("instance") or "test")
     registry = build_registry(instance, data.get("banks"))
     fake = FakeMddb()
@@ -373,6 +387,19 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
                 return dict(st)
             return {"entity_id": entity_id, "state": "unknown"}
         runner.context.ha_client.get_state = _get_state
+    # `ha_raw_states:` full /api/states list — stubs ha_client._states()
+    # for tools that enumerate entities (device_tracker.*, sensors).
+    if "ha_raw_states" in data:
+        raw_states = list(data.get("ha_raw_states") or [])
+        runner.context.ha_client._states = unittest.mock.AsyncMock(
+            return_value=raw_states)
+    # `ha_logbook:` {entity_id: [entries]} — stubs ha_client.logbook.
+    if "ha_logbook" in data:
+        lb_map = dict(data.get("ha_logbook") or {})
+
+        async def _logbook(entity_id=None, hours=24, end=None):
+            return list(lb_map.get(str(entity_id)) or [])
+        runner.context.ha_client.logbook = _logbook
     # `ha_tv_action:` return value for ha_client.tv_action (the
     # cast-browser body).
     if "ha_tv_action" in data:
