@@ -1,0 +1,139 @@
+# SSOT Job: device fleet tracking — lost-device locate via existing sources
+# Card: device-tracking (chaba kanban). Dispatch
+# 20261008-062046-device-fleet-tracking-lost-dev.
+
+title: ada_track_device — multi-source lost-device locate (HA companion + beacon + tailnet + LAN scan + HA logbook)
+
+context:
+  card: |
+    Kanban 'device-tracking': answer "where is my <device>" by merging
+    sources that already exist — HA companion-app device_tracker entities
+    (GPS + battery + charging), the device-telemetry MDDB beacon (WAN geo
+    + battery + users + top procs), tailscale node table (online /
+    last-seen / endpoint IP), the chaba LAN-scan digest served from HA
+    /local/, and HA logbook for location history. Lost-mode: volatile
+    in-process watcher polling on a timer, pushing deltas to LINE/TG via
+    the existing relay /send endpoints. Optional GEV pin via
+    gev_command annotate_map. Explicit caveats: iOS has no app-usage
+    sensor (last_used_app is Android-only — not surfaced); tailnet
+    last-seen is aliveness evidence, NOT a location.
+  prior_state: |
+    backend/tools.d/ada_track_device.py already existed as a beacon +
+    tailscale merge from an earlier session. This job rewrote it into the
+    full multi-source layer the card asks for.
+
+changes:
+  - file: backend/tools.d/ada_track_device.py
+    what: |
+      Rewritten (~960 lines). One canonical namespace (_canon: lowercase,
+      punct->'-', plus an explicit alias table — iphone|tony_ip|iphone15
+      -> iphone-15, ipad-2|kks-ipad -> kk-ipad, homeassistant -> michael-ha,
+      tony-mn -> mn01, etc; 'my X'/'the X' prefixes stripped in _match).
+      Sources merged per device:
+        1. HA /api/states -> _ha_fleet(): device_tracker.* (state, lat/lon,
+           gps_accuracy, battery_level attr), person.<p>.device_trackers
+           links (person state joins the sighting), companion sensor suite
+           sensor.<slug>_{battery_level,battery_state,ssid,bssid,
+           geocoded_location,last_update_trigger} +
+           binary_sensor.<slug>_charging — freshest companion ts is used
+           for the wifi/battery signals.
+        2. device-telemetry beacon: point-read <dev>/latest (never relies
+           on search ordering — 'latest' falls out of the window). Tries
+           canon + every alias spelling. WAN geo -> kind 'city', battery,
+           users, top_procs.
+        3. tailscale status --json keyed on DNSName — HostName is
+           'localhost' on iOS nodes and must never be the key. online ->
+           kind 'online'; offline LastSeen -> kind 'last-seen' (confidence
+           'low' always — aliveness, not a location).
+        4. LAN scan <ha_base>/local/ha/network-scan-latest.json ->
+           presence -> kind 'home'. Device match by registry MAC first
+           (mddb infrastructure-ssot doc
+           'infrastructure-ssot.mac-address-registry.tony', yaml fenced
+           block) then hostname; 'discovered-*' registry rows are excluded
+           from the fleet pool so unknown MACs can't pollute it. A fresh
+           scan with no hit surfaces as sources.lan.present=false.
+        5. HA logbook -> action='history' returns beacon keys +
+           ha_logbook entries for the matched tracker entity.
+      Merge (_describe): sightings ranked gps(4) > home/zone/wifi(3) >
+      city(2) > online/last-seen(1), freshest wins inside a rank. Every
+      source block carries ts + human age. Confidence: high = fresh
+      gps/home/zone/wifi; medium = fresh city|online or <2h evidence;
+      low = stale, and last-seen is ALWAYS low. >15min staleness appends
+      'STALE — not a live fix' to the summary; unknown/zero timestamps
+      (0001-01-01 tailscale epoch) are never treated as fresh.
+      actions: where (default), list, history, lost (arm watcher),
+      found (disarm), watches. Lost-mode: in-process asyncio loop —
+      re-merge every interval_s (default 300, min 60), push to relay
+      /send (LINE :8912 / TG :8911, env-overridable) only when the
+      fingerprint changes (loc kind/place, GPS rounded to ~100m, online
+      flags, battery 20%-buckets, charging). Lifetime default 12h; dies
+      with the backend — volatile by design, not a daemon. gev_pin=true
+      -> runner.gev_command(annotate_map) with {latitude,longitude,label}
+      pin when coords exist. Fixture env for tests/debug:
+      ADA_TRACK_TAILSCALE_JSON, ADA_TRACK_LANSCAN_JSON,
+      ADA_TRACK_LANSCAN_URL, ADA_TRACK_MDBB, ADA_TRACK_PUSH_DRYRUN.
+      iOS note kept honest: no app-usage signal is claimed; 'what was it
+      doing' only answers for beaconed hosts via top_procs.
+  - file: backend/tools.d/manifest.yml
+    what: timeout_s 20 -> 30 (optional gev_pin relay call can be slow).
+  - file: tests/scenario_engine.py
+    what: |
+      New fixtures: ha_raw_states stubs ha_client._states() (full
+      /api/states list for tools that enumerate entities); ha_logbook
+      stubs ha_client.logbook() ({entity_id: [entries]} map). Time
+      placeholders __NOW__, __NOW_M_<secs>__, __NOWISO__,
+      __NOWISO_M_<secs>__ are expanded before yaml parse so freshness-
+      sensitive scenarios don't hardcode timestamps.
+  - file: tests/scenarios/device_track_merge.yaml
+    what: |
+      Offline scenario: multi-source merge, alias folding, LAN MAC match
+      via the registry doc, 'discovered-*' exclusion, history action,
+      lost/found arm-disarm, fresh-vs-stale confidence assertions.
+  - file: tests/test_track_device.py
+    what: |
+      14 unit tests: _ha_fleet extraction + companion join, alias fold
+      (kk_ipad_2 -> kk-ipad), unknown tracker retention, confidence
+      ladder incl. last-seen-always-low, freshest-battery selection,
+      no-telemetry 'never phoned home', lost-mode arm/loop/disarm with
+      ADA_TRACK_PUSH_DRYRUN push capture.
+
+verify:
+  - .venv/bin/python -m pytest tests/test_track_device.py -q   # 14 passed
+  - .venv/bin/python -m pytest tests -q                        # 39 passed
+  - live smoke (tony-dell, real HA + tailnet + idc03 beacon):
+    where tony-omen -> 'home LAN; as of 13min ago; battery 50%
+      (Not charging); tailnet online; on LAN at 192.168.2.84' (beacon
+      Bang Phli WAN geo + users + procs merged; MAC matched via registry)
+    where iphone-15 -> GPS '304/72 Moo 12 (GPS ±8m); as of 9h ago;
+      battery 55% (Not Charging); tailnet online; STALE — not a live fix'
+    where 'my ipad' -> tony-ipad; 'ipad-2' -> kk-ipad
+    list -> 14-device fleet, per-device confidence + age
+
+enrollment_status: |
+  Live HA /api/states (tony-ha, 2026-10-08):
+    device_tracker.tony_ip (iphone-15) — enrolled + reporting: home, GPS
+      attrs, battery_level sensor, ssid sensor, geocoded, update_trigger
+      'Periodic'. Apple Watch tracker exists (device_tracker
+      .tony_ip_apple_watch) but state 'unknown' since 2026-10-07.
+    sensor.tony_omen_battery_level + sensor.kk_macbook_battery_level —
+      entities exist but state 'unknown': companion app registered on
+      both hosts, sensors not flowing (app not running / not enrolled
+      fully). Worth a glance on each device if battery via HA is wanted —
+      the beacon already covers tony-omen.
+    tony-ipad / kk-ipad — NO HA entities at all: iPads are reachable via
+      tailnet + LAN scan only. Companion app install + location
+      permission on the iPads is the gap to close for real GPS on them.
+
+notes: |
+  - HA logbook on tony-ha times out (>20s) for period>=1d — recorder is
+    slow; tool degrades to [] within the client's 5s timeout. Check on
+    michael-ha before expecting history output in prod.
+  - _ha_states uses ha_client._states() (private, but it is the same call
+    backend/tool_runner/ha.py makes — established pattern).
+  - runner.context.ha_client / runner.mddb / runner.gev_command are the
+    shared ToolRunner surfaces the loader contract exposes.
+  - ADA_TRACK_MDBB keeps the beacon-store override name used by the
+    prior beacon implementation (double-B matches DEVICE_TELEMETRY_MDBB
+    in the beacon sender); MDDB_BASE_URL is the general fallback.
+  - No deploy: worktree only. Prod picks this up on the next
+    deploy-ada.sh on idc03.
