@@ -466,6 +466,20 @@ ada_track_device: >-
   <city>' when stale, never narrate a live fix. A 'no device
   matching' miss is honest — offer action='list'.
 
+ada_render_video: >-
+  prompt= is the full assembled scene description (subject, motion,
+  style, audio cues) — ask at most one clarifying question, then render;
+  never speak param names. ref_url= animates a source image instead of
+  generating fresh: pass the 'doc/...' intake key from a [document
+  uploaded] note, a /api/documents/... path, or any fetchable image URL.
+  secs= is 4|6|8 (default 8); aspect= is landscape (16:9, default) or
+  portrait (9:16) — Veo has no square. Renders take ~1-2 minutes — say
+  it's cooking, don't repeat the call. A pending result carries
+  operation= — call again WITH that operation to keep waiting (no new
+  render is billed), never resubmit the same prompt. The result's
+  video_url is the playable mp4; cast_to_screen(action='play',
+  url=video_url) shows it on a display; 'file' is the local artifact.
+
 ada_market_quote: >-
   kind='fx' needs currency= (3-letter, USD base — 'THB' for dollar-baht,
   24 supported). 'gold' returns BOTH thai_gold_bar (GTA fixing, THB per

@@ -46,3 +46,14 @@ tools:
     policy: read
     secondary_allowed: true
     timeout_s: 20
+  # veo-video-render (2026-10-08): text/image-to-video via Veo
+  # predictLongRunning — submit + bounded ~120s poll + download + relay
+  # publish. 'read' policy matches ada_render_image (outbound artifact
+  # to own infra, each call is a billed render); the 220s budget covers
+  # the poll window + mp4 download + publish. A render that outlives the
+  # poll returns pending + operation= for a no-rebill resume.
+  ada_render_video:
+    module: ada_render_video
+    policy: read
+    secondary_allowed: false
+    timeout_s: 220

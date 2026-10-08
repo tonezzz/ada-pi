@@ -1884,12 +1884,15 @@ async def decision_history(request: Request, limit: int = 20) -> dict:
 async def list_tools(request: Request) -> dict:
     """List the tool names available via /api/tools/call."""
     _require_api_key(request)
-    return {
-        "tools": [
-            name for name in dir(tool_runner)
-            if not name.startswith("_") and name != "execute" and callable(getattr(tool_runner, name, None))
-        ]
-    }
+    from backend import tools_loader
+    names = [
+        name for name in dir(tool_runner)
+        if not name.startswith("_") and name != "execute" and callable(getattr(tool_runner, name, None))
+    ]
+    # tools.d drop-ins dispatch through execute() too — list them so
+    # scenario needs_tools gating sees the real surface.
+    names += sorted(tools_loader.registry().tools)
+    return {"tools": names}
 
 
 @app.post("/api/tools/call")
