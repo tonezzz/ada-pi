@@ -1,0 +1,44 @@
+name: device-acl
+# Live scenario — ada_device_acl (owner_only drop-in).
+#
+# What it verifies:
+#   - NL route: "who can control what" / "list device permissions"
+#     -> ada_device_acl(action=list)
+#   - owner path works (admin key -> person.tony)
+#   - a grant for a junk entity on a scratch identity lands honestly —
+#     then is revoked in the same turn chain (self-cleaning)
+#
+# Requires: admin api key (identity person.tony — tool is owner_only).
+#
+# Run on idc03:
+#   python3 scripts/scenario-live.py tests/scenarios-live/device_acl.yaml \
+#     --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+#
+# tier: smoke — read + reversible grant on a scratch identity.
+tier: smoke
+
+turns:
+  - user: "Show me the device access list — who can control what."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: [ada_device_acl]
+
+  - user: "Grant light.test_scratch_acl to the identity 'user-scratch'."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: [ada_device_acl]
+      result_contains_any: ["grant", "user-scratch", "test_scratch_acl"]
+      no_failed_result: [ada_device_acl]
+
+  - user: "Revoke that grant again."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: [ada_device_acl]
+      result_contains_any: ["revok", "removed", "test_scratch_acl"]
+      no_failed_result: [ada_device_acl]

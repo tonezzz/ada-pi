@@ -454,6 +454,15 @@ ada_board_write: >-
   requests — report=<slug> instead returns the card whose report:
   field links that CMS page.
 
+ada_track_device: >-
+  action='where' (default) locates one device — device= is fuzzy
+  ('omen' -> tony-omen); 'list' returns the whole fleet; 'history'
+  recent sightings. The beacon posts WAN geo + battery + logged-in
+  users every 5min; devices without a beacon fall back to tailnet
+  online/last-seen. Every answer carries age — say 'last seen X ago
+  in <city>' and flag stale:true, never narrate it as a live fix. A
+  'no device matching' miss is honest — offer action='list'.
+
 ada_market_quote: >-
   kind='fx' needs currency= (3-letter, USD base — 'THB' for dollar-baht,
   24 supported). 'gold' returns BOTH thai_gold_bar (GTA fixing, THB per
