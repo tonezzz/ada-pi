@@ -593,11 +593,37 @@ async def memory_search(
     When *person_entity* is set (speaker ID active), the default 'personal'
     bank is swapped for the speaker's person-scoped bank (e.g. personal-kk)
     in both single-bank and bank='all' modes, so personal memory never
-    crosses person boundaries."""
+    crosses person boundaries.
+
+    A comma-separated bank list ('people,general') fans out over just
+    that subset — the routed-hint path for the bank-router specialist
+    (card nest-bank-router): same parallel search, same merge, but only
+    over the banks the router predicted."""
     q = str(query or "").strip()
     t_start = time.perf_counter()
-    if str(bank).lower() in ("all", "*"):
+    bank_spec = str(bank).strip()
+    wanted = [w.strip() for w in bank_spec.split(",") if w.strip()]
+    if bank_spec.lower() in ("all", "*") or len(wanted) > 1:
+        fanout_all = bank_spec.lower() in ("all", "*")
         banks = list(registry.banks_for_person(person_entity).values())
+        if not fanout_all:
+            # Routed subset: resolve 'personal' to the speaker's scoped
+            # bank the same way the single-bank path does, then keep only
+            # banks the caller asked for. Unknown names are a caller bug —
+            # say so rather than silently widening to 'all'.
+            names = {b.name for b in banks}
+            resolved = {
+                registry.personal_bank_name(person_entity)
+                if w == "personal" and person_entity else w
+                for w in wanted
+            }
+            unknown = resolved - names
+            if unknown:
+                raise ValueError(
+                    f"unknown memory bank(s): {sorted(unknown)}")
+            banks = [b for b in banks if b.name in resolved]
+            for b in banks:
+                _check_bank_allowed(registry, b.name, person_entity)
         results = await asyncio.gather(
             *(
                 _timed_bank_docs(mddb, b, q, limit, include_inactive)
@@ -635,10 +661,10 @@ async def memory_search(
                   reverse=True)
         hits = hits[: int(limit)]
         _log_search_timing(
-            "all", len(banks), per_bank_ms,
+            bank_spec if not fanout_all else "all", len(banks), per_bank_ms,
             time.perf_counter() - t_start, hits, degraded)
         return {
-            "bank": "all",
+            "bank": "all" if fanout_all else bank_spec,
             "count": len(hits),
             "hits": hits,
             "degraded": degraded,
