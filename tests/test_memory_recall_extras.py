@@ -9,6 +9,7 @@
 - ConversationMemory shared across provider reconnects
 """
 
+import asyncio
 import os
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -206,6 +207,80 @@ class ArchivalDumpShapeTests(unittest.TestCase):
         self.assertFalse(_is_archival_dump(
             {"content": "a curated report", "kind": "report",
              "key": "devin/report/2026-10-07-x"}))
+
+
+class AllMergeDemotionTests(unittest.IsolatedAsyncioTestCase):
+    """liam-e2e fallout (card ada-cms-discovery-fixes, 2026-10-08): devin/*
+    session dumps once filled every bank='all' hit slot by sheer size —
+    they must sort below real memory hits regardless of score, while an
+    explicit bank search still returns them unfiltered."""
+
+    BANKS = {
+        "banks": {
+            "general": {
+                "scope": "shared", "instances": ["tony"],
+                "mddb_collection": "ada-ha-bank-general",
+                "kinds": ["fact", "note"], "writable": True,
+                "status": "active",
+            },
+            "devin": {
+                "scope": "instance", "instances": ["tony"],
+                "mddb_collection": "ada-ha-bank-devin-tony",
+                "kinds": ["session-summary", "report"],
+                "writable": False, "status": "active",
+            },
+        }
+    }
+
+    async def _seed(self):
+        fake = FakeMddb()
+        await fake.add_document(
+            "ada-ha-bank-devin-tony", "devin/session-summary/2026-10-07-dub",
+            "en",
+            "Dispatch session dump: worked on the liam dub pipeline, "
+            "liam dub scenario, dub metrics — full transcript follows.",
+            {"status": ["active"], "kind": ["session-summary"],
+             "source": ["devin"]})
+        await fake.add_document(
+            "ada-ha-bank-devin-tony", "devin/report/2026-10-07-outcome",
+            "en",
+            "Outcome report mentioning liam dub too.",
+            {"status": ["active"], "kind": ["report"],
+             "source": ["devin"]})
+        # The real memory: only ONE query token present -> lower vector
+        # score than the dumps. Without demotion it sorts below them.
+        await fake.add_document(
+            "ada-ha-bank-general", "general/liam-fact", "en",
+            "Liam's interview clip is the Gallagher one.",
+            {"status": ["active"], "kind": ["fact"]})
+        return fake
+
+    async def test_all_merge_demotes_devin_dumps(self):
+        fake = await self._seed()
+        reg = build_registry("tony", self.BANKS)
+        res = await memory_ops.memory_search(
+            fake, reg, "all", "liam dub", limit=5)
+        hits = res["hits"]
+        self.assertGreaterEqual(len(hits), 2)
+        # The lower-scoring real memory leads; devin dumps follow, tagged.
+        self.assertEqual(hits[0]["key"], "general/liam-fact")
+        devin_hits = [h for h in hits
+                      if str(h.get("key") or "").startswith("devin/")]
+        self.assertTrue(devin_hits)
+        self.assertTrue(all(h.get("archive") for h in devin_hits))
+        self.assertGreater(hits.index(devin_hits[0]),
+                           hits.index(hits[0]))
+        await asyncio.sleep(0)  # flush record_use bookkeeping tasks
+
+    async def test_named_bank_search_unfiltered(self):
+        fake = await self._seed()
+        reg = build_registry("tony", self.BANKS)
+        res = await memory_ops.memory_search(
+            fake, reg, "devin", "liam dub", limit=5)
+        keys = [h["key"] for h in res["hits"]]
+        self.assertIn("devin/session-summary/2026-10-07-dub", keys)
+        self.assertFalse(any(h.get("archive") for h in res["hits"]))
+        await asyncio.sleep(0)
 
 
 class DraftVisibilityTests(unittest.IsolatedAsyncioTestCase):

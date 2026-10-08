@@ -369,13 +369,15 @@ tasks: >-
 
 cms_read: >-
   'list' every page and report's slug/kind/title/format/updated, most
-  recently updated first (limit= default 50 — raise it for the long
-  tail; reports like cached-videos-report are included); 'get' one
-  page's content by key=slug (+lang=en|th) — works for any slug you
-  know even when 'list' truncates; read before updating; 'verify'
-  re-reads and checks the content parses for its format — call after
-  publishing since you cannot see the rendered site. Video/dub/cached
-  asks -> 'get' 'cached-videos-report' (every playable clip) or
+  recently updated first (limit= default 50 — a recency window, not the
+  whole collection; reports like cached-videos-report are included);
+  'search' finds pages by query= over slug/title/summary — use it for
+  'does a page about X exist' instead of paging list; 'get' one page's
+  content by key=slug (+lang=en|th) — works for any slug you know even
+  when 'list' truncates; read before updating; 'verify' re-reads and
+  checks the content parses for its format — call after publishing
+  since you cannot see the rendered site. Video/dub/cached asks ->
+  'get' 'cached-videos-report' (every playable clip) or
   'voice-dub-demos' (demos + cast recipe). Absorbs cms_list_pages,
   cms_get_page, cms_verify_page.
 

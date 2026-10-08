@@ -3,6 +3,7 @@ import os
 import re
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch, ANY
@@ -825,6 +826,171 @@ class CmsMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(PermissionError):
             await self.runner.execute(
                 "cms_edit", {"action": "delete", "slug": "x"})
+
+
+class CmsDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    """liam-e2e fallout (card ada-cms-discovery-fixes, 2026-10-08):
+    action='list' is newest-first over a wide fetch window, action=
+    'search' finds pages by slug/title/summary, and the reports index
+    dedupes lang variants + caps each domain."""
+
+    def _cms_doc(self, slug, title, updated, lang="en", domain="",
+                 summary="", status="active", kind="page"):
+        return {
+            "key": slug, "lang": lang, "contentMd": f"# {title}",
+            "meta": {
+                "kind": [kind], "slug": [slug], "title": [title],
+                "status": [status], "updated": [updated],
+                **({"domain": [domain]} if domain else {}),
+                **({"summary": [summary]} if summary else {}),
+            },
+        }
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.runner.mddb = AsyncMock()
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
+        self.runner.mddb.add_document.return_value = {"status": "ok"}
+
+    async def test_list_orders_newest_first(self):
+        # MDDB returns an arbitrary subset — the tool must sort by
+        # updated desc itself or a limit=N call shows random pages.
+        self.runner.mddb.search_documents.return_value = [
+            self._cms_doc("old-page", "Old", "2026-01-01T00:00:00+00:00"),
+            self._cms_doc("new-page", "New", "2026-10-08T00:00:00+00:00"),
+            self._cms_doc("mid-page", "Mid", "2026-06-01T00:00:00+00:00"),
+        ]
+        out = await self.runner.execute("cms_read", {"action": "list"})
+        slugs = [p["slug"] for p in out["output"]]
+        self.assertEqual(slugs, ["new-page", "mid-page", "old-page"])
+        # The fetch window, not the caller's limit, bounds the listing —
+        # otherwise sorting only sees the arbitrary first-N.
+        kwargs = self.runner.mddb.search_documents.await_args.kwargs
+        self.assertGreater(kwargs["limit"], 50)
+
+    async def test_search_finds_page_beyond_list_window(self):
+        docs = [
+            self._cms_doc(f"cam-wall-{i}", f"Cam {i}",
+                          "2026-10-07T00:00:00+00:00", domain="cam")
+            for i in range(30)
+        ]
+        docs.append(self._cms_doc(
+            "voice-dub-demos", "Voice dub demos",
+            "2026-09-01T00:00:00+00:00", domain="media",
+            summary="Thai voice dubs — Liam clip lives here"))
+        self.runner.mddb.search_documents.return_value = docs
+        out = await self.runner.execute(
+            "cms_read", {"action": "search", "query": "liam dub"})
+        self.assertTrue(out["ok"])
+        slugs = [p["slug"] for p in out["pages"]]
+        self.assertIn("voice-dub-demos", slugs)
+        self.assertEqual(out["total_pages"], 31)
+
+    async def test_search_accepts_key_as_term(self):
+        # Models sometimes put the term in key/slug instead of query.
+        self.runner.mddb.search_documents.return_value = [
+            self._cms_doc("pool-notes", "Pool notes",
+                          "2026-10-01T00:00:00+00:00"),
+        ]
+        out = await self.runner.execute(
+            "cms_read", {"action": "search", "key": "pool"})
+        self.assertEqual(out["count"], 1)
+        self.assertEqual(out["pages"][0]["slug"], "pool-notes")
+
+    async def test_search_no_match_carries_note(self):
+        self.runner.mddb.search_documents.return_value = [
+            self._cms_doc("pool-notes", "Pool notes",
+                          "2026-10-01T00:00:00+00:00"),
+        ]
+        out = await self.runner.execute(
+            "cms_read", {"action": "search", "query": "nonexistent"})
+        self.assertEqual(out["count"], 0)
+        self.assertIn("note", out)
+        out = await self.runner.execute("cms_read", {"action": "search"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
+
+    async def test_search_matches_summary_text(self):
+        self.runner.mddb.search_documents.return_value = [
+            self._cms_doc("a-page", "Unrelated title",
+                          "2026-10-01T00:00:00+00:00",
+                          summary="cached YouTube dubs inventory"),
+        ]
+        out = await self.runner.execute(
+            "cms_read", {"action": "search", "query": "cached videos"})
+        self.assertEqual(out["count"], 1)
+
+    def test_index_rows_dedupes_lang_variants(self):
+        from backend.tool_runner.cms import cms_index_rows
+        now = datetime(2026, 10, 8, tzinfo=timezone.utc)
+        docs = [
+            self._cms_doc("flood", "Flood report",
+                          "2026-10-07T10:00:00+00:00", domain="flood"),
+            self._cms_doc("flood", "รายงานน้ำท่วม",
+                          "2026-10-08T10:00:00+00:00", lang="th",
+                          domain="flood"),
+        ]
+        rows, overflow = cms_index_rows(docs, now)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["slug"], "flood")
+        self.assertEqual(rows[0]["title"], "Flood report")  # en wins
+        self.assertEqual(rows[0]["updated"],
+                         "2026-10-08T10:00:00+00:00")  # freshest variant
+        self.assertEqual(sorted(rows[0]["langs"]), ["en", "th"])
+        self.assertEqual(overflow, {})
+
+    def test_index_rows_caps_domain_and_reports_overflow(self):
+        from backend.tool_runner.cms import cms_index_rows
+        now = datetime(2026, 10, 8, tzinfo=timezone.utc)
+        docs = [
+            self._cms_doc(f"cam-{i}", f"Cam {i}",
+                          f"2026-10-{(i % 9) + 1:02d}T00:00:00+00:00",
+                          domain="cam")
+            for i in range(15)
+        ]
+        docs.append(self._cms_doc("cached-videos", "Cached videos",
+                                  "2026-10-07T00:00:00+00:00",
+                                  domain="media"))
+        rows, overflow = cms_index_rows(docs, now, domain_cap=10)
+        cams = [r for r in rows if r["domain"] == "cam"]
+        self.assertEqual(len(cams), 10)
+        self.assertIn("cached-videos", [r["slug"] for r in rows])
+        self.assertEqual(overflow, {"cam": 5})
+
+    def test_index_rows_drops_dead_and_nonreport_docs(self):
+        from backend.tool_runner.cms import cms_index_rows
+        now = datetime(2026, 10, 8, tzinfo=timezone.utc)
+        docs = [
+            self._cms_doc("live", "Live", "2026-10-07T00:00:00+00:00"),
+            self._cms_doc("dead", "Dead", "2026-10-07T00:00:00+00:00",
+                          status="superseded"),
+            self._cms_doc("cfg", "Config", "2026-10-07T00:00:00+00:00",
+                          kind="automation-config"),
+            self._cms_doc("reports-index", "Index",
+                          "2026-10-07T00:00:00+00:00"),
+        ]
+        rows, _ = cms_index_rows(docs, now)
+        self.assertEqual([r["slug"] for r in rows], ["live"])
+
+    async def test_reports_index_marks_capped_domains(self):
+        docs = [
+            self._cms_doc(f"cam-{i}", f"Cam {i}",
+                          "2026-10-07T00:00:00+00:00", domain="cam")
+            for i in range(12)
+        ]
+        docs.append(self._cms_doc("cached-videos", "Cached",
+                                  "2026-10-08T00:00:00+00:00",
+                                  domain="media"))
+        self.runner.mddb.search_documents.return_value = docs
+        await self.runner._cms_reports_index()
+        args = self.runner.mddb.add_document.await_args.args
+        md = args[3]
+        self.assertIn("cached-videos", md)
+        self.assertIn("cam-", md)
+        self.assertIn("_Not shown: +2 cam", md)
 
 
 class CalendarPlanMergeAliasTests(unittest.IsolatedAsyncioTestCase):
