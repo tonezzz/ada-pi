@@ -282,6 +282,7 @@ suites:
     - report_index_first
     - report_freshness_mention
     - report_note_update
+    - report_opinion_loop
 
   # Tool discipline — selection, gating, and honesty under pressure
   # (incl. the correction duty: push back on false premises).

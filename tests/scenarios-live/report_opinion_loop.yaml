@@ -28,7 +28,7 @@ turns:
   # exists to catch.
   - user: "What's your opinion of the dev-kanban report — is it accurate?"
     expect:
-      calls_any: [cms_get_page]
+      calls_any: [cms_read, cms_get_page]
       response_nonempty: true
       timeout_s: 120
       settle_s: 8

@@ -133,7 +133,7 @@ class CmsMixin:
 
     async def cms_get_page(
         self, slug: str, lang: str = "en"
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         """Fetch one page's content by slug + language; falls back to 'en'
         when the requested variant doesn't exist."""
         key = self._cms_slug(slug)
@@ -144,7 +144,13 @@ class CmsMixin:
             doc = await self.mddb.get_document(CMS_COLLECTION, key, "en")
             fallback = bool(doc)
         if not doc:
-            return None
+            # ok:False, not a silent None — Ada opined on a page she never
+            # got because a miss read as ok:True/output:None (2026-10-08,
+            # report_opinion_loop smoke fail).
+            return {"ok": False,
+                    "error": f"no page {key!r} in {CMS_COLLECTION}",
+                    "note": "try cms_read action='list' to find the slug "
+                            "before reading"}
         page = self._cms_page_summary(doc)
         page["content"] = doc.get("contentMd") or doc.get("content") or ""
         page["lang"] = doc.get("lang") or "en"

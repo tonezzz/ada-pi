@@ -41,7 +41,8 @@ DECLARATION = {
             "column": {
                 "type": "string",
                 "description": "Target column for action=move "
-                               "(backlog|doing|review|done).",
+                               "(backlog|doing|review|done); column "
+                               "filter for action=read.",
             },
             "evidence": {
                 "type": "string",
@@ -74,10 +75,6 @@ DECLARATION = {
             "answer": {
                 "type": "string",
                 "description": "Answer text for the request (action=respond).",
-            },
-            "column": {
-                "type": "string",
-                "description": "Optional column filter for action=read.",
             },
             "limit": {
                 "type": "integer",
@@ -229,9 +226,18 @@ def _match_report_card(cards: list[dict[str, Any]], slug: str
     ones; within each tier the most recently `updated` wins. Returns
     {'open': [...], 'done': [...]}, each sorted updated-desc."""
     want = slug.strip().lower()
+    # Slug phrasing drifts in speech ("dev-kanban report" → the model
+    # guesses 'dev-kanban-report' while cards link 'dev-kanban') — accept
+    # the ±'-report' variants on either side (smoke fail 2026-10-08).
+    cands = {want}
+    if want.endswith("-report"):
+        cands.add(want[: -len("-report")])
+    else:
+        cands.add(want + "-report")
     open_, done = [], []
     for c in cards:
-        if str(c.get("report") or "").strip().lower() != want:
+        have = str(c.get("report") or "").strip().lower()
+        if have not in cands:
             continue
         col = str(c.get("column") or "backlog")
         (done if col == "done" else open_).append(c)
