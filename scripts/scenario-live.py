@@ -270,6 +270,8 @@ LEGACY_TOOL_ALIASES: dict[str, str] = {
     "vcast_list": "cast_to_screen",
     "vcast_status": "cast_to_screen",
     "vcast_shortcut": "cast_to_screen",
+    # ada-kanban-access (2026-10-08)
+    "ada_board_write": "kanban",
 }
 
 # Implied args an absorbed name carries into the canonical call

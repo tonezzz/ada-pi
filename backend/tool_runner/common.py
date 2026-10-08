@@ -477,6 +477,10 @@ _ALIASES: dict[str, str] = {
     "devin_pending": "devin_read",
     "devin_job_report": "devin_read",
     "ada_devteam_review": "devin_read",
+    # ada-kanban-access (2026-10-08): ada_board_write folds into the
+    # kanban tool — the design's full board surface under Ada's triage
+    # authority (its action names map through inside the module).
+    "ada_board_write": "kanban",
 }
 
 # Args an aliased call carries implicitly — the absorbed name implies the

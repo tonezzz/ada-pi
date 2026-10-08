@@ -12,11 +12,19 @@ tools:
   # builtin ada_ops action='health'; tools-merge-devin-mcp folded
   # ada_devteam_review into devin_read action='review'. Both names stay
   # callable as tool_runner._ALIASES rows; the drop-in modules are retired.
-  ada_board_write:
-    module: ada_board_write
+  # ada-kanban-access (2026-10-08): ada_board_write folded into the kanban
+  # tool — the design's board surface (list/read/comment/move/ask/file/
+  # respond) under Ada's triage authority. The old name stays callable
+  # via tool_runner._ALIASES. secondary_allowed=true so the in-module
+  # gate can keep list/read reachable on a non-owner turn (design §6)
+  # while writes stay owner-tier.
+  kanban:
+    module: kanban
     policy: read
-    secondary_allowed: false
-    timeout_s: 20
+    secondary_allowed: true
+    # Board writes through Caddy take ~45-75s while board-api rebuilds
+    # under flock — a move is GET+POST+comment. Needs headroom.
+    timeout_s: 180
   ada_track_device:
     module: ada_track_device
     policy: owner_only

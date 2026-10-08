@@ -38,7 +38,11 @@ policy:
                 # tools-merge-meta-voice seats: ada_ops holds the absorbed
                 # ada_outcome bank write; ada_persona persists style prefs
                 # and the speaking voice (absorbed ada_set_voice)
-                ada_ops, ada_persona]
+                ada_ops, ada_persona,
+                # ada-kanban-access seat: kanban holds the board writes —
+                # comment/file/ask/move all mutate card state; list/read
+                # share the name (name-level policy can't split actions).
+                kanban]
   # scenarios permitted to exercise write tools (incl. denied attempts).
   write_allowed_in:
     # cms/report writers
@@ -58,6 +62,11 @@ policy:
     - report_references_lifecycle
     - lab_stack_ideas
     - ideas_burst_capture
+    # kanban board writes (ada-kanban-access — comment/file/ask/move and
+    # the gated denial paths all surface under the kanban name)
+    - ada-board-write
+    - report_opinion_loop
+    - kanban_review
     # memory/speaker writes (incl. gate scenarios with denied attempts)
     - doc_upload
     - doc_recall              # reads the archive via docs action=search|get

@@ -350,6 +350,16 @@ families:
       - yt_cast_status           # -> yt {action: status}
       - yt_cast_stop             # -> yt {action: stop}
       - yt_transcript            # -> yt {action: transcript}
+  # ada-kanban-access (2026-10-08): ada_board_write folds into the new
+  # kanban tool — the design's full board surface (list/read/comment/
+  # move/ask/file + owner-gated respond) under Ada's triage authority.
+  # The old action names (create/read/respond) map inside the module.
+  kanban:
+    merge_card: ada-kanban-access
+    canonical: kanban              # list/read/comment/move/ask/file/respond -> action=
+    scenario: kanban_review
+    absorbed:
+      - ada_board_write            # -> kanban, action names pass through
 
 # Tools with no reference in any tests/scenarios-live/*.yaml tool field
 # (calls/calls_any/no_calls*/needs_tools/needs_any, @family-expanded) at
@@ -357,6 +367,7 @@ families:
 # tools-regression-scenarios card lands coverage. A declared tool absent
 # from BOTH scenarios and this list fails lint (no silent uncovered adds).
 coverage_debt:
+  - ada_device_acl
   - ada_resolve_action
   - chat_send
   - control_cover
