@@ -6,9 +6,22 @@
     <meta name="theme-color" content="#000000">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Ada">
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
     <title>Ada</title>
     <link rel="manifest" href="manifest.json">
+    <script>
+      // Per-instance PWA naming (ADA-HA(Tony) etc.) — iOS honours
+      // apple-mobile-web-app-title at Add-to-Home-Screen time.
+      fetch("manifest.json").then(function (r) { return r.json(); })
+        .then(function (m) {
+          if (m && m.name) {
+            document.title = m.name;
+            var t = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+            if (t) t.content = m.name;
+          }
+        }).catch(function () {});
+    </script>
     <link rel="stylesheet" href="static/style.css">
     <style>
       #pwa-ui { position: fixed; inset: 0; display: grid; grid-template-rows: auto 1fr auto; gap: 12px; padding: env(safe-area-inset-top) 20px env(safe-area-inset-bottom); pointer-events: none; z-index: 100; }

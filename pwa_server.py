@@ -2254,5 +2254,26 @@ pwa_models_dir = Path(os.environ.get(
 if pwa_models_dir.is_dir():
     app.mount("/models", StaticFiles(directory=pwa_models_dir),
               name="pwa-models")
+# Dynamic manifest — must precede the "/" StaticFiles mount. iOS uses the
+# apple-mobile-web-app-title meta (synced in index.html); Android uses this
+# manifest name. Per-instance branding: ADA_PWA_NAME wins, else
+# ADA-HA(<Instance>) e.g. ADA-HA(Tony) / ADA-HA(Michael).
+@app.get("/manifest.json")
+async def pwa_manifest() -> dict:
+    inst = os.environ.get("ADA_INSTANCE_ID", "default")
+    name = os.environ.get("ADA_PWA_NAME") or f"ADA-HA({inst.capitalize()})"
+    return {
+        "name": name,
+        "short_name": name,
+        "start_url": ".",
+        "scope": ".",
+        "display": "standalone",
+        "background_color": "#000000",
+        "theme_color": "#000000",
+        "orientation": "landscape",
+        "icons": [],
+    }
+
+
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/", StaticFiles(directory=pwa_dir, html=True), name="pwa")
