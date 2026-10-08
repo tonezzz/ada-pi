@@ -48,9 +48,20 @@
       .cms-main { overflow-y: auto; min-height: 0; }
       #btn-toggle-list { display: none; }
     }
+    /* ?embed=1 — document-only render for iframe panels (e.g. HA sidebar).
+       Hides nav, page list, tabs; content fills the frame. */
+    body.embed > nav, body.embed .cms-aside { display: none; }
+    body.embed .cms-shell { display: block; height: auto; overflow: visible;
+                            max-width: 56rem; }
+    body.embed .cms-main { overflow-y: visible; }
+    body.embed { min-height: 0; }
   </style>
 </head>
 <body class="bg-bg text-slate-100 min-h-screen">
+  <script>
+    if (new URLSearchParams(location.search).has('embed'))
+      document.body.classList.add('embed');
+  </script>
   <nav class="bg-card border-b border-slate-700 px-4 py-3 flex items-center gap-3">
     <a href="../" class="text-sky-400 hover:text-sky-300">&larr; Ada</a>
     <span class="text-slate-500">|</span>
