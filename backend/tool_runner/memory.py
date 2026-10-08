@@ -118,16 +118,23 @@ class MemoryMixin:
             raise ValueError("no curated memory banks on this instance")
         hits: list[dict[str, Any]] = []
         degraded = False
+        t_start = time.perf_counter()
+        banks_ms = sessions_ms = guest_ms = -1
         if scope_s in ("all", "banks") and self.mddb is not None:
+            t = time.perf_counter()
             res = await memory_ops.memory_search(
                 self.mddb, self.banks, bank, query, limit, include_inactive,
                 person_entity=self._memory_identity(),
             )
+            banks_ms = round((time.perf_counter() - t) * 1000)
             hits.extend(res.get("hits") or [])
             degraded = bool(res.get("degraded"))
         if scope_s in ("all", "sessions") and self.mddb is not None:
+            t = time.perf_counter()
             hits.extend(await self._session_hits(str(query), int(limit)))
+            sessions_ms = round((time.perf_counter() - t) * 1000)
         if scope_s in ("all", "guest") and self.chaba is not None:
+            t = time.perf_counter()
             for h in self.chaba.recall(
                     str(query), session_id=self.session_id,
                     limit=int(limit)):
@@ -136,6 +143,15 @@ class MemoryMixin:
                     "subject": h.get("name"), "score": h.get("score"),
                     "content": h.get("text"), "at": h.get("at"),
                 })
+            guest_ms = round((time.perf_counter() - t) * 1000)
+        # Phase-0 telemetry for the bank-router card (nest-bank-router):
+        # one greppable line — 'memory_search tool timing' — per call so
+        # the wall-time split across scopes is mineable from the journal.
+        logger.info(
+            "memory_search tool timing scope=%s bank=%s total_ms=%d "
+            "banks_ms=%d sessions_ms=%d guest_ms=%d hits_pre_cap=%d",
+            scope_s, bank, round((time.perf_counter() - t_start) * 1000),
+            banks_ms, sessions_ms, guest_ms, len(hits))
         hits.sort(key=lambda h: float(h.get("score") or 0), reverse=True)
         # A caller who names a bank or audits include_inactive asked for
         # that collection — keep dump hits but frame them. The default

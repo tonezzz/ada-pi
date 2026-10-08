@@ -9,9 +9,11 @@ focused on dispatch + Home Assistant tooling.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -516,6 +518,42 @@ def _check_person_scope_write(bank: MemoryBank, person_entity: str | None) -> No
         )
 
 
+async def _timed_bank_docs(
+    mddb: MddbClient,
+    bank: MemoryBank,
+    q: str,
+    limit: int,
+    include_inactive: bool,
+) -> tuple[list[dict[str, Any]], bool, float]:
+    """_bank_docs + wall time — feeds the memory_search timing log."""
+    t0 = time.perf_counter()
+    docs, degraded = await _bank_docs(mddb, bank, q, limit, include_inactive)
+    return docs, degraded, time.perf_counter() - t0
+
+
+def _log_search_timing(
+    bank_arg: str,
+    n_banks: int,
+    per_bank_ms: dict[str, int],
+    total_s: float,
+    hits: list[dict[str, Any]],
+    degraded: bool,
+) -> None:
+    """One greppable line per memory_search — the Phase-0 feed for the
+    bank-router card (nest-bank-router): mine `memory_search timing`
+    lines from the journal to split per-bank wall time vs total. The
+    remote query-embed happens inside mddb, so a per-bank ms that
+    saturates near total_ms is embed-bound; near-zero means the mddb
+    embed cache (or an ops-routed keyword path) served it."""
+    logger.info(
+        "memory_search timing bank=%s banks=%d total_ms=%.0f "
+        "per_bank_ms=%s hits=%d top_bank=%s degraded=%s",
+        bank_arg, n_banks, total_s * 1000,
+        json.dumps(per_bank_ms, sort_keys=True, separators=(",", ":")),
+        len(hits), hits[0].get("bank") if hits else None, degraded,
+    )
+
+
 async def memory_search(
     mddb: MddbClient,
     registry: MemoryBankRegistry,
@@ -538,17 +576,22 @@ async def memory_search(
     in both single-bank and bank='all' modes, so personal memory never
     crosses person boundaries."""
     q = str(query or "").strip()
+    t_start = time.perf_counter()
     if str(bank).lower() in ("all", "*"):
         banks = list(registry.banks_for_person(person_entity).values())
         results = await asyncio.gather(
             *(
-                _bank_docs(mddb, b, q, limit, include_inactive)
+                _timed_bank_docs(mddb, b, q, limit, include_inactive)
                 for b in banks
             )
         )
         hits: list[dict[str, Any]] = []
         degraded = False
-        for b, (docs, deg) in zip(banks, results):
+        per_bank_ms = {
+            b.name: round(elapsed * 1000)
+            for b, (_docs, _deg, elapsed) in zip(banks, results)
+        }
+        for b, (docs, deg, _elapsed) in zip(banks, results):
             degraded = degraded or deg
             used: list[dict[str, Any]] = []
             for doc in docs:
@@ -566,6 +609,9 @@ async def memory_search(
                                  h.get("bank") in writable_banks),
                   reverse=True)
         hits = hits[: int(limit)]
+        _log_search_timing(
+            "all", len(banks), per_bank_ms,
+            time.perf_counter() - t_start, hits, degraded)
         return {
             "bank": "all",
             "count": len(hits),
@@ -578,7 +624,8 @@ async def memory_search(
         bank = registry.personal_bank_name(person_entity)
     b = registry.bank(str(bank))
     _check_bank_allowed(registry, b.name, person_entity)
-    docs, degraded = await _bank_docs(mddb, b, q, limit, include_inactive)
+    docs, degraded, elapsed = await _timed_bank_docs(
+        mddb, b, q, limit, include_inactive)
     hits = []
     used_docs = []
     for doc in docs:
@@ -594,6 +641,9 @@ async def memory_search(
     # Listing/audit queries (empty, '*', include_inactive) don't count.
     if used_docs and not include_inactive and q and q != "*":
         record_use_bg(mddb, b.mddb_collection, used_docs)
+    _log_search_timing(
+        b.name, 1, {b.name: round(elapsed * 1000)},
+        time.perf_counter() - t_start, hits, degraded)
     return {
         "bank": b.name,
         "count": len(hits),

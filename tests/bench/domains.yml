@@ -97,6 +97,72 @@ domains:
         true: the chosen bank matches the note's sensitivity and topic
         false: a different bank fits better
 
+  # bankq — the SEARCH-routing surface (card nest-bank-router): given a
+  # user turn, pick the single bank most likely to answer — sessions for
+  # past-conversation recall, skip when no memory lookup is warranted
+  # (live data, small talk, device control). Distinct from `bank`, which
+  # routes note WRITES into general/home/people/purchase/personal.
+  bankq:
+    state: >-
+      Voice assistant Ada received a user turn and is deciding whether to
+      search long-term memory, and if so which single memory bank to ask
+      first. The user turn was: "{turn}"
+    question:
+      type: choice
+      instructions: >-
+        Choose the one memory bank most likely to answer this turn, or
+        'skip' when a memory search is not warranted.
+      criteria:
+        general: >-
+          shared household facts — wifi, addresses, schedules, who is who,
+          anything any speaker may need
+        home: >-
+          smart-home state and devices — entity quirks, automations,
+          hardware around the house
+        people: >-
+          facts about a person — preferences, birthdays, relationships,
+          what someone said or asked for
+        purchase: shopping, orders, prices, warranties, repair parts
+        personal: private to the speaker — health, finances, accounts
+        note: scratch notes and reminders the speaker left for themselves
+        ideas: ideas, brainstorms, proposals the speaker filed
+        devin: >-
+          Devin agent activity — session notes, dispatched tasks, board
+          state, what Devin did or is doing
+        devin-handoff: Devin hand-off notes and session summaries
+        developer: development notes and tool decisions for ada-pi itself
+        github: repository and project facts, old repos, codebases
+        tony-projects: Tony's project notes and plans
+        cms: CMS report pages and published documents
+        ops-scenarios: >-
+          ops history — scenario runs, benchmarks, test reports, audits
+        infrastructure-ssot: infrastructure facts — hosts, ports, services
+        chaba-docs: chaba knowledge-base docs and runbooks
+        devin-kb: Devin knowledge bank
+        documents: archived documents and attachments
+        kb-development: knowledge base — development topics
+        kb-features: knowledge base — feature notes
+        kb-operations: knowledge base — operations notes
+        kb-system: knowledge base — system reference
+        sessions: >-
+          past conversations — what was said or done in earlier sessions;
+          session and daily summaries
+        skip: >-
+          no memory search needed — live data (weather, prices, now-state),
+          device control, small talk, math, general knowledge Ada already
+          has, or anything answerable without stored memory
+    audit:
+      type: noul
+      instructions: >-
+        You are auditing a memory-search routing decision. Another model
+        routed this user turn to '{decision}'. 'skip' means "don't search
+        memory at all". Given the banks and the skip option above, is that
+        the right choice — would this bank (or skip) most likely produce
+        the needed answer while wasting the least fan-out?
+      criteria:
+        true: the choice is the best single bank, or correctly skips
+        false: a different bank fits better, or the choice wrongly skips/searches
+
   triage:
     state: >-
       A task dispatcher read an operator request for the chaba/home-infra
