@@ -14,6 +14,7 @@ from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import RedirectResponse
@@ -253,7 +254,13 @@ def _redeem_response(name: str, payload: dict) -> dict:
         base = "/"
     base = base.rstrip("/") or "/"
     redirect = str(payload.get("redirect") or "").rstrip("/")
-    if not redirect.startswith("/") or "//" in redirect:
+    # Same-origin paths are always OK; absolute https only inside the
+    # surf-thailand.com family (open-redirect guard with a household allowlist
+    # so QR redeems can land on ada-ha.surf-thailand.com, etc.)
+    ok_rel = redirect.startswith("/") and "//" not in redirect
+    ok_abs = redirect.startswith("https://") and (
+        urlparse(redirect).hostname or "").endswith(".surf-thailand.com")
+    if not (ok_rel or ok_abs):
         redirect = ""
     token = auth.mint_redeem_token(name, base, redirect or None)
     url = f"{base}/redeem/{token}" if base != "/" else f"/redeem/{token}"
