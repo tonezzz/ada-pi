@@ -1,0 +1,88 @@
+# SSOT Job: tg_relay voice/audio/video_note -> local voice corpus
+# Card: tg-voice-corpus-capture (kanban). Dispatch 20261008-104157.
+
+title: tg voice corpus capture — save enrolled senders' clips locally
+subtitle: voice/audio/video_note land under ~/.local/share/ada-voice-corpus/tg/<slug>/ with a JSONL manifest; never forwarded to Ada
+
+planning:
+  goal: |
+    Household speaker-id needs real, consented audio. The TG relay
+    already gates who may talk to Ada (TELEGRAM_ALLOWED_CHAT_IDS for
+    chats, TELEGRAM_USER_CALLERS per-sender inside group rooms) — that
+    gate doubles as the enrollment/consent boundary. Clips from senders
+    inside the gate are downloaded via getFile and written to local
+    disk only; no forwarding, no transcription.
+  context: |
+    backend/tg_relay.py previously ignored non-text/non-photo messages
+    entirely. Photos resolve file_id via getFile -> file host download
+    (_fetch_photo); the same two-step works verbatim for
+    voice/audio/video_note media objects.
+  scope: |
+    In scope:
+      - message.voice, message.audio, message.video_note handling
+      - corpus dir configurable via TG_VOICE_CORPUS_DIR, default
+        ~/.local/share/ada-voice-corpus/tg
+      - per-sender slug dir, <YYYYmmdd-HHMMSS>.<ext> filenames,
+        manifest.jsonl at the corpus root
+      - short saved ack to the sender
+    Out of scope:
+      - forwarding clips into the Ada session / transcription
+      - corpus import into tests/voice-corpus registry (separate step;
+        scripts/voice-corpus-import-mic.py precedent)
+      - retention/pruning policy
+  success_criteria:
+    - 'voice clip from allowed chat saves .ogg + manifest line + ack'
+    - 'audio and video_note save with correct extension/kind'
+    - 'two clips in the same second never clobber (suffix -1, -2, ...)'
+    - 'unknown chat and unmapped group sender save nothing'
+    - 'group clip dir uses the caller key name (e.g. user-tony)'
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-08"
+  steps:
+    - id: 1
+      label: "shared file download"
+      status: done
+      notes: "Extracted _download_file(file_id) -> (bytes, file_path)
+        from _fetch_photo; photo path unchanged."
+    - id: 2
+      label: "_save_voice_clip + _sender_slug"
+      status: done
+      notes: "Slug order: caller key name > username > first_name >
+        numeric id; sanitized to [A-Za-z0-9_-]. Extension: voice .ogg,
+        video_note .mp4, audio from getFile suffix else _MIME_EXT.
+        Manifest fields {ts, sender, sender_id, chat_id, kind,
+        duration_s, file_id, mime, path} — 'kind' added over the card's
+        field list so audio/video_note clips stay distinguishable."
+    - id: 3
+      label: "handle() hook behind the consent gate"
+      status: done
+      notes: "Media check sits after the allowlist/group-sender
+        refusals, before the photo branch — unauthorized senders return
+        early and never touch disk. Clips return without opening an
+        Ada session; sender gets 'Saved Ns voice clip to the voice
+        corpus.' (or a failure notice)."
+    - id: 4
+      label: "tests"
+      status: done
+      notes: "tests/test_tg_relay_voice.py — 6 cases via
+        unittest.IsolatedAsyncioTestCase with stubbed tg()/http.get:
+        save+ack+manifest, kind/ext mapping, same-second collision,
+        group caller slug, unauthorized chat, unmapped group sender."
+
+invoke:
+  commands:
+    - "~/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/test_tg_relay_voice.py -q"
+    - "TG_VOICE_CORPUS_DIR=/tmp/corpus ./.venv/bin/python backend/tg_relay.py  # env override"
+
+verification:
+  - "6/6 new tests pass; full suite 904 passed, 1 skipped (repo .venv —
+    system python lacks google.genai, unrelated)"
+  - "enrollment boundary verified by test: voice updates from chat 999
+    and unmapped group sender 777 produce zero files and zero manifest
+    lines"
+  - "deploy note: corpus dir is on the relay host's user share dir;
+    idc03 gets it free once the service restarts — no config needed
+    unless TG_VOICE_CORPUS_DIR should point elsewhere"
