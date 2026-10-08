@@ -26,6 +26,11 @@ Env:
   TELEGRAM_IDLE_SESSION_S   default 600 — WS close after idle
   TELEGRAM_STATE_FILE       default ~/.local/state/ada-tg-relay.json
   TELEGRAM_API_BASE         default https://api.telegram.org
+  TG_VOICE_CORPUS_DIR       default ~/.local/share/ada-voice-corpus/tg —
+                            voice/audio/video_note clips from allowed
+                            senders land here (one dir per sender slug,
+                            manifest.jsonl at the root). Local disk only:
+                            clips are never forwarded to Ada or elsewhere.
 """
 
 from __future__ import annotations
@@ -35,7 +40,9 @@ import base64
 import json
 import logging
 import os
+import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +71,13 @@ TG_MODE = os.environ.get("TELEGRAM_MODE", "poll").strip().lower()
 TG_LISTEN = os.environ.get("TG_WEBHOOK_LISTEN", "127.0.0.1:8911")
 TG_WEBHOOK_PATH = os.environ.get("TG_WEBHOOK_PATH", "/webhook/tg")
 TG_SECRET_TOKEN = os.environ.get("TG_SECRET_TOKEN", "")
+
+# Voice corpus: clips from enrolled senders (allowed chats / mapped room
+# members — the same gate Ada replies behind) are saved for speaker-id
+# training. Private by design: local disk only, no forwarding.
+VOICE_CORPUS_DIR = Path(os.environ.get(
+    "TG_VOICE_CORPUS_DIR",
+    str(Path.home() / ".local" / "share" / "ada-voice-corpus" / "tg")))
 
 # chat_id -> ada key name; resolved against the issued-keys file.
 ADA_KEYS_FILE = os.environ.get(
@@ -123,6 +137,30 @@ def _key_for_chat(chat_id: int) -> str:
 
 
 _REFUSAL_GAP_S = 3600  # don't spam a room — one refusal per sender per hour
+
+# audio/* clip extensions when Telegram's file_path has no usable suffix.
+_MIME_EXT = {
+    "audio/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/wav": ".wav",
+    "audio/webm": ".weba",
+    "video/mp4": ".mp4",
+}
+
+
+def _sender_slug(msg: dict, caller: str | None,
+                 sender_id: int | None) -> str:
+    """Filesystem-safe dir name for a clip's sender: caller key name if
+    the sender is mapped, else their TG username/name, else the numeric
+    id. Caller names read like 'user-kk' — keep them verbatim so the
+    corpus dir matches the keys file."""
+    sender = msg.get("from") or {}
+    raw = (caller or sender.get("username")
+           or sender.get("first_name") or str(sender_id or "unknown"))
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", str(raw)).strip("-").lower()
+    return slug or str(sender_id or "unknown")
 
 
 def _images_from(results: list[dict]) -> list[tuple[str, str]]:
@@ -315,9 +353,9 @@ class TgRelay:
             logger.warning("chat %s photo %s failed: %s", chat_id, url, exc)
             await self.send_text(chat_id, f"(image failed: {caption or url})")
 
-    async def _fetch_photo(self, file_id: str) -> tuple[bytes, str]:
-        """TG photo messages carry file_ids — resolve via getFile, then
-        download from the file host."""
+    async def _download_file(self, file_id: str) -> tuple[bytes, str]:
+        """TG media messages carry file_ids — resolve via getFile, then
+        download from the file host. Returns (bytes, file_path)."""
         info = await self.tg("getFile", file_id=file_id)
         path = info.get("file_path")
         if not path:
@@ -325,9 +363,55 @@ class TgRelay:
         r = await self.http.get(
             f"{TG_API}/file/bot{BOT_TOKEN}/{path}", timeout=60)
         r.raise_for_status()
+        return r.content, path
+
+    async def _fetch_photo(self, file_id: str) -> tuple[bytes, str]:
+        data, path = await self._download_file(file_id)
         mime = "image/jpeg" if path.lower().endswith((".jpg", ".jpeg")) \
             else "image/png"
-        return r.content, mime
+        return data, mime
+
+    async def _save_voice_clip(
+            self, msg: dict, media: dict, kind: str,
+            chat_id: int, sender_id: int | None,
+            caller: str | None) -> tuple[Path, int]:
+        """Download a voice/audio/video_note clip into the local voice
+        corpus and append one manifest line. Returns (path, duration_s)."""
+        data, tg_path = await self._download_file(media["file_id"])
+        slug = _sender_slug(msg, caller, sender_id)
+        stamp = datetime.fromtimestamp(
+            msg.get("date") or time.time()).strftime("%Y%m%d-%H%M%S")
+        mime = str(media.get("mime_type") or "")
+        ext = {"voice": ".ogg", "video_note": ".mp4"}.get(kind)
+        if not ext:
+            ext = Path(tg_path).suffix.lower() or _MIME_EXT.get(mime, ".bin")
+        dest_dir = VOICE_CORPUS_DIR / slug
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{stamp}{ext}"
+        n = 1
+        while dest.exists():
+            dest = dest_dir / f"{stamp}-{n}{ext}"
+            n += 1
+        dest.write_bytes(data)
+        duration = int(media.get("duration") or 0)
+        entry = {
+            "ts": datetime.fromtimestamp(
+                msg.get("date") or time.time()).isoformat(
+                    timespec="seconds"),
+            "sender": slug,
+            "sender_id": sender_id,
+            "chat_id": chat_id,
+            "kind": kind,
+            "duration_s": duration,
+            "file_id": media["file_id"],
+            "mime": mime or None,
+            "path": str(dest),
+        }
+        with (VOICE_CORPUS_DIR / "manifest.jsonl").open("a") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        logger.info("chat %s saved %s clip %s (%ds)",
+                    chat_id, kind, dest, duration)
+        return dest, duration
 
     async def handle(self, upd: dict[str, Any]) -> None:
         msg = upd.get("message") or upd.get("edited_message") or {}
@@ -370,6 +454,27 @@ class TgRelay:
                         reply_to=reply_to)
                 return
             skey = (chat_id, from_id)
+        # Voice/audio/video_note: only reached by enrolled senders (the
+        # allowlist checks above return early otherwise). Save to the
+        # local voice corpus and ack — nothing goes to Ada.
+        media = msg.get("voice") or msg.get("audio") or msg.get("video_note")
+        if media and media.get("file_id"):
+            kind = ("voice" if msg.get("voice")
+                    else "video_note" if msg.get("video_note") else "audio")
+            try:
+                _, duration = await self._save_voice_clip(
+                    msg, media, kind, chat_id, from_id, caller)
+                await self.send_text(
+                    chat_id,
+                    f"Saved {duration}s {kind} clip to the voice corpus.",
+                    reply_to=reply_to)
+            except Exception as exc:
+                logger.warning("chat %s %s save failed: %s",
+                               chat_id, kind, exc)
+                await self.send_text(
+                    chat_id, "Couldn't save that clip — try again.",
+                    reply_to=reply_to)
+            return
         if photos:
             sess = self.sessions.setdefault(
                 skey, ChatSession(chat_id, self, caller=caller))
