@@ -1,0 +1,25 @@
+{"text": "Check the security posture for idc02 — what's exposed publicly on it?", "kind": "bankq", "label": "devin", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "Remind me — the old ada_v2 hand-gesture system used YOLO to track the finger cursor, right?", "kind": "bankq", "label": "devin", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "Ada, what's the vcast system — the virtual display thing we run on the iPad?", "kind": "bankq", "label": "devin", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "What's your opinion of the dev-kanban report — is it accurate?", "kind": "bankq", "label": "devin", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "สถานะ Kanban การบ้าน ไม่ใช่กล้อง", "kind": "bankq", "label": "devin", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "Check my recent test benchmark reports — is there anything failing or noteworthy that you should report to me?", "kind": "bankq", "label": "ops-scenarios", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "Ada รายงานล่าสุดบนหน้า miniapp ของคุณมีเรื่องอะไรบ้าง — สรุปให้หน่อย", "kind": "bankq", "label": "cms", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "ตะกี้เรื่องอะไรนะที่ค้างอยู่", "kind": "bankq", "label": "sessions", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "Tony Home Assistant ตอนนี้เรียกสั้นๆว่าอะไร", "kind": "bankq", "label": "general", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "Who is KK in this household?", "kind": "bankq", "label": "people", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "Tell me what you know about KK.", "kind": "bankq", "label": "people", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "What do you know about คุณกุ้ง's car?", "kind": "bankq", "label": "people", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "เราเอารถของ KK ไป Market Village เมื่อไหร่", "kind": "bankq", "label": "purchase", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "ล่าสุดเราได้ทำอะไรกับรถของ KK ไปบ้าง", "kind": "bankq", "label": "purchase", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "มีข้อมูลเอกสารของ unit A68 ไหม ช่วยหาให้หน่อย", "kind": "bankq", "label": "documents", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "อธิบายหน่อยนึงเรื่องแผนงานติดตั้งบน VPS", "kind": "bankq", "label": "infrastructure-ssot", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "เล่าเรื่องการกระจาย service container ของ Nest ที่รันโมเดลตามโฮสต์ต่างๆ", "kind": "bankq", "label": "infrastructure-ssot", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "อ่ะเอาไปใส่ในเอกสาร timeline ตัวเนี้ย ตั้งชื่อให้เหมาะสม", "kind": "bankq", "label": "tony-projects", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "Ada, there was an old repo just called 'ada' — what was that project?", "kind": "bankq", "label": "github", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "Hi Ada, it's KK.", "kind": "bankq", "label": "skip", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "Ada, quick check — what is two plus two?", "kind": "bankq", "label": "skip", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "พูดเร็วขึ้นอีก 10% ได้ไหม", "kind": "bankq", "label": "skip", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "อ่ะเดี๋ยวพักคันนี้ก่อนเดี๋ยวค่อยมาต่อ", "kind": "bankq", "label": "skip", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "I just got this news, take a look: UPDATE: กทม. แนะหลีกเลี่ยงถนน 18 เส้นทาง ระวังขับช้า", "kind": "bankq", "label": "skip", "set": "bankq", "slice": "mined-2026-10-08"}
+{"text": "What score did the latest CMS benchmark run get?", "kind": "bankq", "label": "ops-scenarios", "set": "bankq", "slice": "mined-2026-10-08"}

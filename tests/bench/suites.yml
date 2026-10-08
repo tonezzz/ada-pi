@@ -83,6 +83,31 @@ suites:
         cases: 36
       adversarial: {status: spec}
 
+  bank-router:
+    domain: bankq              # domains.yml kind — SEARCH routing, not
+                               # the `bank` write-routing surface
+    incumbent: null            # no specialist yet — Phase 2 target:
+                             # distilbert multi-label (bank set + skip)
+    serves: L1
+    tiers:
+      golden:
+        set: bankq-golden
+        source: orch-bankq-golden-cases.jsonl
+        frozen: true
+        cases: 14
+      hard:
+        set: bankq
+        source: orch-bankq-cases.jsonl
+        rotates: corpus-harvest  # mined ada_memory_search calls —
+                                 # bank-router-mine.py emits candidates;
+                                 # labels corrected at append time
+        cases: 25
+      adversarial:
+        set: adv-bankq
+        source: orch-adv-bankq-cases.jsonl
+        frozen: true
+        cases: 14
+
   dispatch-triage:
     domain: triage
     incumbent: null
