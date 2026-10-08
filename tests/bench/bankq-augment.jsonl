@@ -1,0 +1,120 @@
+{"text": "อากาศวันนี้เป็นยังไง", "labels": ["skip"], "src": "hand-augment"}
+{"text": "กี่โมงแล้ว", "labels": ["skip"], "src": "hand-augment"}
+{"text": "what's two plus two", "labels": ["skip"], "src": "hand-augment"}
+{"text": "how many minutes in three hours", "labels": ["skip"], "src": "hand-augment"}
+{"text": "turn on the living room lights", "labels": ["skip"], "src": "hand-augment"}
+{"text": "เปิดแอร์ห้องนอนให้หน่อย", "labels": ["skip"], "src": "hand-augment"}
+{"text": "set the aircon to 25 degrees", "labels": ["skip"], "src": "hand-augment"}
+{"text": "ปิดทีวีในห้องนั่งเล่น", "labels": ["skip"], "src": "hand-augment"}
+{"text": "what's the temperature in the bedroom", "labels": ["skip"], "src": "hand-augment"}
+{"text": "play some music on the kitchen speaker", "labels": ["skip"], "src": "hand-augment"}
+{"text": "pause the TV", "labels": ["skip"], "src": "hand-augment"}
+{"text": "what's on TV right now", "labels": ["skip"], "src": "hand-augment"}
+{"text": "สวัสดี สบายดีไหม", "labels": ["skip"], "src": "hand-augment"}
+{"text": "good morning", "labels": ["skip"], "src": "hand-augment"}
+{"text": "thank you, that's all", "labels": ["skip"], "src": "hand-augment"}
+{"text": "who won the premier league last night", "labels": ["skip"], "src": "hand-augment"}
+{"text": "how do you make pad thai", "labels": ["skip"], "src": "hand-augment"}
+{"text": "what's the capital of France", "labels": ["skip"], "src": "hand-augment"}
+{"text": "translate 'thank you' to Thai", "labels": ["skip"], "src": "hand-augment"}
+{"text": "how tall is Mount Everest", "labels": ["skip"], "src": "hand-augment"}
+{"text": "what does CPU stand for", "labels": ["skip"], "src": "hand-augment"}
+{"text": "summarize the news today", "labels": ["skip"], "src": "hand-augment"}
+{"text": "what's the dollar to baht exchange rate", "labels": ["skip"], "src": "hand-augment"}
+{"text": "is the front door locked", "labels": ["skip"], "src": "hand-augment"}
+{"text": "how much battery does the vacuum have", "labels": ["skip"], "src": "hand-augment"}
+{"text": "remind me in 10 minutes to check the stove", "labels": ["skip"], "src": "hand-augment"}
+{"text": "ตั้งเตือน 15 นาที", "labels": ["skip"], "src": "hand-augment"}
+{"text": "wake me up at 7 tomorrow", "labels": ["skip"], "src": "hand-augment"}
+{"text": "call KK on the phone", "labels": ["skip"], "src": "hand-augment"}
+{"text": "what did the camera see five minutes ago", "labels": ["skip"], "src": "hand-augment"}
+{"text": "who is at the front gate now", "labels": ["skip"], "src": "hand-augment"}
+{"text": "open the gate for the delivery guy", "labels": ["skip"], "src": "hand-augment"}
+{"text": "read my messages out loud", "labels": ["skip"], "src": "hand-augment"}
+{"text": "how old am I", "labels": ["skip"], "src": "hand-augment"}
+{"text": "what year is it", "labels": ["skip"], "src": "hand-augment"}
+{"text": "what's the opposite of hot", "labels": ["skip"], "src": "hand-augment"}
+{"text": "spell 'necessary'", "labels": ["skip"], "src": "hand-augment"}
+{"text": "sing happy birthday", "labels": ["skip"], "src": "hand-augment"}
+{"text": "are you there", "labels": ["skip"], "src": "hand-augment"}
+{"text": "can you hear me", "labels": ["skip"], "src": "hand-augment"}
+{"text": "never mind", "labels": ["skip"], "src": "hand-augment"}
+{"text": "อะไรนะ พูดอะไร", "labels": ["skip"], "src": "hand-augment"}
+{"text": "ไม่เป็นไร ลืมไปเลย", "labels": ["skip"], "src": "hand-augment"}
+{"text": "ขอบคุณมาก", "labels": ["skip"], "src": "hand-augment"}
+{"text": "เปิดพัดลมให้หน่อย", "labels": ["skip"], "src": "hand-augment"}
+{"text": "วันนี้วันอะไร", "labels": ["skip"], "src": "hand-augment"}
+{"text": "ฝนจะตกไหมวันนี้", "labels": ["skip"], "src": "hand-augment"}
+{"text": "ราคาทองวันนี้เท่าไหร่", "labels": ["skip"], "src": "hand-augment"}
+{"text": "เลิกคุยแค่นี้ก่อน", "labels": ["skip"], "src": "hand-augment"}
+{"text": "turn off everything downstairs", "labels": ["skip"], "src": "hand-augment"}
+{"text": "set a timer for the rice", "labels": ["skip"], "src": "hand-augment"}
+{"text": "how many days until New Year", "labels": ["skip"], "src": "hand-augment"}
+{"text": "what's your name", "labels": ["skip"], "src": "hand-augment"}
+{"text": "are you Ada", "labels": ["skip"], "src": "hand-augment"}
+{"text": "what did that UPS battery cost at HomePro", "labels": ["purchase"], "src": "hand-augment"}
+{"text": "when is the Shopee order arriving", "labels": ["purchase"], "src": "hand-augment"}
+{"text": "did we buy the CCTV power supply already", "labels": ["purchase"], "src": "hand-augment"}
+{"text": "what was the price of the water pump we ordered", "labels": ["purchase"], "src": "hand-augment"}
+{"text": "ซื้ออะไหล่เครื่องซักผ้าไปหรือยัง", "labels": ["purchase"], "src": "hand-augment"}
+{"text": "what warranty do we have on the new aircon", "labels": ["purchase"], "src": "hand-augment"}
+{"text": "jot down that the gate remote battery is dying", "labels": ["note"], "src": "hand-augment"}
+{"text": "what did I ask you to remember about the garden", "labels": ["note"], "src": "hand-augment"}
+{"text": "read back my scratch notes from yesterday", "labels": ["note"], "src": "hand-augment"}
+{"text": "โน้ตไว้ให้หน่อยว่าเปลี่ยนไส้กรองน้ำ", "labels": ["note"], "src": "hand-augment"}
+{"text": "what's in my reminders", "labels": ["note"], "src": "hand-augment"}
+{"text": "which breaker controls the kitchen outlets", "labels": ["home"], "src": "hand-augment"}
+{"text": "why does the hallway light keep flapping", "labels": ["home"], "src": "hand-augment"}
+{"text": "what was the fix for the camwall display again", "labels": ["home"], "src": "hand-augment"}
+{"text": "which sensor is paired to the front gate", "labels": ["home"], "src": "hand-augment"}
+{"text": "สรุปอุปกรณ์บ้านที่เราตั้งชื่อไว้", "labels": ["home"], "src": "hand-augment"}
+{"text": "where did we mount the new access point", "labels": ["home"], "src": "hand-augment"}
+{"text": "show me the handoff notes Devin left for the next session", "labels": ["devin-handoff"], "src": "hand-augment"}
+{"text": "what did the last Devin session hand off", "labels": ["devin-handoff"], "src": "hand-augment"}
+{"text": "read the latest dispatch handoff summary", "labels": ["devin-handoff"], "src": "hand-augment"}
+{"text": "where are the session handoff docs stored", "labels": ["devin-handoff"], "src": "hand-augment"}
+{"text": "pull up the scanned insurance document", "labels": ["documents"], "src": "hand-augment"}
+{"text": "do we have the A68 unit document set", "labels": ["documents"], "src": "hand-augment"}
+{"text": "find the PDF I archived about the house plans", "labels": ["documents"], "src": "hand-augment"}
+{"text": "which documents did we upload last week", "labels": ["documents"], "src": "hand-augment"}
+{"text": "what feature notes do we have on the kanban board redesign", "labels": ["kb-features"], "src": "hand-augment"}
+{"text": "find the notes about planned voice features", "labels": ["kb-features"], "src": "hand-augment"}
+{"text": "what did we document about the new bench features", "labels": ["kb-features"], "src": "hand-augment"}
+{"text": "what dev notes exist on the memory pipeline", "labels": ["kb-development"], "src": "hand-augment"}
+{"text": "read the development notes on the MDDB fork", "labels": ["kb-development"], "src": "hand-augment"}
+{"text": "what does Devin's knowledge base say about worktree rules", "labels": ["devin-kb"], "src": "hand-augment"}
+{"text": "look up the devin kb entry on deploy locks", "labels": ["devin-kb"], "src": "hand-augment"}
+{"text": "what did we talk about yesterday", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "remind me what we decided last week", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "what was I asking you earlier", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "ตะกี้เราคุยเรื่องอะไรกัน", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "เมื่อวานเราคุยเรื่องอะไรไว้บ้าง", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "what did KK ask about this morning", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "summarize our last conversation", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "what did we agree on about the migration", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "what pending topics do we have open", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "เรื่องที่ค้างคุยไว้เมื่อวาน", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "what did I tell you to follow up on", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "do you remember what we said about the garden wall", "labels": ["sessions"], "src": "hand-augment"}
+{"text": "which cards did Devin finish last night", "labels": ["devin"], "src": "hand-augment"}
+{"text": "what did the last dispatch session do", "labels": ["devin"], "src": "hand-augment"}
+{"text": "show me Devin's session notes", "labels": ["devin"], "src": "hand-augment"}
+{"text": "what did devin change in ada-pi yesterday", "labels": ["devin"], "src": "hand-augment"}
+{"text": "which dispatch tasks are still running", "labels": ["devin"], "src": "hand-augment"}
+{"text": "devin ทำอะไรไปบ้างเมื่อคืน", "labels": ["devin"], "src": "hand-augment"}
+{"text": "what's on the devin kanban board", "labels": ["devin"], "src": "hand-augment"}
+{"text": "summarize devin's last three sessions", "labels": ["devin"], "src": "hand-augment"}
+{"text": "did the bank router session finish", "labels": ["devin"], "src": "hand-augment"}
+{"text": "what broke in the last dispatch run", "labels": ["devin"], "src": "hand-augment"}
+{"text": "show me the latest report page", "labels": ["cms"], "src": "hand-augment"}
+{"text": "what reports were published this week", "labels": ["cms"], "src": "hand-augment"}
+{"text": "pull up the dev-kanban report", "labels": ["cms"], "src": "hand-augment"}
+{"text": "สรุปรายงานล่าสุดบนบอร์ดให้หน่อย", "labels": ["cms"], "src": "hand-augment"}
+{"text": "what does the bench report page say", "labels": ["cms"], "src": "hand-augment"}
+{"text": "read the cms page about the migration", "labels": ["cms"], "src": "hand-augment"}
+{"text": "list my published pages", "labels": ["cms"], "src": "hand-augment"}
+{"text": "what's in the auto-report page today", "labels": ["cms"], "src": "hand-augment"}
+{"text": "เปิดหน้ารายงาน scenario ล่าสุด", "labels": ["cms"], "src": "hand-augment"}
+{"text": "which cms pages updated overnight", "labels": ["cms"], "src": "hand-augment"}
+{"text": "the report on disk usage — what's in it", "labels": ["cms"], "src": "hand-augment"}
+{"text": "show yesterday's ops report page", "labels": ["cms"], "src": "hand-augment"}

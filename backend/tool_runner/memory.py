@@ -75,6 +75,110 @@ def _frame_archival_hit(hit: dict[str, Any]) -> dict[str, Any]:
     return hit
 
 
+# --- bank-router specialist (card nest-bank-router, Phase 3) -----------------
+# A micro-model decides whether a turn needs memory at all and which
+# bank(s) to ask, instead of the bank='all' fan-out. Three modes:
+#   off     — no router calls (default when no URL is configured)
+#   shadow  — the default when a URL exists: the router verdict is
+#             computed IN PARALLEL with the normal search (zero added
+#             latency) and logged as 'memory_search router verdict' —
+#             divergence rows append to the router corpus for retraining
+#   enforce — the verdict actually narrows the search (predicted set via
+#             the bank= comma-hint) or skips it entirely. Gate: shadow
+#             rows must show recall preserved first.
+BANKQ_ROUTER_URL = os.environ.get("ADA_BANKQ_ROUTER_URL", "").rstrip("/")
+BANKQ_ROUTER_MODE = os.environ.get(
+    "ADA_BANKQ_ROUTER_MODE", "shadow" if BANKQ_ROUTER_URL else "off")
+BANKQ_ROUTER_TIMEOUT = float(
+    os.environ.get("ADA_BANKQ_ROUTER_TIMEOUT_S", "0.5"))
+BANKQ_ROUTER_SET = int(os.environ.get("ADA_BANKQ_ROUTER_SET", "2"))
+BANKQ_ROUTER_SKIP_THR = float(
+    os.environ.get("ADA_BANKQ_ROUTER_SKIP_THR", "0.75"))
+BANKQ_ROUTER_CORPUS = os.environ.get(
+    "ADA_BANKQ_ROUTER_CORPUS",
+    "~/.local/share/ada/bankq-router-corpus.jsonl")
+
+
+async def _bankq_verdict(query: str) -> dict[str, Any] | None:
+    """Ask the bankq student endpoint (systemone 'choice' contract) which
+    bank a turn routes to. Returns {choice, confidence, scores} or None —
+    the router is advisory; its failure must never break the search."""
+    import httpx  # local: httpx is a project dep, avoid import cost when off
+    try:
+        async with httpx.AsyncClient(
+                timeout=httpx.Timeout(BANKQ_ROUTER_TIMEOUT)) as client:
+            resp = await client.post(
+                BANKQ_ROUTER_URL + "/v1/systemone",
+                json={
+                    "state": f'The user turn was: "{query}"',
+                    "questions": {"q": {"type": "choice"}},
+                })
+            ans = (resp.json().get("answers") or {}).get("q") or {}
+        if ans.get("type") != "choice":
+            return None
+        scores = ans.get("scores") or {}
+        ranked = sorted(scores, key=scores.get, reverse=True)
+        return {
+            "choice": str(ans.get("choice") or ""),
+            "confidence": float(ans.get("confidence") or 0),
+            "bank_set": [b for b in ranked if b != "skip"
+                       ][:BANKQ_ROUTER_SET],
+        }
+    except Exception as exc:  # noqa: BLE001 — advisory path, never raise
+        logger.info("bankq router unreachable: %r", exc)
+        return None
+
+
+def _verdict_from_hint(routed_banks: str) -> dict[str, Any]:
+    """Normalize an explicit routed_banks tool arg into a verdict."""
+    parts = [p.strip() for p in str(routed_banks).split(",") if p.strip()]
+    if parts == ["skip"] or parts == []:
+        return {"choice": "skip", "confidence": 1.0, "bank_set": [],
+                "hint": True}
+    return {"choice": parts[0], "confidence": 1.0,
+            "bank_set": parts[:BANKQ_ROUTER_SET], "hint": True}
+
+
+def _log_router_verdict(verdict: dict[str, Any], query: str,
+                        hits: list[dict[str, Any]], router_ms: int) -> None:
+    """Greppable shadow line + divergence corpus row: does the predicted
+    bank set capture what the 'all' fan-out actually found?"""
+    actual_top = hits[0].get("bank") if hits else None
+    hit_banks = {h.get("bank") for h in hits}
+    pred_set = set(verdict.get("bank_set") or [])
+    captured = bool(actual_top and actual_top in pred_set)
+    skip_regret = verdict["choice"] == "skip" and bool(hits)
+    diverged = (verdict["choice"] == "skip" and bool(hits)) or \
+        (verdict["choice"] != "skip" and actual_top is not None
+         and not captured)
+    logger.info(
+        "memory_search router verdict mode=%s predicted=%s conf=%.3f "
+        "set=%s actual_top=%s hits=%d captured=%s skip_regret=%s "
+        "router_ms=%d",
+        BANKQ_ROUTER_MODE, verdict["choice"], verdict["confidence"],
+        ",".join(sorted(pred_set)) or "-", actual_top, len(hits),
+        captured, skip_regret, router_ms)
+    if diverged:
+        try:
+            row = {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "query": str(query or "")[:300],
+                "predicted": verdict["choice"],
+                "confidence": verdict["confidence"],
+                "bank_set": sorted(pred_set),
+                "actual_top": actual_top,
+                "hit_banks": sorted(b for b in hit_banks if b),
+                "hits": len(hits),
+                "mode": BANKQ_ROUTER_MODE,
+            }
+            path = Path(BANKQ_ROUTER_CORPUS).expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception as exc:  # noqa: BLE001 — corpus loss must not break
+            logger.info("bankq router corpus append failed: %r", exc)
+
+
 class MemoryMixin:
 
     # -- Memory bank tools (curated memory; see ssot.apps.ada-memory-*.yml) --
@@ -88,6 +192,7 @@ class MemoryMixin:
         limit: int = 5,
         include_inactive: bool = False,
         scope: str | None = None,
+        routed_banks: str | None = None,
     ) -> dict[str, Any]:
         """Search memory across scopes (tools-merge-memory):
 
@@ -120,6 +225,60 @@ class MemoryMixin:
         degraded = False
         t_start = time.perf_counter()
         banks_ms = sessions_ms = guest_ms = -1
+
+        # Bank-router specialist (nest-bank-router, Phase 3). Verdict
+        # source: an explicit routed_banks hint arg wins; otherwise the
+        # configured router endpoint is asked — IN PARALLEL with the
+        # search below so shadow mode adds ~0 latency. Only bank='all'
+        # calls route (a named bank is already a routing decision).
+        verdict: dict[str, Any] | None = None
+        router_task = None
+        q_str = str(query or "").strip()
+        if routed_banks is not None:
+            verdict = _verdict_from_hint(routed_banks)
+        elif (BANKQ_ROUTER_MODE != "off" and BANKQ_ROUTER_URL
+                and str(bank or "all") == "all" and q_str
+                and q_str != "*"):
+            router_task = asyncio.ensure_future(
+                _bankq_verdict(q_str))
+
+        # Enforce mode: the verdict decides before searching — a
+        # confident 'skip' short-circuits the whole memory path; a bank
+        # set narrows the fan-out via the comma-list bank spec. An
+        # explicit routed_banks hint is honored the same way (callers
+        # passing it opted in). 'sessions' in the set maps to the
+        # sessions scope — it is a scope, not a curated bank.
+        if (BANKQ_ROUTER_MODE == "enforce" and router_task is not None):
+            verdict = await router_task
+            router_task = None
+        routed = (verdict is not None
+                  and (verdict.get("hint")
+                       or BANKQ_ROUTER_MODE == "enforce"))
+        if routed:
+            if verdict["choice"] == "skip" and (
+                    verdict.get("hint")
+                    or verdict["confidence"] >= BANKQ_ROUTER_SKIP_THR):
+                logger.info(
+                    "memory_search router enforce skip conf=%.3f "
+                    "query=%r", verdict["confidence"], q_str[:80])
+                return {
+                    "bank": "skip", "scope": scope_s, "count": 0,
+                    "hits": [], "degraded": False,
+                    "routed": {"choice": "skip",
+                               "confidence": verdict["confidence"]},
+                }
+            bank_names = [b for b in verdict["bank_set"]
+                          if b != "sessions"]
+            if (verdict["choice"] == "sessions" and not bank_names
+                    and scope_s != "banks"):
+                scope_s = "sessions"
+                bank = "all"
+            elif bank_names:
+                bank = ",".join(bank_names)
+                # keep scope_s as requested — 'all' still runs the cheap
+                # sessions/guest scopes; only the expensive bank fan-out
+                # narrows.
+
         if scope_s in ("all", "banks") and self.mddb is not None:
             t = time.perf_counter()
             res = await memory_ops.memory_search(
@@ -153,6 +312,18 @@ class MemoryMixin:
             scope_s, bank, round((time.perf_counter() - t_start) * 1000),
             banks_ms, sessions_ms, guest_ms, len(hits))
         hits.sort(key=lambda h: float(h.get("score") or 0), reverse=True)
+        # Shadow verdict: the router scored the same turn while the
+        # search ran — log what it WOULD have done vs the outcome.
+        if router_task is not None:
+            t_r = time.perf_counter()
+            verdict = await router_task
+            router_ms = round((time.perf_counter() - t_r) * 1000)
+        elif verdict is not None:
+            router_ms = 0
+        else:
+            router_ms = -1
+        if verdict is not None:
+            _log_router_verdict(verdict, q_str, hits, router_ms)
         # A caller who names a bank or audits include_inactive asked for
         # that collection — keep dump hits but frame them. The default
         # fan-out (bank 'all' / scope 'all') withholds them entirely so

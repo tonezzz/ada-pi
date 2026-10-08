@@ -307,5 +307,96 @@ class DraftVisibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(memory_ops._draft_visible(home, doc, "michael"))
 
 
+class RoutedSubsetTests(unittest.IsolatedAsyncioTestCase):
+    """Comma-list bank spec = the routed-hint path (card nest-bank-router
+    Phase 3): memory_search('people,general') fans out over just that
+    subset with the same merge semantics as 'all'."""
+
+    BANKS = {
+        "banks": {
+            "general": {
+                "scope": "shared", "instances": ["tony"],
+                "mddb_collection": "ada-ha-bank-general",
+                "kinds": ["fact", "note"], "writable": True,
+                "status": "active",
+            },
+            "people": {
+                "scope": "shared", "instances": ["tony"],
+                "mddb_collection": "ada-ha-bank-people",
+                "kinds": ["fact", "person"], "writable": True,
+                "status": "active",
+            },
+            "devin": {
+                "scope": "instance", "instances": ["tony"],
+                "mddb_collection": "ada-ha-bank-devin-tony",
+                "kinds": ["session-summary"], "writable": False,
+                "status": "active",
+            },
+        }
+    }
+
+    async def _seed(self):
+        fake = FakeMddb()
+        await fake.add_document(
+            "ada-ha-bank-general", "general/wifi", "en",
+            "wifi password is hunter2.", {"status": ["active"]})
+        await fake.add_document(
+            "ada-ha-bank-people", "people/kk-bday", "en",
+            "KK's wifi story at the party.", {"status": ["active"]})
+        await fake.add_document(
+            "ada-ha-bank-devin-tony", "devin/wifi-session", "en",
+            "Session dump about wifi debugging.", {"status": ["active"]})
+        return fake
+
+    async def test_comma_subset_fans_out_only_named_banks(self):
+        fake = await self._seed()
+        reg = build_registry("tony", self.BANKS)
+        res = await memory_ops.memory_search(
+            fake, reg, "general,devin", "wifi", limit=5)
+        banks = {h["bank"] for h in res["hits"]}
+        self.assertTrue(banks)
+        self.assertNotIn("people", banks)
+        self.assertEqual(res["bank"], "general,devin")
+        await asyncio.sleep(0)
+
+    async def test_single_name_still_single_bank_path(self):
+        fake = await self._seed()
+        reg = build_registry("tony", self.BANKS)
+        res = await memory_ops.memory_search(
+            fake, reg, "people", "wifi", limit=5)
+        self.assertEqual(res["bank"], "people")
+        self.assertTrue(all(h["key"].startswith("people/")
+                            for h in res["hits"]))
+        await asyncio.sleep(0)
+
+    async def test_unknown_bank_in_subset_is_loud(self):
+        fake = await self._seed()
+        reg = build_registry("tony", self.BANKS)
+        with self.assertRaises(ValueError):
+            await memory_ops.memory_search(
+                fake, reg, "general,bogus", "wifi", limit=5)
+        await asyncio.sleep(0)
+
+
+class VerdictHintTests(unittest.TestCase):
+    """_verdict_from_hint normalizes the routed_banks tool arg (Phase 3)."""
+
+    def test_bank_list(self):
+        from backend.tool_runner.memory import _verdict_from_hint
+        v = _verdict_from_hint("people,general")
+        self.assertEqual(v["choice"], "people")
+        self.assertEqual(v["bank_set"], ["people", "general"])
+
+    def test_skip(self):
+        from backend.tool_runner.memory import _verdict_from_hint
+        v = _verdict_from_hint("skip")
+        self.assertEqual(v["choice"], "skip")
+        self.assertEqual(v["bank_set"], [])
+
+    def test_empty_is_skip(self):
+        from backend.tool_runner.memory import _verdict_from_hint
+        self.assertEqual(_verdict_from_hint("")["choice"], "skip")
+
+
 if __name__ == "__main__":
     unittest.main()
