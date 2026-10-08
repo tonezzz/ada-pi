@@ -423,6 +423,19 @@ function paintTabs() {
   }
 }
 
+// ?q= seeds the page filter from the URL (used by embedded "reports"
+// subviews). Regex-or-substring: "polity|nest" works, plain text too.
+function matchFilter(p, filter) {
+  try {
+    const re = new RegExp(filter, "i");
+    return re.test(titleOf(p)) || re.test(p.slug || "");
+  } catch {
+    return titleOf(p).toLowerCase().includes(filter) ||
+           (p.slug || "").toLowerCase().includes(filter);
+  }
+}
+const Q_PARAM = new URLSearchParams(location.search).get("q");
+
 function renderPageList(filter = "") {
   const list = document.getElementById("page-list");
   list.innerHTML = "";
@@ -433,9 +446,7 @@ function renderPageList(filter = "") {
     const tabOk = curTab === "flood" ? flood
                 : curTab === "pages" ? kind === null && !flood
                 : kind === curTab || kind === "any";
-    return tabOk && (!filter ||
-      titleOf(p).toLowerCase().includes(filter) ||
-      (p.slug || "").toLowerCase().includes(filter));
+    return tabOk && (!filter || matchFilter(p, filter));
   });
   if (!shown.length) {
     list.innerHTML = filter
@@ -831,6 +842,8 @@ function renderYamlItem(item) {
 // loadPages first — vendor libs (mermaid, CDN) must never gate the UI;
 // a failed vendor fetch used to abort init and leave the list empty.
 paintTabs();
+if (Q_PARAM)
+  document.getElementById("page-filter").value = Q_PARAM;
 loadPages();
 try { mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" }); }
 catch (e) { /* mermaid optional */ }
