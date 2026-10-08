@@ -42,9 +42,9 @@ turns:
   # — a write to the wrong card is a broken loop, not a pass.
   - user: "Post that opinion on the kanban card linked to that report"
     expect:
-      calls_any: [ada_board_write]
+      calls_any: [kanban]
       call_args_contain:
-        ada_board_write: ["scenario-report-opinion"]
+        kanban: ["scenario-report-opinion"]
       response_nonempty: true
       timeout_s: 120
       settle_s: 8

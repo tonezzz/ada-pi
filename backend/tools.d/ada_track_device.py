@@ -23,11 +23,10 @@ import httpx
 DECLARATION = {
     "name": "ada_track_device",
     "description": (
-        "Locate a user's device or list the tracked fleet. Sources: the "
-        "device-telemetry beacon (GPS-ish WAN geo, battery, users, top "
-        "apps) merged with tailscale last-seen. Answer with how fresh "
-        "the signal is — never claim live GPS; say 'last seen X ago in "
-        "<city>' when data is stale."
+        "Locate a user's device or list the tracked fleet — "
+        "action='where'|'list'|'history'. Merges the device-telemetry "
+        "beacon with tailscale last-seen; answer with how fresh the "
+        "signal is."
     ),
     "parameters": {
         "type": "object",

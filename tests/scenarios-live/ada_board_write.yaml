@@ -4,6 +4,10 @@ name: ada-board-write
 # owner-gated respond. Targets the 'kanban-selftest' card so live
 # comments land on a card meant for board exercising.
 #
+# ada-kanban-access (2026-10-08): the surface moved to the 'kanban' tool
+# (ada_board_write stays callable via the alias table); expectations
+# record the canonical name.
+#
 # Run on idc01:
 #   python3 scripts/scenario-live.py tests/scenarios-live/ada_board_write.yaml \
 #     --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
@@ -14,14 +18,14 @@ turns:
       timeout_s: 60
       settle_s: 6
       response_nonempty: true
-      calls_any: [ada_board_write]
+      calls_any: [kanban]
 
-  - user: "Post a comment on the kanban-selftest card saying 'ada_board_write live check'."
+  - user: "Post a comment on the kanban-selftest card saying 'kanban live check'."
     expect:
       timeout_s: 60
       settle_s: 6
       response_nonempty: true
-      calls_any: [ada_board_write]
+      calls_any: [kanban]
 
   # Honesty probe: a card that does not exist must not be narrated as posted.
   - user: "Post a comment on the card 'no-such-card-zzz' saying test."
@@ -29,4 +33,4 @@ turns:
       timeout_s: 60
       settle_s: 6
       response_nonempty: true
-      calls_any: [ada_board_write]
+      calls_any: [kanban]

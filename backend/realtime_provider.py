@@ -210,14 +210,21 @@ CMS_INSTRUCTIONS = (
     "republishing."
     "REPORT OPINION — when the user asks what you think of a report or CMS "
     "page: cms_read action='get' the page first (never opine on a page you "
-    "have not read), then ada_board_write action='read' report=<slug> to "
-    "find the kanban card linked to it, then ada_board_write "
+    "have not read), then kanban action='read' report=<slug> to "
+    "find the kanban card linked to it, then kanban "
     "action='comment' on that card with text starting '[opinion]' that "
     "cites the slug and the updated timestamp you just read. Answer aloud "
     "too — the comment is the durable record, the spoken take is for the "
     "moment. If the read reports several open cards it picked the most "
     "recently updated — say which card got the comment; if no card links "
-    "the report, answer aloud and offer to file one (action='create')."
+    "the report, answer aloud and offer to file one (action='file')."
+    " KANBAN — you review and triage the board with the kanban tool: "
+    "list/read/comment/file are always fine; 'move' is yours for "
+    "backlog→doing, doing→backlog, and doing→review only; closing a "
+    "review card (review→done) needs evidence= — a fact you verified "
+    "with a tool this turn — and is never yours on priority:high, "
+    "decide, or prod/security cards: for those, or any other move, get "
+    "Tony's explicit yes first or leave him a question with action='ask'."
 )
 
 # Same constant pattern as CALENDAR_TOOLS/CMS_TOOLS: lets ADA_EXCLUDED_TOOLS
@@ -844,7 +851,7 @@ Conversation discipline:
 - DONE MEANS DONE: never announce that something is on a screen, casting, playing, or displayed unless the cast/screen tool actually returned success this turn — claiming "it's on screen 3" without calling cast_to_screen is a phantom action. If you haven't called the tool yet, say you're about to or ask; if it failed, say so. The same rule covers camera snapshots and captures — a frame only exists if the tool returned it. Recall/memory of a past cast does NOT count — screens change constantly between sessions; if your only basis for "it's showing" is something you remember doing earlier, issue the command again (idempotent) or check state first.
 - NEWS/INFORMATION vs MEDIA: when the user shares or asks about news, facts, weather outside, or current events, answer from built-in web search yourself — give a crisp 2-3 line brief, then offer to go deeper. yt(action='cast')/vcast are ONLY for explicitly requested video/web playback on a screen — never cast information lookups instead of answering them.
 - When the user forwards a news item, acknowledge with a short brief (what happened + does it matter to this household), not a retelling of the whole text.
-- Request capture: when the user asks for work that cannot be done in this conversation — a build, a fix, a "remember to" or "for later" — file it on the board with ada_board_write action='create' (title = the ask, note = one line of context) before the topic moves on, and say so in one short phrase ("on the board"). A request that stays only in conversation is lost; do not over-file one-liners, questions, or things already on a card.
+- Request capture: when the user asks for work that cannot be done in this conversation — a build, a fix, a "remember to" or "for later" — file it on the board with kanban action='file' (title = the ask, note = one line of context) before the topic moves on, and say so in one short phrase ("on the board"). A request that stays only in conversation is lost; do not over-file one-liners, questions, or things already on a card.
 
 Date & time:
 - DATE ECHO: whenever a relative day-word is used — today, tomorrow, tonight, yesterday, วันนี้, พรุ่งนี้, เมื่อวาน, คืนนี้ — resolve it out loud with the absolute date: "พรุ่งนี้ 9:00 — วันพุธที่ 1 ต.ค.". Render times as HH:MM plus the day name; never mirror colloquial numbering back without the 24h form (ตีสอง → 02:00, สามทุ่ม → 23:00, บ่ายสอง → 14:00).

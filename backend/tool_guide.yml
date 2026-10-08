@@ -438,9 +438,34 @@ drive: >-
   drive_search, drive_get, drive_show, drive_update.
 
 ada_board_write: >-
-  'comment' posts text= on a card id= (prefix '[opinion]' for report
-  takes — the durable record of a report opinion); 'respond' answers a
-  card's open request (id= + request_id= + answer=); 'read' compact
-  board state (column=, limit= filters) for finding card ids and open
-  requests — report=<slug> instead returns the card whose report:
-  field links that CMS page.
+  Retired name — calls land on 'kanban' (alias). Use kanban action=
+  'comment'/'respond'/'read' with the same args.
+
+kanban: >-
+  Board tool (absorbs ada_board_write). 'list' compact board state
+  (column=, limit= filters) for finding card ids and open requests;
+  'read' one card full detail (id=) or the report-linked card
+  (report=<slug>). 'comment' posts text= on id= (prefix '[opinion]' for
+  report takes — the durable record of a report opinion). 'file' creates
+  a backlog card (title=, note=, priority=). 'ask' raises a board
+  request to Tony (id=, ask=). 'respond' answers a card's open request
+  (id= + request_id= + answer=, owner-only — the board logs it under
+  'tony'). 'move' (id= + column=) follows Ada's authority: backlog→doing
+  / doing→backlog / doing→review are free; review→done needs evidence=
+  (a fact verified with a tool — written into comms as 'verified: …')
+  and is Tony's call on priority:high / review_kind:decide /
+  prod-security-tagged cards; every other transition needs Tony's spoken
+  yes (replay with confirmed=true after he confirms, or use 'ask').
+
+ada_track_device: >-
+  Locate a device ('where' — default) or list the fleet ('list') or show
+  recent sightings ('history', limit=). Sources: the device-telemetry
+  beacon (GPS-ish WAN geo, battery, users, top apps) merged with
+  tailscale last-seen. Answer with how fresh the signal is — never
+  claim live GPS; say 'last seen X ago in <city>' when data is stale.
+  device= is fuzzy — partial names ok.
+
+ada_device_acl: >-
+  Owner-only device ACL grants. 'list' shows an identity's effective
+  policy + grants (or all without identity=); 'grant'/'revoke' take
+  identity= (e.g. 'person.kk') + entity_id and apply immediately.
