@@ -278,3 +278,35 @@ lanes:
     corpus_archive: >-
       ~/.local/share/ada/jev-corpus{,-mined,-reviewed}.jsonl — the
       pre-migration archive the loop still merges from
+  tony-dell-cpu:
+    host: tony-dell
+    runtime: onnx-cpu          # scripts/serve-jev-student-onnx.py —
+                             # onnxruntime CPUExecutionProvider
+    ssh: tony@192.168.2.67     # how a remote loop host reaches the lane
+    tailnet: 100.68.142.13     # remote serves bind here — never LAN
+    serve_port: 8878
+    python: ~/nest-lane/venv/bin/python   # onnxruntime+tokenizers, py3.14
+    models_dir: ~/nest-lane/models        # onnx exports land here
+    good_for: >-
+      edge-inference serve+bench of seq-cls specialists. Phase-0
+      measured 2026-10-08 (jev-student-v5 fp32 ONNX, i7-6700):
+      probe p50 10.7ms / p95 16.4ms / ~88 rps sequential;
+      accuracy identical to the prod champ (confirm-gate 49/66:
+      golden 10/10, hard 27/35, adv-confirm 12/21). Well under the
+      ~50ms p50 bar — CPU is the default dell lane.
+    watch: >-
+      busiest host in the fleet — off-peak only, keep runs <10 min;
+      background load moves latency numbers, treat p95 as noisy.
+    cadence: manual/dispatch — baseline lane for specialist serve-bench
+  tony-dell-igpu:
+    host: tony-dell
+    runtime: openvino:GPU      # onnxruntime-openvino on the HD 530 —
+                             # or llama.cpp-server Vulkan for gemma-270m
+    status: parked             # phase-0: CPU p50 ~11ms << 50ms target —
+                             # the iGPU lane adds nothing for
+                             # distilbert-class seq-cls
+    good_for: >-
+      revisit only for the 270m LM specialist (llama.cpp-server Vulkan
+      path) or if dell CPU benches regress above ~50ms p50
+    watch: same shared-box rules as tony-dell-cpu
+    cadence: parked
