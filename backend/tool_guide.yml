@@ -39,7 +39,12 @@ control_entity: >-
   source=). Only media_player.tony_tv and media_player.tony_tv_cast are
   ours — other media_player entities are devices we do not own and must
   not be targeted. Find the exact entity_id with home_search first.
-  Absorbs control_cover, press_button, control_media_player.
+  Adjustable verbs (volume_*, volume_mute, select_source, cover
+  open/close/stop) verify the state delta after the call — ok:false with
+  a verify block means the device ignored it (a paused/off cast player
+  swallows volume calls silently); say it did not respond instead of
+  claiming it changed. Absorbs control_cover, press_button,
+  control_media_player.
 
 home_search: >-
   kind='device' searches controllable devices by name/entity_id — the

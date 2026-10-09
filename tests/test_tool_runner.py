@@ -2744,6 +2744,181 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
             {"entity_id": "light.office", "safety": "safe"})
         self.assertFalse(out["ok"])
         self.assertEqual(out["error_type"], "ValueError")
+
+
+class ControlEntityVerifyTests(unittest.IsolatedAsyncioTestCase):
+    """control-entity-verify-state (2026-10-09): HA accepts a service
+    call the device then ignores — 2026-10-08 transcript 9e96b5a5bc had
+    volume_down x4 on a paused cast player, every call ok:true while
+    the level never moved. Adjustable verbs now read the watched attr
+    before+after and come back ok:false with the delta when nothing
+    moved; a state target or cover position move counts as landed."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client.entities.return_value = [
+            {"entity_id": "cover.gate", "state": "closed",
+             "available": True, "name": "Gate"},
+            {"entity_id": "media_player.tony_tv_cast", "state": "paused",
+             "available": True, "name": "TV Cast"},
+        ]
+        # Two fake entities the actuate mocks can mutate to simulate a
+        # device that responded. get_state always reads live values.
+        self._mp = {"entity_id": "media_player.tony_tv_cast",
+                    "state": "paused",
+                    "attributes": {"volume_level": 0.4,
+                                   "is_volume_muted": False,
+                                   "source": "HDMI 1"}}
+        self._gate = {"entity_id": "cover.gate", "state": "closed",
+                      "attributes": {"current_position": 0}}
+
+        def fake_get_state(entity_id):
+            if entity_id == "media_player.tony_tv_cast":
+                return dict(self._mp)
+            if entity_id == "cover.gate":
+                return dict(self._gate)
+            return {"state": "unknown"}
+        self.ha_client.get_state.side_effect = fake_get_state
+        self.ha_client.control_media_player.return_value = {"ok": True}
+        self.ha_client.control_cover.return_value = {"ok": True}
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
+        self.runner.mddb = AsyncMock()
+        self.runner.mddb.search_documents.return_value = []
+        self.runner.mddb.add_document.return_value = {"status": "ok"}
+        self.runner.memory = AdaMemoryStore(
+            self.ha_client, mddb_client=self.runner.mddb,
+            instance_id="test")
+        self.runner.events = Mock()
+        # Keep the verification polls instant.
+        slp = patch("asyncio.sleep", new=AsyncMock())
+        slp.start()
+        self.addCleanup(slp.stop)
+
+    def _mp_call(self, action, **extra):
+        return self.runner.execute(
+            "control_entity",
+            {"entity_id": "media_player.tony_tv_cast",
+             "action": action, **extra})
+
+    async def test_volume_down_moved_is_ok_with_delta(self):
+        async def actuate(entity_id, action, source):
+            self._mp["attributes"]["volume_level"] = 0.35
+            return {"ok": True}
+        self.ha_client.control_media_player.side_effect = actuate
+        out = await self._mp_call("volume_down")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["verify"]["ok"], True)
+        self.assertEqual(out["verify"]["before"], 0.4)
+        self.assertEqual(out["verify"]["after"], 0.35)
+        self.assertAlmostEqual(out["verify"]["delta"], -0.05)
+
+    async def test_volume_down_noop_fails_loudly(self):
+        # The 2026-10-08 bug: HA ok'd every volume_down on a paused
+        # cast player while the level never moved.
+        out = await self._mp_call("volume_down")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["verify"]["before"], 0.4)
+        self.assertEqual(out["verify"]["after"], 0.4)
+        self.assertEqual(out["verify"]["delta"], 0.0)
+        self.assertIn("never moved", out["error"])
+        self.assertIn("Do NOT claim", out["error"])
+
+    async def test_volume_mute_toggle_verified(self):
+        async def actuate(entity_id, action, source):
+            self._mp["attributes"]["is_volume_muted"] = True
+            return {"ok": True}
+        self.ha_client.control_media_player.side_effect = actuate
+        out = await self._mp_call("volume_mute")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["verify"]["attr"], "is_volume_muted")
+
+    async def test_dead_player_fails_fast(self):
+        self._mp["state"] = "off"
+        self._mp["attributes"] = {}
+        out = await self._mp_call("volume_down")
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["verify"]["state"], "off")
+
+    async def test_select_source_reaches_requested(self):
+        async def actuate(entity_id, action, source):
+            self._mp["attributes"]["source"] = "YouTube"
+            return {"ok": True}
+        self.ha_client.control_media_player.side_effect = actuate
+        out = await self._mp_call("select_source", source="youtube")
+        self.assertTrue(out["ok"])
+
+    async def test_select_source_wrong_input_fails(self):
+        out = await self._mp_call("select_source", source="Netflix")
+        self.assertFalse(out["ok"])
+        self.assertIn("Netflix", out["error"])
+
+    async def test_cover_open_state_transition_ok(self):
+        async def actuate(entity_id, action):
+            self._gate["state"] = "opening"
+            return {"ok": True}
+        self.ha_client.control_cover.side_effect = actuate
+        out = await self.runner.execute(
+            "control_entity",
+            {"entity_id": "cover.gate", "action": "open",
+             "confirmed": True})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["verify"]["state"], "opening")
+
+    async def test_cover_open_position_delta_ok(self):
+        # A cover that moves without a state transition still counts.
+        async def actuate(entity_id, action):
+            self._gate["attributes"]["current_position"] = 12
+            return {"ok": True}
+        self.ha_client.control_cover.side_effect = actuate
+        out = await self.runner.execute(
+            "control_entity",
+            {"entity_id": "cover.gate", "action": "open",
+             "confirmed": True})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["verify"]["delta"], 12.0)
+
+    async def test_cover_open_swallowed_fails(self):
+        out = await self.runner.execute(
+            "control_entity",
+            {"entity_id": "cover.gate", "action": "open",
+             "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["verify"]["state"], "closed")
+        self.assertIn("never moved", out["error"])
+
+    async def test_cover_stop_still_moving_fails(self):
+        self._gate["state"] = "opening"
+        self._gate["attributes"]["current_position"] = 30
+        out = await self.runner.execute(
+            "control_entity",
+            {"entity_id": "cover.gate", "action": "stop",
+             "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertIn("still 'opening'", out["error"])
+
+    async def test_unverified_verbs_pass_through(self):
+        # State verbs carry no adjustable attr — no verify block.
+        out = await self._mp_call("media_play")
+        self.assertTrue(out["ok"])
+        self.assertNotIn("verify", out)
+
+    async def test_ha_unreachable_never_fails_the_call(self):
+        self.ha_client.get_state.side_effect = RuntimeError("ha down")
+        out = await self._mp_call("volume_down")
+        self.assertTrue(out["ok"])
+        self.assertNotIn("verify", out)
+
+    async def test_missing_attr_is_inconclusive(self):
+        # A player that does not expose volume_level cannot be verified
+        # — inconclusive never flips the call to ok:false.
+        self._mp["attributes"] = {}
+        out = await self._mp_call("volume_down")
+        self.assertTrue(out["ok"])
+        self.assertNotIn("verify", out)
+
 class DisplayMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     """tools-merge-display (8 -> 2 canonical seats): vcast_say/vcast_list/
     vcast_status/vcast_shortcut are absorbed into cast_to_screen's action=

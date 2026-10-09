@@ -127,11 +127,16 @@ class HaMixin:
         domain = entity_id.partition(".")[0]
         action = str(action or "").strip().lower()
         if domain == "cover":
-            return await self.control_cover(entity_id, action)
+            return await self._control_verified(
+                entity_id, domain, action,
+                lambda: self.control_cover(entity_id, action))
         if domain in ("button", "input_button") or action == "press":
             return await self.press_button(entity_id)
         if domain == "media_player":
-            return await self.control_media_player(entity_id, action, source)
+            return await self._control_verified(
+                entity_id, domain, action,
+                lambda: self.control_media_player(entity_id, action, source),
+                expected=source)
         if on is None:
             if action in ("on", "turn_on"):
                 on = True
@@ -143,6 +148,219 @@ class HaMixin:
                     f"{domain or entity_id} entities")
         outcome = await self.context.ha_client.set_power(entity_id, bool(on))
         return f"Turned {'on' if on else 'off'} {entity_id}: {outcome}"
+
+    # -- actuation ground truth --
+    # HA accepts a service call the device then ignores — a paused or
+    # powered-off cast player swallows every media_player service while
+    # still returning ok (2026-10-08 transcript 9e96b5a5bc: volume_down
+    # x4 on media_player.tony_tv_cast, every call ok:true, the level
+    # never moved — same 200-no-op class tv_action's cast_verify covers
+    # for casts). The adjustable verbs below carry the attribute or
+    # state the call must move; the entity is read before and polled
+    # after, and a zero delta fails loudly with the numbers attached.
+    # verify.ok=None means HA could not say and never fails the call.
+    _CONTROL_DEAD_STATES = frozenset({"off", "standby", "unavailable"})
+    _CONTROL_VERIFY = {
+        ("media_player", "volume_up"):
+            {"kind": "delta", "attr": "volume_level"},
+        ("media_player", "volume_down"):
+            {"kind": "delta", "attr": "volume_level"},
+        ("media_player", "volume_mute"):
+            {"kind": "delta", "attr": "is_volume_muted"},
+        ("media_player", "mute"):
+            {"kind": "delta", "attr": "is_volume_muted"},
+        ("media_player", "select_source"):
+            {"kind": "attr_target", "attr": "source"},
+        ("cover", "open"):
+            {"kind": "target", "attr": "current_position", "dir": 1,
+             "states": frozenset({"opening", "open"}),
+             "fail_states": frozenset({"closed", "closing"})},
+        ("cover", "close"):
+            {"kind": "target", "attr": "current_position", "dir": -1,
+             "states": frozenset({"closing", "closed"}),
+             "fail_states": frozenset({"open", "opening"})},
+        ("cover", "stop"):
+            {"kind": "leave", "states": frozenset({"opening", "closing"})},
+    }
+    _CONTROL_VERIFY_POLLS = 4
+    _CONTROL_VERIFY_INTERVAL_S = 0.7
+
+    async def _control_verified(
+        self, entity_id: str, domain: str, action: str, actuate: Any,
+        expected: str | None = None,
+    ) -> Any:
+        """Wrap one actuation with the before/after state-delta check.
+        Only the verbs in _CONTROL_VERIFY are checked — everything else
+        passes through untouched."""
+        spec = self._CONTROL_VERIFY.get((domain, action))
+        if spec is None:
+            return await actuate()
+        before = await self._control_state_read(entity_id)
+        out = await actuate()
+        out = dict(out) if isinstance(out, dict) else {
+            "entity_id": entity_id, "action": action, "result": out}
+        verify = await self._control_verify(
+            entity_id, spec, before, action, expected)
+        if verify.get("ok") is not None:
+            out["verify"] = verify
+        if verify.get("ok") is False:
+            out["ok"] = False
+            out["error"] = verify["error"]
+        return out
+
+    @staticmethod
+    def _attr_value(raw: Any) -> Any:
+        """Coerce an HA attribute for delta comparison — numbers compare
+        numerically ('0.30' == 0.3), everything else as a string."""
+        if raw is None or isinstance(raw, bool):
+            return raw
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return str(raw).strip().lower()
+
+    async def _control_state_read(
+            self, entity_id: str) -> dict[str, Any] | None:
+        try:
+            st = await self.context.ha_client.get_state(entity_id)
+        except Exception:
+            return None
+        if not isinstance(st, dict):
+            return None
+        attrs = st.get("attributes")
+        return {
+            "state": str(st.get("state") or "unknown").lower(),
+            # Snapshot the attrs — a 'before' read that keeps a live ref
+            # to a shared/mutable dict compares post-actuation values
+            # against themselves and always reports a zero delta.
+            "attrs": dict(attrs) if isinstance(attrs, dict) else {},
+        }
+
+    async def _control_verify(
+        self, entity_id: str, spec: dict[str, Any],
+        before: dict[str, Any] | None, action: str,
+        expected: str | None = None,
+    ) -> dict[str, Any]:
+        """Poll the entity after actuation and judge whether the call
+        landed. delta: the watched attribute must change. attr_target:
+        it must reach the requested value (select_source). target: the
+        state must reach a goal state or the position attr must move the
+        right way (cover open/close). leave: the state must exit a set
+        (cover stop — still-moving after stop is a loud failure)."""
+        out: dict[str, Any] = {"ok": None, "action": action}
+        attr = spec.get("attr")
+        if attr:
+            out["attr"] = attr
+        if before is None:
+            return out
+        out["before_state"] = before["state"]
+        b_val = self._attr_value(before["attrs"].get(attr)) if attr else None
+        if attr:
+            out["before"] = b_val
+        kind = spec["kind"]
+        last_state = None
+        for attempt in range(self._CONTROL_VERIFY_POLLS):
+            if attempt:
+                await asyncio.sleep(self._CONTROL_VERIFY_INTERVAL_S)
+            after = await self._control_state_read(entity_id)
+            if after is None:
+                continue
+            last_state = after["state"]
+            out["state"] = last_state
+            a_val = (
+                self._attr_value(after["attrs"].get(attr)) if attr else None)
+            if attr:
+                out["after"] = a_val
+                if isinstance(a_val, float) and isinstance(b_val, float):
+                    out["delta"] = round(a_val - b_val, 4)
+            moved = attr is not None and a_val is not None and a_val != b_val
+            dead = last_state in self._CONTROL_DEAD_STATES
+            if kind == "delta":
+                if moved:
+                    out["ok"] = True
+                    return out
+                if dead:
+                    break  # a dead device cannot move — fail now
+            elif kind == "attr_target":
+                want = re.sub(r"[^a-z0-9]+", "", str(expected or "").lower())
+                got = (re.sub(r"[^a-z0-9]+", "", str(a_val).lower())
+                       if a_val is not None else None)
+                if got is not None and got == want:
+                    out["ok"] = True
+                    return out
+                if dead:
+                    break
+            elif kind == "target":
+                in_dir = (
+                    moved and isinstance(a_val, float)
+                    and isinstance(b_val, float)
+                    and (a_val - b_val) * spec["dir"] > 0)
+                if last_state in spec["states"] or in_dir:
+                    out["ok"] = True
+                    return out
+                if last_state in spec["fail_states"] or dead:
+                    return self._control_verify_fail(
+                        entity_id, spec, out, expected)
+            elif kind == "leave":
+                if last_state not in spec["states"]:
+                    out["ok"] = True
+                    return out
+        # Poll window closed without the call visibly landing.
+        if kind == "delta":
+            if (out.get("before") is not None and out.get("after") is not None) \
+                    or last_state in self._CONTROL_DEAD_STATES:
+                return self._control_verify_fail(
+                    entity_id, spec, out, expected)
+        elif kind == "attr_target":
+            if (out.get("after") is not None
+                    or last_state in self._CONTROL_DEAD_STATES):
+                return self._control_verify_fail(
+                    entity_id, spec, out, expected)
+        elif kind == "leave":
+            if last_state in spec["states"]:
+                return self._control_verify_fail(
+                    entity_id, spec, out, expected)
+        return out
+
+    @staticmethod
+    def _control_verify_fail(
+        entity_id: str, spec: dict[str, Any], out: dict[str, Any],
+        expected: str | None,
+    ) -> dict[str, Any]:
+        """ok:false verdict with the before/after numbers and a blunt
+        instruction — same 'do not claim it happened' contract as
+        tv_action's cast_verify error."""
+        out["ok"] = False
+        kind = spec["kind"]
+        state = out.get("state") or out.get("before_state")
+        action = out["action"]
+        if kind == "delta":
+            out["error"] = (
+                f"HA accepted {action} on {entity_id} but "
+                f"{out.get('attr')} never moved ({out.get('before')} -> "
+                f"{out.get('after')}, state '{state}') — the device "
+                "ignored the service call: paused/off cast players "
+                "swallow volume commands silently, or it is already at "
+                "the limit. Do NOT claim it changed; tell the user it "
+                "did not respond.")
+        elif kind == "attr_target":
+            out["error"] = (
+                f"HA accepted {action} on {entity_id} but the source "
+                f"stayed '{out.get('after')}' instead of '{expected}' "
+                f"(state '{state}') — the device ignored the call; do "
+                "not claim the input switched.")
+        elif kind == "leave":
+            out["error"] = (
+                f"HA accepted {action} on {entity_id} but it is still "
+                f"'{state}' — it kept moving; do not claim it stopped.")
+        else:  # target
+            pos = (f", {out['attr']} {out.get('before')} -> "
+                   f"{out.get('after')}") if out.get("attr") else ""
+            out["error"] = (
+                f"HA accepted {action} on {entity_id} but it never "
+                f"moved (state '{state}'{pos}) — the call was "
+                "swallowed; do not claim it happened.")
+        return out
 
     async def list_sensors(self) -> list[dict[str, Any]]:
         # Keep the default small: every tool result stays in the live-voice
