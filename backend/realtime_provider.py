@@ -948,7 +948,14 @@ class GeminiLiveProvider(RealtimeProvider):
         self._recall_gate_score = float(os.environ.get("ADA_RECALL_GATE_SCORE", "0.6"))
         self._recall_gate_window = float(os.environ.get("ADA_RECALL_GATE_WINDOW_S", "60"))
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        self.model = os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
+        # Native-audio live models (gemini-3.1-flash-live-preview) reject
+        # TEXT-only sessions ("combination of response modalities (TEXT) is
+        # not supported") — relay channels (telegram/line) need a
+        # half-cascade model that supports TEXT output.
+        self.model = os.environ.get(
+            "GEMINI_LIVE_TEXT_MODEL" if self.text_only else "GEMINI_LIVE_MODEL",
+            "gemini-live-2.5-flash-preview" if self.text_only
+            else "gemini-3.1-flash-live-preview")
         self.voice = voice_config.current_voice()
         self.video_resolution = os.environ.get("GEMINI_VIDEO_RESOLUTION", "high").lower()
         base_instructions = instructions or os.environ.get("GEMINI_LIVE_INSTRUCTIONS") or DEFAULT_ADA_INSTRUCTIONS

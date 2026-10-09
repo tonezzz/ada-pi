@@ -1259,6 +1259,13 @@ class ScreensMixin:
         use yt action='cast', which is the TV only); still images -> 'image';
         audio-only -> 'audio'.
 
+        Chat screens: the ada-chat-card auto-opens a per-chat vcast display
+        labeled 'ada-chat-<id>' — action='list' shows its screen number.
+        "Show X on my chat screen" = cast to that screen. To mirror the
+        chat screen onto another display (screen-1, tony-tv lanes), read
+        the chat screen's state via action='status' and re-cast the same
+        URL/content to the target screen.
+
         Split-screen: action='layout' + panes=2..5 splits the screen into
         that many sub-panes; subsequent casts take pane=0..N-1 (0 is
         left/top). action='zoom' + pane=N makes one pane fullscreen,
