@@ -1414,6 +1414,11 @@ async def voice_socket(ws: WebSocket) -> None:
                 with suppress(Exception):
                     await ws.send_text(json.dumps({"type": "live_reconnecting"}))
                     await ws.send_text(json.dumps({"type": "clear_audio"}))
+                    _rk = voice_fx.bark_event(
+                        "relink", tool_runner.session_caller_name)
+                    if _rk:
+                        await ws.send_text(json.dumps(
+                            {"type": "bark", "text": _rk}))
                 delay = 1.0
                 while not closed.is_set():
                     try:

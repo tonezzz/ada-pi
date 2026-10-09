@@ -16,10 +16,13 @@ from backend import voice_fx
 DECLARATION = {
     "name": "voice_fx",
     "description": (
-        "Sci-fi narration / voice FX settings — the mechanical 'Accessing "
-        "level N memory' style asides. action='status' shows the caller's "
-        "flags; 'set' toggles (feature='sci_fx', enabled=true/false). "
-        "Voice triggers: 'sci-fi mode on/off', 'memory narration on/off'."
+        "Sci-fi narration / voice FX settings — mechanical asides spoken "
+        "in a separate machine voice. Flags: 'sci_fx' = MASTER switch "
+        "(off silences everything); 'sys_ops' = system-operation notices "
+        "(cast, camera, dispatch, relink, device actuation). "
+        "action='status' shows flags; 'set' toggles (feature=, enabled=). "
+        "Voice triggers: 'sci-fi mode on/off' (master), 'system "
+        "operation(s) on/off' (sys_ops), 'memory narration' (sci_fx)."
     ),
     "parameters": {
         "type": "object",
