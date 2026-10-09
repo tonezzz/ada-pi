@@ -59,8 +59,11 @@
 </head>
 <body class="bg-bg text-slate-100 min-h-screen">
   <script>
-    if (new URLSearchParams(location.search).has('embed'))
+    const _p = new URLSearchParams(location.search);
+    if (_p.has('embed') || _p.has('card'))
       document.body.classList.add('embed');
+    const _z = parseFloat(_p.get('zoom'));
+    if (_z > 0) document.body.style.zoom = _z;
   </script>
   <nav class="bg-card border-b border-slate-700 px-4 py-3 flex items-center gap-3">
     <a href="../" class="text-sky-400 hover:text-sky-300">&larr; Ada</a>
@@ -435,6 +438,9 @@ function matchFilter(p, filter) {
   }
 }
 const Q_PARAM = new URLSearchParams(location.search).get("q");
+// ?card=1#/slug — compact summary tile for HA masonry cards: title, meta,
+// status line, "Read full →" swaps the iframe into ?embed=1 doc mode.
+const CARD_MODE = new URLSearchParams(location.search).has("card");
 
 function renderPageList(filter = "") {
   const list = document.getElementById("page-list");
@@ -554,10 +560,27 @@ async function renderRoute() {
     if (res.status === 401) { showUnlock(); return; }
     if (res.status === 404) { el.innerHTML = `<div class="text-slate-500">Page not found: ${escapeHtml(slug)}</div>`; return; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    renderPage(el, await res.json());
+    const page = await res.json();
+    if (CARD_MODE) renderCard(el, page); else renderPage(el, page);
   } catch (err) {
     el.innerHTML = `<div class="text-red-400">Error: ${escapeHtml(err.message)}</div>`;
   }
+}
+
+// Compact tile: title + meta + the page's Status line + a "Read full" link
+// that reloads THIS iframe into ?embed=1 doc mode (keeps api_key, zoom).
+function renderCard(el, page) {
+  curPage = page;
+  const md = page.content || "";
+  const status = (md.match(/\*\*Status:\s*([^*]+?)\s*\*\*/) || [])[1] || "";
+  const q = new URLSearchParams(location.search);
+  q.delete("card"); q.set("embed", "1");
+  const d = document.createElement("div");
+  d.innerHTML = `<h2 class="text-base font-bold text-white leading-snug">${escapeHtml(page.title)}</h2>
+    <div class="text-xs text-slate-500 mt-1">${escapeHtml(page.slug)}${page.updated ? " · " + escapeHtml(fmtUpdated(page.updated)) : ""}</div>
+    ${status ? `<p class="text-sm text-slate-300 mt-2">${escapeHtml(status)}</p>` : ""}
+    <a class="inline-block mt-2 text-sm text-sky-400 hover:underline" href="${location.pathname}?${q}#/${encodeURIComponent(page.slug)}">Read full &rarr;</a>`;
+  el.appendChild(d);
 }
 
 function renderPage(el, page) {
