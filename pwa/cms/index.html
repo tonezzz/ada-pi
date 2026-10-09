@@ -571,8 +571,20 @@ async function renderRoute() {
 // that reloads THIS iframe into ?embed=1 doc mode (keeps api_key, zoom).
 function renderCard(el, page) {
   curPage = page;
+  el.innerHTML = "";
   const md = page.content || "";
-  const status = (md.match(/\*\*Status:\s*([^*]+?)\s*\*\*/) || [])[1] || "";
+  let status = (md.match(/\*\*Status:\s*([^*]+?)\s*\*\*/) || [])[1] || "";
+  if (!status) {
+    // fallback: first substantive line — skip headings, blanks, meta/footer
+    for (const l of md.split("\n")) {
+      const t = l.trim();
+      if (t && !t.startsWith("#") && !t.startsWith("*Generated") &&
+          !t.startsWith("*generated") && !/^\*?_?_?\s*$/.test(t)) {
+        status = t.replace(/\*\*/g, "");
+        break;
+      }
+    }
+  }
   const q = new URLSearchParams(location.search);
   q.delete("card"); q.set("embed", "1");
   const d = document.createElement("div");
