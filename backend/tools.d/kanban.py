@@ -94,11 +94,15 @@ DECLARATION = {
             },
             "options": {
                 "type": "array",
-                "items": {"type": ["string", "object"]},
+                # genai rejects union-typed items (["string","object"]) —
+                # it fails LiveConnectConfig validation and kills every
+                # voice session at connect (2026-10-09). Declare object;
+                # runtime coerces bare strings to {"label": s}.
+                "items": {"type": "object"},
                 "description": "action=ask only: answer choices rendered "
                                "as one-click buttons for Tony — offer "
                                "whenever the decision has a small option "
-                               "set. Strings or {id, label} objects.",
+                               "set. {id?, label} objects.",
             },
             "suggested": {
                 "type": "string",
@@ -511,7 +515,9 @@ async def _ask(args: dict[str, Any]) -> dict[str, Any]:
                             "ask": ask[:_TEXT_MAX]}
     options = args.get("options")
     if isinstance(options, list) and options:
-        body["options"] = options[:6]
+        opts = [o if isinstance(o, dict) else {"label": str(o)}
+                for o in options[:6]]
+        body["options"] = opts
         sug = str(args.get("suggested") or "").strip()
         if sug:
             body["suggested"] = sug
