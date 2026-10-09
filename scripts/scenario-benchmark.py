@@ -293,9 +293,9 @@ def main() -> int:
     write_tools = set(policy.get("write_tools") or [])
     write_allowed = set(policy.get("write_allowed_in") or [])
 
-    names = _expand(args.suite, bench)
-    if args.max_scenarios:
-        names = names[: args.max_scenarios]
+    all_names = _expand(args.suite, bench)
+    names = (all_names[: args.max_scenarios]
+             if args.max_scenarios else all_names)
 
     rows, violations = [], []
     run_metrics: dict[str, str] = {}
@@ -316,7 +316,8 @@ def main() -> int:
             "key": f"benchmark/{args.suite}/live",
             "lang": "en",
             "contentMd": (f"# Benchmark `{args.suite}` — {note}\n\n"
-                          f"{len(rows)}/{len(names)} scenarios completed.\n\n"
+                          f"{len(rows)}/{len(all_names)} scenarios "
+                          "completed.\n\n"
                           "| scenario | status | turns | tools | dur |\n"
                           "|---|---|---|---|---|\n" + table + "\n"),
             "meta": {"kind": ["benchmark-progress"], "suite": [args.suite],
@@ -390,11 +391,11 @@ def main() -> int:
     invalid_reason = (f"{unscored_run}/{len(rows)} scenarios infra/quota "
                       "— environment outage, not a model result"
                       if not run_valid else "")
-    partial = len(rows) < len(names)
+    partial = len(rows) < len(all_names)
     if partial:
         run_valid = False
         invalid_reason += ("; " if invalid_reason else "") + (
-            f"partial run — {len(rows)}/{len(names)} scenarios "
+            f"partial run — {len(rows)}/{len(all_names)} scenarios "
             "completed (budget or --max-scenarios)")
     table = "\n".join(
         f"| {n} | {s} | {t} | {c} | {d:.0f}s |" for n, s, t, c, d in rows)
