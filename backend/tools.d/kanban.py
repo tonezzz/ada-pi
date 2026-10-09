@@ -92,6 +92,21 @@ DECLARATION = {
                 "description": "Question to Tony on the card "
                                "(action=ask).",
             },
+            "options": {
+                "type": "array",
+                "items": {"type": ["string", "object"]},
+                "description": "action=ask only: answer choices rendered "
+                               "as one-click buttons for Tony — offer "
+                               "whenever the decision has a small option "
+                               "set. Strings or {id, label} objects.",
+            },
+            "suggested": {
+                "type": "string",
+                "description": "action=ask only: your recommendation — "
+                               "must match one of options[] (id, label, "
+                               "or 'id — label'). Renders ★ on the "
+                               "option; never auto-answers.",
+            },
             "title": {
                 "type": "string",
                 "description": "Card title (action=file).",
