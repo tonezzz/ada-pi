@@ -1,5 +1,9 @@
 name: gev_layers_track
 tier: full
+preflight:
+  - {check: gev_relay}
+  - {check: vcast_online, screens: ["{real_screen}"]}
+
 turns:
 - user: Put God's Eye View on screen {real_screen}.
   expect:

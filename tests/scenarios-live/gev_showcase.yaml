@@ -5,8 +5,9 @@
 name: gev_showcase
 tier: full
 preflight:
-  vcast_online:
-    screens: ["{real_screen}"]
+  - {check: gev_relay}
+  - {check: vcast_online, screens: ["{real_screen}"]}
+
 turns:
 - user: >-
     Put God's Eye View on screen {real_screen} and give me a clean

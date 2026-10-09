@@ -109,6 +109,9 @@ Failure taxonomy (decision: scenario-harness-false-negatives):
       - {check: http_ok, url: "http://…/health", label: mddb}
       - {check: vcast_online, screens: [2]}        # listed screens connected
       - {check: vcast_online, min_online: 2}       # or at least N online
+      - {check: gev_relay}                          # gev-cmd relay answering —
+      #   tours create their own map client by casting, so this only checks
+      #   the endpoint is alive (a 404/down relay = guaranteed-fail turns)
     A failed preflight exits INFRA (3) — environment down, not a model bug.
   Top-level `needs_tools: [name, ...]` compares against the live
   /api/tools declarations; absent tools exit UNIMPLEMENTED (4) — the
@@ -741,7 +744,9 @@ class _VcastDisplay:
         self._replay_until = 0.0
 
     async def _open(self):
-        self.ws = await websockets.connect(self.ws_url, max_size=8 * 1024 * 1024)
+        self.ws = await websockets.connect(self.ws_url,
+                                           max_size=8 * 1024 * 1024,
+                                           open_timeout=15)
 
     async def _send(self, obj: dict):
         await self.ws.send(json.dumps(obj))
@@ -1201,6 +1206,23 @@ def run_preflight(spec: dict) -> list[str]:
                         f"preflight {label}: no status greeting")
             except Exception as e:
                 fails.append(f"preflight {label}: {e}")
+        elif check == "gev_relay":
+            # Is the gev-cmd relay answering at all? Tour/cast scenarios
+            # create their own map client by casting /apps/gev/ to a
+            # screen, so reachability is the gate — not clients attached.
+            # A 404/down relay means every gev_command errors instantly
+            # while the scenario still burns full per-turn timeouts
+            # (2026-10-09: relay 404'd all night, ~18 gev scenarios each
+            # ate ~8min x2 attempts inside the casting suite).
+            try:
+                req = urllib.request.Request(
+                    _GEV_CMD_URL,
+                    data=json.dumps({"name": "get_current_view_state",
+                                     "args": {}, "wait": 1}).encode(),
+                    headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=15).read()
+            except Exception as e:
+                fails.append(f"preflight {label}: gev relay: {e}")
         elif check == "vcast_online":
             import urllib.request as _ur
             try:
@@ -1623,14 +1645,21 @@ async def main() -> int:
     my_session: list[str] = [""]
 
     async def connect(target: str) -> Any:
-        ws = await websockets.connect(target, max_size=8 * 1024 * 1024)
-        while True:
-            raw = await asyncio.wait_for(ws.recv(), timeout=30)
+        ws = await websockets.connect(target, max_size=8 * 1024 * 1024,
+                                      open_timeout=15)
+        # Total deadline on the ready-wait: a socket that stays chatty but
+        # never sends 'ready' would otherwise loop forever and look like a
+        # hang to the harness (found auditing the casting-suite stall).
+        end = time.monotonic() + 120
+        while time.monotonic() < end:
+            raw = await asyncio.wait_for(
+                ws.recv(), timeout=min(30, max(0.5, end - time.monotonic())))
             if isinstance(raw, str):
                 msg = json.loads(raw)
                 if msg.get("type") == "ready":
                     my_session[0] = str(msg.get("session") or "")
                     return ws
+        raise asyncio.TimeoutError("no ready event within 120s")
 
     async def ensure_ws() -> Any:
         """Lazy Ada /ws connect — driver-only scenarios (vcast_display /

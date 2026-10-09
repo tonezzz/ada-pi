@@ -1,5 +1,9 @@
 name: gev_screen1_interact
 tier: full
+preflight:
+  - {check: gev_relay}
+  - {check: vcast_online, screens: [1]}
+
 turns:
 - user: Put God's Eye View on screen 1 for me.
   expect:

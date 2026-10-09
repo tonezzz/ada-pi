@@ -13,6 +13,9 @@ name: gev-to-tv-live
 #
 # tier: full — switches tony-omen's live workspace and actuates the TV.
 tier: full
+preflight:
+  - {check: gev_relay}
+
 
 turns:
   - user: "Put God's Eye View on the TV."
