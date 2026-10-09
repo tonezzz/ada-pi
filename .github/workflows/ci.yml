@@ -4,14 +4,18 @@ name: CI
 # The live scenario suites (ada-scenario-*.timer on idc03) remain the
 # integration layer; this is the fast static/unit check.
 #
-# Heavy deps are skipped: torch/speechbrain (speaker_id degrades to
-# unavailable) and ai-edge-litert (detection/pose import it lazily)
-# are ~2.5 GB of wheels no unit test touches at import time.
+# Heavy deps are skipped: torch/speechbrain (~2.5 GB of wheels —
+# speaker_id degrades to unavailable without them and no unit test
+# exercises inference). ai-edge-litert stays: detection/pose/hailo
+# inference tests do hit its lazy import.
 #
 # Known-debt tolerance: test_tool_audit's two lint tests fail while
 # ada_track_device (descsize) and ada_device_acl (coverage) carry
 # in-flight debt from another session — deselected below. Remove the
 # --deselect lines and the advisory flag on tool-lint once that lands.
+#
+# Deselected web_search tests post to a live MDDB ops collection
+# (tailnet-only) — they cannot run on a GitHub runner by design.
 
 on:
   push:
@@ -31,7 +35,7 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - name: Install deps (heavy lazy-imported ones excluded)
         run: |
-          grep -vE '^(torch|speechbrain|ai-edge-litert)([=<>]|$)' \
+          grep -vE '^(torch|speechbrain)([=<>]|$)' \
             backend/requirements.txt > /tmp/req-ci.txt
           pip install -r /tmp/req-ci.txt \
             pytest pytest-asyncio PyYAML websockets
@@ -40,6 +44,9 @@ jobs:
           python -m pytest tests/ -q
           --deselect tests/test_tool_audit.py::LintAgainstRepoTests::test_json_output_shape
           --deselect tests/test_tool_audit.py::LintAgainstRepoTests::test_real_repo_is_clean
+          --deselect tests/test_web_search.py::WebSearchFallbackTests::test_429_posts_quota_ops_event
+          --deselect tests/test_web_search.py::WebSearchFallbackTests::test_explicit_gemini_raises_but_still_reports_quota
+          --deselect tests/test_web_search.py::WebSearchFallbackTests::test_quota_event_throttled_per_window
       - name: tool-lint (advisory until ada_track_device/ada_device_acl debt clears)
         continue-on-error: true
         run: python scripts/tool-lint.py
