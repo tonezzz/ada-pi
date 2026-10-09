@@ -67,6 +67,25 @@
        survives any clamp/overflow */
     body.card .card-read { position: fixed; bottom: 8px; right: 12px;
       margin: 0; }
+    /* ?badge=<label> — state pill pinned top-right; click shows ?why= +
+       ?opts= explanation popover (auto-discovery tiles show their status) */
+    body.card .card-badge { position: fixed; top: 6px; right: 10px;
+      font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 8px;
+      background: #334155; color: #cbd5e1; cursor: pointer; z-index: 5; }
+    body.card .card-badge.auto { background: #075985; color: #e0f2fe; }
+    body.card .card-badge.proposed { background: #713f12; color: #fef3c7; }
+    body.card .card-why { position: fixed; top: 26px; right: 10px; width: 75%;
+      max-width: 34ch; font-size: 11px; line-height: 1.4; background: #1e293b;
+      border: 1px solid #475569; border-radius: 8px; padding: 8px 10px;
+      color: #cbd5e1; z-index: 6; }
+    body.card .card-why .opts { color: #94a3b8; margin-top: 4px; }
+    /* fullscreen read: Read full requestFullscreen()s the tile body; Esc or
+       the ✕ drops back to the tile */
+    body.card.fs { overflow-y: auto; overflow-x: hidden; padding: 2rem;
+      max-width: 100%; }
+    body.card.fs .card-exit { position: fixed; top: 10px; right: 12px;
+      font-size: 12px; padding: 3px 10px; border-radius: 8px; z-index: 7;
+      background: #334155; color: #e2e8f0; cursor: pointer; }
   </style>
 </head>
 <body class="bg-bg text-slate-100 min-h-screen">
@@ -601,12 +620,51 @@ function renderCard(el, page) {
   }
   const q = new URLSearchParams(location.search);
   q.delete("card"); q.set("embed", "1");
+  const badge = _p.get("badge"), why = _p.get("why"), opts = _p.get("opts");
   const d = document.createElement("div");
   d.innerHTML = `<h2 class="card-title text-base font-bold text-white leading-snug">${escapeHtml(page.title)}</h2>
     <div class="text-xs text-slate-500 mt-1">${escapeHtml(page.slug)}${page.updated ? " · " + escapeHtml(fmtUpdated(page.updated)) : ""}</div>
     ${status ? `<p class="card-status text-sm text-slate-300 mt-2">${escapeHtml(status)}</p>` : ""}
+    ${badge ? `<span class="card-badge ${escapeHtml(badge.toLowerCase())}" title="state: ${escapeHtml(badge)}">${escapeHtml(badge)}</span>` : ""}
     <a class="card-read inline-block mt-2 text-sm text-sky-400 hover:underline" href="${location.pathname}?${q}#/${encodeURIComponent(page.slug)}">Read full &rarr;</a>`;
   el.appendChild(d);
+  if (badge && (why || opts)) {
+    const pop = document.createElement("div");
+    pop.className = "card-why";
+    pop.hidden = true;
+    pop.innerHTML = `${why ? escapeHtml(why) : `state: ${escapeHtml(badge)}`}${opts ? `<div class="opts">${escapeHtml(opts)}</div>` : ""}`;
+    el.appendChild(pop);
+    d.querySelector(".card-badge").addEventListener("click", () => { pop.hidden = !pop.hidden; });
+  }
+  // Read full: fullscreen-popup the whole tile body (HA iframe cards carry
+  // allow="fullscreen" by default); on fs exit, back to the tile. If the
+  // fullscreen request is denied, fall back to loading the doc in-frame.
+  const link = d.querySelector(".card-read");
+  link.addEventListener("click", async (e) => {
+    e.preventDefault();
+    try { await document.body.requestFullscreen(); }
+    catch { location.href = link.href; return; }
+    document.body.classList.add("fs");
+    el.innerHTML = "";
+    const bar = document.createElement("div");
+    bar.innerHTML = `<button class="card-exit">✕ close — Esc</button>
+      <h1 class="text-2xl font-bold text-white pr-24">${escapeHtml(page.title)}</h1>
+      <div class="text-xs text-slate-500 mt-1 mb-4">${escapeHtml(page.slug)}${page.updated ? " · " + escapeHtml(fmtUpdated(page.updated)) : ""}</div>`;
+    el.appendChild(bar);
+    const fmt = (page.format || "markdown").toLowerCase();
+    if (fmt === "html") renderHtml(el, page.content);
+    else if (fmt === "yaml") renderYaml(el, page.content);
+    else if (fmt === "slides") renderSlides(el, page.content);
+    else renderMarkdown(el, page.content, page.title);
+    bar.querySelector(".card-exit").addEventListener("click", () => document.exitFullscreen());
+    const onFs = () => {
+      if (document.fullscreenElement) return;
+      document.removeEventListener("fullscreenchange", onFs);
+      document.body.classList.remove("fs");
+      renderCard(el, page);
+    };
+    document.addEventListener("fullscreenchange", onFs);
+  });
 }
 
 function renderPage(el, page) {
