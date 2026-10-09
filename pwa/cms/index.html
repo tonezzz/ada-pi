@@ -58,11 +58,15 @@
     /* ?card=1 — summary tile for HA masonry cards. Content is CLAMPED so
        the whole tile fits the iframe height: never scrolls, never clips
        mid-glyph. Read full → for the rest. */
-    body.card { overflow: hidden; }
+    body.card { overflow: hidden; position: relative; }
     body.card .card-title { display: -webkit-box; -webkit-line-clamp: 2;
       -webkit-box-orient: vertical; overflow: hidden; }
     body.card .card-status { display: -webkit-box; -webkit-line-clamp: 3;
       -webkit-box-orient: vertical; overflow: hidden; }
+    /* pin the read link to the tile corner (viewport = iframe edge) so it
+       survives any clamp/overflow */
+    body.card .card-read { position: fixed; bottom: 8px; right: 12px;
+      margin: 0; }
   </style>
 </head>
 <body class="bg-bg text-slate-100 min-h-screen">
@@ -601,7 +605,7 @@ function renderCard(el, page) {
   d.innerHTML = `<h2 class="card-title text-base font-bold text-white leading-snug">${escapeHtml(page.title)}</h2>
     <div class="text-xs text-slate-500 mt-1">${escapeHtml(page.slug)}${page.updated ? " · " + escapeHtml(fmtUpdated(page.updated)) : ""}</div>
     ${status ? `<p class="card-status text-sm text-slate-300 mt-2">${escapeHtml(status)}</p>` : ""}
-    <a class="inline-block mt-2 text-sm text-sky-400 hover:underline" href="${location.pathname}?${q}#/${encodeURIComponent(page.slug)}">Read full &rarr;</a>`;
+    <a class="card-read inline-block mt-2 text-sm text-sky-400 hover:underline" href="${location.pathname}?${q}#/${encodeURIComponent(page.slug)}">Read full &rarr;</a>`;
   el.appendChild(d);
 }
 
