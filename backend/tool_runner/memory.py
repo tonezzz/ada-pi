@@ -279,18 +279,43 @@ class MemoryMixin:
                 # sessions/guest scopes; only the expensive bank fan-out
                 # narrows.
 
+        # Voice can't wait: each bank's vector_search can burn ~60s of
+        # retry+backoff when the embedder is down (2026-10-09 session
+        # e4122f6d27 — call hung ~45s, Ada silent, session died). Cap the
+        # whole scope at ~8s; on timeout return a degraded empty result
+        # the model can narrate instead of hanging the turn.
+        hits_error: str | None = None
         if scope_s in ("all", "banks") and self.mddb is not None:
             t = time.perf_counter()
-            res = await memory_ops.memory_search(
-                self.mddb, self.banks, bank, query, limit, include_inactive,
-                person_entity=self._memory_identity(),
-            )
+            try:
+                res = await asyncio.wait_for(
+                    memory_ops.memory_search(
+                        self.mddb, self.banks, bank, query, limit,
+                        include_inactive,
+                        person_entity=self._memory_identity(),
+                    ),
+                    timeout=8.0,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                res = {"hits": [], "degraded": True,
+                       "error": "memory bank search timed out (8s) — "
+                                "store is slow/unreachable right now; "
+                                "say so and offer to retry"}
             banks_ms = round((time.perf_counter() - t) * 1000)
             hits.extend(res.get("hits") or [])
+            if res.get("error"):
+                hits_error = res["error"]
             degraded = bool(res.get("degraded"))
         if scope_s in ("all", "sessions") and self.mddb is not None:
             t = time.perf_counter()
-            hits.extend(await self._session_hits(str(query), int(limit)))
+            try:
+                hits.extend(await asyncio.wait_for(
+                    self._session_hits(str(query), int(limit)),
+                    timeout=8.0))
+            except (asyncio.TimeoutError, TimeoutError):
+                hits_error = ("session-summary search timed out (8s) — "
+                              "say so and offer to retry")
+                degraded = True
             sessions_ms = round((time.perf_counter() - t) * 1000)
         if scope_s in ("all", "guest") and self.chaba is not None:
             t = time.perf_counter()
@@ -353,6 +378,8 @@ class MemoryMixin:
             "hits": hits,
             "degraded": degraded,
         }
+        if hits_error:
+            out["error"] = hits_error
         if suppressed:
             out["suppressed_archival"] = [
                 {"bank": h.get("bank"), "key": h.get("key")}
