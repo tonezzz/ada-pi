@@ -53,12 +53,18 @@ planning:
       baselines.
 
 verify:
-  - PYTHONUNBUFFERED already in unit (2026-10-09 edit) — tonight's 02:00
-    run shows `== name: status` lines in journalctl.
-  - mddb: benchmark/casting/live shows completed scenarios even for a
-    killed run.
-  - truncated probe run writes benchmark/casting-<ts> with valid:false +
-    partial:true.
+  - DONE on idc03 2026-10-09 ~18:55: patched runner via shadow tree
+    (/tmp/bench-fix, deploy checkout untouched) ran
+    `--suite casting --max-scenarios 3` to completion in ~8.5min —
+    `== name: status` lines streamed live, benchmark/casting-20261009-185732
+    + benchmark/casting/live + auto-report docs all written to the ops
+    store (mddb 100.123.163.11:11025 — MDDB_OPS_URL, not the 11023 leader).
+  - gev_za_tour with the new preflight exited INFRA rc=3 in ~2s on the
+    404'd relay (was ~8min x2 attempts).
+  - SIGTERM mid-run wrote benchmark/casting/live "KILLED by signal 15"
+    then exited — the trail survives TimeoutStartSec kills.
+  - Live doc denominator reads N/43 (idc03's deployed suite has 43
+    scenarios — the tail grew past this worktree's 39).
 
 still-open:
   - gev-cmd relay on tony-dell 404s — separate outage; gev_* correctly
