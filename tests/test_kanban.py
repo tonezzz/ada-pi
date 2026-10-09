@@ -389,7 +389,9 @@ class AskTest(unittest.IsolatedAsyncioTestCase):
                             ask="pick one", options=["A", "B"],
                             suggested="A")
         body = client.posts("/request")[0]["json"]
-        self.assertEqual(body["options"], ["A", "B"])
+        # options are normalized to {label: ...} dicts (cbce30d — the union
+        # schema with bare strings was killing all voice connects)
+        self.assertEqual(body["options"], [{"label": "A"}, {"label": "B"}])
         self.assertEqual(body["suggested"], "A")
 
 
