@@ -66,9 +66,35 @@ verify:
   - Live doc denominator reads N/43 (idc03's deployed suite has 43
     scenarios — the tail grew past this worktree's 39).
 
+verify-2: |
+  2026-10-09 ~19:45 (dispatch 20261009-193531, tony-dell):
+  - gev-cmd relay RESTORED: `strip: /apps/gev-cmd` added to the gev-cmd
+    route in chaba-tony-dell ssot.routes.yml (renderer emits
+    `handle_path /apps/gev-cmd/*`), live Caddyfile updated + caddy
+    reloaded. POST https://tony-dell.taila0626a.ts.net/apps/gev-cmd/command
+    (get_current_view_state, wait=1) → 200 with real view-state JSON,
+    verified both on tony-dell (127.0.0.1:8080) and from idc03 over the
+    tailnet edge. Bridge serves only POST /command + GET /command/health
+    on 127.0.0.1:8790 (inside the gev-gemini container, same bridge.py).
+  - gev-gemini Gemini key DEAD: the same 53-char `AQ.…` credential sits in
+    ~/.config/secrets/gemini-api-key.env, gemini-mic-test.env and the
+    podman secret (sha8 c42bd447 all three); 401 on /v1beta/models both as
+    ?key= and Bearer, and Live ws setup dies 1008 invalid-credentials
+    (seen live in journal 18:13-18:19). Needs a fresh AI Studio key —
+    not self-fixable.
+  - idc03 deploy gap: checkout at 8b3896a (pre-fix); unit already has
+    PYTHONUNBUFFERED=1 + TimeoutStartSec=9000 but no BENCH_BUDGET_S.
+    Sat 02:00 run on old code will still SIGTERM ~04:30 with no docs
+    (== lines will at least stream now). Deploy + BENCH_BUDGET_S=8400
+    requested on the card.
+
 still-open:
-  - gev-cmd relay on tony-dell 404s — separate outage; gev_* correctly
-    INFRA-skip until it returns.
+  - gev-gemini Gemini key: all deployed copies are the same dead token —
+    Tony needs to drop a fresh AI Studio key at
+    ~/.config/secrets/gemini-api-key.env, then re-secret into podman
+    (podman secret rm/create gemini-api-key) + restart gev-gemini.service.
+    Until then the gev-live voice lane fails setup; gev-cmd command lane
+    is unaffected.
   - Suite is still ~3h when healthy — recommend either TimeoutStartSec>=4h
     + budget-s under it, or splitting casting into casting-io /
     casting-gev suites on different nights, or making the daily rerun
