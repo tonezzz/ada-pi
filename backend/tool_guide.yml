@@ -507,3 +507,15 @@ ada_device_acl: >-
   Owner-only device ACL grants. 'list' shows an identity's effective
   policy + grants (or all without identity=); 'grant'/'revoke' take
   identity= (e.g. 'person.kk') + entity_id and apply immediately.
+
+ada_member_keys: >-
+  Member PWA invite + key approval (docs/kb/ada-member-invite.md).
+  'invite' name=<user-kk> person=<KK> mints a PENDING key + a persistent
+  /i/<tok> landing link to relay over LINE — nothing authenticates until
+  approved; on a revoked name it resurrects a fresh pending invite.
+  'approve'/'reject' resolve pending names by 'kk' too (fuzzy 'user-'
+  prefix + person-label match). 'revoke' tombstones an issued key;
+  'reissue' on pending rotates the invite link (old links die), on
+  issued resets the device binding and returns a burn-once /redeem/ link.
+  'list' reads pending/issued/revoked with claimed markers — check it
+  before approving so you name the right person.

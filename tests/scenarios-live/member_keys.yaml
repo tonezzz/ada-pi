@@ -1,0 +1,52 @@
+name: member-keys
+# Live scenario — ada_member_keys (owner_only drop-in).
+#
+# What it verifies:
+#   - NL route: "who's waiting for approval" / "pending invites"
+#     -> ada_member_keys(action=list)
+#   - full invite lifecycle on a scratch name, self-cleaning:
+#     invite (pending) -> approve -> revoke (tombstone)
+#
+# Requires: admin api key (identity person.tony — tool is owner_only).
+#
+# Run on idc03:
+#   python3 scripts/scenario-live.py tests/scenarios-live/member_keys.yaml \
+#     --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
+#
+# tier: smoke — mint/approve/revoke a scratch member key.
+tier: smoke
+
+turns:
+  - user: "Do we have any member keys waiting for approval?"
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: [ada_member_keys]
+
+  - user: "Invite a new member — key name 'user-scratch-member', person label 'SCRATCH'."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: [ada_member_keys]
+      result_contains_any: ["invite_url", "/i/", "pending"]
+      no_failed_result: [ada_member_keys]
+
+  - user: "Approve the scratch member key."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: [ada_member_keys]
+      result_contains_any: ["issued", "approv"]
+      no_failed_result: [ada_member_keys]
+
+  - user: "Now revoke that scratch key — clean it up."
+    expect:
+      timeout_s: 60
+      settle_s: 6
+      response_nonempty: true
+      calls_any: [ada_member_keys]
+      result_contains_any: ["revoked", "revok"]
+      no_failed_result: [ada_member_keys]

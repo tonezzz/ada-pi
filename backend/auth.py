@@ -51,7 +51,12 @@ def _clean_apps(apps: Any) -> list[str] | None:
 
 def _key_entries() -> dict[str, dict]:
     """File-issued keys normalized to {name: {"key", "device", "issued",
-    "apps", "ha_person"}}."""
+    "apps", "ha_person", "approved", "revoked", "person", "invite",
+    "invite_claimed", "revoked_at"}}.
+
+    State fields (docs/kb/ada-member-invite.md): `approved` absent means
+    True (legacy keys stay live); `revoked` is a tombstone — the entry is
+    kept for audit but the key no longer authenticates."""
     try:
         data = json.loads(open(_keys_file()).read())
     except (OSError, ValueError):
@@ -65,18 +70,38 @@ def _key_entries() -> dict[str, dict]:
                                    value.get("issued"))
             apps = _clean_apps(value.get("apps"))
             ha_person = value.get("ha_person")
+            approved = value.get("approved", True)
+            revoked = bool(value.get("revoked"))
+            person = value.get("person")
+            invite = value.get("invite")
+            claimed = value.get("invite_claimed")
+            revoked_at = value.get("revoked_at")
         else:
             key, device, issued, apps, ha_person = value, None, None, None, None
+            approved, revoked, person = True, False, None
+            invite, claimed, revoked_at = None, None, None
         if name and key:
-            entries[str(name)] = {"key": str(key), "device": device or None,
-                                  "issued": issued, "apps": apps,
-                                  "ha_person": ha_person}
+            entries[str(name)] = {
+                "key": str(key), "device": device or None,
+                "issued": issued, "apps": apps, "ha_person": ha_person,
+                "approved": bool(approved), "revoked": revoked,
+                "person": person, "invite": invite,
+                "invite_claimed": claimed if isinstance(claimed, dict) else None,
+                "revoked_at": revoked_at,
+            }
     return entries
 
 
+def _key_live(entry: dict) -> bool:
+    """A key authenticates only when issued: not revoked and approved."""
+    return not entry.get("revoked") and entry.get("approved", True)
+
+
 def _file_keys() -> dict[str, str]:
-    """Dynamically issued keys from the keys file: {key: name}."""
-    return {e["key"]: n for n, e in _key_entries().items()}
+    """Dynamically issued LIVE keys from the keys file: {key: name}.
+    Pending (approved=false) and revoked keys are excluded — they cannot
+    authenticate until the approval gate clears."""
+    return {e["key"]: n for n, e in _key_entries().items() if _key_live(e)}
 
 
 def _parse_keys() -> dict[str, str]:
@@ -113,7 +138,9 @@ def _save_file_keys(data: dict[str, str]) -> None:
 
 
 def create_key(name: str, apps: Any = None,
-               ha_person: str | None = None) -> str | None:
+               ha_person: str | None = None, approved: bool = True,
+               person: str | None = None,
+               invite: bool = False) -> str | None:
     """Issue a new named user key, persisted to the keys file. None if taken.
 
     `apps` optionally restricts which UIs/capabilities the key carries
@@ -121,7 +148,13 @@ def create_key(name: str, apps: Any = None,
     voice+chat.
     ha_person optionally binds the key to a Home Assistant person entity
     (e.g. 'person.kk') — sessions authenticated with this key inherit that
-    identity for memory/persona routing until a voiceprint overrides it."""
+    identity for memory/persona routing until a voiceprint overrides it.
+    approved=False mints a pending key (member-invite flow): it cannot
+    authenticate until approve_key() clears the gate.
+    `person` is the member-facing display label used by the per-invite
+    PWA manifest name (ADA-{INSTANCE}({Person})).
+    invite=True persists an invite token on the entry — the long-lived
+    bearer secret behind the /i/<token> landing page."""
     if not _KEY_NAME_RE.match(name):
         return None
     with _KEYS_LOCK:
@@ -140,27 +173,173 @@ def create_key(name: str, apps: Any = None,
             data[name]["apps"] = clean
         if ha_person:
             data[name]["ha_person"] = str(ha_person)
+        if not approved:
+            data[name]["approved"] = False
+        if person:
+            data[name]["person"] = str(person)
+        if invite:
+            data[name]["invite"] = secrets.token_urlsafe(24)
         _save_file_keys(data)
     try:
         from backend.event_log import log_event
-        log_event("key-issued", name, "key", "device key created")
+        log_event("key-issued", name, "key",
+                  "device key created" if approved else
+                  "member invite key created (pending approval)")
     except Exception:
         pass
     return key
 
 
-def revoke_key(name: str) -> bool:
-    """Remove a file-issued key. Existing sessions for that name die too."""
+def approve_key(name: str) -> bool:
+    """Clear a pending key's approval gate. True only when it flipped
+    pending -> approved (False on no such key, revoked, or already live)."""
     with _KEYS_LOCK:
         try:
             data = json.loads(open(_keys_file()).read())
         except (OSError, ValueError):
             return False
-        if name not in data:
+        entry = data.get(name)
+        if not isinstance(entry, dict) or entry.get("revoked"):
             return False
-        del data[name]
+        if entry.get("approved", True):
+            return False
+        entry["approved"] = True
+        _save_file_keys(data)
+    try:
+        from backend.event_log import log_event
+        log_event("key-approved", name, "key", "member key approved")
+    except Exception:
+        pass
+    return True
+
+
+def revoke_key(name: str) -> bool:
+    """Revoke a file-issued key: writes a revoked tombstone (the entry —
+    and its audit fields — survives) instead of deleting it. The key
+    stops authenticating immediately; existing sessions die on their next
+    request because _parse_keys drops revoked entries."""
+    with _KEYS_LOCK:
+        try:
+            data = json.loads(open(_keys_file()).read())
+        except (OSError, ValueError):
+            return False
+        entry = data.get(name)
+        if entry is None:
+            return False
+        if not isinstance(entry, dict):
+            entry = {"key": entry}
+            data[name] = entry
+        if entry.get("revoked"):
+            return False
+        entry["revoked"] = True
+        entry["revoked_at"] = time.strftime("%Y-%m-%d %H:%M")
         _save_file_keys(data)
     return True
+
+
+def reinvite_key(name: str, person: str | None = None) -> str | None:
+    """Resurrect a revoked tombstone as a fresh pending invite: new invite
+    token (old links die), device binding cleared, approved=False.
+    Returns the new invite token, or None when the name isn't a revoked
+    file-issued key."""
+    with _KEYS_LOCK:
+        try:
+            data = json.loads(open(_keys_file()).read())
+        except (OSError, ValueError):
+            return None
+        entry = data.get(name)
+        if not isinstance(entry, dict) or not entry.get("revoked"):
+            return None
+        entry.pop("revoked", None)
+        entry.pop("revoked_at", None)
+        entry["approved"] = False
+        entry["device"] = None
+        entry.pop("invite_claimed", None)
+        entry["invite"] = secrets.token_urlsafe(24)
+        if person:
+            entry["person"] = str(person)
+        _save_file_keys(data)
+        return entry["invite"]
+
+
+def key_status(name: str) -> str | None:
+    """'issued' | 'pending' | 'revoked' for a file-issued key, else None."""
+    entry = _key_entries().get(name)
+    if entry is None:
+        return None
+    if entry["revoked"]:
+        return "revoked"
+    return "issued" if entry["approved"] else "pending"
+
+
+def invite_for_token(token: str) -> str | None:
+    """Resolve a persistent invite token to its key name (any state —
+    pending/approved/revoked — so a stale link can still answer status)."""
+    if not token:
+        return None
+    for name, e in _key_entries().items():
+        inv = e.get("invite")
+        if inv and hmac.compare_digest(str(inv), token):
+            return name
+    return None
+
+
+def invite_token_for(name: str) -> str | None:
+    entry = _key_entries().get(name)
+    return entry.get("invite") if entry else None
+
+
+def rotate_invite(name: str) -> str | None:
+    """Mint a fresh invite token for a key, invalidating old links.
+    None when the name isn't a file-issued key."""
+    with _KEYS_LOCK:
+        try:
+            data = json.loads(open(_keys_file()).read())
+        except (OSError, ValueError):
+            return None
+        entry = data.get(name)
+        if not isinstance(entry, dict):
+            return None
+        entry["invite"] = secrets.token_urlsafe(24)
+        _save_file_keys(data)
+        return entry["invite"]
+
+
+def claim_invite(name: str, device_id: str) -> None:
+    """Record first-touch on an invite: {device, at} once. Informational
+    only — the real device binding lands on the key at successful redeem,
+    so the Safari->installed-PWA localStorage hop (iOS keeps them
+    separate) can't strand the member on a foreign device id."""
+    if not device_id:
+        return
+    with _KEYS_LOCK:
+        try:
+            data = json.loads(open(_keys_file()).read())
+        except (OSError, ValueError):
+            return
+        entry = data.get(name)
+        if not isinstance(entry, dict) or "invite" not in entry:
+            return
+        if entry.get("invite_claimed"):
+            return
+        entry["invite_claimed"] = {
+            "device": device_id,
+            "at": time.strftime("%Y-%m-%d %H:%M"),
+        }
+        _save_file_keys(data)
+
+
+def invite_details(name: str) -> dict | None:
+    """Member-safe invite view for a key name: person label, approval
+    state, claim marker — never the raw key or token."""
+    e = _key_entries().get(name)
+    if e is None:
+        return None
+    return {"name": name, "person": e.get("person"),
+            "ha_person": e.get("ha_person"),
+            "status": key_status(name),
+            "claimed": bool(e.get("invite_claimed")),
+            "claimed_at": (e.get("invite_claimed") or {}).get("at")}
 
 
 def issued_key_names() -> list[str]:
@@ -184,9 +363,15 @@ def issued_key_apps() -> dict[str, list[str] | None]:
 
 
 def issued_key_details() -> dict[str, dict]:
-    """{name: {issued, device, apps, ha_person}} for admin listing (no raw keys)."""
+    """{name: {issued, device, apps, ha_person, status, person, ...}} for
+    admin listing (no raw keys/tokens). status is issued|pending|revoked —
+    the keys card groups on it."""
     return {n: {"issued": e["issued"], "device": e["device"],
-                "apps": e.get("apps"), "ha_person": e.get("ha_person")}
+                "apps": e.get("apps"), "ha_person": e.get("ha_person"),
+                "status": key_status(n), "person": e.get("person"),
+                "invited": bool(e.get("invite")),
+                "claimed": bool(e.get("invite_claimed")),
+                "revoked_at": e.get("revoked_at")}
             for n, e in _key_entries().items()}
 
 
@@ -282,10 +467,14 @@ def enforce_device(name: str, device_id: str) -> str | None:
 
     Env/admin keys are never bound. Unbound issued keys trust-on-first-use:
     the first request carrying a device id binds it. Requests missing the
-    device id on a bound key are rejected.
+    device id on a bound key are rejected. Pending and revoked keys never
+    pass — approval must clear first (docs/kb/ada-member-invite.md).
     """
-    if name not in _key_entries():
+    entry = _key_entries().get(name)
+    if entry is None:
         return name
+    if not _key_live(entry):
+        return None
     bound = bound_device(name)
     if bound == "*":
         # Shared key (e.g. a viewer URL embedded in a dashboard iframe):
@@ -299,7 +488,10 @@ def enforce_device(name: str, device_id: str) -> str | None:
 
 
 def configured() -> bool:
-    return bool(_parse_keys())
+    # Any key material at all — env pairs, live issued keys, even
+    # pending/revoked tombstones — means auth is on. A pending-only keys
+    # file must NOT read as "unconfigured" (that would fail open).
+    return bool(_parse_keys() or _key_entries())
 
 
 def _sign(name: str, expires: int, key: str) -> str:
@@ -403,10 +595,13 @@ def redeem_token(token: str) -> tuple[str, str, str, str | None] | None:
 
 def websocket_caller(ws: Any) -> str | None:
     """Resolve the caller name for a websocket (api_key → name, else session
-    cookie → name). None when keys are configured and no identity resolves."""
+    cookie → name). None when keys are configured and no identity resolves.
+    "" is the anonymous sentinel — only when auth is NOT configured; a
+    configured deployment whose live map is empty (e.g. all keys pending)
+    must not mint one."""
     keys = _parse_keys()
     if not keys:
-        return ""
+        return None if configured() else ""
     provided = ws.query_params.get("api_key") or ""
     name = keys.get(provided) if provided else None
     if name is None:
@@ -416,7 +611,7 @@ def websocket_caller(ws: Any) -> str | None:
 
 
 def websocket_authorized(ws: Any) -> bool:
-    if not _parse_keys():
+    if not configured():
         return True
     name = websocket_caller(ws)
     if name is None:

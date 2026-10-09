@@ -65,3 +65,12 @@ tools:
     policy: read
     secondary_allowed: false
     timeout_s: 220
+  # member-invite (2026-10-09): per-member PWA invite + approval gate —
+  # mint pending keys (invite), clear the gate (approve/reject), revoke,
+  # re-pair. Owner-only: member onboarding is never a secondary turn's
+  # call. Standard: docs/kb/ada-member-invite.md.
+  ada_member_keys:
+    module: ada_member_keys
+    policy: owner_only
+    secondary_allowed: false
+    timeout_s: 15

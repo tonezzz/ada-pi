@@ -17,7 +17,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent
@@ -287,16 +287,23 @@ async def _auth_payload(request: Request) -> tuple[str, dict]:
     return name, payload if isinstance(payload, dict) else {}
 
 
-# -- User invites: per-user key + one-time redeem URL/QR -------------------
+# -- User invites: per-member key behind an approval gate ------------------
+# Standard: docs/kb/ada-member-invite.md.
 # Flow:
-#   1. POST /api/auth/invites  {name, ha_person?, path?, redirect?, qr?, origin?}
-#      -> creates the user's key AND mints a burn-once redeem link in one call;
-#         the raw key is never returned — only the single-use link/QR.
-#   2. The user scans the QR / opens {base}/redeem/{token}: the token burns,
-#      an HttpOnly session cookie is set, and the PWA is handed the key once —
-#      the browser session is now tied to that user.
-#   3. Re-pair: POST /api/auth/invites/{name} mints a fresh link for the same
-#      key (device binding reset). Revoke: DELETE /api/auth/keys/{name}.
+#   1. POST /api/auth/invites  {name, person?, ha_person?, path?, qr?, origin?}
+#      -> mints a PENDING key (approved=false — cannot authenticate) plus a
+#         persistent invite token; returns the public landing link /i/<tok>
+#         (+ QR SVG when qr+origin given). The raw key is never returned.
+#   2. The member opens /i/<tok> (public — no login): the landing page
+#      claims the invite, shows the per-member install name
+#      ADA-{INSTANCE}({Person}) via /i/<tok>/manifest.json, and waits.
+#   3. Owner clears the gate — Ada voice ("approve kk" -> ada_member_keys)
+#      or Approve on <ada-keys-card>: POST /api/auth/keys/{name}/approve.
+#   4. The member's installed PWA redeems /api/invite/<tok>/redeem: the key
+#      TOFU-binds to that device and is handed back once, with a session
+#      cookie. Reject/revoke tombstones the key.
+#   Re-pair: POST /api/auth/invites/{name} mints a fresh burn-once link for
+#   an ISSUED key (device binding reset). Revoke: DELETE /api/auth/keys/{name}.
 
 
 _HA_PERSON_RE = re.compile(r"^person\.[a-z0-9_]+$")
@@ -322,50 +329,125 @@ async def _ha_person_exists(ha_person: str | None) -> bool | None:
         return None
 
 
+def _invite_base(payload: dict) -> str:
+    """Mount base for invite URLs — same sanitation as _redeem_response."""
+    base = str(payload.get("path") or "/")
+    if not base.startswith("/") or "//" in base:
+        base = "/"
+    return base.rstrip("/") or "/"
+
+
+def _instance_tag() -> str:
+    """INSTANCE tag for ADA-{INSTANCE}({Person}) member install names.
+
+    ADA_PWA_INSTANCE wins; default 'HA-' + ADA_INSTANCE_ID.upper() so the
+    ada-ha-tony service brands member installs ADA-HA-TONY(<person>),
+    visually grouped with the owner's ADA-HA(Tony)."""
+    tag = os.environ.get("ADA_PWA_INSTANCE", "").strip()
+    if tag:
+        return tag.upper()
+    return f"HA-{os.environ.get('ADA_INSTANCE_ID', 'default').upper()}"
+
+
+def _person_label(details: dict) -> str:
+    """Member display label for the manifest name: invite person= label,
+    else the key name minus its user- prefix."""
+    person = str(details.get("person") or "").strip()
+    if person:
+        return person
+    name = str(details.get("name") or "member")
+    return re.sub(r"^user-", "", name) or name
+
+
+def _invite_app_name(details: dict) -> str:
+    return f"ADA-{_instance_tag()}({_person_label(details)})"
+
+
+def _invite_response(name: str, payload: dict) -> dict:
+    """Shape an invite response: public landing URL (+ QR SVG on request)."""
+    token = auth.invite_token_for(name)
+    base = _invite_base(payload)
+    url = f"{base}/i/{token}" if base != "/" else f"/i/{token}"
+    result = {"invite_url": url, "status": auth.key_status(name)}
+    if payload.get("qr"):
+        origin = str(payload.get("origin") or "").rstrip("/")
+        if origin.startswith("http"):
+            result["qr_svg"] = _qr_svg(origin + url)
+    return result
+
+
 @app.post("/api/auth/invites")
 async def create_invite(request: Request) -> dict:
-    """Issue a per-user key and return its one-time redeem URL (+ QR SVG).
+    """Mint a member invite: PENDING key + persistent public invite link.
 
-    Body: {name, ha_person?, path?, redirect?, qr?, origin?}. ha_person binds
-    the key to an HA person entity so sessions inherit person.<id> identity
-    (memory banks, persona, actuation ACL) even before voice enrollment.
+    Body: {name, person?, ha_person?, path?, qr?, origin?, approved?}.
+    The key mints approved=false — it cannot authenticate until the owner
+    clears the gate (ada_member_keys / keys card). `person` is the member
+    display label used in the ADA-{INSTANCE}({Person}) install name.
+    ha_person binds sessions to person.<id> identity even before voice
+    enrollment. `approved: true` is the operator escape hatch — the
+    response then also carries a burn-once redeem link.
+    A revoked name resurrects: fresh pending invite, old links dead.
     """
     _, payload = await _auth_payload(request)
     key_name = str(payload.get("name") or "").strip()
     ha_person = _payload_ha_person(payload)
+    person = str(payload.get("person") or "").strip() or None
+    approved = bool(payload.get("approved"))
     exists = await _ha_person_exists(ha_person)
     if exists is False:
         logger.warning("invite %s: ha_person %s does not exist in Home Assistant",
                        key_name, ha_person)
-    if auth.create_key(key_name, ha_person=ha_person) is None:
+    if auth.key_status(key_name) == "revoked":
+        if auth.reinvite_key(key_name, person=person) is None:
+            raise HTTPException(status_code=409, detail="cannot re-invite name")
+        logger.info("re-invite: revoked key %s resurrected as pending", key_name)
+        return {"name": key_name, "person": person, "reinvited": True,
+                **_invite_response(key_name, payload)}
+    if auth.create_key(key_name, apps=payload.get("apps"),
+                       ha_person=ha_person, approved=approved,
+                       person=person, invite=True) is None:
         raise HTTPException(status_code=409, detail="invalid or taken name")
-    logger.info("issued user key name=%s ha_person=%s", key_name, ha_person)
-    return {
-        "name": key_name,
-        "ha_person": ha_person,
-        "ha_person_exists": exists,
-        **_redeem_response(key_name, payload),
-    }
+    logger.info("issued member invite name=%s person=%s ha_person=%s "
+                "approved=%s", key_name, person, ha_person, approved)
+    result = {"name": key_name, "person": person, "ha_person": ha_person,
+              "ha_person_exists": exists, **_invite_response(key_name, payload)}
+    if approved:
+        result.update(_redeem_response(key_name, payload))
+    return result
 
 
 @app.get("/api/auth/invites")
 async def list_invites(request: Request) -> dict:
-    """List issued user keys: name, issued date, device binding, ha_person."""
+    """List issued user keys: name, issued date, device binding, ha_person,
+    person label, invite/claim markers, and status (issued|pending|revoked)."""
     name, _ = await _auth_payload(request)
     return {"caller": name, "users": auth.issued_key_details()}
 
 
 @app.post("/api/auth/invites/{name}")
 async def reissue_invite(name: str, request: Request) -> dict:
-    """Mint a fresh one-time redeem link for an existing user key.
+    """Re-mint the pair link for an existing user key.
 
-    Re-pairing keeps the same key — the new link hands it to a device again
-    (e.g. after the device cleared its browser storage). The device binding
-    is reset so the next session TOFU-binds to the new device.
+    Issued keys: fresh burn-once redeem link; the device binding resets so
+    the next session TOFU-binds to the new device. Pending keys: the invite
+    link is already persistent — returns it (rotate=true first replaces
+    the invite token, killing links already sent). Revoked: 409 —
+    re-invite with POST /api/auth/invites on the same name instead.
     """
     _, payload = await _auth_payload(request)
-    if name not in auth.issued_key_names():
+    status = auth.key_status(name)
+    if status is None:
         raise HTTPException(status_code=404, detail="no such issued key")
+    if status == "revoked":
+        raise HTTPException(
+            status_code=409,
+            detail="key revoked — POST /api/auth/invites re-invites the name")
+    if status == "pending":
+        if payload.get("rotate"):
+            auth.rotate_invite(name)
+        logger.info("invite link re-minted for pending name=%s", name)
+        return {"name": name, **_invite_response(name, payload)}
     auth.unbind_device(name)
     logger.info("re-pair redeem minted for name=%s (device binding reset)", name)
     return {"name": name, **_redeem_response(name, payload)}
@@ -375,8 +457,11 @@ async def reissue_invite(name: str, request: Request) -> dict:
 async def update_invite(name: str, request: Request) -> dict:
     """Update a user key's metadata: bind/clear its HA person entity."""
     _, payload = await _auth_payload(request)
-    if name not in auth.issued_key_names():
+    status = auth.key_status(name)
+    if status is None:
         raise HTTPException(status_code=404, detail="no such issued key")
+    if status == "revoked":
+        raise HTTPException(status_code=409, detail="key is revoked")
     ha_person = _payload_ha_person(payload)
     exists = await _ha_person_exists(ha_person)
     if exists is False:
@@ -399,9 +484,18 @@ async def mint_redeem(request: Request) -> dict:
 
 @app.get("/api/auth/keys")
 async def list_keys(request: Request) -> dict:
+    """Admin key listing grouped for the keys card: issued | pending |
+    revoked, plus per-key details (status, person label, claim marker)."""
     name, _ = await _auth_payload(request)
-    return {"caller": name, "issued": auth.issued_key_names(),
-            "bindings": auth.issued_key_bindings(), "apps": auth.issued_key_apps()}
+    details = auth.issued_key_details()
+    groups = {"issued": [], "pending": [], "revoked": []}
+    for k, d in details.items():
+        groups.get(d["status"], groups["issued"]).append(k)
+    return {"caller": name, "issued": groups["issued"],
+            "pending": groups["pending"], "revoked": groups["revoked"],
+            "details": details,
+            "bindings": auth.issued_key_bindings(),
+            "apps": auth.issued_key_apps()}
 
 
 @app.post("/api/auth/keys")
@@ -420,12 +514,46 @@ async def create_key(request: Request) -> dict:
 
 @app.delete("/api/auth/keys/{name}")
 async def revoke_key(name: str, request: Request) -> dict:
-    """Revoke an issued user key (kills its sessions too)."""
+    """Revoke an issued or pending user key — tombstone, sessions die."""
     await _auth_payload(request)
     if not auth.revoke_key(name):
         raise HTTPException(status_code=404, detail="no such issued key")
     logger.info("revoked device key name=%s", name)
-    return {"ok": True}
+    return {"ok": True, "status": "revoked"}
+
+
+@app.post("/api/auth/keys/{name}/approve")
+async def approve_key(name: str, request: Request) -> dict:
+    """Owner clears the approval gate on a pending member key — the
+    member's installed PWA can then redeem (docs/kb/ada-member-invite.md)."""
+    await _auth_payload(request)
+    status = auth.key_status(name)
+    if status is None:
+        raise HTTPException(status_code=404, detail="no such issued key")
+    if status == "revoked":
+        raise HTTPException(status_code=409, detail="key is revoked")
+    if status == "issued":
+        return {"ok": True, "name": name, "status": "issued",
+                "already": True}
+    if not auth.approve_key(name):
+        raise HTTPException(status_code=409, detail="approve failed")
+    logger.info("approved member key name=%s", name)
+    return {"ok": True, "name": name, "status": "issued"}
+
+
+@app.post("/api/auth/keys/{name}/reject")
+async def reject_key(name: str, request: Request) -> dict:
+    """Reject a pending member key — tombstones it (Revoked section)."""
+    await _auth_payload(request)
+    status = auth.key_status(name)
+    if status != "pending":
+        raise HTTPException(
+            status_code=404 if status is None else 409,
+            detail="no such pending key"
+            if status is None else f"key is {status} — use DELETE to revoke")
+    auth.revoke_key(name)
+    logger.info("rejected pending key name=%s", name)
+    return {"ok": True, "name": name, "status": "revoked"}
 
 
 @app.post("/api/auth/keys/{name}/redeem")
@@ -506,6 +634,119 @@ async def redeem(token: str, request: Request):
         )
     logger.info("redeem token used: name=%s path=%s", name, base)
     return response
+
+
+# -- Member invite landing (public — no auth) -------------------------------
+# The invite URL is the only secret a member ever sees. /i/<tok> serves the
+# landing page (install prompt + redeem); /i/<tok>/manifest.json carries the
+# per-member install name ADA-{INSTANCE}({Person}) so iOS Add-to-Home-Screen
+# labels the icon for the member, not the instance.
+# Standard: docs/kb/ada-member-invite.md.
+
+_INVITE_PAGE = ROOT / "pwa" / "invite" / "index.html"
+
+
+def _invite_lookup(token: str) -> tuple[str, dict]:
+    name = auth.invite_for_token(token)
+    if name is None:
+        raise HTTPException(status_code=404, detail="invite not found")
+    return name, auth.invite_details(name)
+
+
+@app.get("/i/{token}/manifest.json")
+async def invite_manifest(token: str) -> dict:
+    """Per-invite PWA manifest — the member-named install target."""
+    _, details = _invite_lookup(token)
+    app_name = _invite_app_name(details)
+    return {
+        "name": app_name,
+        "short_name": app_name,
+        "start_url": f"/i/{token}",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#000000",
+        "theme_color": "#000000",
+        "orientation": "portrait",
+        "icons": [],
+    }
+
+
+@app.get("/i/{token}")
+async def invite_landing(token: str) -> HTMLResponse:
+    """Member invite landing page — install prompt + claim/redeem.
+
+    The per-member app name is templated in server-side so iOS reads the
+    correct apple-mobile-web-app-title at Add-to-Home-Screen time even
+    before any JS runs."""
+    _, details = _invite_lookup(token)
+    try:
+        html = _INVITE_PAGE.read_text(encoding="utf-8")
+    except OSError:
+        raise HTTPException(status_code=500, detail="invite page missing")
+    html = (html
+            .replace("{{APP_NAME}}", _invite_app_name(details))
+            .replace("{{PERSON}}", _person_label(details))
+            .replace("{{TOKEN}}", token)
+            .replace("{{STATUS}}", str(details.get("status") or "")))
+    return HTMLResponse(html)
+
+
+@app.get("/api/invite/{token}")
+async def invite_status(token: str) -> dict:
+    """Public invite status for the landing page's pending poll.
+    Member-safe: person label + status only — never key material."""
+    _, details = _invite_lookup(token)
+    return {"ok": True, "person": _person_label(details),
+            "app_name": _invite_app_name(details),
+            "status": details["status"], "claimed": details["claimed"]}
+
+
+@app.post("/api/invite/{token}/redeem")
+async def invite_redeem(token: str, request: Request,
+                        response: Response) -> dict:
+    """Member-side redeem behind the invite token.
+
+    pending  — records first-touch (claim marker for the keys card) and
+               returns status=pending; no key material leaves.
+    issued   — TOFU-binds the key to the posted device_id and hands it
+               back once with a session cookie. A second device fails —
+               invites are single-device bearer credentials.
+    revoked  — 410."""
+    name, details = _invite_lookup(token)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    device_id = str(payload.get("device_id") or "")
+    status = auth.key_status(name)
+    if status == "revoked":
+        raise HTTPException(status_code=410, detail="invite was revoked")
+    auth.claim_invite(name, device_id)
+    if status == "pending":
+        logger.info("invite claimed (pending approval): name=%s", name)
+        return {"ok": True, "status": "pending"}
+    if not device_id:
+        raise HTTPException(status_code=422, detail="device_id required")
+    if auth.enforce_device(name, device_id) is None:
+        raise HTTPException(
+            status_code=403,
+            detail="invite is bound to another device — ask for a re-pair")
+    key = auth.key_for_name(name)
+    if key is None:
+        raise HTTPException(status_code=403, detail="key no longer exists")
+    session = auth.issue_session_for_name(name)
+    if session:
+        secure = (request.headers.get("x-forwarded-proto")
+                  or request.url.scheme) == "https"
+        response.set_cookie(
+            auth.SESSION_COOKIE, session,
+            max_age=auth.SESSION_TTL_S, httponly=True, samesite="lax",
+            secure=secure, path="/",
+        )
+    logger.info("invite redeemed: name=%s", name)
+    return {"ok": True, "status": "issued", "name": name, "api_key": key}
 
 
 @app.on_event("startup")
