@@ -25,6 +25,14 @@ tools:
     # Board writes through Caddy take ~45-75s while board-api rebuilds
     # under flock — a move is GET+POST+comment. Needs headroom.
     timeout_s: 180
+  # voice-fx (2026-10-09): sci-fi narration toggle — per-caller flag for
+  # 'bark' machine-voice asides on deep-memory calls. read+set; secondary
+  # callers may toggle their own flag (it's keyed to their caller name).
+  voice_fx:
+    module: voice_fx
+    policy: read
+    secondary_allowed: true
+    timeout_s: 5
   ada_track_device:
     module: ada_track_device
     policy: owner_only

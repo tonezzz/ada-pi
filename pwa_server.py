@@ -31,7 +31,7 @@ from backend.conversation_memory import (
     record_session_end,
 )
 from backend.realtime_provider import create_provider
-from backend import memory_ops
+from backend import memory_ops, voice_fx
 from backend.home_assistant import HomeAssistantClient
 from backend.tool_runner import ToolRunner
 from backend.conversation_memory import conversation_health
@@ -1376,6 +1376,18 @@ async def voice_socket(ws: WebSocket) -> None:
                     elif event.type in ("response_completed", "response_interrupted"):
                         live_turn_text = ""
                         suppressing = False
+                    if event.type == "tool_call":
+                        # sci-fi narration layer (voice_fx): deep-memory
+                        # calls emit a 'bark' the client speaks in its flat
+                        # machine voice — gated per caller, default on.
+                        with suppress(Exception):
+                            bark = voice_fx.bark_for(
+                                str(event.data.get("name") or ""),
+                                event.data.get("args") or {},
+                                tool_runner.session_caller_name)
+                            if bark:
+                                await ws.send_text(json.dumps(
+                                    {"type": "bark", "text": bark}))
                     await ws.send_text(json.dumps({"type": event.type, **event.data}))
                 elif event.type == "go_away":
                     return

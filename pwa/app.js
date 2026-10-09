@@ -231,6 +231,11 @@ function handleControl(event) {
     case "speech_stopped":
       setStatus("On — listening");
       break;
+    case "bark":
+      // sci-fi narration layer — server emits these on deep-memory tool
+      // calls (voice_fx). Flat machine voice, same channel as boot voice.
+      systemSay(event.text || "");
+      break;
     case "notify_voice":
       // Data-package / event arrival — flat machine voice (speechSynthesis),
       // deliberately NOT Ada's voice. Ada keeps her current focus; a silent
