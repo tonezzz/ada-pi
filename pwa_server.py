@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import collections
+import hashlib
 import json
 import logging
 import os
 import re
+import socket
 import sys
 import time
 import uuid
@@ -2506,6 +2508,157 @@ async def cms_spawn_session(request: Request) -> dict:
         "message": message,
         "board_url": board_client.board_page_url(),
     }
+
+
+# -- Secret drop ----------------------------------------------------------
+# POST /api/secret-drop — the <ada-chat-card> secret-drop modal lands here.
+# Delivers a value into ~/.config/secrets/<name> on the chosen fleet host:
+# local write (0600) when the target is this host, ssh fan-out otherwise —
+# the value rides ssh stdin, never argv (ps-visible) and never the logs.
+# The receipt is metadata only: path + sha256[:8]. Card: ada-secret-drop;
+# standard: docs/kb/ada-secrets-hygiene.md.
+
+SECRET_DROP_HOSTS = ("idc03", "tony-dell", "tony-omen", "idc02")
+_SECRET_NAME_RE = re.compile(r"^[a-z0-9._-]{1,64}$")
+# The auth key store lives in the same secrets dir — dropping over it
+# corrupts auth and locks everyone out, so the name is reserved.
+_SECRET_NAME_DENY_RE = re.compile(r"^ada-ha-.+-keys\.json$")
+SECRET_VALUE_MAX_BYTES = 64 * 1024
+SECRET_DROP_MAX_PER_HOUR = int(
+    os.environ.get("ADA_SECRET_DROP_MAX_PER_HOUR", "5"))
+_secret_drop_hits: dict[str, collections.deque] = {}
+
+
+def _secrets_dir() -> Path:
+    return Path(os.environ.get(
+        "ADA_SECRETS_DIR", os.path.expanduser("~/.config/secrets")))
+
+
+def _local_hostnames() -> set[str]:
+    """Names that mean 'write on this host': the machine's short hostname,
+    localhost, and the optional ADA_HOST_ALIAS (e.g. a service running on
+    idc03 under a different uname)."""
+    names = {socket.gethostname().split(".")[0].lower(), "localhost"}
+    alias = os.environ.get("ADA_HOST_ALIAS", "").strip().lower()
+    if alias:
+        names.add(alias)
+    return names
+
+
+def _write_secret_local(name: str, value: str) -> Path:
+    target = _secrets_dir() / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.write(fd, value.encode())
+    finally:
+        os.close(fd)
+    # O_CREAT mode only applies on create — normalize pre-existing files too.
+    os.chmod(target, 0o600)
+    return target
+
+
+async def _ssh_secret_drop(host: str, name: str, value: str) -> None:
+    """Deliver via ssh stdin. `name` is regex-safe ([a-z0-9._-]) so it can
+    embed in the remote command; `value` never appears in argv."""
+    remote = (f"umask 077; d=\"$HOME/.config/secrets\"; mkdir -p \"$d\" && "
+              f"cat > \"$d/{name}\"")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host,
+            "sh", "-c", remote,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE)
+    except OSError as exc:
+        raise HTTPException(status_code=502,
+                            detail=f"ssh unavailable: {exc}") from exc
+    try:
+        _, err = await asyncio.wait_for(
+            proc.communicate(value.encode()), timeout=20)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise HTTPException(status_code=502,
+                            detail=f"ssh to {host} timed out") from None
+    if proc.returncode != 0:
+        detail = (err or b"").decode(errors="replace").strip()[:200]
+        raise HTTPException(status_code=502,
+                            detail=f"ssh delivery to {host} failed: "
+                                   f"{detail or 'exit ' + str(proc.returncode)}")
+
+
+@app.post("/api/secret-drop")
+async def api_secret_drop(request: Request) -> dict:
+    """Drop a secret into ~/.config/secrets/<name> on a fleet host.
+
+    Any paired chat key may drop (any-paired auth — card answer); pending,
+    revoked, and view-only keys are refused. The secret value is NEVER
+    logged, stored in transcripts, or echoed — callers get back only
+    {host, name, path, sha8, via}."""
+    if auth.configured():
+        caller = auth.caller_name(request)
+        if caller is None:
+            raise HTTPException(status_code=401,
+                                detail="invalid or missing api key")
+        if not auth.key_can(caller, "chat"):
+            raise HTTPException(status_code=403,
+                                detail="key lacks the 'chat' capability")
+    else:
+        caller = "anon"
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400,
+                            detail="invalid json body") from exc
+    host = str(body.get("host") or "").strip().lower()
+    name = str(body.get("name") or "").strip()
+    value = body.get("value")
+    if host not in SECRET_DROP_HOSTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"host must be one of: {', '.join(SECRET_DROP_HOSTS)}")
+    if not _SECRET_NAME_RE.fullmatch(name):
+        raise HTTPException(
+            status_code=422,
+            detail="name must match [a-z0-9._-] (1-64 chars)")
+    if _SECRET_NAME_DENY_RE.fullmatch(name):
+        raise HTTPException(status_code=422,
+                            detail="name is reserved (auth key store)")
+    if not isinstance(value, str) or not value:
+        raise HTTPException(status_code=422, detail="value is required")
+    if len(value.encode()) > SECRET_VALUE_MAX_BYTES:
+        raise HTTPException(status_code=422,
+                            detail="value too large (64KB max)")
+    now = time.time()
+    hits = _secret_drop_hits.setdefault(caller, collections.deque())
+    while hits and hits[0] <= now - 3600:
+        hits.popleft()
+    if len(hits) >= SECRET_DROP_MAX_PER_HOUR:
+        raise HTTPException(status_code=429,
+                            detail="secret-drop rate limit — "
+                                   f"{SECRET_DROP_MAX_PER_HOUR}/hour")
+    hits.append(now)  # count before delivery so a dead host can't be hammered
+    sha8 = hashlib.sha256(value.encode()).hexdigest()[:8]
+    receipt_path = f"{host}:~/.config/secrets/{name}"
+    if host in _local_hostnames():
+        _write_secret_local(name, value)
+        via = "local"
+    else:
+        await _ssh_secret_drop(host, name, value)
+        via = "ssh"
+    # Metadata-only audit trail — the value must never reach any durable
+    # text surface (docs/kb/ada-secrets-hygiene.md).
+    logger.info("secret-drop: caller=%s host=%s name=%s sha8=%s via=%s",
+                caller, host, name, sha8, via)
+    try:
+        from backend.event_log import log_event
+        log_event("secret-drop", caller, name,
+                  f"host={host} sha8={sha8} via={via}")
+    except Exception:
+        pass
+    return {"ok": True, "host": host, "name": name,
+            "path": receipt_path, "sha8": sha8, "via": via}
 
 
 static_dir = ROOT / "frontend"
