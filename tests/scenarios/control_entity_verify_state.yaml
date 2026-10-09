@@ -1,0 +1,72 @@
+name: control-entity-verify-state
+instance: tony
+# control-entity-verify-state card (2026-10-09): 2026-10-08 transcript
+# 9e96b5a5bc — Ada called volume_down on media_player.tony_tv_cast four
+# times; every call returned ok:true and she said "done" each time while
+# the volume never moved (a paused/off cast player swallows media_player
+# services silently). control_entity now reads the watched attribute
+# before and after the call and returns ok:false with the delta when
+# nothing moved — mirrors tv_action's cast_verify contract.
+#
+# Under test:
+#   1) volume_down whose level moves reads back ok:true + verify delta.
+#   2) volume_down that no-ops (the transcript case) fails loudly.
+#   3) volume_mute with no is_volume_muted attr is inconclusive — an
+#      unverifiable read never flips a call to ok:false.
+#   4) cover open still closed after the call fails loudly (position or
+#      state must move).
+#   5) cover stop while still 'opening' fails loudly — safety case.
+ha_entities:
+  - {entity_id: media_player.tony_tv_cast, state: paused,
+     available: true, name: TV Cast}
+  - {entity_id: media_player.tony_tv, state: "on",
+     available: true, name: TONY-TV}
+  - {entity_id: cover.gate, state: closed, available: true, name: Gate}
+ha_states_seq:
+  # get_state reads are consumed in call order; the last entry repeats.
+  # Step 1 lands (0.40 -> 0.35 on the first poll). Step 2 replays the
+  # bug: five identical reads -> the call never moved.
+  media_player.tony_tv_cast:
+    - {state: paused, attributes: {volume_level: 0.40}}
+    - {state: paused, attributes: {volume_level: 0.35}}
+    - {state: paused, attributes: {volume_level: 0.30}}
+    - {state: paused, attributes: {volume_level: 0.30}}
+    - {state: paused, attributes: {volume_level: 0.30}}
+    - {state: paused, attributes: {volume_level: 0.30}}
+    - {state: paused, attributes: {volume_level: 0.30}}
+  cover.gate:
+    # open: reads before + first poll (fail-fast on 'closed') — 2 reads.
+    # stop: needs before + all 4 polls 'opening' to fail — 5 reads.
+    - {state: closed, attributes: {current_position: 0}}
+    - {state: closed, attributes: {current_position: 0}}
+    - {state: opening, attributes: {current_position: 30}}
+    - {state: opening, attributes: {current_position: 30}}
+    - {state: opening, attributes: {current_position: 30}}
+    - {state: opening, attributes: {current_position: 30}}
+    - {state: opening, attributes: {current_position: 30}}
+steps:
+  - tool: control_entity
+    args: {entity_id: media_player.tony_tv_cast, action: volume_down}
+    expect:
+      output_contains: ["verify", "volume_level", "0.35"]
+  - tool: control_entity
+    args: {entity_id: media_player.tony_tv_cast, action: volume_down}
+    expect:
+      error_contains: "never moved"
+      output_contains: ["verify", "0.3"]
+  - tool: control_entity
+    args: {entity_id: media_player.tony_tv, action: volume_mute}
+    expect:
+      # media_player.tony_tv has no ha_states entry -> unknown state and
+      # no is_volume_muted attr -> inconclusive, call stays ok.
+      no_error: true
+      output_not_contains: ["verify"]
+  - tool: control_entity
+    args: {entity_id: cover.gate, action: open, confirmed: true}
+    expect:
+      error_contains: "never moved"
+      output_contains: ["verify", "closed"]
+  - tool: control_entity
+    args: {entity_id: cover.gate, action: stop, confirmed: true}
+    expect:
+      error_contains: "still 'opening'"

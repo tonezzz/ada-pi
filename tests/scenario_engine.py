@@ -333,6 +333,11 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
     runner = ToolRunner(unittest.mock.AsyncMock(), instance_id=instance)
     runner._banks = registry
     runner.mddb = fake
+    # memory was built with a real MddbClient before the fake landed —
+    # repoint it too so confidence/safety loads stay in-memory (control
+    # tools hit _ensure_confidence on every gated call).
+    if runner.memory is not None:
+        runner.memory.mddb = fake
     # `persons:` declares the HA people resolve_person()/persons() should
     # see — matches by entity_id, friendly name, or name slug.
     people = [dict(p) for p in (data.get("persons") or [])]
@@ -371,6 +376,12 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
     saved_env = {k: os.environ.get(k) for k in env_spec}
     os.environ.update(env_spec)
 
+    # `ha_entities:` stub ha_client.entities() — the controllable-device
+    # list the confidence gate (_ensure_confidence) reads on every
+    # control call. Needed for scenarios that EXECUTE control_entity.
+    if "ha_entities" in data:
+        runner.context.ha_client.entities = unittest.mock.AsyncMock(
+            return_value=[dict(e) for e in (data.get("ha_entities") or [])])
     # `ha_states:` / `ha_states_seq:` stub ha_client.get_state —
     # entity_id -> HA state doc ({"state","attributes"}); seq entries are
     # consumed in call order, the last one repeats.
