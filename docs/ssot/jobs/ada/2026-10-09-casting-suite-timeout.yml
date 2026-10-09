@@ -1,0 +1,70 @@
+# SSOT Job: ada-scenario-casting "hang" — actually timeout exhaustion
+# Card: ada-scenario-casting-hang (chaba kanban). Dispatch 20261009-175902.
+
+title: Casting suite never finishes inside TimeoutStartSec — killed silent, holds :8199
+subtitle: Not a stall — 33-36 scenarios x ~2 attempts x ~4min ≈ 3.5-4h vs a 2h kill; doc only written at suite end
+
+planning:
+  goal: |
+    ada-scenario-casting.service looked hung: zero journal output 02:00-04:00
+    nightly, TimeoutStartSec kill, no benchmark doc, and the :8199 lock
+    starved the 02:00/03:00/04:00 smoke runs (self-skip → data gap).
+  findings: |
+    - Both nights (Oct 8 20:47->22:47, Oct 9 02:00->04:00) the suite was
+      ACTIVELY working: ada-ha-tony journal shows a fresh scenario session
+      every ~4-5 min straight through to the SIGTERM; /tmp/bench-*.json
+      mtimes walk the suite in order (Oct 9 reached gev_layers_track #27/33
+      at 03:58 — killed mid attempt-2).
+    - Zero output = two causes: (a) benchmark prints '== name: status' only
+      AFTER a scenario subprocess returns, and children run under
+      subprocess.run(capture_output=True) so nothing reaches the journal
+      mid-scenario; (b) the pre-16:57 unit lacked PYTHONUNBUFFERED so even
+      finished '==' lines sat in the stdout block buffer and were lost at
+      SIGTERM. Wrapper + PYTHONUNBUFFERED + TimeoutStartSec=9000 were added
+      2026-10-09 ~17:00 — visibility is fixed, but 2.5h still < suite needs.
+    - Night amplifier: gev-cmd relay on tony-dell returned HTTP 404 all
+      night — every gev_command errors instantly but the ~16 gev_*
+      scenarios had NO preflight, so each ran full Ada turns ~4min and the
+      harness retried once → ~8min each ≈ 2h burned on guaranteed fails.
+      Same pattern when vcast screens are offline (scenario casts /apps/gev/
+      to create the map client; no screen → no client).
+    - Latent bug: scenario-live.py connect() ready-wait loop had no total
+      deadline — per-recv 30s but a chatty-never-ready socket loops forever
+      (would defeat subprocess timeout only via D-state; not seen, but the
+      unbounded wait was real). Now capped at 120s.
+    - gev_showcase.yaml used dict-form preflight (vcast_online: {...}) —
+      run_preflight iterates a list of {check: ...}; dict form raised
+      AttributeError → instant rc=1 fail. Fixed to list form.
+  decisions: |
+    - New preflight `gev_relay`: POST get_current_view_state (wait=1) to
+      $GEV_CMD_URL — pass iff the endpoint answers. Don't require
+      delivered>0: tours create their own client by casting to a screen.
+    - All 16 casting-suite gev_* scenarios get
+      `preflight: [{check: gev_relay}, {check: vcast_online, screens:…}]`
+      (real_screen / screen 1 / screen 9 per scenario; gev_to_tv_live is
+      relay-only — the TV lane isn't a vcast display).
+      Result: dark-night runs skip the whole block in ~1s each as INFRA
+      (unscored) instead of burning ~8min×16 as scored FAILs.
+    - scenario-benchmark.py: flush=True progress lines; live progress doc
+      `benchmark/{suite}/live` written at start + after each scenario (a
+      killed run leaves the trail); SIGTERM handler writes the progress doc
+      then exits; `--max-scenarios N` and `--budget-s`/`BENCH_BUDGET_S`
+      bound a run and mark the doc partial+invalid so it can't pollute
+      baselines.
+
+verify:
+  - PYTHONUNBUFFERED already in unit (2026-10-09 edit) — tonight's 02:00
+    run shows `== name: status` lines in journalctl.
+  - mddb: benchmark/casting/live shows completed scenarios even for a
+    killed run.
+  - truncated probe run writes benchmark/casting-<ts> with valid:false +
+    partial:true.
+
+still-open:
+  - gev-cmd relay on tony-dell 404s — separate outage; gev_* correctly
+    INFRA-skip until it returns.
+  - Suite is still ~3h when healthy — recommend either TimeoutStartSec>=4h
+    + budget-s under it, or splitting casting into casting-io /
+    casting-gev suites on different nights, or making the daily rerun
+    opt-in (ada-bench-casting.timer). Unit/timer live in
+    ~/.config/systemd/user on idc03 — not in git.

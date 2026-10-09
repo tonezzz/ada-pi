@@ -1,5 +1,9 @@
 name: gev_cast_control
 tier: full
+preflight:
+  - {check: gev_relay}
+  - {check: vcast_online, screens: [9]}
+
 turns:
 - user: Cast God's Eye View to screen 9.
   expect:

@@ -1,5 +1,9 @@
 name: gev_tour_report
 tier: full
+preflight:
+  - {check: gev_relay}
+  - {check: vcast_online, screens: ["{real_screen}"]}
+
 turns:
 - user: Hi Ada.
   expect:

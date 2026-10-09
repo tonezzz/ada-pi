@@ -21,6 +21,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 
 import yaml
@@ -257,6 +258,15 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--report-cms", action="store_true",
                     help="also publish a markdown page to ada-cms-pages")
+    ap.add_argument("--max-scenarios", type=int, default=0,
+                    help="cap the run at N scenarios — the doc is marked "
+                         "partial/invalid so a probe run can't pollute the "
+                         "suite baseline")
+    ap.add_argument("--budget-s", type=float,
+                    default=float(os.environ.get("BENCH_BUDGET_S") or 0),
+                    help="stop starting new scenarios after N seconds and "
+                         "write a partial report — keep under the unit's "
+                         "TimeoutStartSec so a slow run never dies silent")
     args = ap.parse_args()
 
     # One benchmark at a time per host — concurrent runs share the same
@@ -272,7 +282,7 @@ def main() -> int:
     except OSError:
         print("another scenario benchmark is already running — refusing "
               "(concurrent suites share the Ada session and corrupt each "
-              "other's results)")
+              "other's results)", flush=True)
         return 2
     _lock.listen(1)
 
@@ -283,13 +293,61 @@ def main() -> int:
     write_tools = set(policy.get("write_tools") or [])
     write_allowed = set(policy.get("write_allowed_in") or [])
 
+    names = _expand(args.suite, bench)
+    if args.max_scenarios:
+        names = names[: args.max_scenarios]
+
     rows, violations = [], []
     run_metrics: dict[str, str] = {}
-    for name in _expand(args.suite, bench):
+    run_t0 = time.time()
+
+    def _progress(note: str) -> None:
+        """Live progress doc — a run killed mid-suite (TimeoutStartSec,
+        SIGKILL) still leaves every completed scenario on record instead
+        of nothing (2026-10-08/09: casting ran 2h, was killed, and wrote
+        no report — the suite looked hung while it was just slow)."""
+        if args.dry_run:
+            return
+        table = "\n".join(
+            f"| {n} | {s} | {t} | {c} | {d:.0f}s |"
+            for n, s, t, c, d in rows)
+        _post(f"{args.mddb.rstrip('/')}/add", {
+            "collection": COLLECTION,
+            "key": f"benchmark/{args.suite}/live",
+            "lang": "en",
+            "contentMd": (f"# Benchmark `{args.suite}` — {note}\n\n"
+                          f"{len(rows)}/{len(names)} scenarios completed.\n\n"
+                          "| scenario | status | turns | tools | dur |\n"
+                          "|---|---|---|---|---|\n" + table + "\n"),
+            "meta": {"kind": ["benchmark-progress"], "suite": [args.suite],
+                     "partial": ["true"], "note": [note],
+                     "ts": [datetime.datetime.now().isoformat(
+                         timespec="seconds")],
+                     "scenarios": [f"{n}:{s}" for n, s, *_ in rows]}})
+
+    def _on_sigterm(signo, _frame):
+        # TimeoutStartSec lands as SIGTERM — leave the trail, then die.
+        try:
+            _progress(f"KILLED by signal {signo}")
+        except Exception:
+            pass
+        os._exit(128 + signo)
+
+    import signal
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+    _progress("run started")
+    for name in names:
+        if args.budget_s and time.time() - run_t0 > args.budget_s:
+            print(f"== budget {args.budget_s:.0f}s exhausted — "
+                  f"{len(names) - len(rows)} scenario(s) unrun",
+                  flush=True)
+            break
         path = _slug_file(name)
         if not os.path.exists(path):
-            print(f"== {name}: SKIP (no yaml)")
+            print(f"== {name}: SKIP (no yaml)", flush=True)
             rows.append((name, "skip", 0, 0, 0.0))
+            _progress("in progress")
             continue
         status, runs, events, out = _run_one(path, args.url, args.api_key,
                                            keys)
@@ -304,7 +362,8 @@ def main() -> int:
             for mk, mv in (t.get("metrics") or {}).items():
                 run_metrics[f"{name}.{mk}"] = str(mv)
         print(f"== {name}: {status} ({runs} runs, {n_tools} tool calls, "
-              f"{dur:.0f}s)")
+              f"{dur:.0f}s)", flush=True)
+        _progress("in progress")
         if name in required and status != "pass":
             violations.append(f"{name}: required_first_try failed ({status})")
         if name not in write_allowed:
@@ -331,6 +390,12 @@ def main() -> int:
     invalid_reason = (f"{unscored_run}/{len(rows)} scenarios infra/quota "
                       "— environment outage, not a model result"
                       if not run_valid else "")
+    partial = len(rows) < len(names)
+    if partial:
+        run_valid = False
+        invalid_reason += ("; " if invalid_reason else "") + (
+            f"partial run — {len(rows)}/{len(names)} scenarios "
+            "completed (budget or --max-scenarios)")
     table = "\n".join(
         f"| {n} | {s} | {t} | {c} | {d:.0f}s |" for n, s, t, c, d in rows)
     md = (f"# Benchmark `{args.suite}` — {now:%Y-%m-%d %H:%M}\n\n"
@@ -363,6 +428,7 @@ def main() -> int:
                      "status": ["fail" if any(s == "fail" for _, s, *_ in rows)
                                 else "pass"],
                      "valid": [str(run_valid).lower()],
+                     "partial": [str(partial).lower()],
                      "invalid_reason": ([invalid_reason]
                                         if invalid_reason else []),
                      "violations": violations or ["none"],
@@ -458,6 +524,7 @@ def main() -> int:
             })
             print(f"  auto-report: {len(worthy)} worthy item(s)")
 
+        _progress("finished — final doc written")
     return 1 if any(s == "fail" for _, s, *_ in rows) or violations else 0
 
 

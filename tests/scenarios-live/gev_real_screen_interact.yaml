@@ -1,5 +1,9 @@
 name: gev_real_screen_interact
 tier: full
+preflight:
+  - {check: gev_relay}
+  - {check: vcast_online, screens: ["{real_screen}"]}
+
 turns:
 - user: Put God's Eye View on screen {real_screen} for me.
   expect:
