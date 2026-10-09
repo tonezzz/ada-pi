@@ -181,6 +181,14 @@ def _slug(text: str) -> str:
                   re.sub(r"[^a-z0-9]+", "-", text.lower())).strip("-")
 
 
+def _cards_only(cards: Any) -> list[dict[str, Any]]:
+    """Drop non-dict card entries (malformed YAML) instead of poisoning
+    the whole board read."""
+    if not isinstance(cards, list):
+        return []
+    return [c for c in cards if isinstance(c, dict)]
+
+
 def _resolve_in(cards: list[Any], cid: str) -> dict[str, Any] | None:
     """Card lookup tolerant of the model shortening an id — exact,
     then UNIQUE id-prefix or slugified-title match."""
@@ -201,7 +209,7 @@ async def _resolve(client: httpx.AsyncClient,
     data, err = await _request(client, "GET", "/cards")
     if err or not data:
         return None
-    return _resolve_in(data.get("cards") or [], cid)
+    return _resolve_in(_cards_only(data.get("cards")), cid)
 
 
 def _is_owner(runner: Any) -> bool:
@@ -240,7 +248,12 @@ async def _comment(client: httpx.AsyncClient, cid: str,
 # ---------------------------------------------------------------- reads
 
 def _compact_card(c: dict[str, Any]) -> dict[str, Any]:
-    open_reqs = [r for r in (c.get("requests") or [])
+    # malformed cards (bare-string requests/comms) must not poison the
+    # whole board read — coerce str entries to {'needed': text} dicts
+    reqs_raw = c.get("requests") or []
+    reqs_norm = [r if isinstance(r, dict)
+                 else {"needed": str(r)} for r in reqs_raw]
+    open_reqs = [r for r in reqs_norm
                  if r.get("status") != "answered"]
     row: dict[str, Any] = {
         "id": c.get("id"),
@@ -263,6 +276,8 @@ def _compact_card(c: dict[str, Any]) -> dict[str, Any]:
             for r in open_reqs
         ]
     comms = c.get("comms") or []
+    comms = [m if isinstance(m, dict) else {"from": "?", "text": str(m)}
+             for m in comms]
     if comms:
         last = comms[-1]
         row["last_comm"] = (
@@ -287,6 +302,7 @@ def _full_card(c: dict[str, Any]) -> dict[str, Any]:
                          ("type", "status", "runner", "result")
                          if act.get(k)}
     reqs = c.get("requests") or []
+    reqs = [r if isinstance(r, dict) else {"needed": str(r)} for r in reqs]
     if reqs:
         row["requests"] = [
             {"id": r.get("id"), "status": r.get("status") or "open",
@@ -297,6 +313,8 @@ def _full_card(c: dict[str, Any]) -> dict[str, Any]:
             for r in reqs
         ]
     comms = c.get("comms") or []
+    comms = [m if isinstance(m, dict) else {"from": "?", "text": str(m)}
+             for m in comms]
     if comms:
         row["comms"] = [
             {"at": m.get("at"), "from": m.get("from"),
@@ -375,14 +393,14 @@ async def _list(args: dict[str, Any]) -> dict[str, Any]:
     assert data is not None
     slug = str(args.get("report") or "").strip()
     if slug:
-        return _report_lookup(data.get("cards") or [], slug)
+        return _report_lookup(_cards_only(data.get("cards")), slug)
     want_col = str(args.get("column") or "").strip().lower()
     try:
         limit = int(args.get("limit") or _READ_LIMIT_DEFAULT)
     except (TypeError, ValueError):
         limit = _READ_LIMIT_DEFAULT
     limit = max(1, min(limit, _READ_LIMIT_MAX))
-    cards = data.get("cards") or []
+    cards = _cards_only(data.get("cards"))
     columns: dict[str, int] = {}
     open_requests = 0
     rows = []
@@ -417,7 +435,7 @@ async def _read(args: dict[str, Any]) -> dict[str, Any]:
     if err:
         return {"ok": False, "error": err}
     assert data is not None
-    card = _resolve_in(data.get("cards") or [], cid)
+    card = _resolve_in(_cards_only(data.get("cards")), cid)
     if card is not None:
         return {"ok": True, "card": _full_card(card)}
     return {"ok": False,
@@ -562,7 +580,7 @@ async def _move(runner: Any, args: dict[str, Any],
         if err:
             return {"ok": False, "error": err}
         assert data is not None
-        payload, cards = data, data.get("cards") or []
+        payload, cards = data, _cards_only(data.get("cards"))
         card = _resolve_in(cards, cid)
         if card is None:
             return {"ok": False,
