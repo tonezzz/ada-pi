@@ -155,8 +155,10 @@ one's assumptions change deliberately.
 3. Phase 2 + 3 → full suite green; report attached to
    `dispatch-outcome.md` / PR body.
 4. Onboard each member: `POST /api/auth/invites {name:"user-<x>",
-   ha_person:"person.<x>"}` → QR → their own session IS theirs; voice
-   swap is personalization only.
+   person:"<X>", ha_person:"person.<x>"}` → `/i/<tok>` invite link (the
+   key is *pending* until an owner approves — ada_member_keys voice tool
+   or the keys card; see docs/kb/ada-member-invite.md) → their own
+   session IS theirs; voice swap is personalization only.
 
 ## Open items
 

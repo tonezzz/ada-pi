@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+    <meta name="theme-color" content="#000000">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <!-- Server-templated: iOS reads this at Add-to-Home-Screen time, so the
+         member's name must be in the DOM before any JS runs. -->
+    <meta name="apple-mobile-web-app-title" content="{{APP_NAME}}">
+    <title>{{APP_NAME}}</title>
+    <link rel="manifest" href="/i/{{TOKEN}}/manifest.json">
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+             background: #00080c; color: #c9fbff;
+             font: 16px/1.5 system-ui, sans-serif;
+             padding: env(safe-area-inset-top) 18px env(safe-area-inset-bottom); }
+      #card { width: min(380px, 94vw); padding: 30px 24px; text-align: center;
+              border: 1px solid #0d4a63; border-radius: 16px;
+              background: #04141c; }
+      h1 { margin: 0 0 4px; color: #aef8ff; font-size: 24px; font-weight: 700;
+           word-break: break-word; }
+      #sub { margin: 0 0 20px; color: #75bdc5; font-size: 15px; }
+      #status { min-height: 46px; margin: 0 0 16px; color: #ffd97a;
+                font-size: 15.5px; }
+      #status.ok { color: #8affc9; }
+      #status.err { color: #ff9a8a; }
+      .btn { display: block; width: 100%; min-height: 50px; margin-top: 10px;
+             padding: 13px 18px; border: 1px solid #087ef2; border-radius: 10px;
+             color: #aef8ff; background: rgba(5,35,48,.9);
+             font: 600 17px system-ui, sans-serif; cursor: pointer; }
+      .btn:disabled { opacity: .45; }
+      .btn.primary { background: #087ef2; color: #fff; }
+      .btn.text { border: none; background: none; color: #75bdc5;
+                  font-size: 14.5px; text-decoration: underline; }
+      .steps { margin: 0 0 6px; padding: 0 0 0 2px; text-align: left;
+               color: #c9fbff; font-size: 15px; }
+      .steps li { margin: 9px 0; list-style: none; }
+      .steps b { color: #ffd97a; font-weight: 600; }
+      .share-ico { display: inline-block; padding: 0 5px; border: 1px solid #0d4a63;
+                   border-radius: 5px; color: #aef8ff; font-size: 13px; }
+      #spinner { display: inline-block; width: 15px; height: 15px; margin-right: 7px;
+                 vertical-align: -2px; border: 2px solid #0d4a63;
+                 border-top-color: #ffd97a; border-radius: 50%;
+                 animation: spin 1s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+  </head>
+  <body>
+    <div id="card">
+      <h1>{{APP_NAME}}</h1>
+      <p id="sub">Hi {{PERSON}} — your Ada invite is ready.</p>
+      <p id="status"></p>
+      <ol id="install-steps" class="steps" hidden>
+        <li>Tap <span class="share-ico">Share &#x2191;</span> in Safari's toolbar.</li>
+        <li>Choose <b>Add to Home Screen</b>.</li>
+        <li>Tap <b>Add</b> — then open <b>{{APP_NAME}}</b> from your home screen.</li>
+      </ol>
+      <button id="open-app" class="btn primary" hidden>Open Ada</button>
+      <button id="in-browser" class="btn text" hidden>Continue in this browser instead</button>
+    </div>
+    <script>
+      const TOKEN = "{{TOKEN}}";
+      let status0 = "{{STATUS}}";
+      const statusEl = document.getElementById("status");
+      const stepsEl = document.getElementById("install-steps");
+      const openBtn = document.getElementById("open-app");
+      const browserBtn = document.getElementById("in-browser");
+      const AUTH_KEY = "ada_api_key", NAME_KEY = "ada_key_name", DEV_KEY = "ada_device_id";
+
+      function deviceId() {
+        let id = localStorage.getItem(DEV_KEY);
+        if (!id) {
+          id = (crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random()).replace(/-/g, "");
+          localStorage.setItem(DEV_KEY, id);
+        }
+        return id;
+      }
+      function standalone() {
+        return window.navigator.standalone === true ||
+               matchMedia("(display-mode: standalone)").matches;
+      }
+      function say(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
+      function sayHtml(html, cls) { statusEl.innerHTML = html; statusEl.className = cls || ""; }
+
+      // Claim/redeem: while pending this only records first-touch (the real
+      // device binding lands on successful redeem, so the Safari ->
+      // installed-PWA localStorage hop can't strand the member).
+      async function redeem() {
+        const r = await fetch("/api/invite/" + TOKEN + "/redeem", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: deviceId() }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 410) return { status: "revoked" };
+        if (!r.ok) throw new Error(d.detail || "redeem failed (" + r.status + ")");
+        return d;
+      }
+
+      async function finish(d) {
+        localStorage.setItem(AUTH_KEY, d.api_key);
+        localStorage.setItem(NAME_KEY, d.name);
+        location.href = "/";
+      }
+
+      let poll = null;
+      function startPoll() {
+        if (poll) return;
+        poll = setInterval(async () => {
+          try {
+            const r = await fetch("/api/invite/" + TOKEN);
+            const d = await r.json().catch(() => ({}));
+            if (d.status === "issued") { clearInterval(poll); poll = null; showReady(); }
+            else if (d.status === "revoked") { clearInterval(poll); poll = null; say("This invite was revoked — ask for a new one.", "err"); }
+          } catch (_) {}
+        }, 5000);
+      }
+
+      function showReady() {
+        stepsEl.hidden = true;
+        if (standalone()) {
+          say("Approved — you're in.", "ok");
+          openBtn.hidden = false;
+          openBtn.textContent = "Open Ada";
+        } else {
+          // Safari and the installed PWA have separate localStorage/device
+          // ids — the key must redeem inside the installed app, not here.
+          say("Approved — open the " + document.title + " icon on your home screen.", "ok");
+          browserBtn.hidden = false;
+        }
+      }
+
+      openBtn.addEventListener("click", async () => {
+        openBtn.disabled = true;
+        try {
+          const d = await redeem();
+          if (d.status === "issued") await finish(d);
+          else if (d.status === "pending") { say("Still pending approval."); startPoll(); }
+          else say("This invite was revoked.", "err");
+        } catch (e) { say(e.message || "Redeem failed.", "err"); }
+        openBtn.disabled = false;
+      });
+      browserBtn.addEventListener("click", async () => {
+        browserBtn.disabled = true;
+        try { const d = await redeem(); if (d.status === "issued") await finish(d); }
+        catch (e) { say(e.message || "Redeem failed.", "err"); }
+        browserBtn.disabled = false;
+      });
+
+      (async function init() {
+        try {
+          const d = await redeem();   // claim first-touch; pending is the norm
+          if (d.status === "issued") { await finish(d); return; }
+          if (d.status === "revoked") { say("This invite was revoked — ask for a new one.", "err"); return; }
+        } catch (e) {
+          if (status0 === "issued") { showReady(); return; }
+          say(e.message || "Couldn't reach Ada — check the link.", "err");
+          return;
+        }
+        // pending (or claimed while pending): install steps + wait
+        if (standalone()) {
+          sayHtml('<span id="spinner"></span>Waiting for approval — this window updates itself.');
+        } else {
+          sayHtml('<span id="spinner"></span>Waiting for approval. Meanwhile, install the app:');
+          stepsEl.hidden = false;
+        }
+        startPoll();
+      })();
+    </script>
+  </body>
+</html>

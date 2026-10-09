@@ -231,5 +231,161 @@ class InviteKeyTests(unittest.TestCase):
             self.assertIsNone(auth.create_key("bad name!"))
 
 
+class MemberInviteTests(unittest.TestCase):
+    """Pending/approved/revoked key states + invite tokens —
+    docs/kb/ada-member-invite.md."""
+
+    def _keys_file(self, data=None):
+        import json
+        import tempfile
+        f = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        json.dump(data or {}, f)
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def test_pending_key_cannot_authenticate(self):
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            key = auth.create_key("user-kk", approved=False, person="KK",
+                                  invite=True)
+            self.assertIsNotNone(key)
+            self.assertEqual(auth.key_status("user-kk"), "pending")
+            # Pending keys are excluded from the auth map entirely.
+            self.assertIsNone(auth.caller_name(
+                _request(headers={"x-api-key": key})))
+            self.assertIsNone(auth.issue_session(key))
+            self.assertIsNone(auth.issue_session_for_name("user-kk"))
+            self.assertFalse(auth.websocket_authorized(
+                _ws(query={"api_key": key})))
+            # ...but the name still exists for admin surfaces.
+            self.assertIn("user-kk", auth.issued_key_names())
+            self.assertEqual(auth.issued_key_details()["user-kk"]["status"],
+                             "pending")
+
+    def test_approve_flips_pending_to_live(self):
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            key = auth.create_key("user-kk", approved=False)
+            self.assertIsNone(auth.caller_name(
+                _request(headers={"x-api-key": key})))
+            self.assertTrue(auth.approve_key("user-kk"))
+            self.assertEqual(auth.key_status("user-kk"), "issued")
+            self.assertEqual(
+                auth.caller_name(_request(headers={"x-api-key": key})),
+                "user-kk")
+            # Approve is idempotent-false: only pending -> issued flips.
+            self.assertFalse(auth.approve_key("user-kk"))
+
+    def test_approve_missing_and_revoked(self):
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            self.assertFalse(auth.approve_key("ghost"))
+            auth.create_key("user-kk", approved=False)
+            auth.revoke_key("user-kk")
+            self.assertFalse(auth.approve_key("user-kk"))
+
+    def test_revoke_tombstone_kills_auth_and_session(self):
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            key = auth.create_key("user-kk")
+            name, token = auth.issue_session(key)
+            self.assertTrue(auth.revoke_key("user-kk"))
+            self.assertEqual(auth.key_status("user-kk"), "revoked")
+            self.assertIsNone(auth.caller_name(
+                _request(headers={"x-api-key": key})))
+            self.assertIsNone(auth.caller_name(
+                _request(cookies={auth.SESSION_COOKIE: token})))
+            # Tombstone keeps the name taken and listed.
+            self.assertIsNone(auth.create_key("user-kk"))
+            details = auth.issued_key_details()["user-kk"]
+            self.assertEqual(details["status"], "revoked")
+            self.assertIsNotNone(details["revoked_at"])
+            # Double revoke is a no-op.
+            self.assertFalse(auth.revoke_key("user-kk"))
+
+    def test_invite_token_roundtrip_and_rotate(self):
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            auth.create_key("user-kk", approved=False, person="KK",
+                            invite=True)
+            token = auth.invite_token_for("user-kk")
+            self.assertIsNotNone(token)
+            self.assertEqual(auth.invite_for_token(token), "user-kk")
+            self.assertIsNone(auth.invite_for_token("bogus-token"))
+            new_token = auth.rotate_invite("user-kk")
+            self.assertNotEqual(token, new_token)
+            self.assertIsNone(auth.invite_for_token(token))     # old link dead
+            self.assertEqual(auth.invite_for_token(new_token), "user-kk")
+
+    def test_invite_details_member_safe(self):
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            auth.create_key("user-kk", approved=False, person="KK",
+                            ha_person="person.kk", invite=True)
+            d = auth.invite_details("user-kk")
+            self.assertEqual(d["person"], "KK")
+            self.assertEqual(d["ha_person"], "person.kk")
+            self.assertEqual(d["status"], "pending")
+            self.assertFalse(d["claimed"])
+            self.assertNotIn("key", d)          # never key material
+            self.assertNotIn("invite", d)       # never the token
+            self.assertIsNone(auth.invite_details("ghost"))
+
+    def test_claim_invite_records_once(self):
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            auth.create_key("user-kk", approved=False, invite=True)
+            auth.claim_invite("user-kk", "dev-a")
+            auth.claim_invite("user-kk", "dev-b")   # first touch wins
+            import json
+            data = json.loads(open(path).read())
+            self.assertEqual(data["user-kk"]["invite_claimed"]["device"],
+                             "dev-a")
+            self.assertTrue(
+                auth.issued_key_details()["user-kk"]["claimed"])
+            # Claim never binds the key's device — the Safari->PWA
+            # localStorage hop must not strand the member.
+            self.assertIsNone(data["user-kk"]["device"])
+            # No invite token -> no claim recorded (direct keys).
+            auth.create_key("ops-key")
+            auth.claim_invite("ops-key", "dev-c")
+            data = json.loads(open(path).read())
+            self.assertNotIn("invite_claimed", data["ops-key"])
+
+    def test_pending_redeem_path_gate(self):
+        """enforce_device refuses pending/revoked keys — invite redeem
+        can only hand out an approved key."""
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            auth.create_key("user-kk", approved=False, invite=True)
+            self.assertIsNone(auth.enforce_device("user-kk", "dev-a"))
+            auth.approve_key("user-kk")
+            self.assertEqual(auth.enforce_device("user-kk", "dev-a"),
+                             "user-kk")                       # TOFU binds
+            self.assertIsNone(auth.enforce_device("user-kk", "dev-b"))
+            self.assertEqual(auth.enforce_device("user-kk", "dev-a"),
+                             "user-kk")
+            auth.revoke_key("user-kk")
+            self.assertIsNone(auth.enforce_device("user-kk", "dev-a"))
+
+    def test_reinvite_resurrects_revoked(self):
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            auth.create_key("user-kk", person="KK", invite=True)
+            old_token = auth.invite_token_for("user-kk")
+            auth.bind_device("user-kk", "dev-x")
+            auth.revoke_key("user-kk")
+            new_token = auth.reinvite_key("user-kk", person="KK2")
+            self.assertIsNotNone(new_token)
+            self.assertNotEqual(old_token, new_token)
+            self.assertIsNone(auth.invite_for_token(old_token))
+            self.assertEqual(auth.key_status("user-kk"), "pending")
+            self.assertIsNone(auth.bound_device("user-kk"))
+            self.assertEqual(auth.invite_details("user-kk")["person"], "KK2")
+            # Reinvite on a live key refuses.
+            self.assertIsNone(auth.reinvite_key("user-kk"))
+
+
 if __name__ == "__main__":
     unittest.main()

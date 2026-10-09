@@ -1,0 +1,103 @@
+# SSOT Job: member PWA invite — pending keys, approval gate, per-member install
+# Card: ada-member-pwa-invite (chaba kanban). Dispatch
+# 20261009-123934-standard-first-then-build-end-.
+
+title: ada member invite — public /i/<tok> landing, pending keys, owner approval gate, ada-keys-card
+
+context:
+  card: |
+    Standard first, then build end-to-end: (1) standard doc
+    docs/kb/ada-member-invite.md — invite token format, PWA manifest
+    naming ADA-{INSTANCE}({Person}), pending/approved key states,
+    approval surface (Ada voice + keys card), revocation.
+    (2) ada-pi-pwa public per-invite manifest + invite landing page.
+    (3) invite endpoint mints pending key bound to person label,
+    approved=false until gate clears. (4) approval gate: Ada command
+    "approve <name>" and/or button on keys page. (5) keys page
+    restructure Issued | Pending | Revoked. (6) member-facing UI stays
+    vanilla web-component (ada-*-card) — HA sidebar, ada-pi-pwa, CMS
+    embeds unchanged; iPhone 15 Safari + A2HS target matrix.
+  prior_state: |
+    POST /api/auth/invites minted an immediately-live key + burn-once
+    redeem link (10min TTL). No approval step, no per-member install
+    naming, no invite landing page, no keys admin UI in this repo.
+    /manifest.json was already dynamic per-instance (ADA-HA(Tony)).
+
+decisions:
+  - state_model: |
+      Key entries gain approved (absent = true, legacy compat), revoked
+      tombstone (+revoked_at), person label, persistent invite token,
+      invite_claimed first-touch marker. Pending and revoked keys are
+      excluded from _parse_keys — they cannot mint sessions, hit the API,
+      or open /ws. Revoke is a tombstone, not a delete: the name stays
+      taken and the audit trail survives.
+  - fail_closed_fix: |
+      configured() now counts ALL file entries — a pending-only keys
+      file previously read as "auth unconfigured" (fail-open). Same for
+      websocket_caller: the "" anonymous sentinel is only minted when
+      auth is genuinely unconfigured.
+  - invite_security: |
+      Invite token = secrets.token_urlsafe(24), persisted on the entry,
+      bearer + single-device: first successful redeem TOFU-binds the key.
+      Pending redeem only records invite_claimed (no device bind) — the
+      iOS Safari->installed-PWA localStorage hop would otherwise strand
+      the member on the wrong device id. rotate_invite / reinvite kill
+      old links.
+  - manifest_naming: |
+      ADA-{INSTANCE}({Person}); INSTANCE = ADA_PWA_INSTANCE env or
+      "HA-"+ADA_INSTANCE_ID.upper() (ada-ha-tony -> ADA-HA-TONY(KK)).
+      iOS reads apple-mobile-web-app-title server-templated into the
+      landing page; Android reads /i/<tok>/manifest.json.
+
+changes:
+  - file: docs/kb/ada-member-invite.md
+    what: New standard — token format, manifest naming, key states,
+      approval surfaces, revocation, member flow, component standard.
+  - file: backend/auth.py
+    what: approved/revoked/person/invite/invite_claimed fields;
+      _key_live gate in _file_keys + enforce_device; approve_key,
+      key_status, invite_for_token, invite_token_for, rotate_invite,
+      claim_invite, invite_details, reinvite_key; revoke_key tombstone;
+      fail-closed configured()/websocket_caller.
+  - file: pwa_server.py
+    what: POST /api/auth/invites mints pending + invite_url;
+      reissue_invite is state-aware (pending -> invite link w/ rotate,
+      revoked -> 409); GET /api/auth/keys grouped issued|pending|revoked
+      + details; POST /api/auth/keys/{n}/approve + /reject; public
+      surface GET /i/{tok} (+ manifest.json), GET /api/invite/{tok},
+      POST /api/invite/{tok}/redeem; _instance_tag/_invite_app_name.
+  - file: pwa/invite/index.html
+    what: Member landing — server-templated app name, iOS A2HS steps,
+      claim + pending poll + redeem inside installed PWA only.
+  - file: pwa/cards/ada-keys-card.js + pwa/keys.html
+    what: Vanilla <ada-keys-card> — Issued|Pending|Revoked, Approve/
+      Reject/Revoke/Re-pair buttons, mint-invite form; embeddable via
+      api-base attr.
+  - file: backend/tools.d/ada_member_keys.py
+    what: owner_only tool — list|invite|approve|reject|revoke|reissue
+      with fuzzy name/person resolution. Manifest + tool_guide entries;
+      ssot.tool-surface count_cap 109 -> 110; scenario
+      tests/scenarios-live/member_keys.yaml.
+  - file: tests/test_auth.py
+    what: MemberInviteTests — 9 cases covering the gate, tombstones,
+      tokens, claims, redeem path, re-invite resurrection.
+  - file: .env.example + docs/session-security-policy.md
+    what: ADA_PWA_INSTANCE/ADA_PUBLIC_URL documented; onboarding step
+      updated to the pending-invite flow.
+
+verification:
+  - python3 -m unittest tests.test_auth -> 26/26 OK
+  - ada_member_keys module exercised standalone: invite -> pending ->
+    approve -> reissue -> revoke -> reinvite -> reject all correct
+  - tool-lint: only pre-existing violation (yt_cached_list in
+    screens.py, present on HEAD — untouched)
+  - pwa_server.py py_compile clean (no fastapi in this env — runtime
+    check happens on idc03 deploy)
+  - invite page JS + card JS pass node --check
+
+notes:
+  - Deploy via ~/.local/bin/deploy-ada.sh on idc03 (per AGENTS.md) —
+    NOT deployed from this worktree.
+  - Pre-existing tool-lint debt: ToolRunner.yt_cached_list is a public
+    async method with no declaration/alias — needs a fix commit or an
+    ssot runner_internal entry (not this card's scope).
