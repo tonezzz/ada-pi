@@ -5121,8 +5121,12 @@ class GeminiLiveProvider(RealtimeProvider):
                         if result.get("ok") is False:
                             failed_results_this_turn += 1
                         turn_tool_results.append((str(call.name), result))
+                        # tool= is the resolved canonical; emitted= keeps
+                        # the as-called name (alias or typo) for the
+                        # alias-hit rollup (card ada-alias-telemetry).
                         self.conversation.log_event(
                             "tool_call", tool=str(call.name),
+                            emitted=_call_name,
                             dur_ms=int((time.monotonic() - tool_t0) * 1000),
                             ok=bool(result.get("ok", True)))
                         yield ProviderEvent("tool_result", {

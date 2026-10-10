@@ -1,0 +1,17 @@
+# systemd USER unit — idc03 checkout (~/.config/systemd/user/).
+# Refreshes the CMS page report/alias-hits from the session call-logs —
+# the deprecation tracker for the _ALIASES compat layer (card
+# ada-alias-telemetry): per-emitted-name counts, quiet-day eligibility,
+# dead-surface feed for ada-dead-surface-metric.
+# Install: cp to ~/.config/systemd/user/, systemctl --user daemon-reload,
+#          systemctl --user enable --now ada-alias-report.timer
+[Unit]
+Description=Ada alias-hit rollup -> CMS report/alias-hits
+Documentation=https://github.com/tonezzz/ada-pi docs/assessments/tool-consolidation-spec-2026-10-04.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/CascadeProjects/ada-pi
+ExecStart=/usr/bin/env bash -lc 'PY=.venv/bin/python; [ -x "$PY" ] || PY=python3; exec "$PY" scripts/ada/alias_hit_report.py'
+# journalctl scan + publish can lag on a busy host.
+TimeoutStartSec=120

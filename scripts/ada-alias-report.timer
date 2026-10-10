@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly refresh of the Ada alias-hit deprecation page
+
+[Timer]
+# Weekly digest — eligibility needs 14d of quiet anyway, daily churn
+# would just rewrite the same page.
+OnCalendar=Mon *-*-* 06:40
+Persistent=true
+
+[Install]
+WantedBy=timers.target
