@@ -20,6 +20,9 @@ Turn expectations (all optional, all must pass):
   no_calls_except: [tool, ...] no_calls:true, but these tools don't count (e.g. set_facial_expression)
   max_calls: N                 fail if more than N tool_call events fired this turn
   result_contains: [s, ...]    each substring appears in some tool_result
+                     (or tool_result_full under ADA_TRACE_FULL=1 — the
+                     complete payload, so result_* checks assert on
+                     ground truth instead of the 300-char stump)
   result_contains_any: [s, ...]  at least one substring appears in a result
   response_contains: [s, ...]  each substring appears in the spoken transcript
   response_contains_any: [s, ...]  at least one substring appears (paraphrase-tolerant)
@@ -410,7 +413,13 @@ def _expand_tokens(obj: Any) -> Any:
 def check_turn(events: list[dict], expect: dict) -> list[str]:
     failures: list[str] = []
     calls = [e for e in events if e.get("type") == "tool_call"]
-    results = [e for e in events if e.get("type") == "tool_result"]
+    # tool_result_full rides beside tool_result when the provider runs
+    # ADA_TRACE_FULL=1 (card ada-trace-full-result) — same {name, result}
+    # shape but the complete payload, so result_* assertions check
+    # ground truth instead of the 300-char stump. Off-flag runs see only
+    # the stump and behave exactly as before.
+    results = [e for e in events
+               if e.get("type") in ("tool_result", "tool_result_full")]
     names = {c.get("name") for c in calls}
     transcript = "".join(
         str(e.get("text") or "")
@@ -1500,8 +1509,8 @@ async def run_turn(
             t = msg.get("type")
             if t == "tool_call":
                 print(f"      tool_call {msg.get('name')} {msg.get('args')}")
-            elif t == "tool_result":
-                print(f"      tool_result {msg.get('name')}")
+            elif t in ("tool_result", "tool_result_full"):
+                print(f"      {t} {msg.get('name')}")
             elif t in ("error", "live_reconnecting"):
                 print(f"      {t}: {msg}")
         if msg.get("type") == "response_completed":
