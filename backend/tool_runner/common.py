@@ -329,6 +329,33 @@ CONFIRM_TOKEN_TTL_S = float(os.environ.get("ADA_CONFIRM_TOKEN_TTL_S", "300"))
 _CONFIRM_TOKEN_MAX = 64
 _CONFIRM_AUDIT_MAX = 200
 
+# Confirm-gated surface for the infra-failure re-arm
+# (ToolRunner._rearm_confirm_on_infra_failure): when a confirmed call dies
+# on transport, the result payload carries a fresh bound token so the
+# retry does not burn a second voice confirmation.
+CONFIRM_GATED_TOOLS = (
+    CONTROL_TOOLS | MEMORY_WRITE_TOOLS | CALENDAR_WRITE_TOOLS
+    | CMS_WRITE_TOOLS | DEVIN_CONFIRMED_TOOLS | CAPTURE_CONFIRMED_TOOLS
+    | DOC_CONFIRMED_TOOLS | DRIVE_CONFIRMED_TOOLS
+)
+
+# Infra-class failure markers: transport errors where the action provably
+# never ran (ssh/socket timeouts, refused/unreachable peers, DNS, EOF).
+# Semantic failures — bad args, playbook refusals, denials — deliberately
+# do NOT match: they fail identically on retry, so re-arming a token for
+# them would only teach the model to loop on a dead call.
+_INFRA_ERROR_RE = re.compile(
+    r"timed?[\s_-]*out|timeout|connection (?:refused|reset|aborted|closed)|"
+    r"no route to host|network is unreachable|could not resolve|"
+    r"name or service not known|econn\w*|ehostunreach|broken pipe|"
+    r"\beof\b|kex_exchange|temporarily unavailable|service unavailable|"
+    r"bad gateway|unreachable", re.IGNORECASE)
+_INFRA_ERROR_TYPES = frozenset({
+    "TimeoutError", "ConnectionError", "ConnectionRefusedError",
+    "ConnectionResetError", "ConnectionAbortedError", "BrokenPipeError",
+    "OSError", "Timeout",
+})
+
 CONTROL_RATE_WINDOW_S = float(os.environ.get("ADA_CONTROL_RATE_WINDOW_S", "60"))
 CONTROL_MAX_PER_ENTITY = int(os.environ.get("ADA_CONTROL_MAX_PER_ENTITY", "5"))
 CONTROL_MAX_GLOBAL = int(os.environ.get("ADA_CONTROL_MAX_GLOBAL", "30"))

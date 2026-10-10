@@ -2279,6 +2279,106 @@ class DevinMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(key.startswith("spec/"))
 
 
+class ConfirmRearmOnInfraFailureTests(unittest.IsolatedAsyncioTestCase):
+    """confirm-token-retry-expiry (sessions 38b18589b0 + 7a74536b32): a
+    confirmed call that dies on transport consumed its grant, so the
+    retry hit 'confirm_token expired' and forced a second voice
+    confirmation. Infra-class failures now carry a fresh bound token in
+    the error payload — the identical retry executes without re-asking."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        self.runner.mddb = AsyncMock()
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
+        self.runner.mddb.search_documents.return_value = []
+        self.runner.mddb.add_document.return_value = {"status": "ok"}
+        self.runner.mddb.get_document.return_value = None
+
+    _CALL = {"action": "dispatch", "repo": "chaba", "task": "do the thing"}
+
+    async def test_infra_timeout_rearms_token_and_retry_executes(self):
+        with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
+                   new=AsyncMock(side_effect=RuntimeError(
+                       "devin-dispatch start timed out after 60s"))) as disp:
+            out = await self.runner.execute(
+                "devin", {**self._CALL, "confirmed": True})
+        self.assertFalse(out["ok"])
+        token = out.get("confirm_token")
+        self.assertTrue(str(token or "").startswith("cfm-"))
+        self.assertIn("Do NOT ask the user", out["retry_hint"])
+        # The bound retry executes — no second confirmation needed.
+        with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
+                   new=AsyncMock(return_value={"task_id": "t-7"})) as disp2:
+            out2 = await self.runner.execute(
+                "devin", {**self._CALL, "confirm_token": token})
+        self.assertEqual(out2["task_id"], "t-7")
+        disp2.assert_awaited_once()
+
+    async def test_rearmed_token_is_bound_to_identical_args(self):
+        with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
+                   new=AsyncMock(side_effect=RuntimeError(
+                       "ssh: connect to host: Connection refused"))):
+            out = await self.runner.execute(
+                "devin", {**self._CALL, "confirmed": True})
+        token = out["confirm_token"]
+        # A different call cannot spend the re-armed token.
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "devin", {"action": "dispatch", "repo": "chaba",
+                          "task": "something else entirely",
+                          "confirm_token": token})
+
+    async def test_confirmed_true_resend_also_passes(self):
+        # The model's actual retry spelling — confirmed=true on the
+        # identical call — rides the re-armed pending token via
+        # pending_confirm()/_require_confirmation.
+        with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
+                   new=AsyncMock(side_effect=RuntimeError(
+                       "devin-dispatch start timed out after 60s"))):
+            out = await self.runner.execute(
+                "devin", {**self._CALL, "confirmed": True})
+        self.assertIn("confirm_token", out)
+        self.assertTrue(self.runner.pending_confirm("devin", self._CALL))
+        with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
+                   new=AsyncMock(return_value={"task_id": "t-8"})):
+            out2 = await self.runner.execute(
+                "devin", {**self._CALL, "confirmed": True})
+        self.assertEqual(out2["task_id"], "t-8")
+
+    async def test_semantic_failure_does_not_rearm(self):
+        with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
+                   new=AsyncMock(side_effect=RuntimeError(
+                       "devin-dispatch start failed: unknown repo 'zzz'"))):
+            out = await self.runner.execute(
+                "devin", {**self._CALL, "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertNotIn("confirm_token", out)
+
+    async def test_unconfirmed_infra_failure_does_not_rearm(self):
+        # No grant was presented — the gate denied before the tool ran, so
+        # there is nothing to re-arm (denial raises, covered by the gate
+        # tests; this guards a bare confirmed=False call slipping through).
+        with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
+                   new=AsyncMock(side_effect=RuntimeError(
+                       "devin-dispatch start timed out after 60s"))):
+            with self.assertRaises(PermissionError):
+                await self.runner.execute("devin", dict(self._CALL))
+
+    async def test_ungated_tool_infra_failure_does_not_rearm(self):
+        # devin_read is not confirm-gated — a stray confirmed flag plus an
+        # infra error must not mint a token.
+        with patch("backend.tool_runner.devin_dispatch_mod.status",
+                   new=AsyncMock(side_effect=RuntimeError(
+                       "devin-dispatch tasks timed out after 60s"))):
+            out = await self.runner.execute(
+                "devin_read", {"action": "status", "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertNotIn("confirm_token", out)
+
+
 class CastToScreenRouteTests(unittest.IsolatedAsyncioTestCase):
     """Regression coverage for the 2026-10-01 "camera never changes"
     failure: Ada cast a JPEG snapshot with action='play' (renders a black

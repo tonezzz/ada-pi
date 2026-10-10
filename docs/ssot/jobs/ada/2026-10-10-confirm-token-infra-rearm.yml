@@ -1,0 +1,69 @@
+# SSOT Job: confirm-token re-arm on infra-class failure
+# Card: confirm-token-retry-expiry. Dispatch 20261010-091652.
+# Evidence: voice sessions 38b18589b0 + 7a74536b32 — user confirmed a
+# devin dispatch, the downstream ssh call timed out, and the retry hit
+# "confirm_token expired" forcing a second voice confirmation for the
+# same request ("โทเค็นหมดอายุ อีกแล้ว").
+
+title: Confirm gate — re-issue a bound token inside infra-class error payloads
+subtitle: >
+  A confirmed call that dies on transport consumed its grant; the
+  identical retry then hit the gate empty-handed and re-asked the user.
+  Infra failures now carry a fresh confirm_token bound to the same
+  tool+args fingerprint, so the model replays the approved call instead
+  of burning a second voice confirmation.
+
+planning:
+  goal: |
+    Stop double-prompt churn: a downstream infra failure (ssh timeout,
+    connection refused, unreachable host, DNS, EOF) after a successful
+    confirmation must not consume the user's "yes". The identical retry
+    is still the authorized action — re-arm it, don't re-ask.
+  decisions: |
+    - Chose card option B — re-issue a fresh bound token in the error
+      payload — over extending the TTL. TTL was already raised
+      120s -> 300s on 2026-10-07 (speaker-profile-tool handoff), and the
+      failure mode is not slow users: the grant is CONSUMED at the gate
+      before the tool runs, so no TTL covers a post-execution retry.
+      Growing TTL only widens the replay window without fixing churn.
+    - Re-arm is generic across the confirm-gated surface
+      (CONFIRM_GATED_TOOLS in common.py + tools.d policy='confirmed'),
+      not devin-only — the same churn exists for any gated tool whose
+      execution hits transport failure.
+    - Infra classification is text + error_type based
+      (_INFRA_ERROR_RE / _INFRA_ERROR_TYPES). Semantic failures (bad
+      args, remote CLI errors like "unknown repo"), playbook gate
+      refusals (gate= key), and embedded gate denials (NOT EXECUTED /
+      "requires confirmation" text) deliberately never re-arm — they
+      fail identically on retry and a re-armed token would only teach
+      the model to loop on a dead call.
+    - The re-armed token binds the SAME args fingerprint the gate saw
+      (envelope keys popped, pre-_normalize_args), so only the approved
+      identical retry can spend it. confirmed=true resends also pass —
+      pending_confirm() sees the live token, matching the 2026-10-07
+      flake fix for Gemini's actual retry spelling.
+    - Audit: _audit_confirmation("rearmed", ...) entry + confirm_rearm
+      session event so transcript mining can count how often this path
+      rescues a confirmation.
+    - Not handled: a retry that arrives after the runner process
+      restarts (in-memory token table dies with it) still re-asks —
+      acceptable, tokens are deliberately ephemeral.
+  files:
+    - backend/tool_runner/common.py — CONFIRM_GATED_TOOLS,
+      _INFRA_ERROR_RE, _INFRA_ERROR_TYPES
+    - backend/tool_runner/__init__.py — gate_args snapshot in
+      _execute_gated, _rearm_confirm_on_infra_failure()
+    - tests/test_tool_runner.py — ConfirmRearmOnInfraFailureTests
+      (6 cases: rearm+retry, arg binding, confirmed=true resend,
+      semantic failure, unconfirmed, ungated tool)
+
+verification:
+  - ADA_INSTANCE_ID=test .venv/bin/python -m unittest
+    tests.test_tool_runner tests.test_devin_dispatch — 273 tests OK
+    (CalendarPlanMergeAliasTests needs ADA_INSTANCE_ID set — env
+    requirement, unrelated to this change)
+
+followups:
+  - If transcript audits still show re-prompts after this lands, check
+    whether the model reads retry_hint (it's in the tool_result payload)
+    or whether a second denial fires before the result is seen.

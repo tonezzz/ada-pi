@@ -496,6 +496,10 @@ class ToolRunner(
         # confirmed/confirm_token were popped for the gates above — hand them
         # back to methods that declare them (e.g. devin_job_report re-checks
         # confirmation internally on its publish path).
+        # gate_args = the args exactly as the confirm gates saw them
+        # (envelope keys popped, pre-normalize) — a retry arrives spelled
+        # the same way, so a re-armed token must bind THIS fingerprint.
+        gate_args = dict(call_args)
         _params = inspect.signature(method).parameters
         if "confirmed" in _params and confirm[0] is not None:
             call_args["confirmed"] = confirm[0]
@@ -520,6 +524,10 @@ class ToolRunner(
             }
         result = normalize_tool_result(result)
         self._storm_record(name, result)
+        result = self._rearm_confirm_on_infra_failure(
+            name, gate_args, confirm, result,
+            dyn_confirmed=(dyn_spec is not None
+                           and getattr(dyn_spec, "policy", None) == "confirmed"))
         self._log_change_request(name, call_args, result, ident)
         result = self._denial_breaker(name, call_args, result)
         result = self._usage_hint(name, result)
@@ -878,6 +886,55 @@ class ToolRunner(
             f"expires in {int(CONFIRM_TOKEN_TTL_S)}s) — or resend the "
             "identical call with confirmed=true."
         )
+
+    def _rearm_confirm_on_infra_failure(
+        self, name: str, gate_args: dict[str, Any],
+        confirm: tuple[Any, Any], result: Any,
+        dyn_confirmed: bool = False,
+    ) -> Any:
+        """Re-issue a bound confirm_token inside an infra-class failure
+        result. A confirmed call that dies on transport (ssh timeout,
+        refused, unreachable) never ran — consuming the grant and then
+        denying the retry forces a SECOND voice confirmation for the same
+        request (confirm-token-retry-expiry: sessions 38b18589b0 +
+        7a74536b32, "โทเค็นหมดอายุ อีกแล้ว"). The fresh token is bound to
+        the same tool+args fingerprint, so only the approved identical
+        retry can spend it — confirmed=true resends also pass via
+        pending_confirm(). Policy refusals (gate= key) and denials
+        (NOT EXECUTED / "requires confirmation" text) never re-arm."""
+        if not isinstance(result, dict) or result.get("ok") is not False:
+            return result
+        if result.get("gate") or result.get("confirm_token"):
+            return result
+        if not (_confirmed_truthy(confirm[0]) or confirm[1]):
+            return result
+        if name not in CONFIRM_GATED_TOOLS and not dyn_confirmed:
+            return result
+        err = str(result.get("error") or result.get("err") or "")
+        etype = str(result.get("error_type") or "")
+        if ("NOT EXECUTED" in err or "requires confirmation" in err
+                or not (_INFRA_ERROR_RE.search(err)
+                        or etype in _INFRA_ERROR_TYPES)):
+            return result
+        fresh = self._mint_confirm_token(name, gate_args)
+        fp = _confirm_fingerprint(name, gate_args)
+        self._audit_confirmation("rearmed", name, fp, "infra_failure")
+        self._log_session_event(
+            "confirm_rearm", tool=name,
+            speaker=self._current_speaker(),
+            owner=self.session_owner_identity)
+        logger.info(
+            "re-armed confirm token for %s after infra failure: %s",
+            name, err[:120])
+        result["confirm_token"] = fresh
+        result["retry_hint"] = (
+            "Transient infrastructure failure — the action did NOT run. "
+            "The confirmation already given still stands: retry the "
+            f"identical call adding confirm_token='{fresh}' (single use, "
+            f"expires in {int(CONFIRM_TOKEN_TTL_S)}s), or resend it with "
+            "confirmed=true. Do NOT ask the user to confirm again — a "
+            "downstream failure is not a new confirmation question.")
+        return result
 
     async def _check_control_allowed(
         self, name: str, args: dict[str, Any], confirmed: Any,
