@@ -1437,6 +1437,12 @@ class GeminiLiveProvider(RealtimeProvider):
         self._context_turn_budget = int(
             os.environ.get("ADA_CONTEXT_TURN_BUDGET", "45000"))
         self._rotate_scheduled = False
+        # Mirror of the events() in-flight input transcript — a rotate can
+        # close the stream mid-utterance before turn_complete lands the text
+        # in conversation; the reconnect tail carries it via
+        # pending_user_turn (session 5b0d97f477 lost a live ask this way).
+        self._live_input_transcript = ""
+        self.pending_user_turn: str | None = None
         self._last_usage_turn: dict[str, int] = {}
         # Markup-artifact scrubber for the output transcript (&nbsp;, '][',
         # markdown links — transcript 519088cb6d spoke them aloud). Deltas
@@ -2135,6 +2141,8 @@ class GeminiLiveProvider(RealtimeProvider):
         survive; the reconnect directive handles the greeting."""
         await self._wait_for_idle(timeout=30.0)
         await asyncio.sleep(0.5)
+        if self._live_input_transcript.strip():
+            self.pending_user_turn = self._live_input_transcript.strip()
         self.resumption_handle = None
         try:
             await self.close()
@@ -4861,6 +4869,7 @@ class GeminiLiveProvider(RealtimeProvider):
 
         self._response_active = False
         input_transcript = ""
+        self._live_input_transcript = ""
         assistant_turn_text = ""
         response_started_at = 0.0
         response_audio_chunks = 0
@@ -5609,6 +5618,7 @@ class GeminiLiveProvider(RealtimeProvider):
                 transcription = content.input_transcription
                 if transcription and transcription.text:
                     input_transcript += transcription.text
+                    self._live_input_transcript = input_transcript
                     input_done_ts = time.monotonic()
                     self._last_user_at = time.monotonic()
                     self._turn_open = True
@@ -5706,6 +5716,7 @@ class GeminiLiveProvider(RealtimeProvider):
                                 emit=self._emit_ops_event)
                     barge_pending = False
                     input_transcript = ""
+                    self._live_input_transcript = ""
                     n_tools_this_turn = tool_calls_this_turn
                     # A write claim is honest only when a call that can
                     # back it returned ok this turn — claiming "saved"

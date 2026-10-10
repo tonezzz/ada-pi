@@ -1690,10 +1690,18 @@ async def voice_socket(ws: WebSocket) -> None:
                             # forgets the last minutes mid-conversation
                             # (the resume tier reads "same conversation
                             # resuming — pick up where you left off").
+                            tail = conversation.recent_context(
+                                max_turns=12, max_chars=3000)
+                            # A rotate/stall can cut mid-utterance — the
+                            # provider mirrors the in-flight transcript so
+                            # the pending ask isn't lost (5b0d97f477).
+                            pending = getattr(old, "pending_user_turn", None)
+                            if pending:
+                                tail += ("\nUser (cut off by the "
+                                         "reconnect): " + pending)
                             await _prime_session(
                                 new_provider,
-                                reconnect=(0.0, conversation.recent_context(
-                                    max_turns=12, max_chars=3000)),
+                                reconnect=(0.0, tail),
                                 conversation=conversation)
                         await ws.send_text(json.dumps({"type": "ready", "session": session_id}))
                         logger.info("session=%s provider reconnected (resumed=%s)", session_id, bool(handle))
