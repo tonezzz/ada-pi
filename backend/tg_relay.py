@@ -327,6 +327,9 @@ class TgRelay:
                         reply_to: int | None = None) -> None:
         if not text:
             return
+        tag = os.environ.get("TG_SPEAKER_TAG", "").strip().lower()
+        if tag and not text.lstrip().startswith("["):
+            text = f"[{tag}] {text}"
         params: dict[str, Any] = {"chat_id": chat_id}
         if reply_to:
             params["reply_to_message_id"] = reply_to
