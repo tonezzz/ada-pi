@@ -1,0 +1,113 @@
+# SSOT Job: lost-mode durability — persist armed watches across restarts
+# Card: ada-track-lost-persist. Dispatch
+# 20261010-110959-lost-mode-durability-persist-a.
+
+title: ada_track_device — persist lost-mode watches as mddb _watch/<device> docs + resume on service start
+
+context:
+  card: |
+    Kanban 'ada-track-lost-persist': armed lost-mode watches used to die
+    with the backend process (by-design volatile). Persist them to MDDB
+    device-telemetry as _watch/<device> docs (armed_at, channel prefs,
+    last-pushed sighting); on service start resume watchers whose docs
+    exist; 'found'/stale cleanup deletes them.
+  prior_state: |
+    backend/tools.d/ada_track_device.py armed in-process asyncio watcher
+    tasks keyed on runner._track_watches — a restart silently dropped
+    every armed watch.
+
+design: |
+  _watch/<canon> docs in device-telemetry (same collection the beacon
+  uses) hold: device, armed_at, interval_s, channel, until, last_pushed,
+  last_sighting, last_fp (delta fingerprint), and a resume claim
+  (resumed_at, resumed_by = host:pid:time_ns — unique per resume
+  attempt).
+
+  Multi-instance safety: several ada services share one mddb store, so
+  resume is claim-based — the live loop re-stamps resumed_at every poll
+  (heartbeat); resume_watches skips docs whose claim is fresh
+  (< max(3*interval, 300s)); a stale claim means the owner died. The
+  resumer writes its claim then re-reads prefer_leader — a different
+  resumed_by means it lost the race and it stands down (no duplicate
+  pushes).
+
+  Disarm semantics: the loop reads its doc (prefer_leader — follower lag
+  could fake a 'deleted') each poll; a miss skips the persist so a
+  remote 'found' delete cannot be resurrected; 3 consecutive misses
+  (_DOC_MISS_LIMIT) exit the loop. 'found' pops the in-process watch AND
+  deletes the doc (all _watch/* docs when no device is given, or the
+  input's canon even when the device is out of the fleet pool). Expired
+  docs (until <= now) are deleted during resume scans; the loop's
+  finally always deletes its own doc (covers until-expiry + task
+  cancel).
+
+  Resume entry points: resume_watches() is called by
+  on_service_start(runner) — a new tools.d convention wired in
+  pwa_server.warm_cache (every tools.d module may define
+  async on_service_start(runner); called once at boot with the shared
+  runner) — AND lazily once per process at the top of run() guarded by
+  runner._track_resumed, so services without a startup hook still pick
+  watches up on their first track call.
+
+  Resumed watchers seed last_fp from the doc — no duplicate baseline
+  push for an unchanged sighting, but a device that moved during the
+  downtime immediately pushes a 'delta'.
+
+changes:
+  - file: backend/tools.d/ada_track_device.py
+    what: |
+      + ~200 lines: _resumer_id/_watch_key/_mddb_write/_persist_watch/
+      _drop_watch_doc/_watch_doc/_fp_restore/_claim_fresh helpers;
+      resume_watches() + on_service_start() hook; _watch_loop now checks
+      its doc per poll, re-stamps resumed_at, persists last_pushed/
+      last_sighting/last_fp on each iteration, exits on 3 consecutive
+      doc misses or mid-iteration disarm, and always drops the doc in
+      finally; _arm_lost persists before spawning; 'found' deletes docs
+      (all of them when no device given); 'watches' also lists remote
+      (other-process) watchers; _fleet_pool skips '_' prefixed keys so
+      _watch/* docs never become fleet devices; run() lazy-resumes once
+      per process; docstring/declaration updated.
+  - file: pwa_server.py
+    what: |
+      warm_cache() now runs tools.d on_service_start(runner) hooks —
+      any drop-in tool may define `async def on_service_start(runner)`;
+      each is called once at boot with the shared ToolRunner, failures
+      logged and skipped.
+  - file: tests/test_track_device.py
+    what: |
+      FakeMddb gained add_document/delete_document + prefer_leader;
+      watch-loop tests seed the persisted doc (loop only polls while it
+      exists); +6 tests: resume re-arms live doc, expired-doc cleanup,
+      fresh-claim skip, doc-delete loop exit, _watch/* fleet-pool
+      exclusion, persisted-doc assertions in the arm/found lifecycle.
+
+verify:
+  - .venv/bin/python -m pytest tests/test_track_device.py -q   # 19 passed
+  - .venv/bin/python -m pytest tests/ -k 'scenario or track or device' -q  # 51 passed
+  - full suite: 260 passed; ONE flaky pre-existing failure
+    (test_eye_tool::test_empty_detections_is_live_but_empty — time-
+    sensitive FRESH fixture goes stale mid-suite; passes in isolation,
+    unrelated to this change)
+  - tool-lint: 3 violations — all pre-existing on HEAD (voice_fx
+    descsize/coverage, yt_cached_list impl); none from this change
+  - live smoke vs real mddb (100.102.134.91:11023, ADA_TRACK_PUSH_DRYRUN=1):
+    arm -> _watch/<dev> doc persisted with claim; stale-claimed doc
+    resumed by a fresh runner (new resumed_by written); second resumer
+    skipped the fresh claim; 'found' delete -> live loop exited within
+    _DOC_MISS_LIMIT polls; expired doc deleted on resume scan; baseline
+    '[lost-mode]' push logged via the dry-run path.
+
+notes: |
+  - The claim is not a distributed lock — it is a heartbeat + post-write
+    re-check, which makes double-arm a lost-race that the loser detects
+    and abandons. A crashed owner frees the watch for adoption after
+    max(3*interval, 300s).
+  - During an mddb outage the loop's doc-check fails — after
+    _DOC_MISS_LIMIT consecutive misses the watcher exits and its finally
+    delete also fails, so the doc survives in the store and the next
+    resume (restart or later resume scan) re-adopts it.
+  - on_service_start is a generic tools.d convention, not
+    track-specific — other drop-in tools can use it for boot-time
+    recovery without touching pwa_server again.
+  - No commit/push/deploy — worktree only; prod picks it up via the next
+    deploy-ada.sh on idc03.

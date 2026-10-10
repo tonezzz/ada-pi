@@ -31,10 +31,11 @@ NOW = int(time.time())
 
 
 class FakeMddb:
-    """Minimal mddb stand-in: get_document + search_documents."""
+    """Minimal mddb stand-in: get/add/delete + listing."""
 
     def __init__(self, docs=None):
         self.docs = docs or {}
+        self.deleted = []
 
     async def get_document(self, collection, key, lang="en",
                            prefer_leader=False):
@@ -44,6 +45,18 @@ class FakeMddb:
                                filter_meta=None):
         return [d for d in self.docs.values()
                 if isinstance(d, dict) and d.get("_list")]
+
+    async def add_document(self, collection, key, lang, content_md,
+                           meta=None, **kw):
+        doc = {"key": key, "contentMd": content_md,
+               "meta": dict(meta or {}), "_list": True}
+        self.docs[f"{collection}|{key}"] = doc
+        return {"key": key}
+
+    async def delete_document(self, collection, key, lang="en", **kw):
+        self.deleted.append(key)
+        self.docs.pop(f"{collection}|{key}", None)
+        return {"key": key}
 
 
 def _runner(mddb=None, states=None, logbook=None):
@@ -216,7 +229,8 @@ class LostModeTest(unittest.IsolatedAsyncioTestCase):
         self.env.stop()
 
     async def test_arm_push_delta_disarm(self):
-        runner = _runner()
+        fake = FakeMddb()
+        runner = _runner(mddb=fake)
         desc1 = {"summary": "iphone-15: home; battery 50%",
                  "location": {"kind": "gps", "lat": 1.0, "lon": 2.0,
                               "place": "home"},
@@ -239,6 +253,9 @@ class LostModeTest(unittest.IsolatedAsyncioTestCase):
             watch = {"interval_s": 0.01, "channel": "line",
                      "until": time.time() + 5, "armed_at": NOW}
             runner._track_watches = {"iphone-15": watch}
+            # the loop only polls while its persisted doc exists —
+            # _arm_lost writes it before spawning the task
+            await track._persist_watch(runner, "iphone-15", watch)
             task = asyncio.ensure_future(
                 track._watch_loop(runner, "iphone-15", watch))
             await asyncio.sleep(0.15)
@@ -251,9 +268,13 @@ class LostModeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[delta iphone-15]", pushes[1]["text"])
         self.assertIn("away", pushes[1]["text"])
         self.assertEqual(pushes[0]["channel"], "line")
+        # loop exit cleaned up the persisted _watch/ doc
+        self.assertIn("_watch/iphone-15", fake.deleted)
+        self.assertNotIn("device-telemetry|_watch/iphone-15", fake.docs)
 
     async def test_arm_lost_lifecycle_via_run(self):
-        runner = _runner()
+        fake = FakeMddb()
+        runner = _runner(mddb=fake)
         nodes = {"iphone-15": {"online": True, "os": "iOS", "ips": [],
                                "last_seen_ts": 0, "hostname": "localhost"}}
         with patch.object(track, "_tailnet", return_value=nodes), \
@@ -267,15 +288,108 @@ class LostModeTest(unittest.IsolatedAsyncioTestCase):
                                   device="iphone-15", interval_s=60)
             self.assertTrue(out["armed"])
             self.assertIn("iphone-15", track._watches(runner))
+            # armed watch persisted as _watch/<device>
+            doc = fake.docs.get("device-telemetry|_watch/iphone-15")
+            self.assertIsNotNone(doc)
+            body = __import__("json").loads(doc["contentMd"])
+            self.assertEqual(body["device"], "iphone-15")
+            self.assertEqual(body["channel"], "both")
             out = await track.run(runner, action="found",
                                   device="iphone-15")
             self.assertEqual(out["disarmed"], ["iphone-15"])
             self.assertNotIn("iphone-15", track._watches(runner))
+            # 'found' deletes the persisted doc
+            self.assertNotIn("device-telemetry|_watch/iphone-15",
+                             fake.docs)
             # cancel the orphaned task so it can't outlive the test loop
             for w in list(getattr(runner, "_track_watches", {}).values()):
                 t = w.get("task")
                 if t:
                     t.cancel()
+
+    def _watch_doc_row(self, canon, **body):
+        """A listed _watch/<canon> mddb doc as the loader would return."""
+        body.setdefault("device", canon)
+        return {"key": f"_watch/{canon}", "_list": True,
+                "contentMd": __import__("json").dumps(body),
+                "meta": {"kind": ["track-watch"]}}
+
+    async def test_resume_rearms_live_doc(self):
+        doc = self._watch_doc_row(
+            "iphone-15", armed_at=NOW - 100, interval_s=60,
+            channel="line", until=time.time() + 3600, resumed_at=0)
+        fake = FakeMddb({f"device-telemetry|_watch/iphone-15": doc})
+        runner = _runner(mddb=fake)
+        desc = {"summary": "iphone-15: home", "location": {"kind": "gps"},
+                "battery": {}, "sources": {}}
+        with patch.object(track, "_merge_one", AsyncMock(
+                return_value=desc)):
+            resumed = await track.resume_watches(runner)
+            self.assertEqual(resumed, ["iphone-15"])
+            watch = track._watches(runner)["iphone-15"]
+            self.assertTrue(watch["resumed"])
+            # the claim was written back to the doc
+            body = __import__("json").loads(
+                fake.docs["device-telemetry|_watch/iphone-15"]
+                ["contentMd"])
+            self.assertTrue(body["resumed_by"])
+            self.assertGreater(body["resumed_at"], 0)
+            track._watches(runner).pop("iphone-15", None)
+            await asyncio.sleep(0)
+            watch["task"].cancel()
+
+    async def test_resume_deletes_expired_doc(self):
+        doc = self._watch_doc_row(
+            "iphone-15", armed_at=NOW - 90000, interval_s=60,
+            channel="line", until=time.time() - 60)
+        fake = FakeMddb({f"device-telemetry|_watch/iphone-15": doc})
+        runner = _runner(mddb=fake)
+        resumed = await track.resume_watches(runner)
+        self.assertEqual(resumed, [])
+        self.assertNotIn("iphone-15", track._watches(runner))
+        self.assertIn("_watch/iphone-15", fake.deleted)
+
+    async def test_resume_skips_fresh_claim(self):
+        # another live process owns the watch — heartbeat is fresh
+        doc = self._watch_doc_row(
+            "iphone-15", armed_at=NOW - 100, interval_s=60,
+            channel="line", until=time.time() + 3600,
+            resumed_at=time.time() - 30, resumed_by="other-host:1:1")
+        fake = FakeMddb({f"device-telemetry|_watch/iphone-15": doc})
+        runner = _runner(mddb=fake)
+        resumed = await track.resume_watches(runner)
+        self.assertEqual(resumed, [])
+        self.assertNotIn("iphone-15", track._watches(runner))
+        self.assertIn("device-telemetry|_watch/iphone-15", fake.docs)
+
+    async def test_watch_loop_exits_when_doc_deleted(self):
+        # 'found' in another process deletes the doc — the live loop
+        # notices and stops within _DOC_MISS_LIMIT polls.
+        fake = FakeMddb()
+        runner = _runner(mddb=fake)
+        desc = {"summary": "iphone-15: home", "location": {"kind": "gps"},
+                "battery": {}, "sources": {}}
+        watch = {"interval_s": 0.01, "channel": "line",
+                 "until": time.time() + 5, "armed_at": NOW}
+        runner._track_watches = {"iphone-15": watch}
+        await track._persist_watch(runner, "iphone-15", watch)
+        with patch.object(track, "_merge_one", AsyncMock(
+                return_value=desc)):
+            task = asyncio.ensure_future(
+                track._watch_loop(runner, "iphone-15", watch))
+            await asyncio.sleep(0.05)
+            fake.docs.pop("device-telemetry|_watch/iphone-15", None)
+            await asyncio.wait_for(task, timeout=2)
+        self.assertNotIn("iphone-15",
+                         getattr(runner, "_track_watches", {}))
+
+    def test_fleet_pool_ignores_watch_docs(self):
+        docs = [{"key": "_watch/iphone-15"},
+                {"key": "tony-omen/latest"}]
+        pool, _ = track._fleet_pool({}, docs, {}, {}, {})
+        self.assertIn("tony-omen", pool)
+        self.assertNotIn("watch", pool)
+        self.assertFalse(any(p.startswith("_") for p in pool))
 
     def test_fingerprint_detects_geo_move(self):
         a = {"location": {"kind": "gps", "lat": 1.0001, "lon": 2.0001},

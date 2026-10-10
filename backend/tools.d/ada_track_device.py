@@ -24,9 +24,16 @@ Answers carry confidence + per-sighting age — never claim live GPS; say
 
 Lost-mode (action='lost') arms an in-process watcher: re-merge on a
 timer, push deltas to LINE/TG via the relay /send endpoints (same
-loopback API chat_send uses). The watch dies with the backend process —
-it is volatile by design, not a daemon. Optional GEV pin via gev_command
-annotate_map when coordinates are known (gev_pin=true).
+loopback API chat_send uses). Armed watches persist to mddb
+device-telemetry as _watch/<device> docs (armed_at, interval, channel,
+until, last-pushed sighting + fingerprint, and a resume claim) so they
+survive restarts: on_service_start (and lazily the first tool call in a
+process) re-arms docs whose 'until' is still live and deletes expired
+ones. The live loop re-stamps the doc every poll — a fresh resumed_at
+means another process owns the watch, so peers skip it; 'found' deletes
+the doc, which is also how a watcher in another process learns it was
+disarmed. Optional GEV pin via gev_command annotate_map when
+coordinates are known (gev_pin=true).
 
 Fixture env (tests/scenarios + live debugging):
   ADA_TRACK_TAILSCALE_JSON  'tailscale status --json' output, inline or file
@@ -42,6 +49,7 @@ import asyncio
 import json
 import os
 import re
+import socket
 import subprocess
 import time
 from datetime import datetime
@@ -65,7 +73,8 @@ DECLARATION = {
                 "description": "'where' (default — locate one device), "
                                "'list' (fleet summary), 'history' "
                                "(recent sightings), 'lost' (arm lost-mode "
-                               "watcher), 'found' (disarm), 'watches' "
+                               "watcher — persists across restarts), "
+                               "'found' (disarm), 'watches' "
                                "(armed watchers).",
             },
             "device": {
@@ -114,6 +123,10 @@ _LOST_INTERVAL_S = 300
 _LOST_MIN_INTERVAL_S = 60
 _LOST_LIFETIME_H = 12.0
 _PUSH_TIMEOUT_S = 20.0
+_WATCH_PREFIX = "_watch/"
+_CLAIM_MIN_S = 300.0    # live watchers re-stamp each poll; a stale
+                        # resumed_at means the owning process is gone
+_DOC_MISS_LIMIT = 3     # consecutive missing watch docs -> disarmed
 
 # Known cross-source name equivalences (verified 2026-10-08):
 # tailnet DNSName is canonical; iOS HostName is 'localhost' and unusable.
@@ -633,6 +646,8 @@ def _fleet_pool(nodes: dict[str, dict[str, Any]],
         if "/" not in key:
             continue
         dev = key.split("/")[0]
+        if dev.startswith("_"):        # _watch/* etc — not devices
+            continue
         beacon_key.setdefault(_canon(dev), dev)
         pool.add(_canon(dev))
     pool.update(ha_fleet)
@@ -662,6 +677,100 @@ def _match(name: str, pool: list[str]) -> list[str]:
 
 
 # --------------------------------------------------------------- lost mode
+
+def _resumer_id() -> str:
+    """Unique per resume attempt — the doc's resumed_by is how a losing
+    claim-write learns it lost the race."""
+    return f"{socket.gethostname()}:{os.getpid()}:{time.time_ns()}"
+
+
+def _watch_key(canon: str) -> str:
+    return f"{_WATCH_PREFIX}{canon}"
+
+
+async def _mddb_write(runner: Any, op: str, key: str,
+                      body: dict[str, Any] | None = None) -> bool:
+    """Upsert/delete a device-telemetry doc — same client/fallback split
+    as _mddb_get (mddb /add upserts on collection+key+lang)."""
+    meta = {"kind": ["track-watch"], "device": [key.split("/", 1)[-1]]}
+    cli = getattr(runner, "mddb", None)
+    try:
+        if cli is not None:
+            if op == "delete":
+                await cli.delete_document(_COLL, key)
+            else:
+                await cli.add_document(_COLL, key, "en",
+                                       json.dumps(body or {}), meta=meta)
+            return True
+        payload = {"collection": _COLL, "key": key, "lang": "en"}
+        if op != "delete":
+            payload.update({"contentMd": json.dumps(body or {}),
+                            "meta": meta})
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.post(f"{_mddb_base()}/{op}", json=payload)
+            return r.status_code == 200
+    except Exception:
+        return False
+
+
+async def _persist_watch(runner: Any, canon: str,
+                         watch: dict[str, Any]) -> None:
+    fp = watch.get("last_fp")
+    await _mddb_write(runner, "add", _watch_key(canon), {
+        "device": canon,
+        "armed_at": watch.get("armed_at"),
+        "interval_s": watch.get("interval_s"),
+        "channel": watch.get("channel") or "both",
+        "until": watch.get("until"),
+        "resumed_at": watch.get("resumed_at"),
+        "resumed_by": watch.get("resumed_by"),
+        "last_pushed": watch.get("last_pushed"),
+        "last_sighting": watch.get("last_sighting"),
+        "last_fp": list(fp) if fp else None,
+    })
+
+
+async def _drop_watch_doc(runner: Any, canon: str) -> None:
+    await _mddb_write(runner, "delete", _watch_key(canon))
+
+
+async def _watch_doc(runner: Any, canon: str) -> dict[str, Any] | None:
+    """The persisted watch doc. Leader-read on the client path — a
+    follower read right after our own write can lag into a false
+    'deleted' verdict."""
+    cli = getattr(runner, "mddb", None)
+    if cli is not None:
+        try:
+            doc = await cli.get_document(_COLL, _watch_key(canon), "en",
+                                         prefer_leader=True)
+        except TypeError:
+            doc = await cli.get_document(_COLL, _watch_key(canon), "en")
+        except Exception:
+            return None
+        if not isinstance(doc, dict):
+            return None
+        try:
+            return json.loads(doc.get("contentMd") or "{}")
+        except Exception:
+            return None
+    return await _mddb_get(runner, _watch_key(canon))
+
+
+def _fp_restore(raw: Any) -> tuple | None:
+    """Persisted fingerprint (json list) back to the tuple _fingerprint
+    emits — the nested geo pair becomes a tuple so equality works."""
+    if not isinstance(raw, list):
+        return None
+    return tuple(tuple(x) if isinstance(x, list) else x for x in raw)
+
+
+def _claim_fresh(doc: dict[str, Any], now: float) -> bool:
+    """Another process owns this watch while its persisted heartbeat is
+    fresh — the live loop re-stamps resumed_at every poll."""
+    interval = float(doc.get("interval_s") or _LOST_INTERVAL_S)
+    return (now - float(doc.get("resumed_at") or 0)
+            < max(3 * interval, _CLAIM_MIN_S))
+
 
 def _watches(runner: Any) -> dict[str, dict[str, Any]]:
     w = getattr(runner, "_track_watches", None)
@@ -777,9 +886,19 @@ async def _watch_loop(runner: Any, canon: str, watch: dict[str, Any]
     interval = float(watch["interval_s"])
     chan = str(watch.get("channel") or "both")
     until = float(watch["until"])
-    last_fp: tuple | None = None
+    last_fp: tuple | None = watch.get("last_fp")  # seed from a resume
+    doc_misses = 0
     try:
         while time.time() < until and canon in _watches(runner):
+            if await _watch_doc(runner, canon) is None:
+                doc_misses += 1
+                if doc_misses >= _DOC_MISS_LIMIT:
+                    break                # 'found' deleted it elsewhere
+                # skip this poll — persisting now would resurrect a
+                # just-deleted doc before the miss limit trips
+                await asyncio.sleep(interval)
+                continue
+            doc_misses = 0
             try:
                 desc = await _merge_one(runner, canon)
             except Exception as exc:
@@ -792,16 +911,25 @@ async def _watch_loop(runner: Any, canon: str, watch: dict[str, Any]
                             f"[{tag} {canon}] "
                             f"{desc.get('summary') or desc}")
                 watch["last_pushed"] = int(time.time())
+                watch["last_sighting"] = desc.get("summary")
             watch["last_desc"] = desc
+            watch["last_fp"] = last_fp
+            watch["resumed_at"] = time.time()   # claim heartbeat
+            if canon not in _watches(runner):
+                break                # disarmed mid-iteration — don't
+                                     # resurrect the doc via persist
+            await _persist_watch(runner, canon, watch)
             await asyncio.sleep(interval)
     finally:
         _watches(runner).pop(canon, None)
+        await _drop_watch_doc(runner, canon)
 
 
 def _watch_info(canon: str, w: dict[str, Any]) -> dict[str, Any]:
     return {"device": canon, "interval_s": w["interval_s"],
             "channel": w["channel"], "armed_at": w["armed_at"],
             "until": int(w["until"]),
+            "resumed": bool(w.get("resumed")),
             "last_pushed": w.get("last_pushed"),
             "summary": (w.get("last_desc") or {}).get("summary")}
 
@@ -818,23 +946,111 @@ async def _arm_lost(runner: Any, canon: str, *, interval_s: int,
         "channel": channel or "both",
         "armed_at": int(time.time()),
         "until": time.time() + hours * 3600,
+        "resumed_at": time.time(),
+        "resumed_by": _resumer_id(),
     }
     watches[canon] = watch
+    await _persist_watch(runner, canon, watch)
     try:
         watch["task"] = asyncio.ensure_future(
             _watch_loop(runner, canon, watch))
     except Exception as exc:
         watches.pop(canon, None)
+        await _drop_watch_doc(runner, canon)
         return {"ok": False, "error": f"could not arm watcher: {exc}"}
     return {"ok": True, "armed": True, "watch": _watch_info(canon, watch),
-            "note": "watcher lives in this Ada process — it stops on "
-                    "restart; polls push deltas to the relay /send API"}
+            "note": "watcher persists to mddb _watch/<device> — it "
+                    "resumes on restart; polls push deltas to the "
+                    "relay /send API"}
+
+
+async def resume_watches(runner: Any) -> list[str]:
+    """Re-arm watchers persisted as _watch/<device> docs — called at
+    service start (on_service_start) and lazily on the first tool call.
+    Docs past 'until' are stale: delete them. Docs with a fresh
+    resumed_at belong to a live process — skip."""
+    resumed: list[str] = []
+    now = time.time()
+    for d in await _mddb_docs(runner):
+        key = str(d.get("key") or "")
+        if not key.startswith(_WATCH_PREFIX):
+            continue
+        canon = _canon(key.split("/", 1)[1])
+        if canon in _watches(runner):
+            continue
+        doc = await _mddb_get(runner, key)
+        if not isinstance(doc, dict):
+            continue
+        until = float(doc.get("until") or 0)
+        if until <= now:
+            await _drop_watch_doc(runner, canon)     # stale cleanup
+            continue
+        if _claim_fresh(doc, now):
+            continue
+        watch: dict[str, Any] = {
+            "device": canon,
+            "interval_s": max(_LOST_MIN_INTERVAL_S,
+                              int(doc.get("interval_s")
+                                  or _LOST_INTERVAL_S)),
+            "channel": str(doc.get("channel") or "both"),
+            "armed_at": int(doc.get("armed_at") or now),
+            "until": until,
+            "last_pushed": doc.get("last_pushed"),
+            "last_sighting": doc.get("last_sighting"),
+            "last_fp": _fp_restore(doc.get("last_fp")),
+            "resumed_at": now,
+            "resumed_by": _resumer_id(),
+            "resumed": True,
+        }
+        _watches(runner)[canon] = watch
+        await _persist_watch(runner, canon, watch)   # write the claim
+        try:
+            cli = getattr(runner, "mddb", None)
+            fresh = (await cli.get_document(
+                _COLL, key, "en", prefer_leader=True)) \
+                if cli is not None else await _mddb_get(runner, key)
+        except Exception:
+            fresh = await _mddb_get(runner, key)
+        if isinstance(fresh, dict) and "contentMd" in fresh:
+            try:
+                fresh = json.loads(fresh.get("contentMd") or "{}")
+            except Exception:
+                fresh = {}
+        if isinstance(fresh, dict) and fresh.get("resumed_by") \
+                and fresh.get("resumed_by") != watch["resumed_by"]:
+            _watches(runner).pop(canon, None)        # lost a claim race
+            continue
+        try:
+            watch["task"] = asyncio.ensure_future(
+                _watch_loop(runner, canon, watch))
+        except Exception:
+            _watches(runner).pop(canon, None)
+            continue
+        resumed.append(canon)
+    return resumed
+
+
+async def on_service_start(runner: Any) -> list[str]:
+    """tools.d service-start hook — pwa_server calls this once at boot
+    with the shared runner to re-arm persisted watches."""
+    return await resume_watches(runner)
 
 
 # -------------------------------------------------------------------- run
 
 async def run(runner: Any, **args: Any) -> dict[str, Any]:
     action = str(args.get("action") or "where").lower()
+    # Lazy resume: processes without an on_service_start hook re-arm
+    # persisted _watch/* docs on the first track call after boot.
+    if getattr(runner, "_track_resumed", None) is not True:
+        try:
+            runner._track_resumed = True
+        except Exception:
+            pass
+        try:
+            await resume_watches(runner)
+        except Exception:
+            pass
     nodes, docs, states, scan, registry = await asyncio.gather(
         asyncio.to_thread(_tailnet),
         _mddb_docs(runner),
@@ -847,16 +1063,40 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
 
     if action == "watches":
         ws = _watches(runner)
-        return {"ok": True, "watches": [_watch_info(c, w)
-                                        for c, w in ws.items()],
-                "count": len(ws)}
+        out = [_watch_info(c, w) for c, w in ws.items()]
+        # persisted docs owned by another live process show as remote
+        for d in docs:
+            key = str(d.get("key") or "")
+            if not key.startswith(_WATCH_PREFIX):
+                continue
+            canon = _canon(key.split("/", 1)[1])
+            if canon in ws:
+                continue
+            doc = await _mddb_get(runner, key)
+            if isinstance(doc, dict):
+                out.append({"device": canon, "remote": True,
+                            "resumed_by": doc.get("resumed_by"),
+                            "armed_at": doc.get("armed_at"),
+                            "until": int(float(doc.get("until") or 0)),
+                            "interval_s": doc.get("interval_s"),
+                            "channel": doc.get("channel"),
+                            "last_pushed": doc.get("last_pushed")})
+        return {"ok": True, "watches": out, "count": len(out)}
 
     if action in ("found", "unlost", "unwatch"):
         dev_in = str(args.get("device") or "").strip()
-        names = (_match(dev_in, pool) if dev_in
-                 else list(_watches(runner)))
+        if dev_in:
+            names = _match(dev_in, pool) or [_canon(dev_in)]
+        else:
+            names = list({_canon(k.split("/", 1)[1])
+                          for k in (str(d.get("key") or "")
+                                    for d in docs)
+                          if k.startswith(_WATCH_PREFIX)}
+                         | set(_watches(runner)))
         disarmed = [c for c in names if _watches(runner).pop(c, None)]
-        return {"ok": True, "disarmed": disarmed,
+        for c in names:          # delete persisted docs; a live watcher
+            await _drop_watch_doc(runner, c)   # elsewhere sees it gone
+        return {"ok": True, "disarmed": disarmed, "docs_cleared": names,
                 "count": len(disarmed)}
 
     if action == "list":
