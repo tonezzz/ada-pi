@@ -1,0 +1,86 @@
+# SSOT Job: dead-surface metric — per-tool call counts from session reports
+# Card: ada-dead-surface-metric (kanban). Dispatch 20261010-081554 (attempt 2).
+
+title: Dead-surface metric — canonical per-tool call counts, 7d + 30d
+subtitle: |
+  The surface was shape-verified (tool-lint) but usage-blind past journal
+  retention. Session-report JSONs carry kind=tool_call events with the
+  as-called name and persist 30d+ — this closes the loop the merge
+  program needs: which declared tools are actually dead.
+
+planning:
+  goal: |
+    Weekly-visible calls-per-declared-tool over trailing 7d AND 30d with
+    a flagged zero-call-30d list feeding merge/exclusion review.
+    Verify contract on the card: report matches a manual count of one
+    week's tool_call events.
+  decisions: |
+    - Same transcript pass family as ada-alias-telemetry: scan
+      $ADA_DATA_DIR/reports/<day>-<session>.json session_events —
+      kind=tool_call counts, kind=tool_denied shown separately (gated
+      demand is still demand). Runs INSIDE tool-usage-report.py so the
+      existing report/tool-usage CMS page + ada-tool-usage.timer carry
+      it with zero new infra.
+    - Canonicalization: session_events record call.name BEFORE runner
+      dispatch, so scan_reports applies the runner's own order —
+      _ALIASES first, then bare-underscore normalization — via
+      tool-lint's collect_surface() alias table (no backend import).
+    - Window bucketing uses each event's own ts (fallback: file date
+      prefix); a date-prefixed file fully outside 30d is skipped before
+      parsing. 7d ⊂ 30d from one read.
+    - Zero-call-30d renders as merge/exclusion CANDIDATES — review only.
+      Rare-but-critical tools (lost-mode class) legitimately idle; a
+      zero count opens a review, never deletes.
+    - Journal census untouched: it stays the 7d cross-check. Divergence
+      between the two passes is itself a signal (journal retention vs
+      file truth).
+
+execution:
+  steps:
+    - id: 1
+      label: "transcript pass in tool-usage-report.py"
+      status: done
+      notes: "canonical_name(), _file_day/_event_day, scan_reports(),
+        _render_reports(); --reports-dir (default
+        <ADA_TRANSCRIPT_DIR>/../reports) + --no-reports; CMS meta
+        summary gains the zero-call-30d count."
+    - id: 2
+      label: "report sections"
+      status: done
+      notes: "'Canonical calls — transcript pass' table (tool | 7d |
+        30d | denied | last called | note incl. via-alias attribution +
+        not-declared) and 'Zero-call tools — 30d' candidate list with
+        the review-only caveat."
+    - id: 3
+      label: "regression tests"
+      status: done
+      notes: "tests/test_tool_usage_report.py — 13 tests: canonical_name
+        (alias/declared/underscore-drift/unknown), window counts vs a
+        manual fixture count (the card's verify), denied ≠ call,
+        zero-call list, last-seen + alias attribution, undeclared
+        bucket, in-window file count, missing dir, render sections."
+
+invoke:
+  commands:
+    - "python3 -m pytest tests/test_tool_usage_report.py -q"
+    - "python3 scripts/tool-usage-report.py --journal-file /dev/null --reports-dir /path/to/reports --dry-run"
+    - "on idc03: .venv/bin/python scripts/tool-usage-report.py --dry-run | less  # real session reports"
+
+verification:
+  - "tests.test_tool_usage_report: 13/13 pass — fixture 7d count matches
+    the hand-counted tool_call events (ada_memory_search 3 = 2 direct +
+    1 alias; kanban 1), 30d count adds the Sep-20 file, Aug-15 file
+    contributes nothing"
+  - "dry-run on tony-dell (no reports dir): journal census renders
+    unchanged, transcript pass warns + skips — no hard failure when
+    reports are absent"
+  - "dry-run against a fixture reports dir renders both new sections:
+    alias calls fold into canonical rows, denied column populates,
+    zero-call list + review-only caveat print"
+  - "pre-existing: tool-lint reports 3 violations on this base
+    (yt_cached_list impl seat, voice_fx coverage, +1) — present on the
+    untouched tree; not introduced by this diff (lint audits backend/ +
+    ssot, neither modified)"
+  - "live verify (post-deploy, next ada-tool-usage.timer tick on idc03):
+    report/tool-usage CMS page shows both transcript-pass sections with
+    real 7d/30d counts and the zero-call candidate list"
