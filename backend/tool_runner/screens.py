@@ -46,7 +46,7 @@ class ScreensMixin:
         if action == "stop":
             return await self.yt_cast_stop()
         if action == "list":
-            return await self.yt_cached_list()
+            return await self._yt_cached_list()
         if action == "transcript":
             return await self.yt_transcript(url=url or query,
                                             language=language)
@@ -88,7 +88,7 @@ class ScreensMixin:
         import asyncio
         return await asyncio.to_thread(self._yt_api, "/stop", {})
 
-    async def yt_cached_list(self) -> dict[str, Any]:
+    async def _yt_cached_list(self) -> dict[str, Any]:
         """List cast-ready dubbed/cached videos in the yt-live library.
         Each entry has `name` and a LAN `url` ready for
         yt(action='cast', url=...). When the user asks to 'play the <name>

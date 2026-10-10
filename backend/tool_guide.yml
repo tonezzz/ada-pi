@@ -96,7 +96,14 @@ tv_action: >-
 
 cast_to_screen: >-
   Numbered vcast displays — not the physical TV (tv_action / yt cast for
-  that). READS: action='list' enumerates displays plus relay ground
+  that). DISPLAY MANAGEMENT: 'claim' pairs a pending display by the
+  4-digit code on its QR screen; 'assign' retitles/renumbers a display;
+  'background' veils a screen while its audio keeps playing. Chat
+  screens self-register as ada-chat-<id> — 'list' shows them; mirror a
+  chat screen's status URL to screen-1/tony-tv to share media. Cached
+  dubs: cms_read 'cached-videos-report', play its local .mp4.
+  Interrupting a busy screen or a camera capture needs confirmed=true
+  after asking the user. READS: action='list' enumerates displays plus relay ground
   truth (active_captures, camwall_zones — a camwall_zones flag is NOT
   proof a wall is visible when state_mismatch says otherwise);
   action='status' screen=N for one screen. Call 'list' first when unsure
@@ -562,3 +569,11 @@ ada_look: >-
   intervals) — report it as 'last seen' with the age, not 'right now'.
   Read-only: never acts on a detection — doing something about what you
   see is another tool's call.
+
+voice_fx: >-
+  Mechanical asides spoken in a separate machine voice. Flags:
+  'sci_fx' = MASTER switch (off silences everything); 'sys_ops' =
+  system-operation notices (cast, camera, dispatch, relink, device
+  actuation). action='status' shows flags; 'set' toggles
+  (feature=, enabled=). Voice triggers: 'sci-fi mode on/off' (master),
+  'system operation(s) on/off' (sys_ops), 'memory narration' (sci_fx).

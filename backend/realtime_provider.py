@@ -3094,13 +3094,9 @@ class GeminiLiveProvider(RealtimeProvider):
                 }, {
                     "name": "cast_to_screen",
                     "description": (
-                        "Drive the numbered vcast displays (browser/PWA screens — NOT the TV; "
-                        "absorbs vcast_say/list/status/shortcut). Cached dubs: cms_read "
-                        "'cached-videos-report', play its local .mp4. Interrupting a busy "
-                        "screen or a camera capture needs confirmed=true after asking the user. "
-                        "Also manages the displays themselves: 'claim' pairs a pending display "
-                        "by the 4-digit code on its QR screen, 'assign' retitles/renumbers a "
-                        "display, 'background' veils a screen while its audio keeps playing."
+                        "Drive the numbered vcast displays (browser/PWA — NOT the TV; "
+                        "absorbs vcast_say/list/status/shortcut + claim/assign/background). "
+                        "Interrupts and camera captures need confirmed=true. See tool_guide."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {

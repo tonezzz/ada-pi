@@ -371,6 +371,7 @@ families:
 # tools-regression-scenarios card lands coverage. A declared tool absent
 # from BOTH scenarios and this list fails lint (no silent uncovered adds).
 coverage_debt:
+  - voice_fx
   - ada_device_acl
   - ada_resolve_action
   - chat_send
