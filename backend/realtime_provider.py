@@ -24,7 +24,7 @@ from google import genai
 from google.genai import types
 
 from backend import chaba_memory, tools_loader, voice_config, vms_camera, vision_describe
-from backend import write_outbox
+from backend import command_lane, write_outbox
 from backend.instance import ada_instance_id
 from backend.conversation_memory import ConversationMemory
 from backend.speech_sanitize import sanitize_speech, split_artifact_tail
@@ -5680,6 +5680,18 @@ class GeminiLiveProvider(RealtimeProvider):
                                 self._last_user_thai = False
                             yield ProviderEvent("user_transcript",
                                                 {"text": transcript})
+                            # Local command lane (card
+                            # use-local-model-for-short-voice-commands):
+                            # advisory probe — scores whether the local
+                            # model would have served this short turn;
+                            # corpus rows are the promotion evidence.
+                            # Voice stays shadow in every mode: the audio
+                            # already streamed to Gemini.
+                            command_lane.probe(
+                                transcript, surface="voice",
+                                session_id=self.session_id,
+                                tools=[n for n, _ in turn_tool_results],
+                                emit=self._emit_ops_event)
                     barge_pending = False
                     input_transcript = ""
                     n_tools_this_turn = tool_calls_this_turn
