@@ -470,6 +470,10 @@ class MemoryMixin:
             if not str(text or "").strip():
                 raise ValueError("remember(kind='guest') requires text")
             slug = str(key or _slug(str(text))[:40] or "note")
+            refusal = memory_write_guard.check_write(
+                text=str(text), bank="guest", fields={"key": slug})
+            if refusal is not None:
+                return refusal
             if private:
                 return self.chaba.remember_private(
                     self.session_id, slug, str(text))
@@ -654,6 +658,12 @@ class MemoryMixin:
             body = "# Vocabulary — terms I heard, gently corrected\n"
         if line not in body:
             body = body.rstrip("\n") + "\n" + line + "\n"
+        # Cap the FINAL merged doc, not the appended line — a small
+        # addition to a near-full vocab log still refuses (card
+        # ada-memory-write-caps edge case).
+        refusal = memory_write_guard.check_write(bank=bank.name, text=body)
+        if refusal is not None:
+            return refusal
         meta = {
             "kind": ["vocab"], "subject": ["persona"],
             "status": ["active"], "scope": ["instance"],
@@ -883,11 +893,19 @@ class MemoryMixin:
     async def guest_remember(self, key: str, text: str) -> dict[str, Any]:
         """Save a public memory under this visitor's declared name."""
         self._require_chaba()
+        refusal = memory_write_guard.check_write(
+            text=text, bank="guest", fields={"key": key})
+        if refusal is not None:
+            return refusal
         return self.chaba.remember(self.session_id, key, text)
 
     async def guest_remember_private(self, key: str, text: str) -> dict[str, Any]:
         """Save a private note — only for admin-promoted users."""
         self._require_chaba()
+        refusal = memory_write_guard.check_write(
+            text=text, bank="guest", fields={"key": key})
+        if refusal is not None:
+            return refusal
         return self.chaba.remember_private(self.session_id, key, text)
 
     async def guest_recall(self, query: str, limit: int = 10) -> dict[str, Any]:

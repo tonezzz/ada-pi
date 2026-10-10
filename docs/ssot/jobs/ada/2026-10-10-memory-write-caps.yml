@@ -1,0 +1,99 @@
+# SSOT Job: memory write caps — hard size limits with loud, useful refusal
+# Card: ada-memory-write-caps (chaba kanban). Dispatch
+# 20261010-091631-where-ada-pi-repo-extend-backe, attempt 2.
+#
+# NOTE on the module's provenance: the sibling card
+# ada-memory-injection-scan is marked done and its comms claim a merge to
+# "origin/master" (9ecae6dd) — but origin (github.com/tonezzz/ada-pi) has
+# no master branch and that commit is unreachable. The scan work landed
+# on chaba/master only, so this repo had no memory_write_guard.py. Per
+# the card spec's fallback, this module was created carrying the caps
+# stage; check_write() is the single entry point and the scan classes
+# slot in ahead of the cap checks when the chaba merge arrives.
+
+title: Memory write caps — every memory write bounded, refusal tells the
+  model how to fix it
+subtitle: Sizes were silently accepted (or silently truncated at 2000 in
+  the chaba store); now an over-cap write fails with size/cap/hint so the
+  model shortens or splits in the same turn
+
+planning:
+  goal: |
+    Bound every memory write path: curated-bank entries cap at 2,000
+    chars (per-entry — Hermes caps a whole store at ~2,200), key-ish
+    fields at 160, and bank doc-count growth logs a warn event instead
+    of blocking. Refusals carry {ok:false, error:'memory_cap', size,
+    cap, hint} — "shorten by K chars or split into N entries" — so the
+    model self-corrects rather than narrating a failure.
+  decisions: |
+    - check_write() in backend/memory_write_guard.py is the single
+      entry: named fields first (cheap fail), then body. Per-bank
+      override map BANK_CAPS for archive-class banks.
+    - Wiring points: memory_ops.remember() covers create / correct-in-
+      place / supersede (text IS the final body in all three — no merge
+      math needed); tool_runner/memory.py guest path checks text+slug
+      before chaba; _vocab_append checks the FINAL merged doc (the
+      card's named edge case); guest_remember/_private direct methods
+      guarded too for non-execute() callers.
+    - Bank doc-count is warn-only (banks legitimately grow; sweep jobs
+      decay): warn_if_bank_large() runs after successful writes,
+      throttled to one listing per bank per DOC_WARN_INTERVAL_S (600s)
+      so chatty sessions don't pay a listing per write. Guest store
+      gets the analog via chaba_memory._warn_entry_count.
+    - Refusals AND warns log to events.md (memory-cap-refused /
+      memory-bank-doc-warn) — sizes and field names only, never payload.
+    - tool_guide.yml ada_remember blurb names the caps so the model can
+      pre-comply; the guide text is appended to tool errors already.
+    - event_log is imported defensively (try/except) so the module runs
+      standalone — `python3 backend/memory_write_guard.py --selftest`
+      must work with backend/ as argv[0] dir.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-10"
+  steps:
+    - id: 1
+      label: "guard module"
+      status: done
+      notes: "backend/memory_write_guard.py — caps config header,
+        check_field/check_entry/check_write, note_doc_count +
+        warn_if_bank_large (throttled), _event audit helper, --selftest."
+    - id: 2
+      label: "wiring"
+      status: done
+      notes: "memory_ops.remember (all three write verbs + post-write
+        bank-size warn); tool_runner/memory.py guest kind + _vocab_append
+        merged body + guest_remember/_private; chaba_memory entry-count
+        warn; common.py import."
+    - id: 3
+      label: "tests"
+      status: done
+      notes: "tests/test_memory_write_guard.py — 15 tests: boundary,
+        refusal shape, per-bank override, doc-warn throttle, plus wiring
+        (over-cap ada_remember refuses pre-write, supersede leaves old
+        doc active, guest inherits, vocab merged-append)."
+
+invoke:
+  commands:
+    - "python3 backend/memory_write_guard.py --selftest"
+    - "python3 -m pytest tests/test_memory_write_guard.py -q"
+
+verification:
+  - "selftest: SELFTEST-OK (17 checks — over/at/under boundary, hint
+    math, field cap, merged-append, per-bank override, doc-warn
+    throttle, event log)"
+  - "tests/test_memory_write_guard.py: 15 passed"
+  - "regression: test_memory_banks + test_tool_runner +
+    test_memory_recall_extras + test_scenarios + new file — 386 passed
+    on ../ada-pi/.venv python"
+  - "tool-lint: 3 PRE-EXISTING violations (voice_fx descsize,
+    yt_cached_list impl, voice_fx coverage) — unrelated files, present
+    before this change"
+  - "live verify (post-deploy on ada-dev): ada_remember with a
+    5,000-char text -> {ok:false, error:'memory_cap', size:5000,
+    cap:2000, hint:'shorten by 3000 chars or split into 3 entries'};
+    a 2,000-char write lands; vocab append onto a near-full log refuses
+    on merged size"
+  - "NOT verified here: real bank doc-count warn needs a >=400-doc bank
+    — logic covered by unit test against FakeMddb seeding"

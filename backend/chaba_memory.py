@@ -229,6 +229,20 @@ class ChabaMemory:
             yaml.safe_dump(doc, f, allow_unicode=True, sort_keys=False)
         tmp.replace(path)
 
+    def _warn_entry_count(self, file_name: str, count: int) -> None:
+        """Advisory guest-store growth warn (card ada-memory-write-caps) —
+        same throttled threshold as the bank doc-count guard; lazy import
+        keeps this module standalone-safe."""
+        try:
+            from backend import memory_write_guard
+        except ImportError:
+            try:
+                import memory_write_guard  # type: ignore[no-redef]
+            except ImportError:
+                return
+        memory_write_guard.note_doc_count(
+            f"chaba/{file_name}", count, source="chaba")
+
     def remember(self, session_id: str | None, key: str, text: str) -> dict[str, Any]:
         """Append a public memory under the session's declared name."""
         ident = self.identity(session_id)
@@ -246,6 +260,7 @@ class ChabaMemory:
             "public": True,
         })
         self._save_doc(path, doc)
+        self._warn_entry_count(path.name, len(doc["entries"]))
         logger.info("remember %s/%s for session=%s", name, key, session_id)
         return {"ok": True, "file": path.name, "key": key, "public": True,
                 "scope": ident["kind"]}
@@ -267,6 +282,7 @@ class ChabaMemory:
             "public": False,
         })
         self._save_doc(path, doc)
+        self._warn_entry_count(path.name, len(doc["entries"]))
         return {"ok": True, "file": path.name, "key": key, "public": False}
 
     # ---------- recall ----------
