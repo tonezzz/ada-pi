@@ -115,6 +115,25 @@ def _user_callers() -> dict[int, str]:
     return out
 
 
+_whisper_model = None
+
+
+def _transcribe(path) -> str:
+    """Free-first voice transcription — faster-whisper locally, model via
+    TG_WHISPER_MODEL (default base). Gated by TG_VOICE_TRANSCRIBE=1."""
+    if os.environ.get("TG_VOICE_TRANSCRIBE") != "1":
+        return ""
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+        size = os.environ.get("TG_WHISPER_MODEL", "base")
+        _whisper_model = WhisperModel(
+            size, device="cpu", compute_type="int8")
+        logger.info("whisper model %s loaded", size)
+    segments, _ = _whisper_model.transcribe(str(path), beam_size=1)
+    return " ".join(seg.text.strip() for seg in segments).strip()
+
+
 def _key_by_name(name: str | None) -> str:
     """Issued API key for a caller name, else the admin default."""
     if not name:
@@ -465,18 +484,44 @@ class TgRelay:
             kind = ("voice" if msg.get("voice")
                     else "video_note" if msg.get("video_note") else "audio")
             try:
-                _, duration = await self._save_voice_clip(
+                clip_path, duration = await self._save_voice_clip(
                     msg, media, kind, chat_id, from_id, caller)
-                await self.send_text(
-                    chat_id,
-                    f"Saved {duration}s {kind} clip to the voice corpus.",
-                    reply_to=reply_to)
             except Exception as exc:
                 logger.warning("chat %s %s save failed: %s",
                                chat_id, kind, exc)
                 await self.send_text(
                     chat_id, "Couldn't save that clip — try again.",
                     reply_to=reply_to)
+                return
+            transcript = await asyncio.get_event_loop().run_in_executor(
+                None, _transcribe, clip_path)
+            if not transcript:
+                await self.send_text(
+                    chat_id,
+                    f"Saved {duration}s {kind} clip to the voice corpus.",
+                    reply_to=reply_to)
+                return
+            await self.send_text(
+                chat_id, '\U0001f399 "' + transcript + '"',
+                reply_to=reply_to)
+            sess = self.sessions.setdefault(
+                skey, ChatSession(chat_id, self, caller=caller))
+            try:
+                await self.tg("sendChatAction", chat_id=chat_id,
+                              action="typing")
+            except Exception:
+                pass
+            try:
+                reply, images = await sess.send_turn(transcript)
+            except Exception as exc:
+                logger.warning("chat %s voice turn failed: %s", chat_id, exc)
+                reply, images = ("(failed: session dropped)", [])
+                sess = ChatSession(chat_id, self, caller=caller)
+                self.sessions[skey] = sess
+            await self.send_text(chat_id, reply or "(no reply)",
+                                 reply_to=reply_to)
+            for url, cap in images[:3]:
+                await self.send_photo(chat_id, url, cap)
             return
         if photos:
             sess = self.sessions.setdefault(
