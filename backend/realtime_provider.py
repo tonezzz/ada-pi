@@ -2555,10 +2555,11 @@ class GeminiLiveProvider(RealtimeProvider):
 
         self._client = genai.Client(api_key=self.api_key)
         config = {
-            # Text-channel sessions (telegram/line relays) run TEXT modality —
-            # no TTS synthesis, no audio turn cost; reply text arrives in
-            # model_turn parts.
-            "response_modalities": ["TEXT" if self.text_only else "AUDIO"],
+            # Text-channel sessions (telegram/line relays) also run AUDIO —
+            # native-audio live models (3.x) dropped response_modalities TEXT
+            # (Google retired gemini-live-2.5-flash-preview 2026-10). Reply
+            # text arrives via output_audio_transcription instead.
+            "response_modalities": ["AUDIO"],
             "media_resolution": (
                 types.MediaResolution.MEDIA_RESOLUTION_HIGH
                 if self.video_resolution == "high"
@@ -4251,9 +4252,9 @@ class GeminiLiveProvider(RealtimeProvider):
         }
         if self.text_only:
             # No audio in or out on relay channels — speech/voice config is
-            # meaningless (and output_audio_transcription has nothing to
-            # transcribe). Avatar tools and the audio-input VAD likewise.
-            for k in ("speech_config", "output_audio_transcription",
+            # meaningless. Keep output_audio_transcription: it is now the
+            # text source (native-audio models dropped TEXT modality).
+            for k in ("speech_config",
                       "input_audio_transcription", "realtime_input_config"):
                 config.pop(k, None)
             config["tools"][0]["function_declarations"] = [
