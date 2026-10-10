@@ -324,18 +324,60 @@ class CommentTest(unittest.IsolatedAsyncioTestCase):
 
 class FileTest(unittest.IsolatedAsyncioTestCase):
 
+    def _routes(self, post_payload, cards):
+        return {"/card": FakeResp(200, post_payload),
+                "/cards": FakeResp(200, {"cards": cards})}
+
     async def test_file_creates_backlog_card_as_ada(self):
-        client = FakeClient({"/card": FakeResp(200, {"ok": True,
-                                                    "message": "card p1 created"})})
+        client = FakeClient(self._routes(
+            {"ok": True, "message": "card p1 created"},
+            [{"id": "p1", "title": "probe card", "column": "backlog"}]))
         with patch.object(board.httpx, "AsyncClient", return_value=client):
             out = await board.run(_runner(), action="file",
                                   title="probe card", note="one liner",
                                   priority="high")
         self.assertTrue(out["ok"])
+        self.assertEqual(out["id"], "p1")
+        self.assertNotIn("warning", out)
         body = client.posts("/card")[0]["json"]
         self.assertEqual(body["from"], "ada")
         self.assertEqual(body["title"], "probe card")
         self.assertEqual(body["priority"], "high")
+
+    async def test_file_ok_but_no_card_landed_is_honest_failure(self):
+        """Phantom guard (card ada-phantom-card-claims): a 200 that
+        filed nothing must NOT return ok — the narration would claim a
+        card that silently drops the ask."""
+        client = FakeClient(self._routes(
+            {"ok": True, "message": "card created"},
+            [{"id": "other", "title": "unrelated", "column": "backlog"}]))
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(), action="file",
+                                  title="missing card")
+        self.assertFalse(out["ok"])
+        self.assertIn("did not file", out["error"])
+
+    async def test_file_unverifiable_read_warns_but_stays_ok(self):
+        """Write succeeded; the verify read failed — don't flip a real
+        write to failure, but mark it unverified."""
+        client = FakeClient({"/card": FakeResp(
+            200, {"ok": True, "message": "card p2 created"})})
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(), action="file", title="t")
+        self.assertTrue(out["ok"])
+        self.assertIn("warning", out)
+        self.assertEqual(out["id"], "p2")
+
+    async def test_file_verifies_by_title_when_id_absent(self):
+        client = FakeClient(self._routes(
+            {"ok": True, "message": "done"},
+            [{"id": "real-id", "title": "probe card",
+              "column": "backlog"}]))
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(), action="file",
+                                  title="probe card")
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["id"], "real-id")
 
     async def test_file_requires_title(self):
         with patch.object(board.httpx, "AsyncClient",
