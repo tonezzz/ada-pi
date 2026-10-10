@@ -1,0 +1,101 @@
+# SSOT Job: alias-hit rollup — deprecation path for the _ALIASES compat layer
+# Card: ada-alias-telemetry (chaba kanban). Dispatch
+# 20261010-080626-alias-hit-rollup-deprecation-p, attempt 2 (attempt 1
+# left no comms trail — card shows no failure detail; this run rebuilt
+# from the card spec + help pointers).
+
+title: Alias-hit rollup — emitted-name census that makes the 92-name compat
+  layer removable
+subtitle: The data existed in call-logs; nothing aggregated it, and the
+  session report's tool_call.tool held the resolved canonical — not the
+  emitted name the card assumed
+
+planning:
+  goal: |
+    Every merged tool name stays callable via tool_runner._ALIASES (92
+    rows at writing). Deprecation needs evidence: per-emitted-name call
+    counts over a window, so an alias at 0 hits for 14d can retire.
+    The card brief claimed conversation.log_event already records the
+    emitted name — it does not: the provider resolves the alias BEFORE
+    dispatch (call = call.model_copy(update={"name": _rname})), so
+    tool_call.tool is canonical. The emitted name survives in two
+    places: the call-logs JSONL `function_call` event (written
+    pre-resolution, journald-immune by design) and the journal `tool
+    alias <old> -> <new>` line.
+  decisions: |
+    - New scripts/ada/alias_hit_report.py (stdlib-only, same pattern as
+      tool-usage-report.py / cms_regen.py). Sources: call-logs
+      `function_call` names (primary, per-day), session-report
+      tool_call events for sessions with NO call-log (emitted=, else
+      canonical fallback), and the service journal's `tool alias` /
+      `tool <name> args=` lines for the ws/HTTP execute() path which
+      writes no call-log.
+    - realtime_provider.py: log_event("tool_call") gains emitted=<as-
+      called name> so session reports carry the emitted name going
+      forward — the card's premise becomes true.
+    - Eligibility is conservative: quiet_days = today - last_hit across
+      transcript AND journal, and never-hit aliases only count the
+      observed data span — a 5d-old call-log dir cannot declare an
+      alias dead at 14d.
+    - Removal path documented on the page: delete the _ALIASES row AND
+      the family's `absorbed` entry together (lint fails on either
+      half: absorbed-without-alias AND stray-alias are both errors).
+    - Publish = CMS page report/alias-hits in ada-cms-pages
+      (kind=report -> reports-index; report-meta contract enforced
+      pre-publish) + machine JSON at <data>/runs/alias-hits/<date>.json
+      — the same dict feeds ada-dead-surface-metric (dead_surface =
+      declared names unused on every path).
+    - Weekly ada-alias-report.timer (Mon 06:40), inert repo files —
+      install on idc03 like ada-tool-usage.timer.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-10"
+  steps:
+    - id: 1
+      label: "rollup script"
+      status: done
+      notes: "scripts/ada/alias_hit_report.py — call-log + reports +
+        journal scan, kind split, quiet-day eligibility, dead-surface
+        union, markdown render, mddb publish (meta contract gated)."
+    - id: 2
+      label: "emitted-name instrumentation"
+      status: done
+      notes: "backend/realtime_provider.py tool_call event gains
+        emitted=_call_name; tool= stays canonical (post-resolution)."
+    - id: 3
+      label: "units"
+      status: done
+      notes: "scripts/ada-alias-report.service + .timer — weekly
+        refresh, mirrors ada-tool-usage.* install pattern."
+    - id: 4
+      label: "regression tests"
+      status: done
+      notes: "tests/test_alias_hit_report.py — 10 tests: scan window,
+        reports fallback dedupe, kind split, eligibility incl. partial-
+        coverage guard, journal cross-check, dead-surface union,
+        publish meta contract."
+
+invoke:
+  commands:
+    - "python3 scripts/ada/alias_hit_report.py --dry-run"
+    - "python3 -m pytest tests/test_alias_hit_report.py -q"
+    - "python3 scripts/tool-lint.py"
+
+verification:
+  - "tests.test_alias_hit_report: 10 passed; full subset
+    (dead_turn/provider_events/ops_events/event_recorder): 61 passed on
+    .venv python"
+  - "dry-run on tony-dell call-logs: 7 emitted names / 247 calls /
+    92 alias rows / 0 eligible (5d coverage — correctly conservative) /
+    40 dead-surface; journal units absent here -> sources: call-logs"
+  - "tool-lint: 3 PRE-EXISTING violations (voice_fx descsize,
+    yt_cached_list impl, voice_fx coverage) — verified identical on
+    clean HEAD via stash; untouched by this change"
+  - "live verify (post-deploy to idc03): report/alias-hits page appears
+    in reports-index after next regen; ada-alias-report.timer installed
+    + enabled; first weekly run writes runs/alias-hits/<date>.json"
+  - "NOT done here: retiring a real alias (board verify criterion) —
+    requires >=14d of production call-log coverage; call-logs began
+    2026-10-05, so the first eligible rows surface ~2026-10-19"

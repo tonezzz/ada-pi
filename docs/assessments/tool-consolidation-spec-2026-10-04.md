@@ -128,6 +128,15 @@ property is checked, not asserted. The same check runs on
    board-api `/action close` and `ssot-validate-all.mjs` are the
    enforcement call-sites (they live in the chaba repo — this repo ships
    the checker and its contract).
+4. **`scripts/ada/alias_hit_report.py` + `ada-alias-report.timer`** —
+   the deprecation tracker (card ada-alias-telemetry, 2026-10-10):
+   rolls up per-EMITTED-name counts from the session call-logs
+   (`function_call` events — journald-immune), split declared/alias/
+   unknown, plus quiet-day removal eligibility (0 hits for 14d of
+   observed data → removal-eligible: delete the `_ALIASES` row AND the
+   family `absorbed` entry in one commit). Publishes CMS page
+   `report/alias-hits` weekly on idc03; its `dead_surface` list feeds
+   ada-dead-surface-metric.
 
 ## Out of scope here
 
