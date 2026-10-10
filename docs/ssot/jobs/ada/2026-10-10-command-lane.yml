@@ -1,0 +1,118 @@
+# SSOT Job: Local-model command lane (card 'use-local-model-for-short-voice-commands')
+# Handoff: devin-dispatch 2026-10-10 — short user turns classified by the
+# local /v1/systemone fleet instead of spending a Gemini Live turn;
+# shadow-first lifecycle, corpus rows are the promotion evidence.
+
+title: Local-model command lane — shadow probe + gated enforce for short commands
+subtitle: backend/command_lane.py routes short turns through systemone; voice stays advisory, text can enforce
+icon: flash-outline
+
+planning:
+  goal: |
+    Stop spending a Gemini Live turn on every short command ("turn off
+    the fan", "is the bedroom light on", "what time is it"). Route short
+    turns through the local /v1/systemone fleet — same surface jev
+    advisory and orch-bench use — while every existing safety gate
+    (device ACL, dangerous-entity confirm, storm breaker, ADA_READ_ONLY)
+    applies unchanged because actuation still goes through
+    tool_runner.execute.
+  scope: |
+    In scope:
+      - backend/command_lane.py — candidate gate (word cap + Thai
+        unsegmented char cap), deterministic time/date reply, systemone
+        route question (remember/recall/control/answer/search/pass),
+        systemone entity pick over the real HA controllable set,
+        deterministic direction-verb extraction, gated actuation,
+        shadow/enforce modes, corpus JSONL
+      - backend/realtime_provider.py — advisory probe on every
+        completed input_transcription turn (fire-and-forget; audio
+        already streamed to Gemini)
+      - pwa_server.py — ws chat text turns: enforce mode answers through
+        the lane before the provider turn; other armed modes probe
+      - .env.example — ADA_COMMAND_LANE + endpoint/timeout/corpus vars
+      - tests/test_command_lane.py — 32 unit tests
+    Out of scope:
+      - Local STT upstream of Gemini — voice turns cannot be withheld
+        from Gemini Live until a rainy-day STT stage exists (the
+        voice-rainy-day card); voice is advisory in EVERY mode
+      - Serving remember/recall/search through the lane — those routes
+        are scored but always fall through to the full assistant
+      - A trained multi-question student — the lane uses generic gemma
+        choice questions; a distil student that answers them is a later
+        upgrade (noul-only jev students answer choices with conf 0)
+  success_criteria:
+    - 'shadow mode records route/direction/servable rows for live short
+      turns on both voice and text surfaces without touching Gemini'
+    - 'enforce mode answers a confident short control command on a text
+      turn through tool_runner gates — same confirms/ACLs as a Gemini
+      tool call'
+    - 'deterministic time/date handled with zero model calls'
+    - 'every failure mode (timeout, malformed answer, low conf, phantom
+      entity, unmappable direction, gate denial) falls through to the
+      normal provider turn'
+  risks:
+    - 'endpoint latency: gemma-3-4b CPU measured 27-45s/call 2026-10-10 —
+      point ADA_COMMAND_LLM_URL at a gemma-3-1b lane or raise
+      ADA_COMMAND_LANE_TIMEOUT_S; a timed-out classify just falls
+      through (probe) or burns one model call before Gemini (enforce)'
+    - 'entity-pick accuracy on real homes is unproven — corpus rows are
+      the measurement; the token-overlap prefilter caps criteria at 30'
+    - 'per-turn corpus JSONL write is append-only — no rotation; same
+      convention as jev-corpus.jsonl'
+  resources:
+    - route/entity model: any /v1/systemone choice endpoint —
+      gemma-3-1b lanes (idc03:8779, tony-omen:8778, 100.75.102.88:8778)
+      fit the 8s default; gemma-3-4b (idc02:8777) needs ~60s
+    - corpus: ~/.local/share/ada/command-lane-corpus.jsonl
+      (ADA_COMMAND_LANE_CORPUS)
+    - gates: tool_runner.execute — confirmation, owner/speaker identity,
+      secondary-speaker restriction, storm breaker all unchanged
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-10-10"
+  steps:
+    - id: 1
+      label: "Lane module"
+      status: done
+      notes: "command_lane.py: is_candidate (word cap 12, Thai char cap 36), _time_reply (EN+TH), _direction (state-check first, power verbs, media/cover verbs), classify + pick_entity (two systemone hops), try_handle (enforce), probe (shadow), record (corpus)"
+    - id: 2
+      label: "Voice wiring"
+      status: done
+      notes: "realtime_provider turn_complete: probe(transcript, surface=voice, tools=this-turn tool names, emit=_emit_ops_event) after user_transcript emit"
+    - id: 3
+      label: "Text wiring"
+      status: done
+      notes: "pwa_server ws chat path: enforced() → try_handle(tool_runner, session owner/speaker identity) → notify_voice reply + conversation/mirror/tail + silent context note to live session; armed() → probe(surface=text)"
+    - id: 4
+      label: "Verify"
+      status: done
+      notes: "32/32 unit tests pass (unittest runner — dispatch host lacks pytest); 283/283 tool_runner suite with ADA_INSTANCE_ID=tony; py_compile clean; live systemone smoke on idc02:8777 gemma-3-4b: route control 0.9999, entity pick 0.854 (27-45s/call — use a 1b lane)"
+
+invoke:
+  shell:
+    - "ADA_COMMAND_LLM_URL=http://idc03:8779 ADA_COMMAND_LANE=shadow   # default — corpus-only"
+    - "ADA_COMMAND_LANE=enforce                                        # text turns served locally"
+    - "tail -f ~/.local/share/ada/command-lane-corpus.jsonl | jq .     # promotion evidence"
+    - "python3 -m unittest tests.test_command_lane -v"
+  flags:
+    ADA_COMMAND_LANE: "off|shadow|enforce — shadow default; voice advisory in every mode"
+    ADA_COMMAND_LLM_URL: "systemone endpoint; falls back to ADA_JEV_URL (noul-only students answer choices conf 0 = inert)"
+    ADA_COMMAND_LANE_TIMEOUT_S: "per systemone call; 8 default fits 1b lanes, 4b-CPU needs ~60"
+    ADA_COMMAND_LANE_MIN_CONF: "route AND entity-pick confidence floor, 0.65"
+    ADA_COMMAND_LANE_MAX_WORDS: "candidate gate, 12 words (Thai unsegmented: 36 chars)"
+
+verification:
+  - "python3 -m unittest tests.test_command_lane → 32 tests OK"
+  - "ADA_INSTANCE_ID=tony python3 -m unittest tests.test_tool_runner → 283 tests OK"
+  - "python3 -m py_compile backend/command_lane.py backend/realtime_provider.py pwa_server.py"
+  - "live: curl :8777/v1/systemone route question → control 0.9999; pick → entity 0.854"
+  - "scripts/tool-lint.py → 3 pre-existing violations on HEAD (voice_fx descsize/coverage, yt_cached_list impl) — unchanged by this work"
+
+promotion:
+  note: |
+    Flip ADA_COMMAND_LANE=enforce for text once corpus rows show route
+    accuracy on live traffic. Voice promotion additionally needs a local
+    STT stage upstream (voice-rainy-day) — Gemini already owns the audio.

@@ -38,7 +38,7 @@ from backend.conversation_memory import (
 from backend import conversation_memory as _conv_mem
 from backend.instance import ada_instance_id
 from backend.realtime_provider import create_provider
-from backend import memory_ops, voice_fx
+from backend import command_lane, memory_ops, voice_fx
 from backend.home_assistant import HomeAssistantClient
 from backend.tool_runner import ToolRunner
 from backend.conversation_memory import conversation_health
@@ -1404,6 +1404,64 @@ async def voice_socket(ws: WebSocket) -> None:
                             chat_text = str(control.get("text") or "").strip()
                             if chat_text:
                                 logger.info("session=%s chat text turn (%d chars)", session_id, len(chat_text))
+                                # Local command lane (card
+                                # use-local-model-for-short-voice-commands):
+                                # enforce mode answers confident short
+                                # commands without a Gemini turn; every
+                                # other mode just probes for the corpus.
+                                lane_out = None
+                                if command_lane.enforced():
+                                    lane_out = await command_lane.try_handle(
+                                        chat_text[:4000], tool_runner,
+                                        identity=(tool_runner.session_owner_identity
+                                                  or caller_person),
+                                        speaker=caller_person,
+                                        owner=tool_runner.session_owner_identity,
+                                        session=session_id,
+                                        surface="text")
+                                elif command_lane.armed():
+                                    command_lane.probe(
+                                        chat_text[:300], surface="text",
+                                        session_id=session_id,
+                                        emit=lambda t, d, tool=None: getattr(
+                                            provider_ref[0],
+                                            "_emit_ops_event", lambda *a, **k: None)(
+                                            t, d, tool=tool))
+                                if lane_out is not None:
+                                    reply = str(lane_out["reply"])
+                                    logger.info(
+                                        "session=%s command lane answered "
+                                        "(route=%s tool=%s)",
+                                        session_id, lane_out.get("route"),
+                                        lane_out.get("tool"))
+                                    # Machine voice, not Ada's — same
+                                    # surface as notify_voice/bark lines.
+                                    with suppress(Exception):
+                                        await ws.send_text(json.dumps({
+                                            "type": "notify_voice",
+                                            "text": reply}))
+                                    conversation.add_user(chat_text[:4000])
+                                    conversation.add_assistant(reply)
+                                    await _mirror_turn(
+                                        session_id, conversation, "user",
+                                        chat_text[:4000])
+                                    await _mirror_turn(
+                                        session_id, conversation, "assistant",
+                                        reply)
+                                    await _flush_channel_tail(conversation)
+                                    # Silent note keeps the live session
+                                    # aware the device state may have
+                                    # changed without a Gemini turn.
+                                    note = getattr(
+                                        provider_ref[0],
+                                        "queue_context_note", None)
+                                    if note:
+                                        note(
+                                            "(system) The local command "
+                                            "lane handled this turn "
+                                            f"without Ada: {chat_text[:200]!r} "
+                                            f"→ {reply[:200]!r}")
+                                    continue
                                 # Doc-upload notes are context, not urgency —
                                 # wait out any in-flight speech so the note
                                 # doesn't abort a response or merge into the
