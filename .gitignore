@@ -10,3 +10,4 @@ tests/voice-corpus/clips/
 .teststubs/
 pwa-models/
 frontend/cam-snap/
+.venv
