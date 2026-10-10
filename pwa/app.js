@@ -249,6 +249,13 @@ function handleControl(event) {
       window.idleFace?.setSpeechLevel(0, true);
       assistantEntry = null;
       break;
+    case "channel_activity":
+      // Unified voice+chat history: a turn from one of the user's OTHER
+      // live sessions (text chat, telegram, line) — dimmed channel line.
+      logLine(
+        `[${event.via || "?"}] ${event.role === "assistant" ? "Ada" : "You"}: ${event.text}`,
+        "system");
+      break;
     case "user_transcript":
       logLine(`You: ${event.text}`);
       // Edge-tier shadow: score the turn in-browser with the quantized

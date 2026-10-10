@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -130,6 +131,142 @@ def _summary_collection() -> str:
 # doc, always the latest end.
 _SESSION_END_KEY = "last-session-end"
 _SESSION_END_TAIL_CHARS = 400
+
+# Cross-channel history (card ada-reads-text-chat): every session feeds a
+# process-wide channel log so voice, text-chat and relay sessions share one
+# timeline while they are live. A per-owner rolling tail doc in the SHARED
+# recall-summary collection carries the same tail across ada backends
+# (ada-pi-pwa chat -> ada-ha-tony voice) and restarts — the per-instance
+# collections cannot bridge that split.
+_CHANNEL_LOG_KEEP = int(os.environ.get("ADA_CHANNEL_LOG_KEEP", "300"))
+_CHANNEL_TAIL_TURNS = int(os.environ.get("ADA_CHANNEL_TAIL_TURNS", "8"))
+_CHANNEL_TAIL_CHARS = int(os.environ.get("ADA_CHANNEL_TAIL_CHARS", "1400"))
+_CHANNEL_TAIL_MAX_AGE_S = float(
+    os.environ.get("ADA_CHANNEL_TAIL_MAX_AGE_S", str(6 * 3600)))
+_channel_log: deque = deque(maxlen=_CHANNEL_LOG_KEEP)
+
+
+def _channel_collection() -> str:
+    # Deliberately NOT instance-suffixed: this is the unified voice+chat
+    # history — every ada backend reads the same docs. The
+    # ada-ha-recall-summary-* prefix routes it to the ops store (no
+    # embedding burn on per-turn tail upserts).
+    return "ada-ha-recall-summary-shared"
+
+
+def _channel_owner_key(owner: str | None) -> str:
+    slug = re.sub(r"[^a-z0-9._-]+", "-", str(owner or "").strip().lower())
+    return f"channel-tail-{slug or 'anon'}"
+
+
+def channel_tail_text(
+    owner: str | None = None,
+    exclude_session: str | None = None,
+    max_turns: int | None = None,
+    max_chars: int | None = None,
+    max_age_s: float | None = None,
+) -> str:
+    """Recent turns from OTHER sessions on this backend, labelled by
+    channel — the shared voice+chat history a new session primes with.
+    Strict owner match: a session only ever sees its own owner's turns."""
+    now = time.time()
+    max_age = (_CHANNEL_TAIL_MAX_AGE_S if max_age_s is None else max_age_s)
+    rows = [
+        it for it in _channel_log
+        if it.get("session_id") != exclude_session
+        and it.get("owner") == owner
+        and now - float(it.get("ts") or 0) <= max_age
+    ][-(max_turns or _CHANNEL_TAIL_TURNS):]
+    lines = []
+    for it in rows:
+        hhmm = datetime.fromtimestamp(
+            float(it["ts"]), timezone.utc).strftime("%H:%M")
+        chan = it.get("channel") or "voice"
+        who = "User" if it.get("role") == "user" else "Ada"
+        label = who if chan == "voice" else f"{who} [{chan}]"
+        lines.append(f"{hhmm} {label}: {it['text']}")
+    return "\n".join(lines)[: (max_chars or _CHANNEL_TAIL_CHARS)]
+
+
+def channel_log() -> list[dict[str, Any]]:
+    """Raw shared channel-history entries (oldest first) — diagnostics."""
+    return [dict(it) for it in _channel_log]
+
+
+async def record_channel_tail(
+    mddb: Any, owner: str | None, tail: str
+) -> None:
+    """Upsert this instance's channel tail for `owner` into the shared
+    collection. Keyed per instance so concurrent backends never clobber
+    each other's tail — readers merge the freshest docs."""
+    if not owner or not str(tail or "").strip():
+        return
+    from backend.instance import ada_instance_id
+    ts = time.time()
+    iso = datetime.fromtimestamp(ts, timezone.utc).isoformat()
+    try:
+        await mddb.add_document(
+            collection=_channel_collection(),
+            key=f"{_channel_owner_key(owner)}-{ada_instance_id()}",
+            lang="en",
+            content_md=str(tail).strip(),
+            meta={
+                "kind": ["channel-tail"],
+                "owner": [str(owner)],
+                "instance": [ada_instance_id()],
+                "updated_at": [iso],
+                "updated_ts": [f"{ts:.3f}"],
+            },
+        )
+    except Exception as exc:
+        logger.warning("channel-tail write failed: %s", exc)
+
+
+async def read_channel_tails(
+    mddb: Any,
+    owner: str | None,
+    exclude_instance: str | None = None,
+    limit: int = 2,
+    max_age_s: float = 24 * 3600,
+) -> list[str]:
+    """Persisted channel tails for `owner` written by OTHER instances —
+    covers sessions that ran on another ada backend (the ada-pi-pwa chat
+    card) plus any tail that outlived a restart."""
+    if not owner:
+        return []
+    try:
+        docs = await mddb.search_documents(
+            collection=_channel_collection(),
+            query="*",
+            filter_meta={"kind": ["channel-tail"], "owner": [str(owner)]},
+            limit=12,
+        )
+    except Exception as exc:
+        logger.debug("channel-tail read failed: %s", exc)
+        return []
+
+    def _first(meta: dict, field: str) -> str:
+        v = (meta or {}).get(field) or []
+        return str(v[0] if isinstance(v, list) and v else v or "")
+
+    now = time.time()
+    ranked: list[tuple[float, str]] = []
+    for d in docs or []:
+        meta = d.get("meta") or {}
+        if exclude_instance and _first(meta, "instance") == exclude_instance:
+            continue
+        body = str(d.get("contentMd") or d.get("content_md") or "").strip()
+        if not body:
+            continue
+        try:
+            ts = float(_first(meta, "updated_ts"))
+        except ValueError:
+            ts = 0.0
+        if ts and now - ts > max_age_s:
+            continue
+        ranked.append((ts, body))
+    ranked.sort(key=lambda kv: kv[0], reverse=True)
+    return [body for _, body in ranked[:limit]]
 
 
 async def record_session_end(
@@ -536,6 +673,12 @@ class ConversationMemory:
         # caller name) — used to route sensitive auto-extracted memories to
         # the speaker's personal bank instead of shared banks.
         self.speaker_identity: str | None = None
+        # Channel surface for the shared voice+chat history: "voice" for
+        # PWA/audio sessions, the relay name for text channels
+        # (chat/telegram/line). owner_identity is the pinned session owner
+        # — turns only ever merge/mirror between sessions of the same owner.
+        self.channel: str = "voice"
+        self.owner_identity: str | None = None
         self.warm_summary()
 
     def log_event(self, kind: str, **fields: Any) -> None:
@@ -546,13 +689,43 @@ class ConversationMemory:
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "kind": str(kind), "turn": len(self._turns), **fields})
 
+    def _channel_append(self, role: str, text: str) -> None:
+        """Log the turn into the shared cross-channel history. no_persist
+        sessions (scenario/test runs) stay out — their turns must never
+        surface in real sessions' prime or mirrors."""
+        if getattr(self, "no_persist", False):
+            return
+        _channel_log.append({
+            "ts": time.time(), "role": role, "text": text.strip()[:500],
+            "channel": self.channel, "session_id": self.session_id,
+            "owner": self.owner_identity,
+        })
+
     def add_user(self, text: str) -> None:
         if text.strip():
-            self._turns.append({"role": "user", "text": text.strip(), "ts": time.time()})
+            text = text.strip()
+            self._turns.append({"role": "user", "text": text, "ts": time.time()})
+            self._channel_append("user", text)
 
     def add_assistant(self, text: str) -> None:
         if text.strip():
-            self._turns.append({"role": "assistant", "text": text.strip(), "ts": time.time()})
+            text = text.strip()
+            self._turns.append(
+                {"role": "assistant", "text": text, "ts": time.time()})
+            self._channel_append("assistant", text)
+
+    def add_channel_mirror(self, role: str, text: str, via: str) -> None:
+        """A sibling session's turn copied into this transcript, labelled
+        by surface — the unified-history record. Does NOT re-enter the
+        channel log (the origin session already logged it there)."""
+        text = str(text or "").strip()
+        if text:
+            self._turns.append({
+                "role": role if role in ("user", "assistant") else "user",
+                "text": f"[via {via}] {text}",
+                "ts": time.time(),
+                "mirrored": True,
+            })
 
     def turns(self) -> list[dict[str, Any]]:
         """Structured transcript turns ({role, text, ts}), oldest first."""

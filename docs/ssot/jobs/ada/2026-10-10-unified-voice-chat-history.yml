@@ -1,0 +1,59 @@
+# SSOT Job: unified voice+chat history — Ada reads the text-chat channel
+# Card: ada-reads-text-chat. Dispatch 20261010-091641.
+
+title: >
+  Voice, text-chat and relay sessions share one owner-scoped history:
+  live mirror + persisted shared channel tail
+
+subtitle: >
+  Tony ask ("ระบบรวมการคุยทั้งสองทาง"): the text-chat card and voice PWA
+  both ride /ws but each websocket owned an isolated ConversationMemory —
+  a voice session could never see what was typed in chat until long after
+  the session ended, and new sessions only got a lossy last-session tail.
+
+planning:
+  goal: |
+    Persist text-chat turns into the shared session history and let Ada
+    read them from voice sessions — live while both channels are open,
+    and across backends/restarts via a durable tail.
+  decisions: |
+    - Two paths: (1) an in-process _channel_log ring buffer in
+      conversation_memory.py that every non-no_persist session appends
+      to on add_user/add_assistant, labelled {channel, owner, session_id};
+      (2) a per-owner+instance rolling tail doc
+      `channel-tail-<owner>-<instance>` in the SHARED collection
+      `ada-ha-recall-summary-shared` — deliberately not instance-suffixed
+      so ada-pi-pwa chat turns are readable by ada-ha-tony voice.
+    - _mirror_turn() in pwa_server.py copies each user/assistant turn to
+      same-owner live siblings three ways: a `[via <channel>]` transcript
+      line (marked mirrored=True so it never re-logs/re-echoes), a silent
+      queue_context_note() on the sibling's provider (turn_complete=False,
+      never triggers a reply), and a `channel_activity` ws event the
+      chat card + voice log render as a dimmed channel line.
+    - Session prime: _channel_prime_context() merges the live tail
+      (this backend) with persisted tails written by OTHER instances,
+      injected via session_prime_text(channel_context=...). Owner-strict,
+      age-capped (6h default), turn-capped (8/1400 chars).
+    - The chat card now connects with ?channel=chat — same text-only
+      provider path as telegram/line relays, and its turns carry the
+      [chat] label in shared history.
+    - Privacy: owner_identity is pinned at ws connect (session policy P1)
+      and mirrors/tails only ever flow between sessions of the same
+      owner; no_persist scenario sessions neither send nor receive.
+
+verification:
+  - tests/test_channel_history.py — 15 focused tests (log, mirror,
+    owner strictness, age/cap filters, persisted tail write/read,
+    prime injection, provider note) all pass; 188-test affected-module
+    suite passes.
+  - /api/chat/transcript now returns channel_history (raw shared log,
+    last 200 entries).
+
+followups:
+  - Full 1097-test suite: 5 failures + 4 errors, all pre-existing or
+    environmental (missing pytest/ai_edge_litert, unreachable mddb,
+    tool_audit lint debt, time-frozen test_eye_tool FRESH ts).
+  - Node not installed on runner — JS edits verified by inspection only.
+  - Tuning envs documented in .env.example: ADA_CHANNEL_LOG_KEEP,
+    ADA_CHANNEL_TAIL_TURNS, ADA_CHANNEL_TAIL_CHARS,
+    ADA_CHANNEL_TAIL_MAX_AGE_S.
