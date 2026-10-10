@@ -64,6 +64,40 @@ function systemLine(text) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+// Machine voice — flat speechSynthesis announcements (barks, notifies).
+// Text-only surface: bracketed '[machine voice]' line + on-demand ▶,
+// never autoplay.
+function machineVoiceLine(text) {
+  const el = document.createElement("div");
+  el.className = "msg machine-voice";
+  const play = document.createElement("button");
+  play.type = "button";
+  play.className = "machine-voice-play";
+  play.textContent = "▶";
+  play.title = "Play machine voice";
+  play.addEventListener("click", () => speakMachine(text));
+  const tag = document.createElement("span");
+  tag.className = "mv-tag";
+  tag.textContent = "[machine voice] ";
+  const body = document.createElement("span");
+  body.textContent = text;
+  el.append(play, tag, body);
+  logEl.append(el);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function speakMachine(text) {
+  try {
+    if (!("speechSynthesis" in window)) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate = 1.15; u.pitch = 0.85; u.volume = 0.9;
+    const en = speechSynthesis.getVoices()
+      .find(v => /^en[-_]US/i.test(v.lang)) || null;
+    if (en) u.voice = en;
+    speechSynthesis.speak(u);
+  } catch (_) {}
+}
+
 function flushAssistant() {
   if (assistantEntry) { assistantEntry.el.classList.remove("streaming"); assistantEntry = null; }
 }
@@ -86,6 +120,10 @@ function handleControl(event) {
       break;
     case "user_transcript":
       addMsg("You (voice)", event.text, "mine");
+      break;
+    case "bark":
+    case "notify_voice":
+      machineVoiceLine(event.text || "Notification.");
       break;
     case "registered":
       systemLine(`Registered as "${event.name}" — awaiting admin approval for a named profile.`);

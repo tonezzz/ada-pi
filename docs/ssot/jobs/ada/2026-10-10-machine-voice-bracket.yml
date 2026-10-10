@@ -1,0 +1,78 @@
+# SSOT Job: machine voice — bracketed log line + play button, no autoplay on text chat
+# Card: ada-chat-machine-voice-bracket (chaba kanban). Dispatch
+# 20261010-080633-text-chat-render-machine-voice (attempt 2 — attempt 1
+# never executed, devin-dispatch-lan-ip bug).
+
+title: machine voice renders as '[machine voice] <text>' + ▶ replay; silent until pressed on text chat
+
+context:
+  card: |
+    Tony via LINE 2026-10-09: "Display machine voice as text in a
+    bracket [machine voice] when in text chat. add play button for
+    effect. no default play." Triggers: bark (voice_fx narration),
+    notify_voice (non-urgent notifies), response_completed text-only
+    fallback, boot voice — all previously speechSynthesis-only
+    (pwa/app.js systemSay), invisible in every text log, and silently
+    dropped on the text-chat surfaces.
+  prior_state: |
+    pwa/app.js systemSay() spoke flat TTS with no log trace — a bare
+    "This is the machine voice." utterance confused Tony in session
+    ed55a8fcb6. ada-chat-card.js and guest.js ignored bark/notify_voice
+    events entirely, so notifications vanished on the text surfaces.
+
+decisions:
+  - live_voice_unchanged: |
+      The card scopes "no autoplay" to the text-chat surface and says
+      "live-voice surface behaviour unchanged". pwa/app.js therefore
+      keeps auto-speaking machine voice (barks exist to be heard while
+      the face screen shows, not watched) — but now also logs the
+      bracketed line + ▶ so the transcript is labelled and replayable.
+      If Tony wants global silence the change is one line (drop the
+      speakMachine call in machineVoice); flag for review.
+  - mute_semantics: |
+      Sound:Off gates only automatic playback — the line still renders
+      (mute kills sound, not information) and an explicit ▶ tap still
+      speaks. Deliberate user gesture beats the auto-mute.
+  - event_coverage: |
+      bark + notify_voice handled on all three surfaces (voice PWA log,
+      ada-chat-card, guest page). Boot voice and the text-only fallback
+      only exist on the voice surface — they flow through the same
+      machineVoice() and get the bracketed line too.
+  - relay_noop: |
+      Confirmed backend/line_relay.py + tg_relay.py never touch
+      bark/notify_voice (ws-only events) — text-only already, no change.
+
+deliverables:
+  - file: pwa/app.js
+    what: systemSay -> machineVoice(text) — machineVoiceLine() renders
+      '[machine voice] <text>' + machine-voice-play button in #pwa-log;
+      speakMachine() holds the speechSynthesis call (replay + autoplay).
+      All 8 call sites renamed; systemHush unchanged.
+  - file: pwa/index.html
+    what: CSS for .machine-voice / .mv-tag / .machine-voice-play inside
+      #pwa-log; app.js cache bump v11 -> v12.
+  - file: pwa/cards/ada-chat-card.js
+    what: bark/notify_voice cases -> _machineVoiceLine() (bracketed line
+      + ▶, _speakMachine() on click only — never autoplay) + shadow CSS.
+  - file: pwa/guest/guest.js + pwa/guest/index.html
+    what: Same non-autoplay bracketed line + ▶ handling on the guest
+      text chat.
+  - file: pwa/chat.html
+    what: Added Cache-Control no-store meta (index.html/guest already
+      had it; chat.html was missing it, so ada-chat-card.js could serve
+      stale).
+
+verification:
+  checks:
+    - grep -q 'machine voice' pwa/app.js pwa/chat.html            -> pass
+    - grep -Eq 'playMachine|machine-voice-play|speakMachine' ...  -> pass
+    - '! grep -n systemSay(event.text pwa/app.js'                 -> pass
+  smoke: |
+    node stubbed-DOM harness (20 assertions): notify_voice/bark/
+    text-only-fallback on app.js render the bracketed line, autoplay,
+    ▶ replays, hush before replay, muted still renders+stays silent+▶
+    works; ada-chat-card + guest render the line with zero autoplay and
+    ▶ speaks on demand. node --check clean on all three files.
+  live: |
+    Not exercised against a running server — idc03 deploy is out of
+    dispatch scope (deploy via ~/.local/bin/deploy-ada.sh after merge).
