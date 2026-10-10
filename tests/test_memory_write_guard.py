@@ -73,7 +73,7 @@ class RememberCapTests(unittest.IsolatedAsyncioTestCase):
     async def test_over_cap_text_refused_before_write(self):
         out = await memory_ops.remember(
             self.mddb, self.registry, "test", "personal",
-            "x" * (guard.entry_cap() + 1))
+            "x " * (guard.entry_cap() // 2 + 1))
         self.assertFalse(out["ok"])
         self.assertEqual(out["error"], "memory_cap")
         self.assertEqual(self.mddb.collections, {})
@@ -81,7 +81,7 @@ class RememberCapTests(unittest.IsolatedAsyncioTestCase):
     async def test_at_cap_text_lands(self):
         out = await memory_ops.remember(
             self.mddb, self.registry, "test", "personal",
-            "x" * guard.entry_cap())
+            "x " * (guard.entry_cap() // 2))
         self.assertEqual(out["verb"], "create")
         coll = self.registry.bank("personal").mddb_collection
         self.assertEqual(len(self.mddb.collections[coll]), 1)
@@ -89,7 +89,7 @@ class RememberCapTests(unittest.IsolatedAsyncioTestCase):
     async def test_over_cap_key_refused(self):
         out = await memory_ops.remember(
             self.mddb, self.registry, "test", "personal", "short text",
-            key="k" * (guard.field_cap() + 1))
+            key="k " * (guard.field_cap() // 2 + 1))
         self.assertEqual(out["error"], "memory_cap")
         self.assertEqual(out["field"], "key")
         self.assertEqual(self.mddb.collections, {})
@@ -101,7 +101,7 @@ class RememberCapTests(unittest.IsolatedAsyncioTestCase):
             {"status": ["active"], "kind": ["note"]})
         out = await memory_ops.remember(
             self.mddb, self.registry, "test", "personal",
-            "x" * (guard.entry_cap() + 1), supersedes="personal/old")
+            "x " * (guard.entry_cap() // 2 + 1), supersedes="personal/old")
         self.assertEqual(out["error"], "memory_cap")
         # The refused supersede left the old doc untouched.
         doc = await self.mddb.get_document(coll, "personal/old")
@@ -137,7 +137,7 @@ class ToolRunnerCapTests(unittest.IsolatedAsyncioTestCase):
         out = await self.runner.execute(
             "ada_remember",
             {"bank": "personal", "confirmed": True,
-             "text": "x" * (guard.entry_cap() + 1)})
+             "text": "x " * (guard.entry_cap() // 2 + 1)})
         self.assertFalse(out["ok"])
         self.assertEqual(out["error"], "memory_cap")
         self.assertIn("hint", out)
@@ -148,7 +148,7 @@ class ToolRunnerCapTests(unittest.IsolatedAsyncioTestCase):
         self.runner.chaba.remember = Mock(return_value={"ok": True})
         out = await self.runner.execute(
             "ada_remember",
-            {"kind": "guest", "text": "x" * (guard.entry_cap() + 1)})
+            {"kind": "guest", "text": "x " * (guard.entry_cap() // 2 + 1)})
         self.assertFalse(out["ok"])
         self.assertEqual(out["error"], "memory_cap")
         self.runner.chaba.remember.assert_not_called()
@@ -159,7 +159,7 @@ class ToolRunnerCapTests(unittest.IsolatedAsyncioTestCase):
             return_value={"ok": True})
         out = await self.runner.execute(
             "guest_remember_private",
-            {"key": "wifi", "text": "x" * (guard.entry_cap() + 1)})
+            {"key": "wifi", "text": "x " * (guard.entry_cap() // 2 + 1)})
         self.assertFalse(out["ok"])
         self.assertEqual(out["error"], "memory_cap")
         self.runner.chaba.remember_private.assert_not_called()
@@ -167,7 +167,7 @@ class ToolRunnerCapTests(unittest.IsolatedAsyncioTestCase):
     async def test_vocab_append_counts_final_merged_size(self):
         # A small vocab line appended to a near-full log must refuse on
         # the merged size, not the delta.
-        body = "# Vocabulary\n" + "x" * guard.entry_cap()
+        body = "# Vocabulary\n" + "x " * (guard.entry_cap() // 2)
         self.runner.mddb.get_document.return_value = {
             "key": "vocab/log", "contentMd": body, "meta": {}}
         out = await self.runner.execute(

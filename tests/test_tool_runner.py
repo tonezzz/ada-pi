@@ -228,11 +228,15 @@ class MemoryMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("live session", result["error"])
 
     async def test_guest_remember_alias_routes_public(self):
+        # owner='admin' keeps the write on the direct path — guest writes
+        # from untrusted callers stage for approval instead (see
+        # tests/test_memory_pending.py::test_guest_remember_stages).
         self.runner.chaba = SimpleNamespace()
         self.runner.chaba.remember = Mock(return_value={"ok": True})
         self.runner.chaba.remember_private = Mock(return_value={"ok": True})
         result = await self.runner.execute(
-            "guest_remember", {"key": "fav-drink", "text": "likes iced tea"})
+            "guest_remember", {"key": "fav-drink", "text": "likes iced tea"},
+            owner="admin")
         self.runner.chaba.remember.assert_called_once_with(
             self.runner.session_id, "fav-drink", "likes iced tea")
         self.runner.chaba.remember_private.assert_not_called()
@@ -242,8 +246,13 @@ class MemoryMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.runner.chaba = SimpleNamespace()
         self.runner.chaba.remember = Mock(return_value={"ok": True})
         self.runner.chaba.remember_private = Mock(return_value={"ok": True})
+        # A private write needs a promoted-user session identity; the
+        # admin owner keeps this on the direct (non-staged) path.
+        self.runner.chaba.identity = Mock(
+            return_value={"kind": "user", "name": "tony"})
         await self.runner.execute(
-            "guest_remember_private", {"key": "wifi", "text": "pw on fridge"})
+            "guest_remember_private", {"key": "wifi", "text": "pw on fridge"},
+            owner="admin")
         self.runner.chaba.remember_private.assert_called_once_with(
             self.runner.session_id, "wifi", "pw on fridge")
         self.runner.chaba.remember.assert_not_called()

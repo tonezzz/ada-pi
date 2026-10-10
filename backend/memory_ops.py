@@ -974,6 +974,62 @@ async def remember(
     return out
 
 
+VOCAB_DOC_KEY = "vocab/log"
+
+
+async def vocab_append(
+    mddb: MddbClient,
+    registry: MemoryBankRegistry,
+    person_entity: str | None,
+    text: Any,
+    note: Any = None,
+) -> dict[str, Any]:
+    """Append a term-coaching entry to the speaker's personal vocab log
+    (vocab/log in their own personal bank — KK's notes land in
+    personal-kk, Tony's in personal-tony). Not confirmation-gated:
+    append-only, scoped to the caller's own bank. Shared by the
+    ada_remember kind='vocab' path and pending-lane approval
+    (memory_pending route='vocab')."""
+    bank = persona_bank_for(registry, person_entity)
+    if bank is None:
+        raise PermissionError(
+            "vocab notes need a personal bank — this identity has none"
+        )
+    entry = str(text or "").strip()
+    note_s = str(note).strip() if note else ""
+    if not entry:
+        raise ValueError("vocab memory requires text ('term → correction')")
+    today = datetime.now(timezone.utc).date().isoformat()
+    line = f"- {entry} — {today}" + (f" ({note_s})" if note_s else "")
+    doc = await mddb.get_document(bank.mddb_collection, VOCAB_DOC_KEY)
+    body = ((doc or {}).get("contentMd") or doc and doc.get("content_md") or "")
+    if not body.strip():
+        body = "# Vocabulary — terms I heard, gently corrected\n"
+    if line not in body:
+        body = body.rstrip("\n") + "\n" + line + "\n"
+    # Cap the FINAL merged doc, not the appended line — a small
+    # addition to a near-full vocab log still refuses (card
+    # ada-memory-write-caps edge case).
+    refusal = memory_write_guard.check_write(bank=bank.name, text=body)
+    if refusal is not None:
+        return refusal
+    meta = {
+        "kind": ["vocab"], "subject": ["persona"],
+        "status": ["active"], "scope": ["instance"],
+        "last_verified": [today],
+    }
+    if doc is None:
+        ok = await mddb.add_document(
+            bank.mddb_collection, VOCAB_DOC_KEY, "en", body, meta)
+    else:
+        ok = await mddb.update_document(
+            bank.mddb_collection, VOCAB_DOC_KEY, content_md=body, meta=meta)
+    if not ok:
+        return {"status": "error", "error": "mddb write failed"}
+    return {"status": "noted", "bank": bank.name, "key": VOCAB_DOC_KEY,
+            "entry": entry}
+
+
 # Keys shaped like speaker-profile paths (speaker/kk, voiceprint/พรศิริ)
 # never name memory docs — voiceprints live in the speaker profile store
 # (backend/speaker_id.py), which ada_forget cannot reach. Redirecting
