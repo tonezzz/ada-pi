@@ -778,3 +778,71 @@ class LooseIdResolutionTest(unittest.IsolatedAsyncioTestCase):
                                   column="backlog")
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["id"], "kanban-review-probe-0be154")
+
+
+class StaleGuardTest(unittest.IsolatedAsyncioTestCase):
+    """expected_updated= optimistic-concurrency guard
+    (report_first_protocol#write_guard): a write must refuse when the
+    card's updated stamp moved since the caller's last read."""
+
+    CARDS = [{"id": "x1", "title": "stale probe", "column": "backlog",
+              "updated": "2026-10-10 09:00"}]
+
+    def _routes(self, extra=None):
+        routes = {"/cards": FakeResp(200, _board(list(self.CARDS)))}
+        routes.update(extra or {})
+        return FakeClient(routes)
+
+    async def test_comment_stale_refuses_before_write(self):
+        client = self._routes({"/comment": FakeResp(200, {"ok": True})})
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(), action="comment", id="x1",
+                                  text="hi",
+                                  expected_updated="2026-10-10 08:00")
+        self.assertFalse(out["ok"])
+        self.assertTrue(out["stale"])
+        self.assertEqual(out["updated"], "2026-10-10 09:00")
+        self.assertEqual(client.posts("/comment"), [])
+
+    async def test_comment_matching_stamp_writes(self):
+        client = self._routes(
+            {"/comment": FakeResp(200, {"ok": True, "message": "ok"})})
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(), action="comment", id="x1",
+                                  text="hi",
+                                  expected_updated="2026-10-10 09:00")
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(len(client.posts("/comment")), 1)
+
+    async def test_no_expected_updated_writes_unchecked(self):
+        client = FakeClient({"/comment": FakeResp(200, {"ok": True,
+                                                      "message": "ok"})})
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(), action="comment", id="x1",
+                                  text="hi")
+        self.assertTrue(out["ok"], out)
+        # no pre-flight /cards read — the guard is opt-in
+        self.assertFalse(any(u.endswith("/cards")
+                             for m, u, kw in client.calls))
+
+    async def test_move_stale_refuses(self):
+        client = self._routes(
+            {"/action": FakeResp(200, {"ok": True}),
+             "/comment": FakeResp(200, {"ok": True})})
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(), action="move", id="x1",
+                                  column="doing",
+                                  expected_updated="2026-10-10 08:00")
+        self.assertFalse(out["ok"])
+        self.assertTrue(out["stale"])
+        self.assertEqual(client.posts("/action"), [])
+
+    async def test_respond_stale_refuses(self):
+        client = self._routes({"/respond": FakeResp(200, {"ok": True})})
+        with patch.object(board.httpx, "AsyncClient", return_value=client):
+            out = await board.run(_runner(owner=True), action="respond",
+                                  id="x1", request_id="r1", answer="a",
+                                  expected_updated="2026-10-10 08:00")
+        self.assertFalse(out["ok"])
+        self.assertTrue(out["stale"])
+        self.assertEqual(client.posts("/respond"), [])

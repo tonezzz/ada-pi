@@ -469,7 +469,10 @@ ada_board_write: >-
   'comment'/'respond'/'read' with the same args.
 
 kanban: >-
-  Board tool (absorbs ada_board_write). 'list' compact board state
+  Board tool (absorbs ada_board_write). Read the 'kanban-brief' page's
+  board-index block first — one row per open card, cheapest read — and
+  use 'list'/'read' only for what the index doesn't carry.
+  'list' compact board state
   (column=, limit= filters) for finding card ids and open requests;
   'read' one card full detail (id=) or the report-linked card
   (report=<slug>). 'comment' posts text= on id= (prefix '[opinion]' for
@@ -483,6 +486,10 @@ kanban: >-
   and is Tony's call on priority:high / review_kind:decide /
   prod-security-tagged cards; every other transition needs Tony's spoken
   yes (replay with confirmed=true after he confirms, or use 'ask').
+  Stale-write guard: pass expected_updated=<updated stamp from your last
+  read> on comment/move/respond — the write refuses with stale=true when
+  the card changed underneath you; re-read, reconcile, retry if still
+  applicable.
 
 ada_track_device: >-
   action='where' (default) locates one device — device= is fuzzy

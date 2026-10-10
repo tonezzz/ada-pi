@@ -143,6 +143,15 @@ DECLARATION = {
                 "type": "integer",
                 "description": "Max cards for action=list (default 12).",
             },
+            "expected_updated": {
+                "type": "string",
+                "description": "Stale-write guard (report-first "
+                               "protocol): pass the card's 'updated' "
+                               "stamp from your last read — comment/"
+                               "move/respond refuse when the card "
+                               "changed underneath you; re-read, "
+                               "reconcile, retry if still applicable.",
+            },
             "confirmed": {
                 "type": "boolean",
                 "description": "Set true only after the user explicitly "
@@ -449,6 +458,38 @@ async def _read(args: dict[str, Any]) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- writes
 
+async def _stale_check(client: httpx.AsyncClient, args: dict[str, Any],
+                       cid: str,
+                       card: dict[str, Any] | None = None
+                       ) -> dict[str, Any] | None:
+    """Optimistic-concurrency guard (ssot.apps.cms-reports.yml
+    report_first_protocol#write_guard): when the caller passes
+    expected_updated=<stamp from the last read>, a mismatch means the
+    card moved under us — refuse so the caller re-reads and reconciles
+    instead of clobbering a newer update. Reports are snapshots; the
+    stamp is what turns a stale read into a visible conflict."""
+    exp = str(args.get("expected_updated") or "").strip()
+    if not exp:
+        return None
+    if card is None:
+        data, err = await _request(client, "GET", "/cards")
+        if err:
+            return {"ok": False, "error": err}
+        card = _resolve_in(_cards_only(data.get("cards")), cid)
+    if card is None:
+        return {"ok": False,
+                "error": f"no card {cid!r} on the board — check the id "
+                         "with action='list'"}
+    cur = str(card.get("updated") or "")
+    if cur != exp:
+        return {"ok": False, "stale": True,
+                "id": str(card.get("id") or cid), "updated": cur,
+                "error": f"card changed since your read (expected "
+                         f"updated={exp}, now {cur or '?'}) — re-read "
+                         f"it, reconcile, and retry if it still applies"}
+    return None
+
+
 async def _do_comment(args: dict[str, Any]) -> dict[str, Any]:
     cid = _card_id(args)
     text = str(args.get("text") or "").strip()
@@ -457,6 +498,9 @@ async def _do_comment(args: dict[str, Any]) -> dict[str, Any]:
     if not text:
         return {"ok": False, "error": "comment text is required"}
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+        stale = await _stale_check(client, args, cid)
+        if stale:
+            return stale
         posted, msg = await _comment(client, cid, text)
         if not posted and msg and "no card" in msg:
             card = await _resolve(client, cid)
@@ -652,6 +696,9 @@ async def _move(runner: Any, args: dict[str, Any],
             return {"ok": False,
                     "error": f"no column {target!r} — board columns: "
                              + ", ".join(sorted(columns))}
+        stale = await _stale_check(client, args, cid, card=card)
+        if stale:
+            return stale
         cur = str(card.get("column") or "backlog")
         if cur == target:
             return {"ok": True, "id": cid,
@@ -728,6 +775,9 @@ async def _respond(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
     if not answer:
         return {"ok": False, "error": "answer text is required"}
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+        stale = await _stale_check(client, args, cid)
+        if stale:
+            return stale
         body = {"id": cid, "request_id": rid,
                 "answer": answer[:_TEXT_MAX], "from": "ada"}
         data, err = await _request(client, "POST", "/respond", json=body)

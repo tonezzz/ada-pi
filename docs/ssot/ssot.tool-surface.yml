@@ -357,6 +357,10 @@ families:
   kanban:
     merge_card: ada-kanban-access
     canonical: kanban              # list/read/comment/move/ask/file/respond -> action=
+    # report-first protocol (ssot.apps.cms-reports.yml, chaba): reads go
+    # through the kanban-brief board-index block; expected_updated= is the
+    # stale-write guard on comment/move/respond (refuse -> re-read -> retry).
+
     scenario: kanban_review
     absorbed:
       - ada_board_write            # -> kanban, action names pass through
