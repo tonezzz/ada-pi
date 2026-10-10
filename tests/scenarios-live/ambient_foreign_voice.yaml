@@ -1,4 +1,5 @@
 name: ambient-foreign-voice
+tier: full
 # Foreign voice / TV-like speech while a real user session is open.
 #
 # What this exercises:

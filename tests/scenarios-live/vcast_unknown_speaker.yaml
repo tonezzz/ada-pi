@@ -1,4 +1,5 @@
 name: vcast-unknown-speaker
+tier: full
 # Live scenario — an unrecognized voice must NOT be able to cast to a
 # vcast display (fail closed on speaker ACL, same posture as other
 # actuating tools).

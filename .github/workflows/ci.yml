@@ -1,6 +1,7 @@
 name: CI
 
-# ada-pi's only GitHub gate — pytest suite + tool-lint on every push/PR.
+# ada-pi's only GitHub gate — scenario-schema + pytest suite +
+# tool-lint on every push/PR.
 # The live scenario suites (ada-scenario-*.timer on idc03) remain the
 # integration layer; this is the fast static/unit check.
 #
@@ -9,10 +10,12 @@ name: CI
 # exercises inference). ai-edge-litert stays: detection/pose/hailo
 # inference tests do hit its lazy import.
 #
-# Known-debt tolerance: test_tool_audit's two lint tests fail while
-# ada_track_device (descsize) and ada_device_acl (coverage) carry
-# in-flight debt from another session — deselected below. Remove the
-# --deselect lines and the advisory flag on tool-lint once that lands.
+# Known-debt tolerance: test_tool_audit's two lint tests assert the
+# whole repo lint-clean — they go red whenever an in-flight card adds
+# surface debt — deselected below; tool-lint itself runs advisory so
+# the violations still show in the log without blocking the push.
+# Remove the --deselect lines and the advisory flag once the surface
+# stays clean.
 #
 # Deselected web_search tests post to a live MDDB ops collection
 # (tailnet-only) — they cannot run on a GitHub runner by design.
@@ -39,6 +42,8 @@ jobs:
             backend/requirements.txt > /tmp/req-ci.txt
           pip install -r /tmp/req-ci.txt \
             pytest pytest-asyncio PyYAML websockets
+      - name: scenario-schema
+        run: python scripts/scenario-schema-check.py
       - name: pytest
         run: >
           python -m pytest tests/ -q
@@ -47,6 +52,6 @@ jobs:
           --deselect tests/test_web_search.py::WebSearchFallbackTests::test_429_posts_quota_ops_event
           --deselect tests/test_web_search.py::WebSearchFallbackTests::test_explicit_gemini_raises_but_still_reports_quota
           --deselect tests/test_web_search.py::WebSearchFallbackTests::test_quota_event_throttled_per_window
-      - name: tool-lint (advisory until ada_track_device/ada_device_acl debt clears)
+      - name: tool-lint (advisory while surface debt is in flight)
         continue-on-error: true
         run: python scripts/tool-lint.py

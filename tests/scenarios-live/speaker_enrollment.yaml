@@ -1,4 +1,5 @@
 name: speaker-enrollment-live
+tier: full
 # AUDIO tier — the real path. Streams a deterministic synthetic voice
 # fixture as PCM16 frames; the server-side SpeakerSession identifies it,
 # finds no match twice, and fires speaker_unrecognized. Ada offers

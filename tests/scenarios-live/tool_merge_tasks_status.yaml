@@ -15,6 +15,7 @@
 #   battery/power reads   — home_status what='battery'|'power'
 #   photos picker         — chat_send photo='pick'
 name: tool_merge_tasks_status
+tier: full
 turns:
   - user: >-
       What's on my todo list? Just read it, don't change anything.

@@ -2,6 +2,7 @@
 # pull a known report, discuss it, suggest improvements, then benchmark/
 # refresh it. Ada should read the page first, not re-derive from memory.
 name: deep_dive_flood_report
+tier: full
 turns:
   - user: >-
       I want to dig into the flood report page. Pull it up and tell me

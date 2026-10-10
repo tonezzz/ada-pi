@@ -1134,7 +1134,7 @@ class GeminiLiveProvider(RealtimeProvider):
         self._research_task: asyncio.Task | None = None
         # Monotonic time of the last confident ada_memory_search hit — used to
         # short-circuit a redundant ada_session_recall in the same turn.
-        self._strong_hit_at = 0.0
+        self._strong_hit_at = float("-inf")
         self._recall_gate_score = float(os.environ.get("ADA_RECALL_GATE_SCORE", "0.6"))
         self._recall_gate_window = float(os.environ.get("ADA_RECALL_GATE_WINDOW_S", "60"))
         self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")

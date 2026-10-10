@@ -11,6 +11,7 @@
 #   task status / ledger / blocked jobs / job report — devin_read
 #   dispatch offer (no confirm => no actual dispatch) — devin
 name: tool_merge_devin
+tier: full
 turns:
   - user: >-
       What Devin tasks are running right now — anything finished or

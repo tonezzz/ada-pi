@@ -1,4 +1,5 @@
 name: lab_stack_review
+tier: full
 turns:
 - expect:
     calls_any:

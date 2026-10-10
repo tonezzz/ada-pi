@@ -12,6 +12,7 @@
 # seats and are covered by unit tests in tests/test_tool_runner.py
 # (DocsDriveMergeAliasTests) — live writes would mutate the real archive.
 name: tool_merge_docs_drive
+tier: full
 turns:
   - user: >-
       Search my document archive for the A-68 deed — I just want the

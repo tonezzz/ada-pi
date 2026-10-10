@@ -3,6 +3,7 @@
 # exists at ada-ha-bank-general:yomi-vs-line-bot. Then she must write a
 # CMS report explaining the two.
 name: yomi_linebot_disambiguation
+tier: full
 turns:
   - user: >-
       You keep mixing up Yomi and the old LINE bot project. Explain the

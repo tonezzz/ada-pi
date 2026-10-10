@@ -2,6 +2,7 @@
 # free reads (list/get), gated writes (disable needs the confirm round-trip),
 # and run-now queueing. Ends by re-enabling so state is left unchanged.
 name: cms_automation_switches
+tier: full
 turns:
   - user: >-
       Which miniapp pages have automation configured? Just list them.

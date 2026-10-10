@@ -93,6 +93,11 @@ class IdleTest(unittest.IsolatedAsyncioTestCase):
 
 class LiveTest(unittest.IsolatedAsyncioTestCase):
 
+    def setUp(self):
+        # FRESH stamps ts at module import — in a full-suite run the doc
+        # is older than the 3*pub_s stale window before this class runs.
+        FRESH["ts"] = time.time()
+
     async def test_fresh_doc_counts_classes(self):
         out = await eye.run(_runner(_md(FRESH)))
         self.assertTrue(out["ok"])

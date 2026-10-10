@@ -1,4 +1,5 @@
 name: speaker-enrollment-sim
+tier: full
 # TEXT tier — no audio needed. ?simulate_unknown_speaker=1 injects the
 # unrecognized-speaker system note at connect, so we test Ada's behavior:
 # does she offer enrollment, and does ada_enroll_speaker degrade gracefully

@@ -1,4 +1,5 @@
 name: reconnect-continuity-live
+tier: full
 # Exercises the away-time reconnect tiers against a live /ws backend via
 # ?simulate_away_s=. Greeting phrasing is model-dependent — expectations are
 # deliberately soft (response_nonempty / loose substrings).

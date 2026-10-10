@@ -1,4 +1,5 @@
 name: notify-mid-response
+tier: full
 # The 2026-09-28 complaint: a data-package arrival mid-task made Ada
 # "stop responding" — the injected turn was absorbed by the in-flight
 # generation. Now /api/notify splits on `urgent`:

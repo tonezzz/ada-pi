@@ -315,7 +315,7 @@ class VisionBackendManager:
         self._lock = threading.Lock()
         self._temperature_device = None
         self._temperature_reading: dict[str, object] = {}
-        self._temperature_read_at = 0.0
+        self._temperature_read_at = float("-inf")
         self._cpu_pose, self._cpu_detection = PoseEstimator(), ObjectDetector()
         self._hailo_pose, self._hailo_detection = HailoPoseEstimator(), HailoObjectDetector()
         self.pose = _ManagedEstimator(self, "pose")

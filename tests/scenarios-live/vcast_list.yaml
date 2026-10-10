@@ -1,4 +1,5 @@
 name: vcast-list
+tier: full
 # Live scenario — Ada can enumerate vcast virtual displays.
 #
 # What it verifies:

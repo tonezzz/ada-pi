@@ -4,6 +4,7 @@
 # Seed before running: a job/test-ans-4419 doc with status=awaiting-user
 # (same add-doc payload shape as devin_pending_list.yaml).
 name: devin_answer_gate
+tier: full
 turns:
   - user: >-
       Job test-ans-4419 is blocked — send it this answer: zeta-answer-4419,

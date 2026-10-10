@@ -3,6 +3,7 @@
 # confirmed=true publishes, then verify. Exercises the stateful gate added
 # 2026-09-27 (gesture-page loop regression).
 name: cms_publish_handshake
+tier: full
 turns:
   - user: >-
       Create a new page named "Bench Ping" (slug bench-ping) containing a

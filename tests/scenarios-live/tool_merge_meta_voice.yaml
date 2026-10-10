@@ -13,6 +13,7 @@
 # turns 2-3 also satisfy the "no write tool fires" guard implicitly —
 # none of these calls are in benchmark write_tools.
 name: tool_merge_meta_voice
+tier: full
 turns:
   - user: >-
       Ada, which voice are you speaking with right now, and what other

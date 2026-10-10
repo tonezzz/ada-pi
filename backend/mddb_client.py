@@ -75,7 +75,7 @@ class MddbClient:
         # base_url pins the client (lab tests, direct follower access)
         self._read_url = (MDDB_READ_URL if base_url is None else "")
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(20.0))
-        self._follower_ok_at = 0.0
+        self._follower_ok_at = float("-inf")
         self._follower_ok = False
 
     def is_ops_routed(self, collection: str) -> bool:

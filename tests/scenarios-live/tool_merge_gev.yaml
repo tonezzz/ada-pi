@@ -6,6 +6,7 @@
 #   list tours / fetch a tour card — gev_command with tour= set
 #   drive the map — gev_command with name=<gev tool> (+ args)
 name: tool_merge_gev
+tier: full
 turns:
   - user: >-
       What God's Eye View tours are available? Just list them, don't run

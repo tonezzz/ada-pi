@@ -3,6 +3,7 @@
 # direct-policy person banks accept writes from any broad-access
 # identity — expect denial once fixed.
 name: memory_person_scope
+tier: full
 turns:
   - user: >-
       Remember this in the personal-testo bank: marker zeta-scope-7733 —

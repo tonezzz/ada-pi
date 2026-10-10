@@ -4,6 +4,7 @@
 # (devin action='dispatch' or web_search loop today; ada_deep_research once it
 # exists), and does NOT block waiting — the report arrives later.
 name: deep_research_tiny_models
+tier: full
 turns:
   - user: >-
       Research tiny AI models around 43 megabytes — like SmolLM2-135M or

@@ -3,6 +3,7 @@
 # cast vs lookup, devin ledger). Each turn asserts the expected tool OR
 # an allowed non-call where answering from context is correct.
 name: tool_selection_accuracy
+tier: full
 turns:
   - user: Search DuckDuckGo for the latest Bangkok flood news.
     expect:

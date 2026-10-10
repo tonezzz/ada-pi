@@ -2,6 +2,7 @@
 # Exercises ada_persona set/show across the style knobs, including the
 # new sassiness gate.
 name: persona_style_change
+tier: full
 turns:
   - user: What's my current response style set to?
     expect:

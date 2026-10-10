@@ -2,6 +2,7 @@
 # confident memory_search hit, ada_session_recall is normally refused as
 # redundant. An explicit user push ("dig deeper") must override the gate.
 name: recall_gate_override
+tier: full
 turns:
   - user: What music does KK like? Check memory.
     expect:
