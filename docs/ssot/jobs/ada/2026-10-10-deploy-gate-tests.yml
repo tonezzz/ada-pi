@@ -1,0 +1,76 @@
+# SSOT Job: deploy-ada.sh pre-flight gates — tests before restart
+# Card: ada-deploy-gate-tests (kanban). Dispatch 20261010-091603 (attempt 2).
+
+title: deploy-ada.sh pre-flight — run tests before restarting services
+subtitle: |
+  Deploy gate refuses to restart on a broken tree. The old flow ff-merged
+  and restarted blind; a rebase resolution that silently dropped the
+  958-line ada_track_device rewrite only surfaced because its unit test
+  failed locally afterward (2026-10-08 incident). Attempt 1 died silent —
+  deploy-ada.sh lives at ~/.local/bin/, outside the worktree sandbox.
+
+planning:
+  goal: |
+    Between merge and restart: (a) mass-delete warn on merged diffs that
+    gut backend/tools.d/ or backend/tool_runner/ files without touching a
+    covering scenario (pause until DEPLOY_FORCE=1), (b) python3
+    scripts/tool-lint.py, (c) .venv/bin/python -m pytest tests/ -x -q.
+    Card metric: non-zero exit before any restart when lint or pytest
+    fails.
+  decisions: |
+    - deploy-ada.sh was untracked (existed only at ~/.local/bin on the
+      hosts). Vendored a canonical copy into scripts/deploy-ada.sh
+      implementing the AGENTS.md-documented flow; AGENTS.md now points
+      ~/.local/bin installs at it. The old hand-maintained copy should be
+      replaced on next deploy (install -m 0755 scripts/deploy-ada.sh
+      ~/.local/bin/deploy-ada.sh).
+    - Mass-delete means NET SHRINK >50% (file ends under half its old
+      line count), not raw deletions — tools.d modules get wholesale
+      rewrites, which delete every old line; flagging deletions would
+      false-positive on the exact rewrite shape the gate protects.
+    - "Touching its scenario": any scenario/tests file changed in the
+      same merge that references the module stem OR a manifest tool name
+      mapping to that module (covers ada_look -> eye.py drift). Loose on
+      purpose — it's a pause heuristic, not a proof.
+    - The pause persists: the merge has already landed when the gate
+      fires, so a bare rerun sees pre==post and would slip past. The warn
+      SHA is recorded in .git/deploy-mass-delete-warn and holds until
+      DEPLOY_FORCE=1 clears it (or HEAD moves off it).
+    - Lint/test failures are hard stops with no override — DEPLOY_FORCE
+      only clears the mass-delete pause, per the card.
+
+execution:
+  steps:
+    - id: 1
+      label: "scripts/deploy-ada.sh"
+      status: done
+      notes: "snapshot -> fetch + ff-merge -> mass-delete gate (embedded
+        python numstat pass) -> tool-lint -> pytest -> restart -> verify
+        active. ADA_REPO/ADA_SERVICES env overrides."
+    - id: 2
+      label: "AGENTS.md deploy bullet"
+      status: done
+      notes: "canonical-path + install line + gates summary."
+    - id: 3
+      label: "scratch-repo test matrix"
+      status: done
+      notes: "/tmp/deploy-test harness (bare origin, stub systemctl, rc-
+        driven lint/pytest stubs) — 19 checks, all pass."
+
+invoke:
+  commands:
+    - "install -m 0755 scripts/deploy-ada.sh ~/.local/bin/deploy-ada.sh   # on idc03/idc02, once"
+    - "DEPLOY_FORCE=1 ~/.local/bin/deploy-ada.sh   # override a mass-delete pause"
+
+verification:
+  - "19/19 harness checks pass: clean merge deploys; >50% gut w/o
+    scenario pauses pre-restart (systemctl never invoked); pause persists
+    across reruns until DEPLOY_FORCE=1; gut + covering-scenario change
+    deploys; full-file deletion pauses; tool-lint/pytest failures abort
+    before restart; dirty tree snapshots to wip/deploy-snapshot-*;
+    is-active failure exits non-zero"
+  - "KNOWN DEBT — tool-lint is red on current main (3 pre-existing
+    violations: voice_fx descsize + scenario coverage, yt_cached_list
+    impl seat). Once the gated script is installed, deploys will HOLD
+    until those clear — that is the gate working, but the first install
+    should coincide with a lint-fix pass or the next deploy stalls."
