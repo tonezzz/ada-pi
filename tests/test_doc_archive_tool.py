@@ -1,5 +1,7 @@
 """ada_doc_* tools — confirmed gate, dispatch, and client helpers."""
+import io
 import os
+import urllib.error
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -128,6 +130,50 @@ class DocSearchShapeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out[0]["slug"], "A-68")
         self.assertEqual(out[0]["doc_type"], "condo-sale")
         self.assertIn("070547", out[0]["summary"])
+
+
+def _http_error(code: int, body: bytes = b"") -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "http://doc-archive/v1/photos/picker", code, "err", {},
+        io.BytesIO(body))
+
+
+class PhotosPickerErrorTest(unittest.IsolatedAsyncioTestCase):
+    """The service's 501 (GPHOTO_REFRESH_TOKEN unset) must surface as a
+    named 'not configured' failure — chat_send photo= flows then report
+    it honestly instead of an opaque HTTP code."""
+
+    async def test_picker_create_501_is_not_configured(self):
+        with patch.object(doc_archive_client, "_post",
+                          side_effect=_http_error(501, b"no token")):
+            with self.assertRaises(
+                    doc_archive_client.PhotosNotConfiguredError) as cm:
+                await doc_archive_client.photos_picker_create()
+        self.assertIn("photo sending is not configured", str(cm.exception))
+
+    async def test_picker_poll_501_is_not_configured(self):
+        with patch.object(doc_archive_client, "_get",
+                          side_effect=_http_error(501)):
+            with self.assertRaises(
+                    doc_archive_client.PhotosNotConfiguredError):
+                await doc_archive_client.photos_picker_poll("s1")
+
+    async def test_picker_poll_404_is_expired_session(self):
+        with patch.object(doc_archive_client, "_get",
+                          side_effect=_http_error(404)):
+            with self.assertRaises(RuntimeError) as cm:
+                await doc_archive_client.photos_picker_poll("s1")
+        self.assertIn("unknown or expired photos picker session",
+                      str(cm.exception))
+
+    async def test_picker_create_other_codes_stay_generic(self):
+        with patch.object(doc_archive_client, "_post",
+                          side_effect=_http_error(500, b"boom")):
+            with self.assertRaises(RuntimeError) as cm:
+                await doc_archive_client.photos_picker_create()
+        self.assertNotIsInstance(
+            cm.exception, doc_archive_client.PhotosNotConfiguredError)
+        self.assertIn("HTTP 500", str(cm.exception))
 
 
 if __name__ == "__main__":

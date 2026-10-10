@@ -141,7 +141,10 @@ chat_send: >-
   produced — never arbitrary web URLs. 'to' overrides the default owner
   chat. photo='pick' starts a Google Photos picker (texts picker_uri);
   photo='picked' polls session_id and sends/casts the choice (screen=,
-  show=). doc='show' texts a held upload's summary (key= intake key);
+  show=). A photo= 'not configured' error means the Photos auth is
+  missing server-side — tell the user photo picking isn't set up yet
+  (needs the operator) instead of retrying. doc='show' texts a held
+  upload's summary (key= intake key);
   'process' returns its intake assessment; 'card' + op='archive' files
   it into the document archive (confirmation-gated).
 
