@@ -1,0 +1,87 @@
+# SSOT Job: tool_result trace fidelity — result_hash + full payload
+# Card: ada-trace-full-result (chaba kanban). Dispatch 20261010-110924.
+
+title: tool_result trace fidelity — result_hash pin + full payload trace
+subtitle: ws stump unchanged; ground truth keyed by session+call id
+
+planning:
+  goal: |
+    Card spec: keep the ws tool_result event as-is (scalars + _safe_args
+    truncated strings) but add result_hash — sha256 of the canonical
+    result JSON — and emit the full result as a fire-and-forget trace
+    doc keyed by session+call id, so scenario-live.py and the audit
+    flow assert on ground truth instead of the ≤300-char stump.
+    Named alternative also taken: ADA_TRACE_FULL=1 emits a
+    tool_result_full ws event for debug runs.
+  decisions: |
+    - Hash covers the NORMALIZED result (post normalize_tool_result) —
+      the same object the model sees via FunctionResponse. Canonical
+      form: json.dumps(_json_safe(result), sort_keys, tight separators,
+      ensure_ascii=False) so every consumer hashes identical bytes.
+    - Trace doc = the existing call-log JSONL (audit tier 2), not an
+      mddb ops event: _emit_ops_event is capped at 5/session and feeds
+      the hourly chaba index — one doc per tool_result would spam it,
+      while the call log is already append-as-it-happens, durable under
+      journald suppression, and keyed by session_id + call id.
+    - function_result line keeps `result` (the stump) and adds
+      `result_hash` + `result_full` (deep json-safe payload;
+      head-truncated past a 200 KB serialized cap, hash still pins).
+    - ws events gain `id` (call id) on tool_call + tool_result and
+      `result_hash` on tool_result — scalars only, consumers that ignore
+      extra keys are unaffected; `session_events` tool_call entries also
+      anchor `result_hash` for tier-1→tier-2 cross-check.
+    - ADA_TRACE_FULL=1 emits tool_result_full {id, name, result,
+      result_hash} beside tool_result; pwa_server forwards it;
+      scenario-live folds tool_result_full into the `results` list so
+      every result_* check asserts on the complete payload when the flag
+      is on and stays stump-compatible when off.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-10"
+  steps:
+    - id: 1
+      label: "provider trace emission"
+      status: done
+      notes: "backend/realtime_provider.py: _json_safe /
+        _canonical_result_json / _result_hash / _full_result_payload
+        helpers; _trace_full flag (ADA_TRACE_FULL); tool_call + tool_result
+        events carry id, tool_result carries result_hash; log_event
+        tool_call anchors result_hash; call-log function_result writes
+        result_hash + result_full."
+    - id: 2
+      label: "ws + scenario-live surface"
+      status: done
+      notes: "pwa_server.py forwards tool_result_full; scenario-live
+        check_turn merges tool_result_full into results (result_contains
+        /result_contains_any/result_not_contains/result_geo_near/
+        no_failed_result all assert on ground truth under the flag),
+        docstring + verbose print updated."
+    - id: 3
+      label: "tests + docs"
+      status: done
+      notes: "tests/test_trace_fidelity.py (12 tests): canonical hash
+        invariants, cap marker, ws event id+hash+stump, call-log
+        result_full ground truth, session_events hash anchor, flag on/
+        off, failed-result hash. docs/session-audit.md tier-2 + audit
+        flow updated; .env.example documents ADA_TRACE_FULL."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py"
+    - "python3 -m pytest tests/test_trace_fidelity.py -x -q"
+    - "python3 -m pytest tests/test_provider_events.py tests/test_transcript_leak.py tests/test_ops_events.py -q"
+
+verification:
+  - "test_trace_fidelity: 12/12 pass (unittest + pytest runs)"
+  - "provider_events + transcript_leak + ops_events: all pass — ws event
+    shape additions are backward compatible (extra scalar keys only)"
+  - "pre-existing suite failures on this host, none touched by the diff:
+    ai_edge_litert missing (test_detection/test_pose/test_hailo_vision),
+    eye-tool FRESH fixture goes stale in long suite runs (passes
+    standalone), tool-lint flags voice_fx descsize/coverage +
+    ToolRunner.yt_cached_list — all present on the base tree"
+  - "manual audit recipe: jq 'select(.event==\"function_result\") |
+    {id, name, result_hash, result_full}' call-logs/<date>-<sid>.jsonl —
+    recompute sha256 over canonical JSON of result_full to verify"

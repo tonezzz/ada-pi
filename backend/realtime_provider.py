@@ -5,6 +5,7 @@ from __future__ import annotations
 import abc
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -946,6 +947,52 @@ def _safe_args(args: Any) -> dict[str, Any]:
     return out
 
 
+def _json_safe(value: Any, depth: int = 0) -> Any:
+    """Deep JSON-safe copy — the full-fidelity counterpart of _safe_args:
+    scalars pass through, dicts/lists recurse, anything else stringifies.
+    Depth-capped so a pathological return can't hang the trace write."""
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if depth >= 24:
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v, depth + 1)
+                for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v, depth + 1) for v in value]
+    return str(value)
+
+
+def _canonical_result_json(result: Any) -> str:
+    """Canonical serialization for result hashing — sorted keys and tight
+    separators so every consumer hashes identical bytes."""
+    return json.dumps(_json_safe(result), sort_keys=True,
+                      separators=(",", ":"), ensure_ascii=False)
+
+
+def _result_hash(result: Any) -> str:
+    """sha256 of the canonical result JSON — the join key between the
+    truncated ws stump and the full trace payload."""
+    return hashlib.sha256(
+        _canonical_result_json(result).encode("utf-8")).hexdigest()
+
+
+# Serialized-size ceiling for the call-log full payload — past this the
+# line stores a head-truncated copy and result_hash still pins the body.
+_RESULT_FULL_CAP = 200_000
+
+
+def _full_result_payload(result: Any) -> Any:
+    """Full-fidelity result for the call-log trace doc; head-truncated
+    past _RESULT_FULL_CAP (the hash still pins the complete payload)."""
+    safe = _json_safe(result)
+    blob = json.dumps(safe, ensure_ascii=False, default=str)
+    if len(blob) <= _RESULT_FULL_CAP:
+        return safe
+    return {"_truncated": True, "chars": len(blob),
+            "head": blob[:_RESULT_FULL_CAP]}
+
+
 _NOISE_WORDS = {
     "uh", "uhh", "um", "umm", "hmm", "hm", "mm", "mmm", "ah", "eh", "oh",
     "shh", "shhh", "psst", "tsk", "huh",
@@ -1342,6 +1389,13 @@ class GeminiLiveProvider(RealtimeProvider):
         # be suppressed. ADA_CALL_LOG=0 disables.
         self._call_log_enabled = os.environ.get(
             "ADA_CALL_LOG", "1").lower() not in ("0", "false", "no")
+        # ADA_TRACE_FULL=1 (card ada-trace-full-result): also emit a
+        # tool_result_full ws event carrying the complete json-safe
+        # payload — debug/scenario runs assert on ground truth without
+        # reading call-log files. The always-on channel stays the
+        # call-log result_full line.
+        self._trace_full = os.environ.get(
+            "ADA_TRACE_FULL", "").strip().lower() in ("1", "true", "yes")
         self._call_log_dir = Path(os.environ.get(
             "ADA_CALL_LOG_DIR",
             str(Path(os.environ.get(
@@ -4876,6 +4930,7 @@ class GeminiLiveProvider(RealtimeProvider):
                                     "session=%s alias copy failed for %s",
                                     self.session_id, call.name)
                         yield ProviderEvent("tool_call", {
+                            "id": str(call.id or ""),
                             "name": str(call.name),
                             "args": _safe_args(call.args),
                         })
@@ -5367,6 +5422,12 @@ class GeminiLiveProvider(RealtimeProvider):
                                 str(call.name), dict(call.args or {})):
                             backing_calls_this_turn += 1
                         turn_tool_results.append((str(call.name), result))
+                        # Ground-truth pin (card ada-trace-full-result):
+                        # the ws tool_result stays a stump, but id +
+                        # result_hash join it to the call-log result_full
+                        # line (and to tool_result_full under
+                        # ADA_TRACE_FULL) keyed by session+call id.
+                        result_hash = _result_hash(result)
                         # tool= is the resolved canonical; emitted= keeps
                         # the as-called name (alias or typo) for the
                         # alias-hit rollup (card ada-alias-telemetry).
@@ -5374,11 +5435,21 @@ class GeminiLiveProvider(RealtimeProvider):
                             "tool_call", tool=str(call.name),
                             emitted=_call_name,
                             dur_ms=int((time.monotonic() - tool_t0) * 1000),
-                            ok=bool(result.get("ok", True)))
+                            ok=bool(result.get("ok", True)),
+                            result_hash=result_hash)
                         yield ProviderEvent("tool_result", {
+                            "id": str(call.id or ""),
                             "name": str(call.name),
                             "result": _safe_args(result) if isinstance(result, dict) else {"value": str(result)[:500]},
+                            "result_hash": result_hash,
                         })
+                        if self._trace_full:
+                            yield ProviderEvent("tool_result_full", {
+                                "id": str(call.id or ""),
+                                "name": str(call.name),
+                                "result": _json_safe(result),
+                                "result_hash": result_hash,
+                            })
                         self._tools_in_flight = max(0, self._tools_in_flight - 1)
                         function_responses.append(types.FunctionResponse(
                             id=call.id,
@@ -5397,9 +5468,11 @@ class GeminiLiveProvider(RealtimeProvider):
                         self._write_call_log({
                             "event": "function_result",
                             "id": call.id, "name": call.name,
+                            "result_hash": result_hash,
                             "result": _safe_args(result)
                             if isinstance(result, dict)
-                            else {"value": str(result)[:500]}})
+                            else {"value": str(result)[:500]},
+                            "result_full": _full_result_payload(result)})
                     await self._session.send_tool_response(
                         function_responses=function_responses
                     )

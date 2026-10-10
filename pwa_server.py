@@ -1478,6 +1478,9 @@ async def voice_socket(ws: WebSocket) -> None:
                     "expression",
                     "tool_call",
                     "tool_result",
+                    # full-fidelity result payload — only emitted when
+                    # the provider runs with ADA_TRACE_FULL=1 (debug).
+                    "tool_result_full",
                     # per-turn token counts (card ada-context-budget) —
                     # scenario-live asserts input_tokens_below on these.
                     "usage",

@@ -33,6 +33,17 @@ weakest evidence tier, not the primary one.**
    even when journald is suppressing. One JSON object per line:
    `{ts, session_id, event, id, name, args|result}`. Disable with
    `ADA_CALL_LOG=0`; `ADA_CALL_LOG_DIR` relocates.
+   Since card ada-trace-full-result (2026-10-10) each `function_result`
+   line also carries `result_hash` — sha256 of the canonical result JSON
+   (sorted keys, tight separators), the same hash the ws `tool_result`
+   event and the tier-1 `session_events` tool_call entry now carry — and
+   `result_full`: the complete json-safe payload keyed by session_id +
+   call id, so audits assert on ground truth instead of the ≤300-char
+   `_safe_args` stump (`result` is kept for continuity). Past a 200 KB
+   serialized cap `result_full` is head-truncated and the hash remains
+   the pin. `ADA_TRACE_FULL=1` additionally emits a `tool_result_full`
+   ws event beside `tool_result` for live scenario/debug runs — same
+   `{id, name, result, result_hash}` shape, full payload.
 
 3. **`transcripts/<date>-<sid>.md`** — raw user/assistant turns.
    Speech only — tool calls never appear here; pair with tier 1/2.
@@ -53,7 +64,9 @@ weakest evidence tier, not the primary one.**
    → documents[]       : doc-archive/print timeline
    → memory_block      : one-line session digest (owner, speakers, counts)
 2. For each session_events entry kind=tool_call:
-   → corroborate args/result in call-logs/<date>-<sid>.jsonl (same call id)
+   → corroborate args/result in call-logs/<date>-<sid>.jsonl (same call id;
+     result_hash on both sides must match — recompute as sha256 of the
+     canonical JSON of result_full to verify the payload wasn't edited)
 3. journalctl -u <unit> --since/--until  — deep detail + a suppression check.
    Treat the journal as annotation, never as the tool-call ledger.
 4. transcripts/<date>-<sid>.md         — spoken side, when wording matters
