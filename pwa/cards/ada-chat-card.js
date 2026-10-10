@@ -108,6 +108,41 @@ class AdaChatCard extends HTMLElement {
     log.scrollTop = log.scrollHeight;
   }
 
+  // Machine voice — flat speechSynthesis announcements (barks, notifies).
+  // The text chat renders them as a bracketed '[machine voice]' line and
+  // NEVER auto-plays: the voice only sounds when the user presses ▶.
+  _machineVoiceLine(text) {
+    const el = document.createElement("div");
+    el.className = "msg machine-voice";
+    const play = document.createElement("button");
+    play.type = "button";
+    play.className = "machine-voice-play";
+    play.textContent = "▶";
+    play.title = "Play machine voice";
+    play.addEventListener("click", () => this._speakMachine(text));
+    const tag = document.createElement("span");
+    tag.className = "mv-tag";
+    tag.textContent = "[machine voice] ";
+    const body = document.createElement("span");
+    body.textContent = text;
+    el.append(play, tag, body);
+    const log = this._logEl();
+    log.append(el);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  _speakMachine(text) {
+    try {
+      if (!("speechSynthesis" in window)) return;
+      const u = new SpeechSynthesisUtterance(text);
+      u.rate = 1.15; u.pitch = 0.85; u.volume = 0.9;
+      const en = speechSynthesis.getVoices()
+        .find(v => /^en[-_]US/i.test(v.lang)) || null;
+      if (en) u.voice = en;
+      speechSynthesis.speak(u);
+    } catch (_) {}
+  }
+
   _status(t) { this.shadowRoot.getElementById("acc-status").textContent = t; }
 
   async _ensureSession() {
@@ -170,6 +205,10 @@ class AdaChatCard extends HTMLElement {
         break;
       case "user_transcript":
         this._addMsg("You (voice)", ev.text, "mine");
+        break;
+      case "bark":
+      case "notify_voice":
+        this._machineVoiceLine(ev.text || "Notification.");
         break;
       case "error":
         this._systemLine(`Error: ${ev.message}`);
@@ -271,6 +310,14 @@ class AdaChatCard extends HTMLElement {
                    border: 1px solid #0d4a63; }
         .msg.system { align-self: center; background: none; color: #ff9a8a;
                       font-size: 12px; padding: 2px; }
+        .msg.machine-voice { align-self: center; background: none;
+                             color: #75bdc5; font-size: 12.5px; padding: 2px; }
+        .msg.machine-voice .mv-tag { color: #f2a008; font-weight: 600; }
+        .machine-voice-play { min-height: 26px; margin-right: 7px; padding: 1px 9px;
+                              border: 1px solid #0d4a63; border-radius: 7px;
+                              background: rgba(5,35,48,.9); color: #aef8ff;
+                              font: 12px system-ui, sans-serif; cursor: pointer;
+                              vertical-align: 1px; }
         .msg.streaming { opacity: .75; }
         .composer { display: flex; gap: 8px; margin-top: 10px; }
         .composer input { flex: 1; min-height: 44px; padding: 10px 14px;

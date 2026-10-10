@@ -223,7 +223,7 @@ function handleControl(event) {
       window.idleFace?.setConnecting(false);
       setConnected(true);
       setStatus("Connected — listening");
-      systemSay("Ada online. Listening.");
+      machineVoice("Ada online. Listening.");
       break;
     case "speech_started":
       setStatus("Speech detected");
@@ -234,14 +234,14 @@ function handleControl(event) {
     case "bark":
       // sci-fi narration layer — server emits these on deep-memory tool
       // calls (voice_fx). Flat machine voice, same channel as boot voice.
-      systemSay(event.text || "");
+      machineVoice(event.text || "");
       break;
     case "notify_voice":
       // Data-package / event arrival — flat machine voice (speechSynthesis),
       // deliberately NOT Ada's voice. Ada keeps her current focus; a silent
       // context note lets her circle back later. Urgent items take the
       // normal injection path instead and interrupt her.
-      systemSay(event.text || "Notification.");
+      machineVoice(event.text || "Notification.");
       break;
     case "clear_audio":
       assistantPlaybackActive = false;
@@ -275,7 +275,7 @@ function handleControl(event) {
         logLine(`Ada: ${assistantEntry}`);
         if (audioFramesInResponse === 0) {
           logLine("(text only — no audio frames arrived)", "system");
-          systemSay(assistantEntry);  // flat-voice fallback beats silence
+          machineVoice(assistantEntry);  // flat-voice fallback beats silence
         }
       }
       assistantEntry = null;
@@ -301,11 +301,40 @@ function handleControl(event) {
   }
 }
 
-// Boot-voice: flat system announcements while connecting. SpeechSynthesis
-// with low pitch + brisk rate = crisp, non-emotional machine voice; the
-// click gesture unlocks it on iOS/Safari. Cancelled the moment Ada speaks.
-function systemSay(text) {
-  if (speakerMuted) return;
+// Machine voice: flat system announcements (boot, barks, notify_voice,
+// text-only fallback). Every utterance lands in the log as a bracketed
+// '[machine voice] <text>' line with a replay button — on this live-voice
+// surface it also speaks immediately (unchanged); the text-chat card
+// renders the same line but stays silent until the button is pressed.
+// SpeechSynthesis with low pitch + brisk rate = crisp, non-emotional
+// machine voice; a user gesture unlocks it on iOS/Safari. Cancelled the
+// moment Ada speaks.
+function machineVoice(text) {
+  if (!text) return;
+  machineVoiceLine(text);
+  if (!speakerMuted) speakMachine(text);
+}
+function machineVoiceLine(text) {
+  if (!logElement) return;
+  const line = document.createElement("div");
+  line.className = "entry machine-voice";
+  const play = document.createElement("button");
+  play.type = "button";
+  play.className = "machine-voice-play";
+  play.textContent = "▶";
+  play.title = "Play machine voice";
+  // ▶ always speaks — an explicit tap beats the Sound:Off auto-mute.
+  play.addEventListener("click", () => { systemHush(); speakMachine(text); });
+  const tag = document.createElement("span");
+  tag.className = "mv-tag";
+  tag.textContent = "[machine voice] ";
+  const body = document.createElement("span");
+  body.textContent = text;
+  line.append(play, tag, body);
+  logElement.append(line);
+  logElement.scrollTop = logElement.scrollHeight;
+}
+function speakMachine(text) {
   try {
     if (!("speechSynthesis" in window)) return;
     const u = new SpeechSynthesisUtterance(text);
@@ -333,12 +362,12 @@ async function connect() {
   wantConnected = true;
   window.idleFace?.setConnecting(true);
   setStatus("Requesting microphone…");
-  systemSay("Initializing voice link.");
+  machineVoice("Initializing voice link.");
   try {
     await ensureSession();
     await createPlayback();
     await startMicrophone();
-    systemSay("Microphone ready. Establishing channel.");
+    machineVoice("Microphone ready. Establishing channel.");
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     const basePath = appBasePath();
     const key = getApiKey();
@@ -348,7 +377,7 @@ async function connect() {
     socket = new WebSocket(wsUrl);
     socket.binaryType = "arraybuffer";
     socket.onopen = () => { setStatus("Connecting to AI…");
-      systemSay("Channel open. Handing over to Ada.");
+      machineVoice("Channel open. Handing over to Ada.");
       // Only a connection that survives 15s counts as stable — flap
       // cycles must keep climbing the backoff ladder.
       reconnectStableTimer = setTimeout(() => reconnectAttempts = 0, 15000); };
@@ -372,7 +401,7 @@ async function connect() {
     window.idleFace?.setConnecting(false, true);
     console.error(error);
     setStatus(error.message);
-    systemSay("Link failed. " + String(error.message || "unknown error").slice(0, 60));
+    machineVoice("Link failed. " + String(error.message || "unknown error").slice(0, 60));
     await disconnect(false);
   } finally {
     connectionInProgress = false;
