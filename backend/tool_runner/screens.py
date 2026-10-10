@@ -1261,7 +1261,7 @@ class ScreensMixin:
             pass
         return None
 
-    async def cast_to_screen(self, screen: int | None = None,
+    async def cast_to_screen(self, screen: int | str | None = None,
                              action: str = "nav",
                              url: str = "", pane: int | None = None,
                              panes: int | None = None,
@@ -1269,6 +1269,8 @@ class ScreensMixin:
                              interval: int | None = None,
                              text: str = "",
                              shortcut: str = "",
+                             name: str = "",
+                             to_screen: int | None = None,
                              confirmed: bool = False) -> dict[str, Any]:
         """Cast to a numbered vcast virtual display (NOT the TV).
         action: nav|play|image|audio|stop|layout|zoom|unzoom|uplink|
@@ -1278,6 +1280,18 @@ class ScreensMixin:
         'status' (was vcast_status — one screen's live state) and
         'shortcut' (was vcast_shortcut — nav a named /apps/<name>/ app).
         url required for nav/play/image/audio/cast; text for say.
+
+        Display management seats:
+        'claim' — pair a pending display by the 4-digit code shown on its
+        QR screen: text="<code>", optional name="<label>", optional
+        screen=<number it should take>. "Ada, claim display 4821 as
+        tv-corner on screen 9."
+        'assign' — retitle or renumber a registered display:
+        name="<new label>" sets the human name, to_screen=<M> moves the
+        number. screen may be a number or the display's current label.
+        'background' — veil the screen while its content keeps running
+        (audio continues; used for the percussion app and similar):
+        mode='off' brings it back to the foreground.
 
         action='image' is for still frames (JPEG/PNG) — optional
         interval=N re-fetches the image every N seconds (good for
@@ -1315,12 +1329,62 @@ class ScreensMixin:
             return await self.vcast_list()
         if action == "status":
             return await self._vcast_display_status(screen)
+        if action == "claim":
+            # Voice pairing — the unpaired display shows a 4-digit code
+            # under its QR; the relay resolves code -> pending sid and runs
+            # the normal claim (mint ada key, push api_key to the display).
+            code = re.sub(r"\D", "", text or "")
+            if len(code) != 4:
+                return {"ok": False, "delivered": 0,
+                        "error": "claim needs the 4-digit code shown on "
+                                 "the display's pair screen — pass it in "
+                                 "text (e.g. text='4821')."}
+            body: dict[str, Any] = {"code": code}
+            if str(name or "").strip():
+                body["name"] = str(name).strip()
+            if screen is not None and str(screen).strip().isdigit():
+                body["screen"] = int(screen)   # honored as want_screen
+            out = await asyncio.to_thread(self._vcast_api, "/claim", body)
+            if out.get("ok"):
+                out["claimed"] = (f"display claimed as screen "
+                                  f"{out.get('screen')} ({out.get('name')})")
+            return out
+        # display labels double as addresses — 'the living-room screen'
+        if isinstance(screen, str) and screen.strip() and not screen.strip().isdigit():
+            found = await asyncio.to_thread(self._screen_by_label, screen)
+            if found is None:
+                return {"ok": False, "delivered": 0, "error": (
+                    f"no display labeled/named {screen!r} — "
+                    "cast_to_screen(action='list') shows them all.")}
+            screen = found
         if screen is None:
             return {"ok": False, "delivered": 0,
                     "error": "screen number required — "
                              "cast_to_screen(action='list') shows the "
                              "registered displays."}
         screen = int(screen)
+        if action == "assign":
+            # retitle (name=label) and/or renumber (to_screen=M) a
+            # registered display — the relay pushes a 'rescreen' to the
+            # live display so its HUD follows without a reload.
+            body = {"screen": screen}
+            if str(name or "").strip():
+                body["label"] = str(name).strip()
+            if to_screen is not None:
+                body["move_to"] = int(to_screen)
+            if len(body) == 1:
+                return {"ok": False, "delivered": 0, "error": (
+                    "assign needs name='<label>' and/or to_screen=<n>")}
+            return await asyncio.to_thread(self._vcast_api, "/screen", body)
+        if action == "background":
+            # veil the screen while its content keeps running — used for
+            # audio apps like /apps/percussion/ ("background the music").
+            # mode='off' lifts the veil; absent mode defaults to on.
+            on = str(mode or "on").lower() not in {"off", "0", "false", "no"}
+            return await asyncio.to_thread(
+                self._vcast_api, "/pub",
+                {"screen": screen,
+                 "msg": {"type": "bg", "on": on}})
         if action == "say":
             return await self.vcast_say(screen, text)
         if action == "shortcut":
@@ -1577,6 +1641,24 @@ class ScreensMixin:
                 "error": f"screen {n} is not a registered display",
                 "screens": [s.get("screen")
                             for s in data.get("screens") or []]}
+
+    def _screen_by_label(self, label: str) -> int | None:
+        """Resolve a display's label or registry name ('living-room',
+        'screen-5') to its screen number — labels are how operators refer
+        to screens once assigned."""
+        try:
+            data = self._vcast_api("/displays")
+        except Exception:
+            return None
+        want = str(label).strip().lower()
+        for s in data.get("screens") or []:
+            for cand in (s.get("label"), s.get("name")):
+                if str(cand or "").strip().lower() == want:
+                    try:
+                        return int(s["screen"])
+                    except (KeyError, TypeError, ValueError):
+                        break
+        return None
 
     def _cast_shortcut_url(self, target: str) -> str | None:
         """cast_to_screen(action='shortcut') — resolve a short app name

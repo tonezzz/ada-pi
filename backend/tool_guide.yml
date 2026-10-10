@@ -123,6 +123,13 @@ cast_to_screen: >-
   cast-screens.json) get a tv_input check after the cast lands —
   tv_input_mismatch means the TV is on another input; the result reports
   the tv_browser_nav remediation and whether the cast became visible.
+  DISPLAY MGMT: action='claim' pairs a pending display by the 4-digit
+  code shown under its QR — text='<code>', optional name='<label>' and
+  screen=<wanted number>. action='assign' retitles (name='<label>')
+  and/or renumbers (to_screen=<M>) a registered display; screen may be
+  the display's label instead of a number. action='background' veils
+  the screen while content keeps playing (audio apps like
+  shortcut='percussion'); mode='off' lifts the veil.
   Absorbs vcast_say, vcast_list, vcast_status, vcast_shortcut.
 
 vcast_snapshot: >-

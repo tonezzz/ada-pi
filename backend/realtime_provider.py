@@ -3091,7 +3091,10 @@ class GeminiLiveProvider(RealtimeProvider):
                         "Drive the numbered vcast displays (browser/PWA screens — NOT the TV; "
                         "absorbs vcast_say/list/status/shortcut). Cached dubs: cms_read "
                         "'cached-videos-report', play its local .mp4. Interrupting a busy "
-                        "screen or a camera capture needs confirmed=true after asking the user."
+                        "screen or a camera capture needs confirmed=true after asking the user. "
+                        "Also manages the displays themselves: 'claim' pairs a pending display "
+                        "by the 4-digit code on its QR screen, 'assign' retitles/renumbers a "
+                        "display, 'background' veils a screen while its audio keeps playing."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
                     "parameters_json_schema": {
@@ -3107,8 +3110,9 @@ class GeminiLiveProvider(RealtimeProvider):
                                          "cast", "shortcut", "stop",
                                          "layout", "zoom", "unzoom",
                                          "uplink", "uplink-stop",
-                                         "say", "list", "status"],
-                                "description": "nav=web page | play=video mp4/m3u8 or YouTube/Vimeo watch URL (auto-embeds on screen) | image=still jpg/png | audio | cast=auto-route by content | shortcut=named /apps/<name>/ app | stop | layout | zoom | unzoom | uplink | uplink-stop | say=narrate text aloud on the display | list=enumerate displays | status=one screen's live state (default nav). Pick by content type.",
+                                         "say", "list", "status",
+                                         "claim", "assign", "background"],
+                                "description": "nav=web page | play=video mp4/m3u8 or YouTube/Vimeo watch URL (auto-embeds on screen) | image=still jpg/png | audio | cast=auto-route by content | shortcut=named /apps/<name>/ app | stop | layout | zoom | unzoom | uplink | uplink-stop | say=narrate text aloud on the display | list=enumerate displays | status=one screen's live state | claim=pair a pending display by the 4-digit code on its QR (pass the code in text) | assign=retitle/renumber a display (name + to_screen) | background=veil the screen but keep its audio playing, mode='off' restores (default nav). Pick by content type.",
                             },
                             "url": {
                                 "type": "string",
@@ -3128,7 +3132,15 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "mode": {
                                 "type": "string",
-                                "description": "For action=layout: 'pip' floats panes 1..N top-right over a fullscreen pane 0 (picture-in-picture); omit for the normal grid split.",
+                                "description": "For action=layout: 'pip' floats panes 1..N top-right over a fullscreen pane 0 (picture-in-picture); omit for the normal grid split. For action=background: 'off' lifts the veil (default toggles it on).",
+                            },
+                            "name": {
+                                "type": "string",
+                                "description": "For action=claim/assign: the display's human label, e.g. 'living-room' — shown as 'Screen N · living-room' and usable in place of the number.",
+                            },
+                            "to_screen": {
+                                "type": "integer",
+                                "description": "For action=assign: renumber the display to this screen number (must be free).",
                             },
                             "confirmed": {
                                 "type": "boolean",
