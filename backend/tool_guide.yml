@@ -524,3 +524,13 @@ ada_member_keys: >-
   issued resets the device binding and returns a burn-once /redeem/ link.
   'list' reads pending/issued/revoked with claimed markers — check it
   before approving so you name the right person.
+
+ada_look: >-
+  No args — returns the freshest detections the /apps/eye/ page
+  published to MDDB (ada-ha-scenario-reports eye/latest): per-class
+  counts in objects, plus src/model and freshness. ok:true live:false
+  means no eye page is publishing — say that, never invent objects.
+  stale:true means the page went quiet (age_s older than ~3 publish
+  intervals) — report it as 'last seen' with the age, not 'right now'.
+  Read-only: never acts on a detection — doing something about what you
+  see is another tool's call.

@@ -73,6 +73,16 @@ tools:
     policy: read
     secondary_allowed: false
     timeout_s: 220
+  # ada-look-tool (2026-10-10): what the /apps/eye/ page's in-browser
+  # detector sees — reads the ada-ha-scenario-reports eye/latest doc the
+  # page republishes every ?pub=N seconds (nest-edge-vision phase 4).
+  # Read-only; secondary_allowed matches the ungated camera-describe
+  # path — 'what do you see' is a household question.
+  ada_look:
+    module: eye
+    policy: read
+    secondary_allowed: true
+    timeout_s: 10
   # member-invite (2026-10-09): per-member PWA invite + approval gate —
   # mint pending keys (invite), clear the gate (approve/reject), revoke,
   # re-pair. Owner-only: member onboarding is never a secondary turn's

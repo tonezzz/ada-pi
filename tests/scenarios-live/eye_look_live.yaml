@@ -1,0 +1,30 @@
+# ada-look-tool — live acceptance: while an /apps/eye/ page publishes
+# (?pub=N) with objects in view, "what do you see" routes to ada_look
+# and she names actual detections — never a hallucinated scene.
+#
+# PRECONDITION (manual): open /apps/eye/?pub=5 on a device pointed at
+# something detectable and let it publish for a few seconds. Until the
+# chaba-side eye-mddb route is deployed this scenario cannot pass —
+# run it as the phase-4 acceptance gate, not in the routine suite.
+name: eye-look-live
+tier: smoke
+turns:
+  - user: "Ada, what do you see through the eye page right now?"
+    expect:
+      calls_any: ["ada_look"]
+      response_nonempty: true
+      response_contains_any:
+        - "see"
+        - "person"
+        - "people"
+        - "detect"
+        - "showing"
+        - "view"
+        - "เห็น"
+        - "คน"
+        - "ตรวจ"
+      response_not_contains:
+        - "no eye page is publishing"
+        - "isn't publishing"
+      timeout_s: 60
+      settle_s: 8
