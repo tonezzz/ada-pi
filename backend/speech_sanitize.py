@@ -1,5 +1,9 @@
 """Scrub markup artifacts out of text headed for speech.
 
+Also strips parenthesized internal annotations — "(ha_safety: caution)",
+"(kanban list review)" — that the model voices as asides (session
+67b02417a8, card ada-output-hygiene-tags).
+
 Two consumers:
 
 - The Gemini Live output-transcription stream (realtime_provider): the
@@ -35,6 +39,17 @@ _MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)\n]*\)")
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)\n]*\)")
 _MD_REF_LINK_RE = re.compile(r"\[([^\]]*)\]\[[^\]\n]*\]")
 _MD_JUNCTION_RE = re.compile(r"\]\[|\]\(|\)\[")
+# Parenthesized internal annotations the model speaks as asides —
+# "(ha_safety: caution)", "(kanban list review)". The technical shape is
+# the tell: >=2 all-lowercase [a-z0-9_] tokens joined by space/colon/
+# comma inside parens. A lone word ("(draft)", "(system)") and
+# natural-language asides with capitals ("(I think)") or Thai survive.
+_INTERNAL_TAG_RE = re.compile(
+    r"\(\s*[a-z][a-z0-9_]*(?:[\s:：,]+[a-z0-9_]+)+\s*\)")
+# Same shape without the closing paren — a truncated annotation at the
+# very end of a delta/turn ("(ha_safety: caution" ) still drops.
+_INTERNAL_TAG_OPEN_RE = re.compile(
+    r"\(\s*[a-z][a-z0-9_]*(?:[\s:：,]+[a-z0-9_]+)+\s*$")
 _BRACKET_RE = re.compile(r"[\[\]]")
 _MARKUP_CHARS_RE = re.compile(r"[`*]+")
 _SPACE_RUN_RE = re.compile(r"[^\S\n]{2,}")
@@ -46,6 +61,7 @@ ARTIFACT_TAIL_RE = re.compile(
     r"|!?\[[^\]\n]{0,80}"         # '[' / '![' + link text in progress
     r"|\]\([^)\n]{0,120}"         # '](url in progress'
     r"|\]\[[^\]\n]{0,60}"         # '][ref in progress'
+    r"|\([^)\n]{0,80}"            # '(tag in progress' — internal annotation
     r"|[\]!]"                     # bare ']' or '!' — opener for ]( / ][ / ![
     r")$"
 )
@@ -64,6 +80,8 @@ def sanitize_speech(text: str) -> str:
     t = _MD_IMAGE_RE.sub(r"\1", t)
     t = _MD_LINK_RE.sub(r"\1", t)
     t = _MD_REF_LINK_RE.sub(r"\1", t)
+    t = _INTERNAL_TAG_RE.sub(" ", t)
+    t = _INTERNAL_TAG_OPEN_RE.sub("", t)
     t = _MD_JUNCTION_RE.sub(" ", t)
     t = _BRACKET_RE.sub("", t)
     t = _MARKUP_CHARS_RE.sub("", t)
