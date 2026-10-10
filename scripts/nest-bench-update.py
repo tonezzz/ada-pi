@@ -196,7 +196,7 @@ def publish(lang, body, now):
         "title": ["Nest bench — topology scoreboard"],
         "summary": ["Compound-AI topology trends — accuracy, cost, ECE "
                     "across orch-bench runs."],
-        "fresh_for": ["1d"], "confidence": ["high"],
+        "fresh_for": ["7d"], "confidence": ["high"],
         "timeline": [f"{now.isoformat(timespec='minutes')}: trend refresh"],
         "written_by": ["nest-bench-update"],
     })
