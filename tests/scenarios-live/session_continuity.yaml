@@ -1,4 +1,5 @@
 name: session-continuity-live
+tier: full
 # Does Ada recall recent-session context at connect time?
 #
 # Exercises the rolling "recent sessions" memory layer: after previous

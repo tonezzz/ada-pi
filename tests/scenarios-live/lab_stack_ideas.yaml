@@ -2,6 +2,7 @@
 # her own knowledge) and write her review back into tony-projects via
 # ada_remember as a doc with subject lab-stack-ideas-ada.
 name: lab_stack_ideas
+tier: full
 turns:
   - user: >-
       Research additional ideas for my lab stack plan. Search the

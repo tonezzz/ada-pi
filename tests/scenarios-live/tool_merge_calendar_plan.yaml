@@ -12,6 +12,7 @@
 #   schedule/calendars/free-busy — calendar_read
 #   day plan / day recap / weekly recap — plan_day
 name: tool_merge_calendar_plan
+tier: full
 turns:
   - user: >-
       What's on my calendar today? Just read it, don't change anything.

@@ -2,6 +2,7 @@
 # bank — manage it." Ada should audit the devin-handoff ledger (the
 # shared space) and report what's stale/missing, not just agree.
 name: shared_memory_audit
+tier: full
 turns:
   - user: >-
       We share a memory bank between you, me, and Devin — audit it. What's

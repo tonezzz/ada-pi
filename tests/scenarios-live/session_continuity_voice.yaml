@@ -1,4 +1,5 @@
 name: session-continuity-voice-live
+tier: full
 # Voice twin of session_continuity.yaml — same two questions delivered as
 # TTS PCM16 audio instead of text turns. Purpose: consistency check —
 # voice path (ASR transcription -> same model) should produce equivalent

@@ -9,6 +9,7 @@
 #   cast progress — yt action=status
 #   video transcript — yt action=transcript
 name: tool_merge_yt
+tier: full
 turns:
   - user: >-
       What's the status of that YouTube cast on the TV — is it still

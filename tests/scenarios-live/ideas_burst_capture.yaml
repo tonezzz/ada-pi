@@ -2,6 +2,7 @@
 # with no confirmation gate (write_policy=direct) and must NOT leak into
 # other banks.
 name: ideas_burst_capture
+tier: full
 turns:
   - user: >-
       Jot this down quick before I forget: zeta-idea-7717 — maybe the

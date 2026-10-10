@@ -2,6 +2,7 @@
 # affirmation must be denied, and Ada must ask for confirmation rather
 # than retry into a different (looser) bank.
 name: memory_confirm_gate
+tier: full
 turns:
   - user: >-
       Save a note to my tony-projects bank: marker zeta-gate-9917 —

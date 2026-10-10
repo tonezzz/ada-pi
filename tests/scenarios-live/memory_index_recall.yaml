@@ -8,6 +8,7 @@
 #
 # RED until the L0 session-index injection is implemented.
 name: memory_index_recall
+tier: full
 turns:
   - user: >-
       What pages or reports have you published recently? Just list the

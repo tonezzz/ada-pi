@@ -1,6 +1,7 @@
 # Memory write gate: the happy path — a write to a confirmed-policy
 # bank AFTER explicit user affirmation must land in the requested bank.
 name: memory_confirmed_write
+tier: full
 turns:
   - user: >-
       Please save this to tony-projects: marker zeta-write-4419 —

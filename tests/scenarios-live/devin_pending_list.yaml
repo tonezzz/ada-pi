@@ -7,6 +7,7 @@
 #             "subject":["job-test-pending-9917"],"bank":["devin-handoff"],
 #             "written_by":["scenario"],"ts":["2026-09-26T00:00:00Z"]}}'
 name: devin_pending_list
+tier: full
 turns:
   - user: "Is anything waiting for my attention — any blocked jobs?"
     expect:

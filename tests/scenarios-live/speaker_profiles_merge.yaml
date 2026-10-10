@@ -1,4 +1,5 @@
 name: speaker-profiles-merge
+tier: full
 # Card speaker-profile-tool (2026-10-07): 'kk re-enroll under wrong-name
 # profile' — Ada must identify the existing print, offer the merge, and
 # resolve it with the speaker_profiles tool instead of looping on the

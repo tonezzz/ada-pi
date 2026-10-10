@@ -224,7 +224,8 @@ def emit_ops_event(mddb: Any, tool: str, exc: BaseException,
     except Exception:
         return
     now_mono = time.monotonic()
-    if now_mono - _event_at.get(tool, 0.0) < _EVENT_MIN_S:
+    prev_at = _event_at.get(tool)
+    if prev_at is not None and now_mono - prev_at < _EVENT_MIN_S:
         return
     _event_at[tool] = now_mono
     collection = f"ada-ha-events-{instance}"

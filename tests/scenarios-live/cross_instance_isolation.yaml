@@ -1,4 +1,5 @@
 name: cross-instance-isolation-live
+tier: full
 # Michael's Ada must never surface tony-only bank data. Dynamic tool
 # schemas already hide tony-only bank names, so the correct behavior is a
 # graceful "I don't have that" — the assertions check that no tony-only

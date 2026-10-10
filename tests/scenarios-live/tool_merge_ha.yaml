@@ -12,6 +12,7 @@
 # the actuation path is regression-covered by the confirm-gate unit
 # tests (control_entity keeps the CONTROL_TOOLS seat).
 name: tool_merge_ha
+tier: full
 turns:
   - user: >-
       Am I home right now, and did I leave any plugs on? Check the

@@ -9,6 +9,7 @@
 #   list/get — cms_read
 #   note     — cms_edit action='note' (ungated merge, safe write)
 name: tool_merge_cms
+tier: full
 turns:
   - user: >-
       What pages exist in the miniapp right now? Just list them.

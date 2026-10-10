@@ -2,6 +2,7 @@
 # handshake. Assesses: list → read → draft → publish (handshake) →
 # update → delete, plus honest report when a page doesn't exist.
 name: cms_ops_assessment
+tier: full
 turns:
   - user: List the CMS pages you have — just the titles.
     expect:

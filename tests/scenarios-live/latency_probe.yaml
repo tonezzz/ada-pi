@@ -1,4 +1,5 @@
 name: latency-probe
+tier: full
 # Per-path latency probe. Run with --timing to see event offsets:
 #   python3 scripts/scenario-live.py tests/scenarios-live/latency_probe.yaml \
 #       --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY" -t

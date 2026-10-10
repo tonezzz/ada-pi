@@ -2,6 +2,7 @@
 # the handoff bank, including failures and awaiting-user. Guards against
 # the 2026-09-27 failure mode (task failed silently, Ada guessed "done").
 name: devin_status_accuracy
+tier: full
 turns:
   - user: >-
       Summarize my dispatched Devin tasks — which are done, which failed,

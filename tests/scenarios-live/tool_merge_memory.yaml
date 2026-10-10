@@ -9,6 +9,7 @@
 #   recall  — stored HA device/sensor recall lands on ada_session_recall
 #             scope='history' (the absorbed ada_ha_recall path)
 name: tool_merge_memory
+tier: full
 turns:
   - user: >-
       What do you have stored in memory about the gate remote?

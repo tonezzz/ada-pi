@@ -1,4 +1,5 @@
 name: michael-technician-live
+tier: full
 # Live replay of the technician scenario against a running Ada backend.
 # Run on mn01:  python3 scripts/scenario-live.py \
 #   tests/scenarios-live/michael_technician.yaml --url ws://127.0.0.1:8003/ws \

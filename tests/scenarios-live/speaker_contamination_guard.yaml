@@ -1,4 +1,5 @@
 name: speaker-contamination-guard
+tier: full
 # Regression for the KK-poisoning bug (2026-09-24): a borderline
 # misidentification (Tony→"KK" at 51%) followed by ada_enroll_speaker
 # REPLACED KK's embedding with Tony's voice — every later session matched

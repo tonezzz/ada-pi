@@ -1,0 +1,71 @@
+# SSOT Job: ada-pi CI — lint + unit tests + scenario-schema on push
+# Card: ada-pi-ci (chaba kanban). Dispatch 20261010-094410 (attempt 2).
+
+title: ada-pi push-gate CI — scenario-schema step + monotonic-sentinel fixes
+subtitle: CI existed but was red on every push; root cause was a sentinel class of bug, not test debt
+
+planning:
+  goal: |
+    Every push to main runs (1) scenario-schema check, (2) pytest unit
+    suite, (3) tool-lint; failures surface via the existing chaba
+    gh-runs-watch channel instead of rotting. Complements
+    ada-deploy-gate-tests: CI catches it at push, the gate catches
+    what CI missed.
+  context: |
+    Attempt 1 (merged in 36524e0/7a3bc48) landed the pytest+tool-lint
+    workflow and PR template but every run went red: two
+    test_gemini_pool ops-event tests failed deterministically on the
+    GitHub runner while passing on tony-dell. Root cause is a
+    sentinel bug family: `now - stamp < window` where stamp defaults
+    to 0.0 reads as "stamped at host boot" — on ephemeral CI runners
+    (uptime < throttle window) first-use events are silently
+    swallowed. Fixed at the source, plus the same shape in
+    realtime_provider (recall gate flake), mddb_client (follower
+    probe), hailo_vision (temperature cache) and the import-time
+    FRESH timestamp in test_eye_tool.
+  scope: |
+    - .github/workflows/ci.yml — added scenario-schema step; refreshed
+      stale advisory comments
+    - scripts/scenario-schema-check.py — NEW: yaml.safe_load +
+      required-keys (name/tier/turns) + non-empty mapping per turn
+    - tests/scenarios-live/*.yaml — 51 files backfilled `tier: full`
+      (the engine's documented default; zero behavior change)
+    - backend/gemini_pool.py — emit throttle: `_event_at.get(tool)`
+      None-check instead of 0.0 sentinel
+    - backend/realtime_provider.py — _strong_hit_at: 0.0 -> -inf
+    - backend/mddb_client.py — _follower_ok_at: 0.0 -> -inf
+    - backend/hailo_vision.py — _temperature_read_at: 0.0 -> -inf
+    - tests/test_eye_tool.py — LiveTest.setUp re-stamps FRESH ts
+      (import-time constant went stale >15s into any full suite)
+    - .github/PULL_REQUEST_TEMPLATE.md — schema check in test plan
+    Out of scope: gh-runs-watch watched-repo config lives in chaba —
+    board request raised for the operator to add tonezzz/ada-pi if it
+    is not auto-discovered.
+  success_criteria:
+    - scenario-schema-check exits 0 on the 183-file corpus
+    - pytest tests/ green with only the documented deselects
+    - a red push alerts via gh-runs-watch (pending watch-list confirm)
+
+decisions:
+  tier-backfill: |
+    scenario-report.py defaults a missing `tier` to "full" — the 51
+    untiered files were already full-tier by behavior, so writing
+    `tier: full` explicitly is truthful, zero-drift, and lets the
+    schema check require all three keys as the card specifies.
+  tool-lint-advisory: |
+    tool-lint stays continue-on-error: the two test_tool_audit
+    "repo is clean" tests go red whenever ANY card carries in-flight
+    surface debt (currently voice_fx descsize/coverage +
+    yt_cached_list impl). Advisory keeps violations visible in the
+    log without blocking pushes on other sessions' debt.
+  sentinel-pattern: |
+    When a timestamp doubles as "has-ever-happened" flag, 0.0 is the
+    wrong default — time.monotonic() counts from boot, so 0.0 means
+    "at boot" not "never". Use float("-inf") or an explicit None
+    check. `until`-style sentinels (monotonic() < until) are fine at
+    0.0 — only elapsed-since comparisons are affected.
+
+verify:
+  - python3 scripts/scenario-schema-check.py    # 183 files, 0 violations
+  - pytest tests/ -q (+ documented deselects)   # 1105 passed locally
+  - gh run list --repo tonezzz/ada-pi           # green after merge

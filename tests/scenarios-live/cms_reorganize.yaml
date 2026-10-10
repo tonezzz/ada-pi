@@ -4,6 +4,7 @@
 # publish goes through the pending/confirm handshake and the pilot page
 # is a marker doc the cleanup deletes by content match.
 name: cms_reorganize
+tier: full
 turns:
   - user: >-
       Create a CMS page with slug "tmp-random-note-xyz", title "Random

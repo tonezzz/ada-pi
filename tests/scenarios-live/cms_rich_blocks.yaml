@@ -1,6 +1,7 @@
 # Rich CMS blocks — Ada must publish a page containing a chart block
 # and verify it parses. Exercises ```chart/```mermaid/```media support.
 name: cms_rich_blocks
+tier: full
 turns:
   - user: >-
       Create a page called "Power Trend" (slug power-trend) with a short

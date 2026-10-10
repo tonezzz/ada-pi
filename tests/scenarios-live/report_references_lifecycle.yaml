@@ -6,6 +6,7 @@
 # Ada asks for confirmation without a tool call are valid protocol —
 # expectations only assert tool calls on the action turns.
 name: report_references_lifecycle
+tier: full
 turns:
   - user: >-
       Create a CMS report called "ref-lifecycle-test" titled "Reference
