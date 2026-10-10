@@ -2141,8 +2141,6 @@ class GeminiLiveProvider(RealtimeProvider):
         survive; the reconnect directive handles the greeting."""
         await self._wait_for_idle(timeout=30.0)
         await asyncio.sleep(0.5)
-        if self._live_input_transcript.strip():
-            self.pending_user_turn = self._live_input_transcript.strip()
         self.resumption_handle = None
         try:
             await self.close()
@@ -5920,6 +5918,12 @@ class GeminiLiveProvider(RealtimeProvider):
         if self._closed:
             return
         self._closed = True
+        # Stash any in-flight user utterance before the session dies — a
+        # close mid-input (rotate, stall, drop) otherwise loses the text
+        # because turn_complete never fired and add_user never ran. The
+        # reconnect path appends it to the session prime's tail.
+        if self._live_input_transcript.strip():
+            self.pending_user_turn = self._live_input_transcript.strip()
         if self.usage_input_tokens or self.usage_output_tokens:
             logger.info(
                 "session=%s usage summary %s", self.session_id, self.usage_summary()
