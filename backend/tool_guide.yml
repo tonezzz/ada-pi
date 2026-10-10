@@ -292,6 +292,11 @@ ada_ops: >-
   a background refresh (node= defaults system-report, depth=
   leaf|subtree|full) — answer with the cached numbers and say fresh ones
   are coming; a 'report-updated' ops event lands when it finishes.
+  'acl_explain' traces which ACL layer allows/denies an action —
+  identity= (default: this session's caller), entity_id= for device
+  control, bank= (+tool= for a write) for memory access; the reply
+  names the deciding layer (control_policies, device_grants,
+  person_policies, bank.allowed_tools, ...) plus call-time gates.
   Absorbs ada_outcome, ada_usage_summary, ada_mddb_health,
   ada_decision_check, ada_deep_research, report_refresh.
 

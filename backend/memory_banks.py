@@ -312,7 +312,239 @@ class MemoryBankRegistry:
 
     def bank_allowed(self, name: str, person_entity: str | None) -> bool:
         """Whether this speaker may access the named bank at all."""
-        return name in self.banks_for_person(person_entity)
+        return bool(self.acl_decision(person_entity, bank=name)["allowed"])
+
+    # ---------- unified ACL resolver (card ada-acl-explain) ----------
+    #
+    # acl_decision() is the ONE function every allow/deny answer flows
+    # through: the actuation gate (_check_control_allowed), the
+    # memory-write gate (_check_memory_write_allowed), the bank-read
+    # ACL (memory_ops._check_bank_allowed via bank_allowed), and the
+    # explain path (ada_ops action='acl_explain'). It walks the policy
+    # layers in evaluation order and records each step in `trace`, so
+    # "why can kk control the TV" names the deciding layer in one call
+    # instead of a three-file investigation. Layer names:
+    #   registry        — bank assigned to this instance (banks map)
+    #   person_scope    — person-scoped bank replaced 'personal'
+    #   person_policies — registry person_policies allow/deny/full
+    #   control_policies— registry control_policies lists/full
+    #   device_grants   — ~/.config/ada/device-grants.json overlay
+    #   bank.writable / bank.allowed_tools / bank.write_policy —
+    #                     per-bank spec gates (tool= writes only)
+    #   bank.person_scope — person-scoped banks reject foreign writes
+
+    @staticmethod
+    def _policy_source(
+        policies: dict[str, dict[str, Any]], person_entity: str | None
+    ) -> tuple[dict[str, Any] | None, str]:
+        """(policy, via) mirroring policy_for/control_policy_for:
+        exact identity entry, else 'default' (named) / 'unknown'
+        (anonymous), else none."""
+        if not policies:
+            return None, "unconfigured"
+        if person_entity:
+            policy = policies.get(person_entity)
+            if policy:
+                return policy, "identity"
+            policy = policies.get("default")
+            return (policy, "default") if policy else (None, "unlisted")
+        policy = policies.get("unknown")
+        return (policy, "unknown") if policy else (None, "unlisted")
+
+    def acl_decision(
+        self,
+        identity: str | None,
+        *,
+        entity_id: str | None = None,
+        bank: str | None = None,
+        tool: str | None = None,
+        tool_aliases: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve whether `identity` may act on the given subject and
+        name the layer that decided. Subjects: entity_id -> actuation
+        (control_policies + device-grants overlay); bank -> bank access
+        (person_policies), with tool= adding the write-side layers
+        (writable, allowed_tools, write_policy, person-scope).
+        tool_aliases maps retired tool names to canonical ones for the
+        allowed_tools comparison (the runner passes its _ALIASES)."""
+        if entity_id:
+            return self._acl_control(str(entity_id), identity)
+        if bank:
+            return self._acl_bank(
+                str(bank), identity, tool=tool,
+                tool_aliases=tool_aliases or {})
+        return {
+            "ok": False, "identity": identity, "allowed": False,
+            "decided_by": "input", "verdict": "denied",
+            "reason": "no subject — pass entity_id= and/or bank=",
+            "trace": [],
+        }
+
+    def _acl_control(
+        self, entity_id: str, identity: str | None
+    ) -> dict[str, Any]:
+        """Actuation walk — same rule order as the old control_allowed:
+        full bypass -> deny_entities -> deny_domains -> device grants ->
+        allow_entities -> allow_domains -> default allow."""
+        trace: list[dict[str, Any]] = []
+
+        def done(allowed: bool, layer: str, rule: str,
+                 reason: str) -> dict[str, Any]:
+            trace.append({"layer": layer, "rule": rule,
+                          "result": "allow" if allowed else "deny",
+                          "detail": reason})
+            return {
+                "ok": True, "subject": "control", "identity": identity,
+                "entity_id": entity_id, "allowed": allowed,
+                "decided_by": layer, "verdict": (
+                    "allowed" if allowed else "denied"),
+                "reason": reason, "trace": trace,
+            }
+
+        policy, via = self._policy_source(self.control_policies, identity)
+        domain = entity_id.split(".", 1)[0]
+        trace.append({
+            "layer": "control_policies", "rule": "policy_lookup",
+            "result": "info",
+            "detail": {
+                "unconfigured": "no control_policies declared",
+                "identity": f"policy for {identity!r}",
+                "default": "no entry for identity — 'default' applies",
+                "unknown": "anonymous identity — 'unknown' applies",
+                "unlisted": ("no policy matches this identity"
+                             + ("" if identity else " (anonymous)")),
+            }[via],
+        })
+        if policy is None:
+            return done(True, "control_policies",
+                        f"policy_lookup:{via}",
+                        "no control policy applies — actuation allowed")
+        if policy.get("full"):
+            return done(True, "control_policies", "full",
+                        "policy declares full: true — all entities allowed")
+        deny_entities = set(policy.get("deny_entities") or [])
+        if entity_id in deny_entities:
+            return done(False, "control_policies", "deny_entities",
+                        f"{entity_id} is in deny_entities")
+        deny_domains = set(policy.get("deny_domains") or [])
+        if domain in deny_domains:
+            return done(False, "control_policies", "deny_domains",
+                        f"domain '{domain}' is in deny_domains")
+        grants = device_grants().get(identity or "") or {}
+        if entity_id in grants:
+            rec = grants[entity_id] or {}
+            return done(True, "device_grants", "grant",
+                        f"{entity_id} granted"
+                        + (f" by {rec.get('by')}" if rec.get("by") else "")
+                        + (f" at {rec.get('granted_at')}"
+                           if rec.get("granted_at") else ""))
+        allow_entities = set(policy.get("allow_entities") or [])
+        if allow_entities and entity_id not in allow_entities:
+            return done(False, "control_policies", "allow_entities",
+                        f"{entity_id} not in allow_entities")
+        allow_domains = set(policy.get("allow_domains") or [])
+        if allow_domains and domain not in allow_domains:
+            return done(False, "control_policies", "allow_domains",
+                        f"domain '{domain}' not in allow_domains")
+        return done(True, "control_policies", "default_allow",
+                    "policy imposes no restriction on this entity")
+
+    def _acl_bank(
+        self, name: str, identity: str | None, tool: str | None = None,
+        tool_aliases: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Bank-access walk — registry membership, person-scope swap,
+        person_policies allow/deny, then (tool= given) the write layers:
+        writable, allowed_tools, person-scope write, write_policy."""
+        trace: list[dict[str, Any]] = []
+
+        def done(allowed: bool, layer: str, rule: str,
+                 reason: str, **extra: Any) -> dict[str, Any]:
+            trace.append({"layer": layer, "rule": rule,
+                          "result": "allow" if allowed else "deny",
+                          "detail": reason})
+            out = {
+                "ok": True, "subject": "bank_write" if tool else "bank",
+                "identity": identity, "bank": name,
+                "allowed": allowed, "decided_by": layer,
+                "verdict": "allowed" if allowed else "denied",
+                "reason": reason, "trace": trace,
+            }
+            if tool:
+                out["tool"] = tool
+            out.update(extra)
+            return out
+
+        if name not in self._banks:
+            return done(False, "registry", "unknown_bank",
+                        f"unknown or unassigned memory bank {name!r}")
+        bank = self._banks[name]
+        scoped = self._scoped_bank_name(identity)
+        if scoped and scoped in self._banks and name == "personal":
+            return done(
+                False, "person_scope", "scoped_swap",
+                f"identity is served by person-scoped bank {scoped!r} — "
+                "'personal' is not visible to it")
+
+        policy, via = self._policy_source(self.person_policies, identity)
+        trace.append({
+            "layer": "person_policies", "rule": "policy_lookup",
+            "result": "info",
+            "detail": {
+                "unconfigured": "no person_policies declared",
+                "identity": f"policy for {identity!r}",
+                "default": "no entry for identity — 'default' applies",
+                "unknown": "anonymous identity — 'unknown' applies",
+                "unlisted": ("no policy matches this identity"
+                             + ("" if identity else " (anonymous)")),
+            }[via],
+        })
+        if policy is not None:
+            allow = set(policy.get("allow") or [])
+            deny = set(policy.get("deny") or [])
+            if allow and name not in allow:
+                return done(False, "person_policies", "allow",
+                            f"{name!r} is not in the policy's allow list")
+            if name in deny:
+                return done(False, "person_policies", "deny",
+                            f"{name!r} is in the policy's deny list")
+            if policy.get("full"):
+                trace.append({"layer": "person_policies",
+                              "rule": "full", "result": "allow",
+                              "detail": "policy declares full: true"})
+        if not tool:
+            return done(True, "person_policies", "default_allow",
+                        "policy imposes no restriction on this bank")
+
+        if not bank.writable:
+            return done(False, "bank.writable", "read_only",
+                        f"memory bank '{name}' is read-only")
+        # Bank configs may name an absorbed (pre-merge) tool — the runner
+        # resolves entries through its alias table so the canonical tool
+        # inherits the same authorization.
+        aliases = tool_aliases or {}
+        allowed_tools = {aliases.get(t, t) for t in bank.allowed_tools}
+        if tool not in allowed_tools:
+            return done(False, "bank.allowed_tools", "tool_not_listed",
+                        f"tool {tool} is not allowed on memory bank "
+                        f"'{name}'",
+                        allowed_tools=sorted(allowed_tools))
+        owners = {bank.person_scope, *bank.key_scope}
+        owners.discard(None)
+        if bank.scope == "person" and identity not in owners:
+            return done(False, "bank.person_scope", "foreign_write",
+                        f"memory bank '{name}' is private to its owner")
+        out = done(True, "person_policies", "default_allow",
+                   "policy imposes no restriction on this bank")
+        if bank.write_policy == "confirmed":
+            out["requires_confirm"] = True
+            out["verdict"] = "needs_confirmation"
+            out["trace"].append({
+                "layer": "bank.write_policy", "rule": "confirmed",
+                "result": "info",
+                "detail": f"bank '{name}' write_policy=confirmed — "
+                          "the call still needs confirmed=true"})
+        return out
 
     # ---------- actuation ACL ----------
 
@@ -341,25 +573,10 @@ class MemoryBankRegistry:
         an explicit admin grant (device-grants.json overlay) allows, a
         non-empty allow_entities whitelists exact entities, and a non-empty
         allow_domains whitelists domains. The global danger-pattern floor
-        still applies on top — this is subtractive only."""
-        policy = self.control_policy_for(person_entity)
-        if not policy or policy.get("full"):
-            return True
-        domain = entity_id.split(".", 1)[0]
-        if entity_id in set(policy.get("deny_entities") or []):
-            return False
-        if domain in set(policy.get("deny_domains") or []):
-            return False
-        granted = (device_grants().get(person_entity or "") or {})
-        if entity_id in granted:
-            return True
-        allow_entities = set(policy.get("allow_entities") or [])
-        if allow_entities and entity_id not in allow_entities:
-            return False
-        allow = set(policy.get("allow_domains") or [])
-        if allow and domain not in allow:
-            return False
-        return True
+        still applies on top — this is subtractive only. Bool view of
+        acl_decision() — the layer trace lives there."""
+        return bool(self.acl_decision(
+            person_entity, entity_id=entity_id)["allowed"])
 
     def notebook_for(self, name: str) -> str | None:
         return self.bank(name).notebook(self.notebook_ids)

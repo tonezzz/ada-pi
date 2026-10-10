@@ -1,0 +1,93 @@
+# SSOT Job: unified ACL resolver + 'who can do what' explain command
+# Card: ada-acl-explain (chaba kanban). Dispatch
+# 20261010-080608-unified-acl-resolver-who-can-d.
+
+title: unified ACL resolver (acl_decision) + ada_ops action='acl_explain'
+
+context:
+  card: |
+    Three overlapping ACL systems answered differently: control_policies
+    domain lists, ~/.config/ada/device-grants.json overlay, and per-bank
+    allowed_tools. Phase 1 is read-only unification — one resolver
+    function consumed by all gates, then an explain path — so "why can
+    kk control the TV" is one call instead of a three-file
+    investigation. Phase 2 (separate card): converge the stores.
+  prior_state: |
+    control_allowed() inlined the whole walk (policy lookup, full
+    bypass, deny lists, grants overlay, allow lists) and returned a
+    bare bool; bank_allowed() was `name in banks_for_person()`; the
+    memory-write gate re-checked writable/allowed_tools inline. None of
+    them could say WHICH rule fired.
+
+resolver:
+  function: MemoryBankRegistry.acl_decision(identity, *, entity_id=None, bank=None, tool=None, tool_aliases=None)
+  home: backend/memory_banks.py — lives next to the stores it reads
+    (control_policies, person_policies, device_grants(), bank specs).
+  returns: |
+    {ok, subject: control|bank|bank_write, identity, allowed,
+     decided_by, verdict: allowed|denied|needs_confirmation,
+     reason, trace: [{layer, rule, result, detail}], ...}
+    - trace records every layer walked in evaluation order.
+    - decided_by names the layer that produced the verdict.
+  control_layers: |
+    policy_lookup (identity|'default'|'unknown'|unlisted/unconfigured)
+    -> full bypass -> deny_entities -> deny_domains ->
+    device_grants overlay -> allow_entities -> allow_domains ->
+    default allow. Same order as the old control_allowed.
+  bank_layers: |
+    registry membership -> person_scope swap (scoped bank shadows
+    'personal') -> person_policies allow/deny/full -> default allow;
+    with tool= the write layers append: bank.writable ->
+    bank.allowed_tools (runner _ALIASES expansion, passed in as
+    tool_aliases) -> bank.person_scope (foreign-write check, mirrors
+    memory_ops._check_person_scope_write) -> bank.write_policy
+    (annotates requires_confirm, never denies).
+
+consumers:
+  - control_allowed() / bank_allowed() — now bool views over
+    acl_decision; every existing caller (tool_runner gates,
+    memory_ops._check_bank_allowed, ada_device_acl, pwa_server power
+    endpoint) inherits the resolver unchanged.
+  - _check_control_allowed (tool_runner) — calls acl_decision
+    directly; denial log line now carries decided_by.
+  - _check_memory_write_allowed — one acl_decision(bank=, tool=)
+    call replaces the bank_allowed + writable + allowed_tools trio;
+    per-layer PermissionError messages preserved. bank.person_scope
+    denials are DEFERRED to memory_ops._check_person_scope_write so the
+    denial keeps its tool-result shape ({ok: False}, not a raise).
+  - ada_ops action='acl_explain' (tool_runner/meta.py) — explain path.
+
+explain_surface:
+  tool: ada_ops action='acl_explain'
+  params:
+    identity: "whose access (default: this session's policy identity)"
+    entity_id: "HA entity for actuation verdict"
+    bank: "bank access; + tool= resolves a bank write"
+  runtime_gates: |
+    The runner annotates call-time gates the stores don't own:
+    ADA_READ_ONLY (deny), chaba guest deny-pattern (deny), safety-map
+    dangerous (confirm; 'unloaded' noted when the map is cold), control
+    rate-limit counters (pass/deny). verdict folds them in so the
+    answer reflects what would actually happen.
+  secondary_turns: |
+    acl_explain is not in the ops_read carve-out — it stays owner-tier
+    on secondary turns (ACL internals are admin surface).
+
+verify:
+  - tests/test_memory_banks.py::AclDecisionTests — granted/denied/
+    ambiguous (grant losing to deny_entities), full/no-policy,
+    person-scope swap, write layers, alias expansion, and a full
+    parity sweep vs banks_for_person/control_allowed.
+  - tests/test_tool_runner.py::AclExplainTests — ada_ops acl_explain
+    for entity and bank(+tool) subjects, ValueError on missing
+    subject, session-identity default.
+  - pytest tests/test_memory_banks.py tests/test_tool_runner.py: 320 pass
+  - scripts/tool-lint.py: clean for this change (3 pre-existing
+    violations on origin/main: voice_fx descsize+coverage,
+    yt_cached_list impl — untouched).
+
+next_phase: |
+  Card's phase 2 (separate card): converge the stores behind the
+  resolver — control_policies + device-grants overlay + person/bank
+  policy keys into one store shape; the trace layers are already the
+  seam.
