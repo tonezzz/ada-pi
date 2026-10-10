@@ -770,6 +770,22 @@ async def warm_cache() -> None:
     if ha_client.configured and tool_runner.events is not None:
         await tool_runner.events.start()
         logger.info("ha event recorder running=%s", tool_runner.events.running)
+    # tools.d service-start hooks: a drop-in tool may define
+    # async on_service_start(runner) for boot-time recovery (e.g.
+    # ada_track_device re-arms persisted lost-mode _watch/* docs).
+    try:
+        from backend import tools_loader
+        for _tool in tools_loader.registry().tools.values():
+            _hook = _tool.run.__globals__.get("on_service_start")
+            if not callable(_hook):
+                continue
+            try:
+                await _hook(tool_runner)
+            except Exception as exc:
+                logger.warning("tools.d %s on_service_start failed: %s",
+                               _tool.name, exc)
+    except Exception as exc:
+        logger.warning("tools.d service-start hooks failed: %s", exc)
     if not auth.configured():
         logger.warning(
             "ADA_API_KEY is not set — /api/tools/call, power endpoints, and /ws are UNAUTHENTICATED. "
