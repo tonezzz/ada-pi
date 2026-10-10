@@ -1,0 +1,102 @@
+# SSOT Job: staged memory writes for untrusted identities
+# Card: ada-memory-staged-writes (chaba kanban). Dispatch
+# 20261010-091611-where-ada-pi-repo-tool-runner- (attempt 2).
+
+title: Memory staged writes — restricted/unknown/guest content held for approval, full identities write direct
+
+context:
+  dependency: |
+    Card ada-memory-injection-scan was marked done but its module
+    backend/memory_write_guard.py never reached a branch (left uncommitted
+    on the edit-point checkout). Recreated here from that card's published
+    spec: data-driven rule table, classes prompt_injection /
+    credential_shape / invisible_unicode / token_flood / homoglyph_mix,
+    refusal {ok:false, matched_class}, memory-scan-refused event
+    (metadata only, no payload), --selftest prints SELFTEST-OK.
+  ordering: |
+    Every memory write path scans FIRST (guard), then routes
+    direct-vs-staged. Scan-before-stage: poisoned content is refused
+    outright, never parked in the pending queue.
+
+changes:
+  - file: backend/memory_write_guard.py
+    what: |
+      Recreated missing dependency module. Data-driven _RULES table maps
+      compiled patterns to classes; scan(text, *fields) returns None when
+      clean else the {ok:false, matched_class, reason} refusal dict (no
+      payload). memory-scan-refused events are emitted by the runner's
+      _scan_memory_write with class/identity/bank only. Selftest covers
+      all five classes incl. ZWSP/RTL-override and homoglyph-mix
+      detection (chr-built, no literal invisibles in source).
+  - file: backend/memory_pending.py
+    what: |
+      New file-backed pending store (vault dir, NOT MDDB — chaba has no
+      MDDB but still stages guest writes). Dir override
+      ADA_MEMORY_PENDING_DIR, default ~/.local/share/ada/memory-pending.
+      Entry shape {id, identity, bank, key, text, staged_at,
+      source_session, route, status, text_sha256, args, guest, instance}.
+      stage() writes one JSON file per entry under flock; approve()
+      re-hashes stored text, refuses on pin mismatch (keeps pending),
+      then invokes a caller-supplied apply fn; reject() marks resolved.
+      Single-use: resolved entries cannot re-apply.
+  - file: backend/tool_runner/memory.py
+    what: |
+      _scan_memory_write() -> run guard, return structured refusal.
+      _memory_staging_required() -> routing rule reusing
+      person_policies: {full: true} identity (_persona_admin) writes
+      direct; when any person/control policy map exists, non-full
+      callers stage; no policy map at all -> direct (nothing to route
+      by). Guest route always stages for non-admin — guest-store
+      content is untrusted by definition.
+      _stage_memory_write() -> build entry, pending.stage(), emit
+      memory-staged event + optional board comment
+      (ADA_MEMORY_REVIEW_CARD), return {ok, staged, id, note} where the
+      note tells the model to say "keep it for Tony to approve" and
+      never "saved".
+      ada_remember: bank, guest, guest-private and vocab paths all run
+      scan -> stage/direct. Retired shims guest_remember,
+      guest_remember_private, vocab_note delegate through ada_remember
+      so aliases can't bypass the gate.
+  - file: backend/memory_ops.py
+    what: |
+      New vocab_append(store, key_text, bank=None) shared by the live
+      vocab path and pending-approval replay (VOCAB_DOC_KEY vocab/log).
+  - file: backend/tool_runner/common.py
+    what: Import memory_pending + memory_write_guard for the runner.
+  - file: scripts/ada/memory-pending.py
+    what: |
+      Approver CLI (existing surface, no new UI): list / approve /
+      reject. Approve replays the pinned route through ToolRunner
+      internals (bank -> memory_ops.remember, vocab -> vocab_append,
+      guest/guest_private -> guest store) using staged args verbatim.
+  - file: tests/test_memory_pending.py
+    what: |
+      21 tests — store CRUD, pin-mismatch refusal, single-use,
+      routing (full direct / restricted+unknown+guest staged /
+      no-map direct), scan-before-stage refusal, board-notify failure
+      non-fatal, approval replay uses staged bytes.
+  - file: docs/ssot-drafts/PATCHES.md
+    what: ssot.apps.ada-memory-banks.yml delta — write_guard +
+      staged_writes blocks documenting store choice, routing rule,
+      pinning, approver surface, out-of-scope paths.
+
+complementary_gates: |
+  per-bank write_policy: confirmed still gates the WRITE TOOL call
+  (ToolRunner._check_memory_write_allowed) — unchanged. Staging gates
+  the CONTENT for untrusted callers. Confirmation happens before
+  either; a confirmed restricted caller still stages.
+
+verify:
+  - .venv/bin/python backend/memory_write_guard.py --selftest  # SELFTEST-OK
+  - .venv/bin/python -m pytest tests/test_memory_pending.py -q  # 21 passed
+  - .venv/bin/python -m pytest tests/test_tool_runner.py \
+      tests/test_memory_banks.py tests/test_memory_ops.py \
+      tests/test_memory_recall_extras.py -q                     # 85 passed
+  - python3 scripts/ada/memory-pending.py list                  # empty queue
+
+notes: |
+  Approver surface = card comms + CLI (no new UI): staging posts an
+  events.md line (surfaced by the existing ada-review digest) and, when
+  ADA_MEMORY_REVIEW_CARD is set, a board comment naming the pending id.
+  Out of scope by design: ada_forget (deletes are reversible via mddb
+  history and already confirmation-gated) and ada_ops outcome (telemetry).

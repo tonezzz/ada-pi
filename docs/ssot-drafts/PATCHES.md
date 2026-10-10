@@ -100,7 +100,50 @@ out; the tony-dell MDDB is a read-only follower on `100.68.142.13:11023`
 (no loopback, no embedding provider). Worth an SSOT note in
 `ssot.values.yml`: `mddb.primary` vs `mddb.local_follower`.
 
-## 7. `ssot.apps.ada-cms-reports.yml` — meta_contract is now enforced
+## 7. `ssot.apps.ada-memory-banks.yml` — write_guard + staged_writes
+
+Card ada-memory-injection-scan (guard) + ada-memory-staged-writes (this
+dispatch). Add a top-level block next to `person_policies`:
+
+```yaml
+write_guard:
+  # backend/memory_write_guard.py — string-level pre-write scan, every
+  # memory write path runs it BEFORE the store write AND before staging.
+  # Trusted identities are scanned too (the guard protects the bank).
+  classes: [prompt_injection, credential_shape, invisible_unicode,
+            token_flood, homoglyph_mix]
+  refusal: {ok: false, error: memory_scan_refused, matched_class: <cls>}
+  event: memory-scan-refused          # events.md — class only, no payload
+
+staged_writes:
+  # backend/memory_pending.py — the approval lane (card
+  # ada-memory-staged-writes). Reuses person_policies — no new ACL:
+  #   {full: true} identities (tool_runner._persona_admin) -> direct write
+  #   restricted/unknown/guest identities -> staged pending entry
+  #   no policy map at all -> direct (nothing to route by; guest route
+  #   still stages — guest-store content is untrusted by definition)
+  store: file                          # vault pending/ dir, NOT mddb:
+                                       # chaba has no MDDB but still
+                                       # stages guest writes
+  dir: ~/.local/share/ada/memory-pending   # ADA_MEMORY_PENDING_DIR
+  entry: {id, identity, bank, key, text, staged_at, source_session,
+          route, status, text_sha256, args, guest, instance}
+  pinning: text_sha256                 # approval applies staged bytes
+                                       # verbatim; mismatch -> refuse,
+                                       # keep pending (Hermes pinning)
+  single_use: true                     # resolved entries can't re-apply
+  approver:                            # existing surfaces, no new UI
+    notify: [events.md memory-staged,  # -> ada-review digest
+             board comment (ADA_MEMORY_REVIEW_CARD, opt-in)]
+    respond: scripts/ada/memory-pending.py list|approve|reject
+  routes: [bank, guest, guest_private, vocab]
+  out_of_scope: [ada_forget, ada_ops outcome]   # reversible/telemetry
+```
+
+`write_policy: confirmed` per bank stays complementary: it gates the
+tool CALL; staging gates untrusted CONTENT.
+
+## 8. `ssot.apps.ada-cms-reports.yml` — meta_contract is now enforced
 
 Card ada-report-quality (dispatch 20261005-222628) turned the SHOULD into
 enforcement in ada-pi. Suggested doc edits:

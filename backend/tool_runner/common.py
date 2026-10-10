@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from backend import memory_ops
+from backend import memory_pending
+from backend import memory_write_guard
 from backend import chaba_memory
 from backend import gemini_pool
 from backend import speech_sanitize

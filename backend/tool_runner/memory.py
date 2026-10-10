@@ -464,12 +464,38 @@ class MemoryMixin:
         if not k and self.chaba is not None:
             k = "guest"
         if k == "vocab":
+            refused = self._scan_memory_write(
+                route="vocab", text=text, extra=note)
+            if refused is not None:
+                return refused
+            if self.mddb is None:
+                raise PermissionError(
+                    "vocab notes are unavailable on this instance")
+            if self._memory_staging_required("vocab"):
+                return await self._stage_memory_write(
+                    route="vocab", text=str(text),
+                    args={"note": note})
             return await self._vocab_append(text, note)
         if k == "guest":
             self._require_chaba()
             if not str(text or "").strip():
                 raise ValueError("remember(kind='guest') requires text")
             slug = str(key or _slug(str(text))[:40] or "note")
+            refused = self._scan_memory_write(
+                route="guest", text=text, extra=slug)
+            if refused is not None:
+                return refused
+            if private:
+                # A guest can never apply a private write — refuse now
+                # rather than parking an entry approval must deny anyway.
+                gident = self.chaba.identity(self.session_id)
+                if gident.get("kind") != "user" or not gident.get("name"):
+                    raise PermissionError(
+                        "private memory requires a promoted user session")
+            if self._memory_staging_required("guest"):
+                return await self._stage_memory_write(
+                    route="guest_private" if private else "guest",
+                    key=slug, text=str(text))
             if private:
                 return self.chaba.remember_private(
                     self.session_id, slug, str(text))
@@ -490,6 +516,18 @@ class MemoryMixin:
                 "(kind fact/preference/person/procedure/note)")
         if not str(text or "").strip():
             raise ValueError("ada_remember requires 'text'")
+        refused = self._scan_memory_write(
+            route="bank", bank=str(bank), text=text,
+            extra=" ".join(str(x) for x in (key, subject, attribute) if x))
+        if refused is not None:
+            return refused
+        if self._memory_staging_required("bank"):
+            return await self._stage_memory_write(
+                route="bank", bank=str(bank), key=key, text=str(text),
+                args={"subject": subject, "attribute": attribute,
+                      "kind": kind, "valid_until": valid_until,
+                      "applies_to": applies_to, "supersedes": supersedes,
+                      "prime": prime})
         return await memory_ops.remember(
             self.mddb, self.banks, self.memory.instance,
             str(bank), str(text), key, subject, attribute, kind, valid_until,
@@ -625,7 +663,8 @@ class MemoryMixin:
         term, correct = (term or "").strip(), (correct or "").strip()
         if not term or not correct:
             raise ValueError("vocab_note requires term and correct")
-        return await self._vocab_append(f"{term} → {correct}", note)
+        return await self.ada_remember(
+            kind="vocab", text=f"{term} → {correct}", note=note)
 
     async def _vocab_append(
         self, text: Any, note: Any = None
@@ -633,42 +672,122 @@ class MemoryMixin:
         """Append a term-coaching entry to the current speaker's personal
         vocab log (vocab/log in their own personal bank — KK's notes land in
         personal-kk, Tony's in personal-tony). Not confirmation-gated:
-        append-only, scoped to the caller's own bank."""
+        append-only, scoped to the caller's own bank. The write itself
+        lives in memory_ops.vocab_append so the pending-lane approver
+        shares it."""
         if self.mddb is None:
             raise PermissionError(
                 "vocab notes are unavailable on this instance")
-        bank = memory_ops.persona_bank_for(self.banks, self._memory_identity())
-        if bank is None:
-            raise PermissionError(
-                "vocab notes need a personal bank — this identity has none"
-            )
-        entry = str(text or "").strip()
-        note_s = str(note).strip() if note else ""
-        if not entry:
-            raise ValueError("vocab memory requires text ('term → correction')")
-        today = datetime.now(timezone.utc).date().isoformat()
-        line = f"- {entry} — {today}" + (f" ({note_s})" if note_s else "")
-        doc = await self.mddb.get_document(bank.mddb_collection, self.VOCAB_DOC_KEY)
-        body = ((doc or {}).get("contentMd") or doc and doc.get("content_md") or "")
-        if not body.strip():
-            body = "# Vocabulary — terms I heard, gently corrected\n"
-        if line not in body:
-            body = body.rstrip("\n") + "\n" + line + "\n"
-        meta = {
-            "kind": ["vocab"], "subject": ["persona"],
-            "status": ["active"], "scope": ["instance"],
-            "last_verified": [today],
+        return await memory_ops.vocab_append(
+            self.mddb, self.banks, self._memory_identity(), text, note)
+
+    # -- staged writes (card ada-memory-staged-writes) ----------------------
+    # Scan first (memory_write_guard refuses outright), then route: a
+    # {full: true} identity keeps today's direct write; every other
+    # caller's content parks in the pending lane until approved. The
+    # per-bank write_policy=confirmed gate upstream is complementary —
+    # it decides IF this call may write, staging decides WHERE untrusted
+    # content lands first.
+
+    def _scan_memory_write(
+        self, *, route: str, bank: str | None = None,
+        text: Any = "", extra: Any = "",
+    ) -> dict[str, Any] | None:
+        """Pre-write content scan. Returns the refusal dict (for the model)
+        or None when clean — never carries the payload into logs."""
+        matched = memory_write_guard.scan(text, extra)
+        if matched is None:
+            return None
+        ident = self.policy_identity()
+        label = str(bank or route)
+        self._log_session_event(
+            "memory-scan-refused", route=route, bank=bank,
+            matched_class=matched["matched_class"], identity=ident)
+        try:
+            from backend.event_log import log_event
+            log_event("memory-scan-refused", str(ident or "anonymous"),
+                      label, matched["matched_class"])
+        except Exception:
+            pass
+        logger.warning(
+            "memory write scan refused route=%s bank=%s identity=%r "
+            "class=%s", route, bank, ident, matched["matched_class"])
+        return matched
+
+    def _memory_staging_required(self, route: str) -> bool:
+        """True when this caller's memory content must stage for approval.
+
+        {full: true} identities (the _persona_admin map — person_policies,
+        control_policies, or the 'admin' key name) write directly, keeping
+        Tony's 'remember X' latency-free. Everything else stages — except
+        bank/vocab writes on an instance with NO policy map at all, where
+        no access map exists to sort callers (pre-staging behavior kept).
+        Guest-store writes are untrusted content by definition and always
+        stage for non-admin callers."""
+        if self._persona_admin(self.policy_identity()):
+            return False
+        if route == "guest":
+            return True
+        return bool(self.banks.person_policies or self.banks.control_policies)
+
+    async def _stage_memory_write(
+        self, *, route: str, bank: str | None = None,
+        key: str | None = None, text: Any = "",
+        args: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Park the write in the pending lane and answer the model with the
+        staged contract — {ok, staged, id} means 'kept for review', NOT
+        saved."""
+        ident = self.policy_identity()
+        guest = None
+        if route.startswith("guest") and self.chaba is not None:
+            guest = self.chaba.identity(self.session_id)
+        entry = memory_pending.stage(
+            route=route, identity=ident, bank=bank, key=key,
+            text=str(text), args=args or {}, guest=guest,
+            source_session=self.session_id,
+            instance=(self.memory.instance
+                      if self.memory is not None else None))
+        self._log_session_event(
+            "memory-staged", pending_id=entry["id"], route=route,
+            bank=bank, identity=ident)
+        try:
+            from backend.event_log import log_event
+            log_event("memory-staged", str(ident or "anonymous"),
+                      str(bank or route),
+                      f"{entry['id']} — pending approval")
+        except Exception:
+            pass
+        await self._pending_board_note(entry)
+        return {
+            "ok": True,
+            "staged": True,
+            "id": entry["id"],
+            "note": (
+                "held for review — this caller's memory writes need "
+                "approval. Tell the user you'll keep it for Tony to "
+                "approve; do NOT say it was saved, do NOT retry the "
+                "write, and do NOT write it to a different bank."),
         }
-        if doc is None:
-            ok = await self.mddb.add_document(
-                bank.mddb_collection, self.VOCAB_DOC_KEY, "en", body, meta)
-        else:
-            ok = await self.mddb.update_document(
-                bank.mddb_collection, self.VOCAB_DOC_KEY, content_md=body, meta=meta)
-        if not ok:
-            return {"status": "error", "error": "mddb write failed"}
-        return {"status": "noted", "bank": bank.name, "key": self.VOCAB_DOC_KEY,
-                "entry": entry}
+
+    async def _pending_board_note(self, entry: dict[str, Any]) -> None:
+        """Card-comms approver surface: when ADA_MEMORY_REVIEW_CARD names a
+        standing board card, each staged write posts one comms line there.
+        Responding is scripts/ada/memory-pending.py approve|reject."""
+        card = os.environ.get("ADA_MEMORY_REVIEW_CARD", "").strip()
+        if not card:
+            return
+        try:
+            from backend import board_client
+            await board_client.post("/comment", {
+                "id": card, "from": "ada",
+                "text": (
+                    f"memory write staged {entry['id']} "
+                    f"({entry['route']}/{entry.get('bank') or '-'} by "
+                    f"{entry.get('identity') or 'anonymous'}) — approve|"
+                    "reject: scripts/ada/memory-pending.py")})
+        except Exception:
+            pass
 
     def _persona_admin(self, caller: str | None) -> bool:
         """Full-access identities may manage other people's profiles.
@@ -883,12 +1002,13 @@ class MemoryMixin:
     async def guest_remember(self, key: str, text: str) -> dict[str, Any]:
         """Save a public memory under this visitor's declared name."""
         self._require_chaba()
-        return self.chaba.remember(self.session_id, key, text)
+        return await self.ada_remember(kind="guest", key=key, text=text)
 
     async def guest_remember_private(self, key: str, text: str) -> dict[str, Any]:
         """Save a private note — only for admin-promoted users."""
         self._require_chaba()
-        return self.chaba.remember_private(self.session_id, key, text)
+        return await self.ada_remember(
+            kind="guest", key=key, text=text, private=True)
 
     async def guest_recall(self, query: str, limit: int = 10) -> dict[str, Any]:
         """Search public guest memories (and own private notes for users)."""
