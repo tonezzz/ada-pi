@@ -26,11 +26,14 @@ import yaml
 
 logger = logging.getLogger("tools.devin_dispatch")
 
-# tony-dell's LAN IP, not its tailnet name: `ssh tony-dell` resolves via
-# MagicDNS to the tailscale IP where tailscaled-ssh intercepts and demands a
-# periodic interactive re-auth — unusable from an unattended service. The LAN
-# address reaches plain sshd with key auth (mn01/idc01 keys are authorized).
-HOST = os.environ.get("ADA_DEVIN_DISPATCH_HOST", "192.168.2.67")
+# Tailnet name, not the LAN IP: idc03 (Ada's current home) cannot reach
+# 192.168.2.67, while `ssh tony-dell` resolves via MagicDNS to the tailscale
+# address where plain sshd answers — tony-dell's tailscaled runs with
+# RunSSH:false so it no longer intercepts :22, and the old re-auth concern
+# that forced the LAN IP (2026-09-24) is moot. ssh configs on
+# mn01/idc03/tony-omen already map tony-dell -> IdentityFile.
+# Supersedes docs/ssot/jobs/infrastructure/2026-10-10-dispatch-ssh-tailnet.yml
+HOST = os.environ.get("ADA_DEVIN_DISPATCH_HOST", "tony-dell")
 BIN = os.environ.get("ADA_DEVIN_DISPATCH_BIN", "~/.local/bin/devin-dispatch")
 TIMEOUT_S = float(os.environ.get("ADA_DEVIN_DISPATCH_TIMEOUT_S", "45"))
 

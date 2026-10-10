@@ -1,0 +1,63 @@
+# SSOT Job: devin-dispatch SSH target -> tailnet name
+# Card: ada-dispatch-tailnet-target. Dispatch 20261010-095613.
+
+title: Ada devin_dispatch default host -> tailnet `tony-dell`
+subtitle: LAN-IP rule from 2026-09-24 superseded — tailscaled RunSSH:false
+
+planning:
+  goal: |
+    Flip the Ada -> Devin dispatch client's default SSH target from the
+    tony-dell LAN IP (192.168.2.67) to the tailnet name `tony-dell`.
+    Verified live 2026-10-10 (card devin-dispatch-lan-ip): from idc03 —
+    Ada's current home — `ssh 192.168.2.67` times out while
+    `ssh -o BatchMode=yes tony-dell` succeeds, and tony-dell's
+    `tailscale debug prefs` shows RunSSH:false, so tailscaled no longer
+    intercepts :22 and the old "tailscaled-ssh forces interactive
+    re-auth" rationale is stale. ssh configs on mn01/idc03/tony-omen
+    already map `tony-dell` -> 100.68.142.13 + IdentityFile; MagicDNS
+    covers the rest. Sibling fix: chaba
+    docs/ssot/jobs/infrastructure/2026-10-10-dispatch-ssh-tailnet.yml.
+  decisions: |
+    - One-line default change: HOST = env ADA_DEVIN_DISPATCH_HOST or
+      "tony-dell". All dispatch verbs (start/status/followup) funnel
+      through _run() -> `ssh HOST <bin> <args>`, so the single constant
+      covers every command; no per-call sites to touch.
+    - ADA_DEVIN_DISPATCH_HOST env override kept verbatim — the override
+      path is the rollback (set it back to 192.168.2.67 on a host that
+      still needs LAN).
+    - tools.d/devin.py is tool_runner/devin.py since the 2026-10-06
+      mixin split; its docstrings and the tool_guide entry already say
+      "on tony-dell" (host name, not IP) — no declaration edit needed.
+    - Stale comment at devin_dispatch.py:29-32 rewritten to record the
+      inversion (tailnet name is now the reachable path; the LAN IP is
+      the unreachable one from idc03).
+  owner: tony
+
+processing:
+  status: done
+  steps:
+    - id: 1
+      label: "default + comment"
+      status: done
+      notes: "backend/devin_dispatch.py HOST default 192.168.2.67 ->
+        tony-dell; rationale comment updated (RunSSH:false, idc03
+        reachability, supersedes-pointer to the chaba job doc)."
+
+invoke:
+  trigger: "voice 'hand this to Devin' -> devin action=dispatch"
+  entry: "backend/tool_runner/devin.py DevinMixin.devin_dispatch"
+
+verification:
+  - "python3 -m pytest tests/test_devin_dispatch.py -x -q -> 26 passed"
+  - "ssh -o BatchMode=yes -o ConnectTimeout=6 tony-dell
+    ~/.local/bin/devin-dispatch status -> task list returned (run from
+    tony-dell; MagicDNS -> 100.68.142.13 -> sshd). The card's verify
+    clause targets idc03 — same ssh-config mapping exists there per
+    the card's live evidence."
+  - "python3 scripts/tool-lint.py -> 3 pre-existing violations
+    (voice_fx descsize/coverage, yt_cached_list undeclared) unrelated
+    to this diff — present on the base tree."
+
+notes: |
+  Outbound-only change on the client; nothing to deploy from this
+  worktree. Effective on the next ada-pi deploy on idc03.
