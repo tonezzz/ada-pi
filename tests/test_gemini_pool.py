@@ -67,6 +67,15 @@ class PoolTests(unittest.TestCase):
             picks = {gemini_pool.next_key("m") for _ in range(4)}
             self.assertEqual(picks, {"k1", "k2"})
 
+    def test_next_key_priority_prefers_first_key(self):
+        env = {"GEMINI_API_KEY": "free", "GEMINI_API_KEY_2": "paid",
+               "ADA_GEMINI_KEY_POLICY": "priority"}
+        with patch.dict(os.environ, env):
+            picks = {gemini_pool.next_key("m") for _ in range(4)}
+            self.assertEqual(picks, {"free"})
+            gemini_pool.mark_exhausted("free", "m")
+            self.assertEqual(gemini_pool.next_key("m"), "paid")
+
     def test_exhaustion_is_per_key_model(self):
         env = {"GEMINI_API_KEY": "k1"}
         with patch.dict(os.environ, env):

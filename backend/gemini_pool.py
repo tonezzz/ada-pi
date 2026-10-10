@@ -124,8 +124,11 @@ def _prune() -> None:
 
 
 def next_key(model: str = "") -> str | None:
-    """Round-robin pick among keys that still have quota for `model`.
-    None when the pool is drained (or ADA_GEMINI_SIMULATE_EXHAUSTED)."""
+    """Pick a key that still has quota for `model`.
+    ADA_GEMINI_KEY_POLICY=priority: always the first configured live key —
+    free-first with paid spillover (a 429 marks the primary out, the
+    fallback serves until the free daily reset). Any other value:
+    round-robin. None when the pool is drained (or the simulate flag)."""
     if os.environ.get("ADA_GEMINI_SIMULATE_EXHAUSTED", "").lower() in (
             "1", "true", "yes"):
         return None
@@ -139,6 +142,8 @@ def next_key(model: str = "") -> str | None:
                 if _exhausted.get((k, model), 0) <= time.time()]
         if not live:
             return None
+        if os.environ.get("ADA_GEMINI_KEY_POLICY", "") == "priority":
+            return live[0]
         key = live[_rr_index % len(live)]
         _rr_index += 1
         return key
