@@ -642,14 +642,66 @@ class TgRelay:
                     "listening", host, TG_WEBHOOK_PATH)
         await server.serve()
 
+    async def _serve_push(self) -> None:
+        """Loopback-only outbound push API for polling relays — same /send
+        contract as webhook mode so chat_send works on every lane."""
+        import uvicorn
+        from starlette.applications import Starlette
+        from starlette.responses import JSONResponse
+        from starlette.routing import Route
+
+        async def send(request):
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse({"ok": False,
+                                     "error": "bad json"}, status_code=422)
+            try:
+                cid = int(body.get("chat_id") or 0) or \
+                    next(iter(_allowed_chats()), 0)
+            except (TypeError, ValueError):
+                cid = next(iter(_allowed_chats()), 0)
+            if not cid:
+                return JSONResponse({"ok": False,
+                                     "error": "no target"}, status_code=400)
+            photo = body.get("photo_url") or body.get("image_url")
+            if not (body.get("text") or photo):
+                return JSONResponse({"ok": False,
+                                     "error": "nothing to send"},
+                                    status_code=400)
+            try:
+                if body.get("text"):
+                    await self.send_text(cid, str(body["text"])[:4000])
+                if photo:
+                    await self.send_photo(cid, str(photo),
+                                          str(body.get("caption") or ""))
+                return JSONResponse({"ok": True, "chat_id": cid})
+            except Exception as exc:
+                return JSONResponse({"ok": False, "error": str(exc)},
+                                    status_code=502)
+
+        async def health(request):
+            return JSONResponse({"ok": True, "mode": "polling"})
+
+        app = Starlette(routes=[
+            Route("/send", send, methods=["POST"]),
+            Route("/webhook/health", health, methods=["GET"]),
+        ])
+        host, _, port = TG_LISTEN.rpartition(":")
+        server = uvicorn.Server(uvicorn.Config(
+            app, host=host or "127.0.0.1", port=int(port or 8911),
+            log_level="warning"))
+        await server.serve()
+
     async def run(self) -> None:
         self.http = httpx.AsyncClient(timeout=POLL_TIMEOUT_S + 15)
         asyncio.create_task(self.sweeper())
         if TG_MODE == "webhook":
             await self._webhook_server()
             return
-        logger.info("tg relay up — polling %s", TG_API)
-        await self._poll_loop()
+        logger.info("tg relay up — polling %s (send listener %s)", TG_API,
+                    TG_LISTEN)
+        await asyncio.gather(self._poll_loop(), self._serve_push())
 
 
 async def main() -> None:
