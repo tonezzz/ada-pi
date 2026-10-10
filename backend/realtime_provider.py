@@ -954,8 +954,10 @@ class GeminiLiveProvider(RealtimeProvider):
         # half-cascade model that supports TEXT output.
         self.model = os.environ.get(
             "GEMINI_LIVE_TEXT_MODEL" if self.text_only else "GEMINI_LIVE_MODEL",
-            "gemini-live-2.5-flash-preview" if self.text_only
-            else "gemini-3.1-flash-live-preview")
+            # Text channels default to the main live model — reply text now
+            # comes via output_audio_transcription (native-audio models
+            # dropped TEXT modality; gemini-live-2.5-flash-preview retired).
+            os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview"))
         self.voice = voice_config.current_voice()
         self.video_resolution = os.environ.get("GEMINI_VIDEO_RESOLUTION", "high").lower()
         base_instructions = instructions or os.environ.get("GEMINI_LIVE_INSTRUCTIONS") or DEFAULT_ADA_INSTRUCTIONS
