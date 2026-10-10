@@ -273,6 +273,18 @@ async def drive_media_url(file_id: str) -> str:
 
 # ---------------------------------------------------------------- Photos Picker
 
+class PhotosNotConfiguredError(RuntimeError):
+    """The doc-archive service answered 501 — Google Photos auth
+    (GPHOTO_REFRESH_TOKEN) is missing there."""
+
+
+def _photos_unconfigured() -> "PhotosNotConfiguredError":
+    return PhotosNotConfiguredError(
+        "photo sending is not configured — Google Photos auth is "
+        "missing on the doc-archive service (run gphoto-auth.py there "
+        "and set GPHOTO_REFRESH_TOKEN)")
+
+
 async def photos_picker_create() -> dict[str, Any]:
     """Create a Picker session → {session_id, picker_uri, expire_time}.
     501 from the service → not configured (run gphoto-auth.py)."""
@@ -281,6 +293,8 @@ async def photos_picker_create() -> dict[str, Any]:
             return _post(f"{DOC_ARCHIVE_URL}/v1/photos/picker", {},
                          headers=_api_headers())
         except urllib.error.HTTPError as exc:
+            if exc.code == 501:
+                raise _photos_unconfigured() from exc
             raise RuntimeError(
                 f"photos picker failed: HTTP {exc.code} "
                 f"{exc.read().decode(errors='replace')[:200]}") from exc
@@ -295,6 +309,13 @@ async def photos_picker_poll(session_id: str) -> dict[str, Any]:
                 f"{DOC_ARCHIVE_URL}/v1/photos/picker/{session_id}",
                 headers=_api_headers()))
         except urllib.error.HTTPError as exc:
+            if exc.code == 501:
+                raise _photos_unconfigured() from exc
+            if exc.code == 404:
+                raise RuntimeError(
+                    f"unknown or expired photos picker session "
+                    f"'{session_id}' — start a new picker") from exc
             raise RuntimeError(
-                f"photos poll failed: HTTP {exc.code}") from exc
+                f"photos poll failed: HTTP {exc.code} "
+                f"{exc.read().decode(errors='replace')[:200]}") from exc
     return await asyncio.to_thread(_run)

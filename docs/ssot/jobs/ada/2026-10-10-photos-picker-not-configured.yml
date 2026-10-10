@@ -1,0 +1,86 @@
+# SSOT Job: photos picker honest not-configured
+# Card: chat-send-photos-picker (chaba kanban). Dispatch 20261010-111758.
+
+title: Photos picker honest not-configured — chat_send photo= says so, not "HTTP 501"
+subtitle: The service's documented 501 contract now reaches the model as a named, narratable failure
+
+planning:
+  goal: |
+    Journal evidence: chat_send photo='pick' kept surfacing the
+    doc-archive service's 501 verbatim ("photos picker failed: HTTP
+    501 ...") — opaque to the model and to the user. The card offered
+    two paths: configure Google Photos auth for real (run
+    gphoto-auth.py, set GPHOTO_REFRESH_TOKEN on the doc-archive
+    service), or make the failure honest. Auth needs an interactive
+    OAuth consent flow plus an env write on the idc03 doc-archive
+    service — not doable from an unattended worktree — so this job is
+    the honest-degradation path.
+  decisions: |
+    - Translation lives in backend/doc_archive_client.py, at the layer
+      that sees the status code — photos_picker_create AND
+      photos_picker_poll both map HTTP 501 to a new
+      PhotosNotConfiguredError(RuntimeError): "photo sending is not
+      configured — Google Photos auth is missing on the doc-archive
+      service (run gphoto-auth.py there and set GPHOTO_REFRESH_TOKEN)".
+      Every caller (chat_send photo=pick|picked, the photos_pick /
+      photos_picked forward aliases) degrades identically for free —
+      the runner boundary turns it into {ok: false, error,
+      error_type: 'PhotosNotConfiguredError'}.
+    - The named class also lands verbatim as the storm-breaker error
+      class — repeated photo= attempts while unconfigured trip the
+      per-session circuit after TOOL_BREAKER_TRIP hits instead of
+      retry-storming.
+    - photos_picker_poll 404 → "unknown or expired photos picker
+      session '<id>' — start a new picker" (same spirit: no opaque
+      code); other codes keep the generic message, now with body.
+    - tool_guide.yml chat_send entry gained the narration contract: a
+      'not configured' photo= result means server-side auth is missing
+      — tell the user it isn't set up yet (needs the operator), don't
+      retry. The hint auto-attaches to the failed result.
+    - Configuring auth for real remains an operator step: run
+      gphoto-auth.py where the doc-archive service runs (idc03 stack),
+      set GPHOTO_REFRESH_TOKEN in its env, restart the service. No
+      ada-pi change needed once the token exists — 501 simply stops.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-10"
+  steps:
+    - id: 1
+      label: "501 -> PhotosNotConfiguredError"
+      status: done
+      notes: "backend/doc_archive_client.py — PhotosNotConfiguredError +
+        _photos_unconfigured(); create and poll translate 501; poll 404
+        gets an honest expired-session message; poll's generic branch
+        now includes the response body like create's."
+    - id: 2
+      label: "narration contract"
+      status: done
+      notes: "backend/tool_guide.yml chat_send — photo= 'not configured'
+        means server-side auth missing; say it isn't set up yet, don't
+        retry."
+    - id: 3
+      label: "tests"
+      status: done
+      notes: "tests/test_doc_archive_tool.py PhotosPickerErrorTest —
+        501 -> PhotosNotConfiguredError on create+poll, 404 -> expired
+        session, other codes stay generic. tests/test_tool_runner.py —
+        chat_send photo='pick'/'picked' return {ok: false,
+        error_type: 'PhotosNotConfiguredError', error contains
+        'not configured'} and queue no send."
+
+invoke:
+  commands:
+    - "python3 -m unittest tests.test_doc_archive_tool tests.test_tool_runner"
+
+verification:
+  - "tests.test_doc_archive_tool: 15 passed (4 new PhotosPickerErrorTest)"
+  - "tests.test_tool_runner: 256 passed (1 new
+    test_chat_send_photo_unconfigured_degrades_honestly; run with
+    ADA_INSTANCE_ID=test — conftest.py supplies it under pytest)"
+  - "breaker behavior confirmed in test output: two photo= failures trip
+    'storm breaker OPEN tool=chat_send ... PhotosNotConfiguredError'"
+  - "scripts/tool-lint.py: 3 violations, all PRE-EXISTING on this base
+    (voice_fx descsize + coverage, yt_cached_list impl) — verified
+    identical with the change stashed; untouched by this job"

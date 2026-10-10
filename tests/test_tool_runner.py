@@ -1756,6 +1756,29 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(out["ok"])
         self.assertEqual(out["error_type"], "ValueError")
 
+    async def test_chat_send_photo_unconfigured_degrades_honestly(self):
+        # The doc-archive service 501s when GPHOTO_REFRESH_TOKEN is
+        # missing — the model must see 'not configured', not an opaque
+        # HTTP code, and nothing is queued to the channel.
+        from backend import doc_archive_client
+        err = doc_archive_client.PhotosNotConfiguredError(
+            "photo sending is not configured")
+        with patch("backend.tool_runner.doc_archive_client"
+                   ".photos_picker_create",
+                   new=AsyncMock(side_effect=err)):
+            out = await self.runner.execute(
+                "chat_send", {"photo": "pick", "channel": "line"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "PhotosNotConfiguredError")
+        self.assertIn("not configured", out["error"])
+        with patch("backend.tool_runner.doc_archive_client"
+                   ".photos_picker_poll",
+                   new=AsyncMock(side_effect=err)):
+            out = await self.runner.execute(
+                "chat_send", {"photo": "picked", "session_id": "s1"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "PhotosNotConfiguredError")
+
 
 class YtMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     """tools-merge-yt (4 -> 1): the four absorbed names stay callable via
