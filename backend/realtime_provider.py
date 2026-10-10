@@ -963,6 +963,32 @@ def _looks_like_noise(text: str) -> bool:
     return len(words) <= 2 and all(w in _NOISE_WORDS for w in words)
 
 
+def _count_scripts(text: str) -> tuple[int, int]:
+    """(thai_letters, latin_letters) in `text` — script census for the
+    language-drift guard."""
+    thai = latin = 0
+    for ch in text or "":
+        if "ก" <= ch <= "๙":
+            thai += 1
+        elif "a" <= ch.lower() <= "z":
+            latin += 1
+    return thai, latin
+
+
+# Language-drift guard (card ada-output-hygiene-tags — session
+# e9837ae922 flipped to English 3x mid-Thai-conversation, Tony flagged
+# "ทำไมเปลี่ยนภาษา"). Drift = a Thai-locked user but a Latin-dominant
+# reply. The 30-letter floor keeps Thai sentences peppered with English
+# terms ("kanban", "Home Assistant") from tripping it — drift means a
+# whole English clause, not a lone term.
+_DRIFT_LATIN_MIN = 30
+
+
+def _assistant_drifted_english(text: str) -> bool:
+    thai, latin = _count_scripts(text)
+    return latin >= _DRIFT_LATIN_MIN and latin > thai
+
+
 def _now_context() -> str:
     tz = ZoneInfo(os.environ.get("ADA_TIMEZONE", "Asia/Bangkok"))
     now = datetime.now(tz)
@@ -992,7 +1018,10 @@ Conversation discipline:
   gets a Thai answer, English gets English. If the user's latest turn is
   in a third language (Chinese, Japanese, …), do NOT switch — keep
   answering in the session language (the last TH/EN used, else Thai) and
-  acknowledge briefly if needed. Reconnect
+  acknowledge briefly if needed. Once a reply starts in a language it
+  stays in it to the end of the turn — never flip mid-sentence or
+  mid-turn; a lone English name or technical term inside a Thai sentence
+  is fine, a whole English clause is a slip. Reconnect
   greetings and system-note replies use the conversation's dominant
   language (Thai unless the speaker has been speaking English). Memory
   hits, tool results, or (system) notes in English do NOT change your
@@ -1000,7 +1029,7 @@ Conversation discipline:
 - Always answer the user's most recent question before ending a turn — never drop it or pivot to a different topic unprompted.
 - POLITENESS PARTICLES: pick ONE — ค่ะ (default persona) or ครับ — and use it consistently within a turn and across the session; never mix both in one reply.
 - NO ROUTINE CLOSER: do not end turns with "มีอะไรให้ช่วยไหมคะ" / "anything else?" — it's noise. Only ask a follow-up when the answer genuinely needs more information from the user.
-- SPEECH IS PLAIN TEXT: you speak, you do not write — never voice markup: no HTML entities (&nbsp;, &amp;), no markdown syntax (brackets, asterisks, link targets), no URLs. When quoting a page, report, or memory entry that contains markup, read only the words — "[flood report](url)" is spoken as "flood report".
+- SPEECH IS PLAIN TEXT: you speak, you do not write — never voice markup: no HTML entities (&nbsp;, &amp;), no markdown syntax (brackets, asterisks, link targets), no URLs. Parenthesized internal notes are not speech either — "(ha_safety: caution)", "(kanban list review)", tool names, safety levels, and stage directions stay inside your head, never in your mouth. When quoting a page, report, or memory entry that contains markup, read only the words — "[flood report](url)" is spoken as "flood report".
 - BE BRIEF: keep spoken replies to one short sentence — a few words when the
   answer is simple. Never narrate your own mechanics ("let me check",
   "the system says", "please wait while I…"), tool names, or
@@ -1328,6 +1357,14 @@ class GeminiLiveProvider(RealtimeProvider):
         # turn falls through to the synthesized tool-result fallback
         # instead of looping. Cleared when a turn lands a real answer.
         self._dead_retried = False
+        # Language-drift guard (card ada-output-hygiene-tags): the last
+        # clearly-dominant user script — True once a Thai turn lands, back
+        # to False on a clearly-English one; filler ("ok", "mhm") doesn't
+        # flip it. Drift injects a silent language-lock context note —
+        # _lang_locks_sent caps it per session so a stubborn model can't
+        # grow the context with repeated locks.
+        self._last_user_thai = False
+        self._lang_locks_sent = 0
         # Context budget (card ada-context-budget — session d6cbf6e6e7
         # hit ~78k input tokens/turn, 1.5M cumulative in 12min and the
         # model degenerated into emitting role tags). When a single turn's
@@ -1490,9 +1527,10 @@ class GeminiLiveProvider(RealtimeProvider):
         )
         return text[:m.start()]
 
-    # Chars that only appear when markup leaked — a sanitize diff without
-    # any of these is just whitespace normalization, not an artifact.
-    _ARTIFACT_HINT_RE = re.compile(r"[&\[\]`*<>]")
+    # Chars that only appear when markup/annotation leaked — a sanitize
+    # diff without any of these is just whitespace normalization, not an
+    # artifact. '(' counts: "(ha_safety: caution)" internal-tag strips.
+    _ARTIFACT_HINT_RE = re.compile(r"[&\[\]`*(<>]")
 
     def _strip_speech_artifacts(self, text: str) -> str:
         """Scrub markup out of an output-transcription delta.
@@ -5532,6 +5570,15 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "barge_noise", {"text": transcript})
                         else:
                             self.conversation.add_user(transcript)
+                            # Language lock (card ada-output-hygiene-tags):
+                            # only a clearly-dominant script flips the
+                            # lock — a stray "ok" or loanword doesn't
+                            # re-key the session language.
+                            _uth, _ula = _count_scripts(transcript)
+                            if _uth >= 3 and _uth > _ula:
+                                self._last_user_thai = True
+                            elif _ula >= 8 and _ula > 2 * _uth:
+                                self._last_user_thai = False
                             yield ProviderEvent("user_transcript",
                                                 {"text": transcript})
                     barge_pending = False
@@ -5663,8 +5710,13 @@ class GeminiLiveProvider(RealtimeProvider):
                         # Keep results across a mid-task boundary so a dead
                         # FINAL segment can still speak them as the fallback.
                         turn_tool_results = []
+                    _lang_drift = ""
                     if assistant_turn_text.strip():
                         self.conversation.add_assistant(assistant_turn_text)
+                        if (self._last_user_thai
+                                and _assistant_drifted_english(
+                                    assistant_turn_text)):
+                            _lang_drift = assistant_turn_text.strip()[:160]
                         assistant_turn_text = ""
                     if self._response_active:
                         elapsed = time.monotonic() - response_started_at if response_started_at else 0.0
@@ -5689,6 +5741,36 @@ class GeminiLiveProvider(RealtimeProvider):
                         # boundary — the final segment still needs it as
                         # dead-turn evidence.
                         self._turn_open = False
+                    # Language drift (card ada-output-hygiene-tags —
+                    # session e9837ae922 flipped to English 3x mid-Thai):
+                    # flag it for the audit, then re-lock silently — a
+                    # turn_complete=False note lands in context without
+                    # prompting a reply. Capped per session (context
+                    # budget): two locks in, a drifting model needs a
+                    # session rotate, not more notes.
+                    if _lang_drift:
+                        logger.warning(
+                            "session=%s language drift — English reply in "
+                            "a Thai-locked session: %r",
+                            self.session_id, _lang_drift)
+                        self._emit_ops_event(
+                            "language_drift",
+                            "assistant replied in English while the user "
+                            f"was speaking Thai: {_lang_drift!r}")
+                        if self._lang_locks_sent < 2:
+                            self._lang_locks_sent += 1
+                            try:
+                                await self._send_context_note(
+                                    "(system) Language lock — the speaker "
+                                    "is using Thai. Keep every reply in "
+                                    "Thai end to end: an English name or "
+                                    "technical term inside a Thai sentence "
+                                    "is fine, a whole English clause is a "
+                                    "slip.")
+                            except Exception:
+                                logger.debug(
+                                    "language-lock note send failed",
+                                    exc_info=True)
                     # A notification queued mid-turn — deliver it now that
                     # the response finished, as its own turn.
                     if self._pending_notifications:
