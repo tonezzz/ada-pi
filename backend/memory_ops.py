@@ -19,6 +19,7 @@ from typing import Any
 
 from backend.mddb_client import MddbClient
 from backend import write_outbox
+from backend import memory_write_guard
 from backend.memory_banks import (
     MemoryBank,
     MemoryBankRegistry,
@@ -851,6 +852,15 @@ async def remember(
         raise ValueError(
             f"kind {kind!r} not allowed in bank '{b.name}' (allowed: {', '.join(b.kinds)})"
         )
+    # Size caps (card ada-memory-write-caps): text is the FINAL stored
+    # body in every path below — create, correct-in-place, and supersede
+    # all replace content_md wholesale — so len(text) is the real size.
+    refusal = memory_write_guard.check_write(
+        bank=b.name, text=text,
+        fields={"key": key, "subject": subject, "attribute": attribute,
+                "supersedes": supersedes})
+    if refusal is not None:
+        return refusal
     today = datetime.now(timezone.utc).date().isoformat()
     scope = "shared" if b.scope == "shared" else instance
     applies = [applies_to] if isinstance(applies_to, str) else list(applies_to or [])
@@ -884,6 +894,8 @@ async def remember(
             b.mddb_collection, str(supersedes), meta=old_meta,
             durable=True, tool="ada_remember", session_id=session_id)
         _must(res2, f"supersede-mark {b.mddb_collection}/{supersedes}")
+        await memory_write_guard.warn_if_bank_large(
+            mddb, b.mddb_collection, b.name)
         return _queued_note({
             "verb": "supersede",
             "bank": b.name,
@@ -952,6 +964,8 @@ async def remember(
             durable=True, tool="ada_remember", session_id=session_id)
         _must(res, f"add {b.mddb_collection}/{target_key}")
         out = {"verb": "create", "bank": b.name, "key": target_key}
+    await memory_write_guard.warn_if_bank_large(
+        mddb, b.mddb_collection, b.name)
     out = _queued_note(out, res)
     if rerouted_from:
         out["rerouted_from"] = rerouted_from

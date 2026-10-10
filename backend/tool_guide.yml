@@ -267,6 +267,8 @@ ada_remember: >-
   a matching key or subject+attribute corrects in place, otherwise
   creates; supersedes=<key> replaces a misattributed fact;
   confirmed-policy banks need confirmed=true after a spoken yes.
+  Hard caps: text 2,000 chars, key/subject 160 — over-cap refuses with a
+  memory_cap error telling you to shorten or split into N entries.
   kind='vocab' logs a speaker's misused term into their glossary (text
   'term → correction', optional note=) — append-only, no confirmation.
   kind='guest' saves a public guest memory (private=true for a promoted
