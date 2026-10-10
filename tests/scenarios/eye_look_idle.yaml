@@ -1,0 +1,13 @@
+name: eye-look-idle
+# ada-look-tool: no eye/latest doc at all — ada_look must answer honest
+# empty ("no eye page is publishing"), never an error and never
+# invented objects.
+steps:
+  - tool: ada_look
+    expect:
+      no_error: true
+      output_contains:
+        - '"ok": true'
+        - '"live": false'
+        - '"count": 0'
+        - 'No eye page is publishing'

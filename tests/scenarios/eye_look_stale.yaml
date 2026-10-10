@@ -1,0 +1,26 @@
+name: eye-look-stale
+# ada-look-tool: the eye doc's last publish is older than 3x its pub_s
+# interval — the page went quiet; ada_look must flag stale:true with
+# the age instead of presenting old detections as 'right now'.
+# __NOW_M_600__ = epoch 10 minutes ago (see scenario_engine.py).
+seed:
+  - collection: ada-ha-scenario-reports
+    key: eye/latest
+    text: |
+      # eye page — last publish before it closed
+      ```json
+      {"ts": __NOW_M_600__, "pub_s": 5, "src": "cam:c100",
+       "model": "yolov8n-int8",
+       "detections": [{"cls": "person", "score": 0.9, "box": [0, 0, 1, 1]}]}
+      ```
+steps:
+  - tool: ada_look
+    expect:
+      no_error: true
+      output_contains:
+        - '"ok": true'
+        - '"stale": true'
+        - '"age_s"'
+        - '"person": 1'
+        - 'stopped publishing'
+        - 'minutes ago'

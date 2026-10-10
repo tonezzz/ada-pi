@@ -1,0 +1,32 @@
+name: eye-look-live
+# ada-look-tool: an /apps/eye/ page is publishing — the eye/latest doc
+# carries a fresh ```json payload with detections, so ada_look must
+# answer with the real per-class counts, flagged live and not stale.
+# __NOW__ inlines the current epoch (see scenario_engine.py).
+seed:
+  - collection: ada-ha-scenario-reports
+    key: eye/latest
+    text: |
+      # eye page — live detections
+      ```json
+      {"ts": __NOW__, "pub_s": 5, "src": "cam:c100", "model": "yolov8n-int8",
+       "ua": "Mozilla/5.0 (iPhone)",
+       "detections": [
+         {"cls": "person", "score": 0.91, "box": [10, 20, 100, 200]},
+         {"cls": "person", "score": 0.84, "box": [300, 40, 120, 220]},
+         {"cls": "dog", "score": 0.77, "box": [50, 300, 80, 60]}
+       ]}
+      ```
+steps:
+  - tool: ada_look
+    expect:
+      no_error: true
+      output_contains:
+        - '"ok": true'
+        - '"live": true'
+        - '"stale": false'
+        - '"person": 2'
+        - '"dog": 1'
+        - '"count": 3'
+        - '"cam:c100"'
+        - 'people'

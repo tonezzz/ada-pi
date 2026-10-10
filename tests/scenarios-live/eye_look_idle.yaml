@@ -1,0 +1,24 @@
+# ada-look-tool — live acceptance, idle side: with NO eye/latest doc
+# (no /apps/eye/ page publishing), "what do you see" must come back
+# honest-empty — she says nothing is publishing rather than guessing or
+# reaching for a camera snapshot.
+name: eye-look-idle
+tier: smoke
+turns:
+  - user: "Ada, what do you see on the eye page right now?"
+    expect:
+      calls_any: ["ada_look"]
+      response_nonempty: true
+      response_contains_any:
+        - "not publishing"
+        - "isn't publishing"
+        - "no eye page"
+        - "nothing"
+        - "can't see"
+        - "don't see"
+        - "no feed"
+        - "ไม่"
+        - "ไม่เห็น"
+        - "ไม่มี"
+      timeout_s: 60
+      settle_s: 8

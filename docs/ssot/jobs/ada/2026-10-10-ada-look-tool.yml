@@ -1,0 +1,98 @@
+# SSOT Job: ada_look tools.d tool — "what do you see" from the eye page
+# Card: ada-look-tool (kanban). Dispatch 20261010-081352.
+# Parent: nest-edge-vision phase 4 (job doc lives in chaba —
+#   docs/ssot/jobs/eye/2026-10-07-nest-edge-vision.yml handoff_ada_look;
+#   not in this repo, implemented from the card spec).
+
+title: ada_look — read the /apps/eye/ page's latest detections
+subtitle: Ada answers "what do you see" from MDDB instead of guessing —
+  honest-empty when no eye page is publishing
+
+planning:
+  goal: |
+    Drop-in tool backend/tools.d/eye.py (tool name ada_look) that reads
+    the MDDB doc ada-ha-scenario-reports/eye:latest — republished every
+    ?pub=N seconds by an /apps/eye/ browser tab running in-page object
+    detection — and answers with per-class counts, source, and a
+    speakable freshness-qualified summary.
+  context: |
+    Write side (done in chaba): /apps/eye/?pub=N rewrites the doc every
+    N s with a ```json block {ts, pub_s, src, model,
+    detections[{cls,score,box}], ua}. Deploy order matters — the doc
+    only exists while a page is publishing AND the eye-mddb edge route
+    is live (chaba Caddyfile deploy pending), so honest-empty is the
+    dominant real-world answer until then.
+  scope: |
+    In scope:
+      - backend/tools.d/eye.py + manifest entry (policy read,
+        secondary_allowed — parity with the ungated camera-describe
+        path; "what do you see" is a household question)
+      - tool_guide.yml ada_look entry
+      - ssot.tool-surface.yml count_cap 110 -> 111 (8th tools.d tool)
+      - tests/test_eye_tool.py (13 tests, faked mddb)
+      - tests/scenarios/eye_look_{live,idle,stale}.yaml — deterministic
+        coverage via the offline engine (FakeMddb seed)
+      - tests/scenarios-live/eye_look_{live,idle}.yaml — live
+        acceptance pair (lint coverage + post-deploy gate)
+    Out of scope:
+      - any action on detections (confirm-gate model preserved —
+        actuating on what she sees is another tool's call)
+      - the chaba /apps/eye/ page + eye-mddb edge route (already done /
+        pending deploy on that side)
+  contract:
+    - 'doc absent or no ```json block -> ok:true live:false
+      "no eye page is publishing" — never an error'
+    - 'age_s > 3*pub_s -> stale:true with age_s, summary says "last
+      update N ago" not "right now"'
+    - 'else -> per-class counts + speakable summary ("I see 2 people
+      and a dog")'
+    - 'malformed json / unreachable store -> honest ok:false'
+    - 'ts missing -> counts returned with freshness:unknown'
+    - 'defensive parsing: ts epoch or ISO-8601; pub_s or pub; cls or
+      label; bare-JSON doc tolerated'
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-10"
+  steps:
+    - id: 1
+      label: "eye.py drop-in module"
+      status: done
+      notes: "Reads runner.mddb.get_document('ada-ha-scenario-reports',
+        'eye/latest'). All five contract branches implemented; result
+        stays voice-sized (ok/live/stale/age_s/pub_s/src/model/count/
+        objects/summary)."
+    - id: 2
+      label: "manifest + guide + census"
+      status: done
+      notes: "manifest key ada_look -> module eye, policy read,
+        secondary_allowed true, timeout_s 10. count_cap bumped in the
+        same change per the ratchet rule."
+    - id: 3
+      label: "tests + lint"
+      status: done
+      notes: "13 unit tests + 3 offline scenarios all pass (FakeMddb).
+        tool-lint: same 3 pre-existing FAILs as baseline (voice_fx
+        descsize+coverage, yt_cached_list impl) — verified identical on
+        the base checkout; ada_look itself clean."
+
+invoke:
+  commands:
+    - "python3 -m unittest tests.test_eye_tool"
+    - "python3 -m unittest tests.test_scenarios"
+    - "python3 scripts/tool-lint.py"
+    - "python3 scripts/scenario-live.py tests/scenarios-live/eye_look_live.yaml --url ws://<host>:8003/ws --api-key $ADA_API_KEY -v   # needs a publishing /apps/eye/?pub=N page"
+    - "python3 scripts/scenario-live.py tests/scenarios-live/eye_look_idle.yaml --url ws://<host>:8003/ws --api-key $ADA_API_KEY -v   # needs NO eye doc"
+
+verification:
+  - "unittest + offline scenarios: 16 pass — live/stale/idle/malformed/
+    missing-ts/missing-store all covered"
+  - "tool-lint: ada_look declared, scenario-covered, desc within caps;
+    count 111 <= cap 111"
+  - "live scenarios cannot run yet — eye/latest requires the chaba
+    /apps/eye/ + eye-mddb route deploy; they are the phase-4
+    acceptance gate, not routine-suite entries"
+  - "the ready-to-apply snippet in chaba's job doc was not reachable
+    from this worktree — implemented from the card spec; payload field
+    names (pub_s/pub, cls/label, epoch/ISO ts) all tolerated"
