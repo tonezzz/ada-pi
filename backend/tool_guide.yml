@@ -83,6 +83,10 @@ tv_action: >-
   text=, press text='<key>', back, shot text='<name>', viewport
   text='WxH'. A streamed desktop is one-way video — for interaction nav
   the page itself. Never use to answer questions — web_search instead.
+  cmd=type: text= must be the exact text the user just dictated — empty
+  or placeholder-looking payloads ('your-*', '<...>', '{...}', 'xxx',
+  masked dots/stars) are refused; ask the user for the literal text, or
+  reach the field with click/press.
   Personal screens are owner-locked; the TV is shared. After nav the
   result carries tv_input (the TV's foreground app via HA) — input_warn
   means the page loaded but the TV is on another input and it is NOT

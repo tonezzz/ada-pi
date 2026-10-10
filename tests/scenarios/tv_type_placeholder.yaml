@@ -1,0 +1,52 @@
+name: tv-type-placeholder
+instance: tony
+# ada-tv-action-hallucinated-input (2026-10-09): journal ada-ha-tony
+# 16:21:50-16:22:03 ICT — Ada ran tv_action cmd=type with
+# text='your-username' and 'your-password' into a login form on the TV:
+# model-invented placeholder scaffolds, not user dictation. cmd=type may
+# only carry the exact text the user just said; empty or
+# placeholder-looking payloads are refused before the call leaves.
+cast_screens:
+  screens: {}
+ha_tv_action:
+  {ok: true, typed: "ok"}
+vcast:
+  # execute() runs the capture reminder on every result — keep it local.
+  "/capture": {captures: {}}
+steps:
+  # Absent text — the incident's second half had no real payload either.
+  - tool: tv_action
+    args: {cmd: type}
+    expect:
+      error_contains: "cmd=type refused"
+      output_contains: ["ok\": false"]
+  # The exact placeholder scaffolds from the incident.
+  - tool: tv_action
+    args: {cmd: type, text: "your-username"}
+    expect:
+      error_contains: "cmd=type refused"
+      output_contains: ["placeholder"]
+  - tool: tv_action
+    args: {cmd: type, text: "your-password"}
+    expect:
+      error_contains: "cmd=type refused"
+  - tool: tv_action
+    args: {cmd: type, text: "<username>"}
+    expect:
+      error_contains: "cmd=type refused"
+  - tool: tv_action
+    args: {cmd: type, text: "xxx"}
+    expect:
+      error_contains: "cmd=type refused"
+  # Payload packed into cmd ('type your-username') is refused too.
+  - tool: tv_action
+    args: {cmd: "type your-email"}
+    expect:
+      error_contains: "cmd=type refused"
+  # Real dictated text still goes through — the refusal message, not the
+  # user's words, is what gets blocked.
+  - tool: tv_action
+    args: {cmd: type, text: "somchai@gmail.com"}
+    expect:
+      no_error: true
+      output_contains: ["typed"]

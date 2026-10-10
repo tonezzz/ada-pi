@@ -153,6 +153,7 @@ policy:
     - cast_during_ha_restart
     - vcast_flap_recovery
     - gev_to_tv_live         # tv_action nav gev -> live workspace stream + verify
+    - tv_whats_playing_grounded  # may tv_action shot/status-read the TV
     # dub program gate (card yt-voice-dub-scenarios, 2026-10-07) — the
     # three dub_* metrics scenarios are http_check-only (no tool calls);
     # the suite's two live-path entries actuate real surfaces
@@ -369,6 +370,9 @@ suites:
     - cast_during_ha_restart
     - vcast_flap_recovery
     - gev_to_tv_live
+    # ada-tv-action-hallucinated-input (2026-10-09) — "what's playing"
+    # must be grounded in a same-turn status read, never an invented title
+    - tv_whats_playing_grounded
 
   # GEV regression gate (card gev-scenarios, 2026-10-06) — every gev_*
   # scenario: the bridge/served-code probes (ws round-trip, tools.json

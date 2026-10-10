@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 from google.genai import types
 
 from backend.realtime_provider import (
-    GeminiLiveProvider, _claim_backing_call, _phantom_claim)
+    GeminiLiveProvider, _claim_backing_call, _media_grounding_problems,
+    _phantom_claim)
 
 
 class InterruptedSession:
@@ -510,6 +511,71 @@ class PhantomWriteClaimGateTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_write_still_fires(self):
         fired = await self._run("file", {"ok": False, "error": "nope"})
         self.assertEqual(len(fired), 1)
+
+class MediaClaimGuardTests(unittest.TestCase):
+    """ada-tv-action-hallucinated-input (2026-10-09, transcript
+    cfed319d22/73d7713ce8): Ada narrated 'Dancing In The Street' playing
+    while the turn's only evidence was cast_verify=paused — the title
+    was in no tool result. Playing-state and title claims must cite a
+    same-turn tool result."""
+
+    def test_incident_replay_title_over_paused_verify(self):
+        problems = _media_grounding_problems(
+            "Dancing In The Street is playing on the TV.",
+            [("tv_action", {"ok": False, "cast_verify": {
+                "ok": False, "state": "paused",
+                "entity": "media_player.tony_tv_cast"}})])
+        self.assertTrue(any("Dancing In The Street" in p
+                            for p in problems), problems)
+        self.assertTrue(any("playing" in p for p in problems), problems)
+
+    def test_thai_title_claim_flagged(self):
+        problems = _media_grounding_problems(
+            "กำลังเล่นเพลง Dancing In The Street อยู่ค่ะ",
+            [("tv_action", {"cast_verify": {"state": "paused"}})])
+        self.assertTrue(any("Dancing In The Street" in p
+                            for p in problems), problems)
+
+    def test_grounded_answer_is_clean(self):
+        # A 'what is playing' answer that cites an actual yt/status
+        # result — the contract the card requires.
+        results = [("yt", {"ok": True, "state": "playing",
+                           "title": "Dancing In The Street"})]
+        self.assertEqual(_media_grounding_problems(
+            "Dancing In The Street is playing.", results), [])
+        self.assertEqual(_media_grounding_problems(
+            "It's still playing — 'Blue Monday'.",
+            [("yt", {"ok": True, "state": "playing",
+                     "title": "Blue Monday"})]), [])
+
+    def test_zero_tool_calls_flags_playing_claim(self):
+        problems = _media_grounding_problems("it's playing now.", [])
+        self.assertIn("asserted 'playing'", problems)
+
+    def test_error_text_is_not_evidence(self):
+        # Our own admonition strings must not launder a claim — a
+        # failed result saying "do not claim it is playing" does not
+        # ground a playing claim.
+        problems = _media_grounding_problems(
+            "it's playing.",
+            [("tv_action", {"ok": False, "error":
+                            "do not claim it is playing"})])
+        self.assertIn("asserted 'playing'", problems)
+
+    def test_negated_and_non_media_text_clean(self):
+        self.assertEqual(_media_grounding_problems(
+            "it's not playing anything.", []), [])
+        self.assertEqual(_media_grounding_problems(
+            "the page loaded on the TV.", []), [])
+        # No play word -> quoted span alone is not a media claim.
+        self.assertEqual(_media_grounding_problems(
+            "I saved the page 'Flood Report'.", []), [])
+
+    def test_filler_edges_not_titles(self):
+        # "now playing on the TV" extracts no bogus title — but the
+        # playing claim itself still needs evidence.
+        problems = _media_grounding_problems("it's now playing on the TV.", [])
+        self.assertEqual(problems, ["asserted 'playing'"])
 
 
 if __name__ == "__main__":

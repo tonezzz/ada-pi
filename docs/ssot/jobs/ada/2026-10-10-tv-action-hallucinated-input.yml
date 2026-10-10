@@ -1,0 +1,113 @@
+# SSOT Job: tv_action cmd=type placeholder refusal + media-title narration guard
+# Card: ada-tv-action-hallucinated-input. Dispatch 20261010-080541.
+
+title: >
+  tv_action type refuses placeholder payloads; media title/playing-state
+  claims require same-turn tool-result evidence
+subtitle: >
+  2026-10-09 incident (journal ada-ha-tony 16:21:50–16:22:03 ICT,
+  transcripts 2026-10-09-cfed319d22 + 73d7713ce8 ~10:00:54Z): Ada called
+  tv_action cmd=type with text='your-username' and 'your-password' —
+  model-invented placeholder scaffolds typed verbatim into a TV login
+  form — then narrated 'Dancing In The Street' as playing while the
+  same turn's only tool evidence was cast_verify=paused.
+
+planning:
+  goal: |
+    Two honesty guards: (1) cmd=type never carries text the user did not
+    just dictate — absent or placeholder-looking payloads are refused
+    before the call leaves the runner; (2) a specific media title or
+    playing/paused claim is narrated only when a tool result from the
+    same turn contains it.
+  decisions: |
+    - Refusal lives in HaMixin.tv_action via
+      ScreensMixin._tv_type_text_problem (raises ValueError -> the
+      method-error contract converts it to {ok:false,error} plus the
+      tool_guide usage hint). Effective text is text= or a payload
+      packed into cmd ('type your-username'). Placeholder classes:
+      'your-*'/'your_*', '<...>'/'{...}' bracket scaffolds, all-x
+      strings, and mask/ellipsis payloads (*** / ••• / ...).
+    - Narration guard is a detector, not a block:
+      _media_grounding_problems() scans each completed assistant turn
+      for play-state assertions (playing/กำลังเล่น/เล่นอยู่/ฉายอยู่) and
+      named titles (quoted spans, 'now playing X', 'X is playing',
+      Thai เพลง/วิดีโอ/คลิป <latin title>), then requires each claim to
+      appear literally in the turn's tool-result blob. Instructive
+      result fields (error/usage/warn/note/hint/reminder) are scrubbed —
+      our own 'do not claim it is playing' admonitions are not
+      evidence. Violations emit the phantom_media_claim ops event —
+      same audit lane as phantom_write_claim.
+    - Prompt contract: a TITLE/PLAYING-STATE CLAIMS bullet in the voice
+      system prompt (next to DONE MEANS DONE) + the cmd=type contract in
+      the tv_action text= param description and tool_guide.yml.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-10"
+  steps:
+    - id: 1
+      label: "cmd=type placeholder refusal"
+      status: done
+      notes: "backend/tool_runner/screens.py _TV_TYPE_PLACEHOLDER_RES +
+        _tv_type_text_problem; ha.py tv_action checks cmd.split()[0] ==
+        'type' before the owner-ACL and dispatch."
+    - id: 2
+      label: "media narration guard"
+      status: done
+      notes: "backend/realtime_provider.py _MEDIA_PLAY_RE /
+        _MEDIA_TITLE_RES / _media_evidence_blob /
+        _media_grounding_problems; phantom_media_claim ops event emitted
+        at turn_complete alongside phantom_write_claim; system-prompt
+        bullet added."
+    - id: 3
+      label: "declarations + guide"
+      status: done
+      notes: "tv_action text= param description (realtime_provider.py)
+        and backend/tool_guide.yml tv_action entry both state the
+        dictated-text-only contract."
+    - id: 4
+      label: "tests + scenarios"
+      status: done
+      notes: "TvTypeGuardTests x6 in test_tool_runner.py;
+        MediaClaimGuardTests x7 in test_provider_events.py; offline
+        scenario tests/scenarios/tv_type_placeholder.yaml; live probe
+        tests/scenarios-live/tv_whats_playing_grounded.yaml (calls_any a
+        status/state read before answering); benchmark.yml registers it
+        in write_allowed_in + casting suite."
+
+invoke:
+  commands:
+    - "python -m pytest tests/test_tool_runner.py -k TvTypeGuard -q"
+    - "python -m pytest tests/test_provider_events.py -k MediaClaimGuard -q"
+    - "python -m pytest tests/test_scenarios.py -k tv_type_placeholder -q"
+    - "python3 scripts/scenario-live.py tests/scenarios-live/tv_whats_playing_grounded.yaml   # live, reads TV state"
+
+verification:
+  - "pytest TvTypeGuardTests — 6 tests: empty + 'your-*'/'<...>'/'{...}'/
+    'xxx'/mask payloads refused (ha_client.tv_action never awaited),
+    cmd-packed payload refused, real dictated text passes, execute()
+    returns ok:false + usage hint, other cmds unaffected"
+  - "pytest MediaClaimGuardTests — 7 tests: 'Dancing In The Street'
+    over cast_verify=paused flagged (EN+TH), grounded yt-status answer
+    clean, zero-tool playing claim flagged, error/admonition text not
+    evidence, negations and non-media turns clean, 'now playing on the
+    TV' yields no bogus title"
+  - "offline scenario tv_type_placeholder — refused placeholders and a
+    passing dictated-text replay"
+  - "live (operator): ask 'what is playing on the TV' — Ada must call
+    yt/status or a state read before answering; an invented title emits
+    a phantom_media_claim doc in ada-ha-events-<instance>"
+
+notes:
+  - "The guard is audit-level (ops event), not a block — spoken output
+    can't be unsaid. The prompt rule is the primary control; the event
+    feeds the hourly chaba ops digest so violations stay visible."
+  - "Placeholder detection is intentionally narrow (the card's three
+    classes + bracket/mask/ellipsis forms, <=40 chars) — aggressive
+    keyword matching would refuse legitimately dictated text."
+  - "cmd=press/click/nav are untouched; a nav target like a URL is
+    validated by the existing owner-ACL, not this guard."
+  - "Known lint debt unchanged: tool-lint reports 3 pre-existing
+    violations (voice_fx descsize/coverage, yt_cached_list impl) — none
+    introduced here."

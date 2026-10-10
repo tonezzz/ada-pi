@@ -346,6 +346,94 @@ def _claim_backing_call(name: str, args: dict[str, Any]) -> bool:
             args.get("target") or "").strip().lower() in ("tv", "screen")
     return False
 
+# Media narration guard (card ada-tv-action-hallucinated-input,
+# 2026-10-09): Ada answered "what's playing" with 'Dancing In The
+# Street' while the turn's only evidence was cast_verify=paused — the
+# title existed in no tool result. A named title or a playing claim is
+# honest only when that turn's tool results literally carry it.
+_MEDIA_PLAY_RE = re.compile(
+    r"(?i)\bplaying\b|กำลังเล่น|เล่นอยู่|กำลังฉาย|ฉายอยู่")
+_MEDIA_TITLE_RES = (
+    # 'Title' / "Title" quoted spans (only consulted when a play word is
+    # present — checked by the caller). The lookbehind keeps mid-word
+    # apostrophes ("It's") from opening a fake span.
+    re.compile(r"(?<![\w’'])[\"'‘’“”«»]([^\"'‘’“”«»\n]{2,60})[\"'‘’“”«»]"),
+    # "now playing <Title>"
+    re.compile(r"(?i)\bnow\s+playing[\s:–—-]*"
+               r"([A-Za-z0-9][A-Za-z0-9'’&.,\- ]{1,58})"),
+    # "<Title Case words> is/was (now|still) playing"
+    re.compile(r"\b([A-Z][\w'’&.,-]*(?:\s+[A-Za-z0-9'’&.,-]+){0,6})"
+               r"\s+(?:is|was)\s+(?:now\s+|still\s+|currently\s+)?playing\b"),
+    # Thai: เพลง/เพลิดเพลิน/วิดีโอ/คลิป followed by a latin-script title
+    # ("กำลังเล่นเพลง Dancing In The Street อยู่ค่ะ").
+    re.compile(r"(?:เพลง|เพลิดเพลิน|วิดีโอ|คลิป)\s*[\"'«»]?"
+               r"([A-Za-z0-9][A-Za-z0-9'’&.,\- ]{1,58}[A-Za-z0-9])"),
+)
+# Pronouns/generic words the Title-Case extractor can pick up — never
+# treated as named titles.
+_MEDIA_TITLE_STOP = frozenset({
+    "it", "this", "that", "the", "they", "he", "she", "we", "i", "you",
+    "something", "nothing", "anything", "everything", "ada", "tv",
+    "กำลัง", "เพลง",
+})
+# Filler words trimmed off capture edges — "now playing on the TV" must
+# not read 'on the TV' as a title.
+_MEDIA_TITLE_EDGE_RE = re.compile(
+    r"(?i)^(?:on|the|a|an|in|at|to|of|for|by|and|is|was|now|still|"
+    r"currently|right|your|my)\s+|\s+(?:on|the|a|an|in|at|to|of|for|"
+    r"by|and|is|was|now|still|currently|right|your|my)$")
+# Instructive result fields are our own admonitions ("do not claim it is
+# playing") — not evidence a title/state was reported.
+_MEDIA_EVIDENCE_SKIP_RE = re.compile(
+    r"(?i)error|warn|note|usage|reminder|hint|instruct")
+
+
+def _media_evidence_blob(results: list[tuple[str, Any]]) -> str:
+    """Lowercased JSON of the turn's tool results minus instructive
+    fields — the corpus a media claim must be found in."""
+    def scrub(v: Any) -> Any:
+        if isinstance(v, dict):
+            return {k: scrub(x) for k, x in v.items()
+                    if not _MEDIA_EVIDENCE_SKIP_RE.search(str(k))}
+        if isinstance(v, list):
+            return [scrub(x) for x in v]
+        return v
+    return json.dumps([scrub(r) for _, r in results],
+                      default=str).lower()
+
+
+def _media_grounding_problems(
+        text: str, results: list[tuple[str, Any]]) -> list[str]:
+    """Ungrounded media narration in one assistant turn: playing-state
+    assertions and named titles no tool result carries. Empty = grounded
+    or no media claim. Negated statements ("it's not playing") are not
+    claims."""
+    if not _MEDIA_PLAY_RE.search(text):
+        return []
+    blob = _media_evidence_blob(results)
+    problems: list[str] = []
+    for m in _MEDIA_PLAY_RE.finditer(text):
+        if _PHANTOM_NEGATION_RE.search(text[: m.start()][-48:]):
+            continue
+        if "playing" not in blob:
+            problems.append("asserted 'playing'")
+        break  # one verdict covers all play-state mentions in the turn
+    for raw in _MEDIA_TITLE_RES:
+        for match in raw.finditer(text):
+            title = match.group(1).strip(" .,!?'\"'’“”«»")
+            while True:
+                trimmed = _MEDIA_TITLE_EDGE_RE.sub("", title).strip(
+                    " .,!?'\"'’“”«»")
+                if trimmed == title:
+                    break
+                title = trimmed
+            low = title.lower()
+            if len(low) < 2 or low in _MEDIA_TITLE_STOP:
+                continue
+            if low not in blob:
+                problems.append(f"named title {title!r}")
+    return problems
+
 
 # Dead-turn detector (card ada-dead-turn-guard — session 56d2e4d167,
 # 2026-10-07): the model twice ended a turn having emitted only the
@@ -925,6 +1013,8 @@ Conversation discipline:
 - When asked to save "that plan/summary/answer", save only what you actually said this turn; if you have not said it yet, say it first, then save.
 - If a tool, service, or lookup fails or is unavailable, say so plainly and offer the nearest fallback — never describe an imagined state.
 - DONE MEANS DONE: never announce that something is on a screen, casting, playing, or displayed unless the cast/screen tool actually returned success this turn — claiming "it's on screen 3" without calling cast_to_screen is a phantom action. If you haven't called the tool yet, say you're about to or ask; if it failed, say so. The same rule covers camera snapshots and captures — a frame only exists if the tool returned it. Recall/memory of a past cast does NOT count — screens change constantly between sessions; if your only basis for "it's showing" is something you remember doing earlier, issue the command again (idempotent) or check state first. Board writes follow the same law: a kanban card exists only when kanban action='file' (or comment/move/ask) returned ok THIS turn — then you may say "on the board" with the card id. Narrating a filed/moved card from intent or memory is a phantom write: the board is the record, so if the tool didn't confirm it, it didn't happen — say the write didn't land and offer to retry.
+- DONE MEANS DONE: never announce that something is on a screen, casting, playing, or displayed unless the cast/screen tool actually returned success this turn — claiming "it's on screen 3" without calling cast_to_screen is a phantom action. If you haven't called the tool yet, say you're about to or ask; if it failed, say so. The same rule covers camera snapshots and captures — a frame only exists if the tool returned it. Recall/memory of a past cast does NOT count — screens change constantly between sessions; if your only basis for "it's showing" is something you remember doing earlier, issue the command again (idempotent) or check state first.
+- TITLE/PLAYING-STATE CLAIMS: never name a specific song, video, or channel title — and never claim playing vs paused — unless a tool result in THIS turn contains it (yt action='status', a media_player state read, a shot). A cast ack or cast_verify='paused' means it is NOT playing; say paused, not the title you expected. If no result reported a title, say you can't tell what's playing — or check first, then answer from the result.
 - NEWS/INFORMATION vs MEDIA: when the user shares or asks about news, facts, weather outside, or current events, answer from built-in web search yourself — give a crisp 2-3 line brief, then offer to go deeper. yt(action='cast')/vcast are ONLY for explicitly requested video/web playback on a screen — never cast information lookups instead of answering them.
 - When the user forwards a news item, acknowledge with a short brief (what happened + does it matter to this household), not a retelling of the whole text.
 - Request capture: when the user asks for work that cannot be done in this conversation — a build, a fix, a "remember to" or "for later" — file it on the board with kanban action='file' (title = the ask, note = one line of context) before the topic moves on, and — only once the tool returns ok — say so in one short phrase ("on the board, card <id>"). Complaints and wishes count as requests: "X is broken", "this button is too small", "I wish it did Y" are fix-requests — file them the same way WITHOUT asking permission first (the complaint is the request; asking "want me to file it?" adds a dead turn). Put the surface in the note (which page/card/app). A request that stays only in conversation is lost; do not over-file one-liners, questions, or things already on a card.
@@ -2882,7 +2972,7 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "text": {
                                 "type": "string",
-                                "description": "Command text/payload: nav target (URL, 'gev' for live God's Eye View, 'screenlive:workspace:N[:pad|crop]', 'tony-omen:workspace:N'), scroll direction, visible text to click, text to type, or shot/viewport args.",
+                                "description": "Command text/payload: nav target (URL, 'gev' for live God's Eye View, 'screenlive:workspace:N[:pad|crop]', 'tony-omen:workspace:N'), scroll direction, visible text to click, text to type (cmd=type takes ONLY the exact words the user just dictated — empty or placeholder text like 'your-*', '<...>', 'xxx' is refused), or shot/viewport args.",
                             },
                             "selector": {"type": "string", "description": "CSS selector for click."},
                             "role": {"type": "string", "description": "ARIA role for click (e.g. 'button')."},
@@ -5465,6 +5555,20 @@ class GeminiLiveProvider(RealtimeProvider):
                         self._emit_ops_event(
                             "phantom_write_claim",
                             f"assistant claimed a write with {_claim_basis}: "
+                            f"{assistant_turn_text.strip()[:160]!r}",
+                        )
+                    # Media narration guard (card
+                    # ada-tv-action-hallucinated-input, 2026-10-09): a
+                    # named title or playing claim must literally appear
+                    # in a tool result from THIS turn — 'Dancing In The
+                    # Street' was narrated over a cast_verify=paused.
+                    _media_flags = _media_grounding_problems(
+                        assistant_turn_text, turn_tool_results)
+                    if _media_flags:
+                        self._emit_ops_event(
+                            "phantom_media_claim",
+                            "media claim with no supporting tool result "
+                            f"this turn ({'; '.join(_media_flags)}): "
                             f"{assistant_turn_text.strip()[:160]!r}",
                         )
                     tool_calls_this_turn = 0

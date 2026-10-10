@@ -1,0 +1,79 @@
+name: chaba-systemwide-assessment
+# Collaboration scenario — Tony asks Ada and Devin to work together on a
+# thorough systemwide assessment of Chaba, producing a shared report page.
+#
+#   Devin's half (runs on tony-dell, outside this session): host audits,
+#   report-registry state, SSOT validation — facts are embedded in turn 3.
+#   Ada's half (this scenario): memory-bank knowledge, known issues and
+#   attention items, her assessment plan, and publishing the joint report
+#   as CMS page 'chaba-systemwide-assessment'.
+#
+# Run from any tailnet host:
+#   python3 scripts/scenario-live.py \
+#     tests/scenarios-live/chaba_systemwide_assessment.yaml \
+#     --url ws://100.74.146.0:8002/ws --api-key "$ADA_API_KEY"
+#
+# tier: full — publishes a real CMS page (upsert by slug, idempotent).
+# Assertions are soft: this run is for the collaboration, not regression.
+# A systemwide sweep legitimately touches home-state, devin_status, weather,
+# and logbook tools, so tool use is asserted with calls_any only.
+#
+# First run 2026-09-27: cms_publish_page -> MDDB /v1/add 404'd (transient;
+# collection existed), idc01 then rebooted mid-run. Page was completed by a
+# direct MDDB /v1/add with Ada's authored content; verified via
+# /api/cms/pages/chaba-systemwide-assessment/verify.
+tier: full
+
+turns:
+  - user: "Tony here. Devin and I are teaming up on a thorough systemwide assessment of the whole Chaba system today. Your half: search your memory banks for known issues, open attention items, and pending jobs across the system — hosts, the memory system, home assistant, security, scheduled jobs. Summarize the important ones."
+    expect:
+      timeout_s: 150
+      settle_s: 8
+      calls_any: [ada_memory_search, ada_session_recall, ada_ha_recall,
+                  devin_status, get_home_state, list_sensors, get_logbook]
+      response_nonempty: true
+
+  - user: "Now propose your half of the assessment plan — which areas we should check, in priority order, based on what you know."
+    expect:
+      timeout_s: 90
+      settle_s: 8
+      response_nonempty: true
+
+  - user: >-
+      Here is Devin's half, straight from the live host audits and report
+      registry on tony-dell: (1) Report registry is ATTENTION — 3 missing
+      nodes: audit-suite, memory-suite, audit-hosts/macbook; 6 stale: all
+      four host audits last ran 2026-09-25, overnight-assessment and
+      system-report are stale; 2 planned L2 renderers not built yet:
+      fleet and ada-memory-report; report-feed is remote-only.
+      (2) SSOT validation: 691 files, 0 errors, 1 warning.
+      (3) Host audits show no deltas vs expected services, but failed
+      units: tony-dell has xdg portal units, xfce4-notifyd and
+      xiaomi-token-refresh failing (needs a Chrome re-login to
+      account.xiaomi.com); tony-omen has arp-inventory-scan,
+      michael-dev-parity and nvidia-cdi-refresh failing (NVML
+      userspace/kernel mismatch — reboot still pending); mn01 has portal
+      noise and grub-initrd-fallback; idc01 has ada-memory-sync failing
+      on push conflicts and ada-scenario-smoke at 3-of-7 failing after
+      the migration; kk-macbook is offline and unaudited.
+      (4) Focus inbox has 139 unprocessed attention files again.
+      Please publish a CMS page now — slug 'chaba-systemwide-assessment',
+      title 'Chaba systemwide assessment', format markdown — combining
+      your findings and plan with Devin's findings above, organized as
+      'Ada's half' and 'Devin's half' sections plus a joint prioritized
+      checklist. You have my explicit confirmation to publish it.
+    expect:
+      timeout_s: 150
+      settle_s: 8
+      calls_any: [cms_publish_page]
+      response_nonempty: true
+
+  # Safety net: cms_publish_page requires confirmed=true. If the model
+  # asked instead of passing confirmed, this turn supplies the explicit
+  # yes; if it already published, the turn is a harmless no-op.
+  - user: "Yes — confirmed. Publish the page now with confirmed, slug 'chaba-systemwide-assessment'."
+    expect:
+      timeout_s: 120
+      settle_s: 8
+      calls_any: [cms_publish_page]
+      response_nonempty: true

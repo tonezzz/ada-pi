@@ -393,6 +393,14 @@ class HaMixin:
                         factor: float | None = None) -> dict[str, Any]:
         if not cmd:
             raise ValueError("cmd is required")
+        # cmd=type payload guard: the payload sometimes arrives packed
+        # into cmd ('type foo') instead of text= — check the effective
+        # text either way.
+        if str(cmd).strip().lower().split()[:1] == ["type"]:
+            problem = self._tv_type_text_problem(
+                text or " ".join(str(cmd).split()[1:]))
+            if problem:
+                raise ValueError(problem)
         # Screen-ownership ACL: personal desktop sources are owner-locked.
         # Deny non-owners here (rest_command swallows the controller's 403)
         # and pass the speaker so cast-browser enforces as backstop too.

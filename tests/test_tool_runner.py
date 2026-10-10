@@ -2582,6 +2582,69 @@ class TvGevLaneTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("cast_verify", out)
 
 
+class TvTypeGuardTests(unittest.IsolatedAsyncioTestCase):
+    """ada-tv-action-hallucinated-input (2026-10-09): Ada typed the
+    literal scaffolds 'your-username'/'your-password' into a TV login
+    form — invented placeholder text, not user dictation. cmd=type must
+    refuse empty or placeholder-looking payloads; only the exact text
+    the user just said may be typed."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.tv_action.return_value = {"ok": True, "typed": "ok"}
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+        reg = Path(tempfile.mkdtemp()) / "cast-screens.json"
+        reg.write_text(json.dumps({"screens": {}}))
+        env = patch.dict(os.environ, {"ADA_CAST_SCREENS": str(reg)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    async def test_type_with_no_text_refused(self):
+        with self.assertRaisesRegex(ValueError, "cmd=type refused"):
+            await self.runner.tv_action(cmd="type")
+        self.ha_client.tv_action.assert_not_awaited()
+
+    async def test_placeholder_texts_refused(self):
+        for bad in ("your-username", "your password", "your_email",
+                    "<password>", "<...>", "{otp}", "xxx", "XXXX",
+                    "••••••", "******"):
+            with self.assertRaisesRegex(ValueError, "cmd=type refused"):
+                await self.runner.tv_action(cmd="type", text=bad)
+        self.ha_client.tv_action.assert_not_awaited()
+
+    async def test_placeholder_packed_into_cmd_refused(self):
+        with self.assertRaisesRegex(ValueError, "cmd=type refused"):
+            await self.runner.tv_action(cmd="type your-username")
+        self.ha_client.tv_action.assert_not_awaited()
+
+    async def test_real_dictated_text_passes(self):
+        for good in ("somchai@gmail.com", "P@ssw0rd!2026",
+                     "search for recipe", "1234"):
+            out = await self.runner.tv_action(cmd="type", text=good)
+            self.assertTrue(out["ok"], good)
+        self.assertEqual(self.ha_client.tv_action.await_count, 4)
+
+    async def test_execute_returns_failed_result_with_usage(self):
+        with patch.object(ToolRunner, "_vcast_api",
+                          staticmethod(lambda *a, **k: {"captures": {}})):
+            out = await self.runner.execute(
+                "tv_action", {"cmd": "type", "text": "your-password"})
+        self.assertFalse(out["ok"])
+        self.assertIn("cmd=type refused", out["error"])
+        self.assertIn("usage", out)  # tool_guide.yml attached on failure
+        self.ha_client.tv_action.assert_not_awaited()
+
+    async def test_other_cmds_not_guarded(self):
+        self.ha_client.get_state.return_value = {
+            "entity_id": "media_player.tony_tv", "state": "on",
+            "attributes": {"app_id": "com.webos.app.browser",
+                           "app_name": "com.webos.app.browser"}}
+        await self.runner.tv_action(cmd="press", key="Enter")
+        await self.runner.tv_action(cmd="scroll", text="down")
+        self.assertEqual(self.ha_client.tv_action.await_count, 2)
+
+
 class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     """tools-merge-ha (21 -> 6): every absorbed name stays callable via
     _ALIASES and routes to its canonical parent — home_search for the

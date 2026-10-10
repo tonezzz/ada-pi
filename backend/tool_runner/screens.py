@@ -894,6 +894,39 @@ class ScreensMixin:
             return
         raise self._private_screen_denial(f"screen {screen}", owner, person)
 
+    # cmd=type payload guard (card ada-tv-action-hallucinated-input,
+    # 2026-10-09): Ada typed the literal scaffolds 'your-username' /
+    # 'your-password' into a TV login form — model-invented placeholder
+    # text, not user dictation. type may only carry the exact text the
+    # user just said; empty or placeholder-looking text is refused.
+    _TV_TYPE_PLACEHOLDER_RES = (
+        re.compile(r"(?i)^your[\s\-_]"),          # your-username, your_password
+        re.compile(r"<[^>\n]{0,80}>"),            # <username>, <...>
+        re.compile(r"\{[^{}\n]{0,80}\}"),         # {token}
+        re.compile(r"(?i)^x{2,}$"),               # xxx / xxxx masks
+        re.compile(r"^[*•●.…\s]{2,}$"),           # ***, •••, "..."
+    )
+    _TV_TYPE_PLACEHOLDER_MAX = 40
+
+    def _tv_type_text_problem(self, text: Any) -> str | None:
+        """Refusal reason for a cmd=type payload, or None when the text
+        is plausibly real user dictation."""
+        t = str(text or "").strip()
+        if not t:
+            return (
+                "tv_action cmd=type refused: text is empty — type "
+                "carries only the exact text the user just dictated. If "
+                "they have not given you the literal text, ask for it "
+                "first; never type a placeholder scaffold.")
+        if len(t) <= self._TV_TYPE_PLACEHOLDER_MAX and any(
+                rx.search(t) for rx in self._TV_TYPE_PLACEHOLDER_RES):
+            return (
+                f"tv_action cmd=type refused: text {t!r} looks like a "
+                "placeholder, not something the user said — type carries "
+                "only the exact text the user just dictated. Ask for the "
+                "literal text; to reach a field, use click/press instead.")
+        return None
+
     def _check_tv_source_owner(self, target: str, ident: str | None) -> None:
         """Gate personal desktop streams in tv_action nav targets
         (screenlive:* / workspace:* / screen:* = the tony-dell seat,
