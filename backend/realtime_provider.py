@@ -2274,7 +2274,8 @@ class GeminiLiveProvider(RealtimeProvider):
         owner = self.session_owner
         kw = dict(identity=(owner or self.current_speaker_ha_person),
                   speaker=self.current_speaker_ha_person,
-                  speaker_session=self.speaker_session, owner=owner)
+                  speaker_session=self.speaker_session, owner=owner,
+                  session=self.session_id)
         try:
             if t == "tv":
                 out = await self.tool_runner.execute(
@@ -5285,7 +5286,8 @@ class GeminiLiveProvider(RealtimeProvider):
                                                   or self.current_speaker_ha_person),
                                         speaker=self.current_speaker_ha_person,
                                         speaker_session=self.speaker_session,
-                                        owner=owner)
+                                        owner=owner,
+                                        session=self.session_id)
                                     # Contract (tool-error-contract):
                                     # execute() already returns the
                                     # canonical {ok: bool, ...} dict —

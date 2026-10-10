@@ -1,0 +1,55 @@
+name: tool-storm-breaker
+instance: test
+# ada-tool-retry-storm — journal 2026-10-10 16:31:03-16:32:18 ICT: a dead
+# calendar auth produced ~75s of identical calendar read retries. The
+# per-session circuit breaker must stop the storm after 2 same-class
+# failures and hand the model a 'do not retry — tell the user it is
+# broken' result; Ada narrates the outage ONCE, then the synthesized
+# result tells her not to re-announce.
+
+steps:
+  # Force the calendar into the journal's broken state — no registry,
+  # every read raises inside the method.
+  - set: {_calendar_loaded: true, _calendar: null}
+
+  # Two real failures with the same error class land as normal results.
+  - tool: calendar_read
+    args: {action: events}
+    expect:
+      error_contains: "not configured"
+      output_not_contains: ['"circuit_open"']
+
+  - tool: calendar_read
+    args: {action: events}
+    expect:
+      error_contains: "not configured"
+      output_not_contains: ['"circuit_open"']
+
+  # 3rd call: breaker open — the tool never executes; the synthesized
+  # result instructs a one-time plain-language outage narration.
+  - tool: calendar_read
+    args: {action: events}
+    expect:
+      error_contains: "DO NOT RETRY"
+      output_contains:
+        - '"circuit_open": true'
+        - '"error_type": "CircuitOpen"'
+        - '"error_class": "RuntimeError"'
+        - '"already_announced": false'
+        - "tell the user ONCE"
+
+  # 4th call: still open, but now marked already-announced — Ada was
+  # told to narrate once, not to repeat the outage every retry.
+  - tool: calendar_read
+    args: {action: events}
+    expect:
+      output_contains:
+        - '"circuit_open": true'
+        - '"already_announced": true'
+        - "still down"
+
+  # The breaker is per-tool — other tools in the same session are fine.
+  - tool: ada_memory_search
+    args: {query: "pool timer"}
+    expect:
+      output_not_contains: ['"circuit_open"']

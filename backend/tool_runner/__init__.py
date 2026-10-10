@@ -56,6 +56,12 @@ class ToolRunner(
         # that retries the same gated call instead of asking the user gets
         # a hard stop. {(tool, args-key): [timestamps]}
         self._denials: dict[tuple[str, str], list[float]] = {}
+        # Per-session storm breaker (card ada-tool-retry-storm): failure
+        # timestamps per (scope, tool, error_class), and open circuits per
+        # (scope, tool) once a class trips — the runner is shared, so the
+        # scope key keeps one session's outage from breaking another's.
+        self._storm_fails: dict[tuple[str, str, str], list[float]] = {}
+        self._storm_open: dict[tuple[str, str], dict[str, Any]] = {}
         # Voice session that invoked the current tool call; the realtime
         # provider sets this so memory writes carry provenance.
         self.session_id: str | None = None
@@ -208,7 +214,8 @@ class ToolRunner(
                       *, identity: Any = _IDENTITY_UNSET,
                       speaker: Any = _IDENTITY_UNSET,
                       speaker_session: Any = _IDENTITY_UNSET,
-                      owner: Any = _IDENTITY_UNSET) -> Any:
+                      owner: Any = _IDENTITY_UNSET,
+                      session: Any = _IDENTITY_UNSET) -> Any:
         # Retired names from the tool consolidation resolve to their
         # canonical action= tool first — the alias table is the contract,
         # phonetic normalization below is just typo repair. The alias's
@@ -266,6 +273,12 @@ class ToolRunner(
             _CALLER_OWNER.set(owner)
             if owner is not _IDENTITY_UNSET else None
         )
+        # The provider's own session_id for the storm breaker scope —
+        # same shared-runner race class as the identity vars above.
+        _sess_token = (
+            _CALLER_SESSION.set(session)
+            if session is not _IDENTITY_UNSET else None
+        )
         try:
             return await self._execute_gated(name, call_args, ident,
                                              method=method, dyn_spec=dyn_spec)
@@ -286,6 +299,8 @@ class ToolRunner(
                 _CALLER_SPEAKER_SESSION.reset(_ss_token)
             if _owner_token is not None:
                 _CALLER_OWNER.reset(_owner_token)
+            if _sess_token is not None:
+                _CALLER_SESSION.reset(_sess_token)
 
     @property
     def _dynamic_tools(self) -> tools_loader.ToolRegistry:
@@ -314,6 +329,13 @@ class ToolRunner(
         # confirm gate in one step (the pending key is still recorded).
         _affirm_token = _CALLER_VERIFIED_AFFIRM.set(
             bool(call_args.pop("_verified_affirm", None)))
+        # Per-session storm breaker: a tool that already failed
+        # TOOL_BREAKER_TRIP times with the same error class in this
+        # session is short-circuited — the model gets a synthesized
+        # 'do not retry' result and neither the gates nor the tool run.
+        synth = self._storm_check(name)
+        if synth is not None:
+            return synth
         policy_ident = self.policy_identity()
         # tools-merge-display (2026-10-05): cast_to_screen's absorbed
         # seats — action='list'/'status' were ungated reads (vcast_list /
@@ -396,6 +418,8 @@ class ToolRunner(
                     "denied %s: secondary speaker %r (owner %r)",
                     name, self._current_speaker(),
                     self.session_owner_identity)
+                self._storm_record(name, PermissionError(
+                    "secondary speaker"))
                 raise PermissionError(
                     "Only the session owner can run this action — propose it "
                     "to them aloud and let them confirm in their own voice.")
@@ -464,6 +488,7 @@ class ToolRunner(
             # Phantom-save guard (2026-09-28): the model papered over refused
             # writes and claimed success aloud. Every gate denial now carries
             # a blunt prefix the narration layer cannot miss.
+            self._storm_record(name, exc)
             raise PermissionError(
                 "NOT EXECUTED — the action did not happen and must not be "
                 f"described as done/saved/published: {exc}"
@@ -494,6 +519,7 @@ class ToolRunner(
                 "error_type": type(exc).__name__,
             }
         result = normalize_tool_result(result)
+        self._storm_record(name, result)
         self._log_change_request(name, call_args, result, ident)
         result = self._denial_breaker(name, call_args, result)
         result = self._usage_hint(name, result)
@@ -585,6 +611,98 @@ class ToolRunner(
                 "they want it replaced, and wait for their spoken yes in "
                 "the next turn.")}
         return result
+
+    # -- per-session storm breaker ---------------------------------------
+
+    def _storm_scope(self) -> str:
+        """Session bucket for the breaker — the runner is shared, so one
+        session's outage must not trip the circuit for another. The
+        provider passes its session_id per call (contextvar, race-free);
+        voice sessions without one fall back to the SpeakerSession
+        object, then the pinned owner/caller identity."""
+        sess = _CALLER_SESSION.get(None)
+        if sess:
+            return f"sess-{sess}"
+        ss = _CALLER_SPEAKER_SESSION.get(_IDENTITY_UNSET)
+        if ss is _IDENTITY_UNSET:
+            ss = getattr(self, "speaker_session", None)
+        if ss is not None:
+            return f"ws-{id(ss)}"
+        return "owner-" + str(
+            self._owner() or getattr(self, "session_caller_name", None)
+            or self._memory_identity() or "-")
+
+    def _storm_check(self, name: str) -> dict[str, Any] | None:
+        """Open circuit → synthesized 'do not retry' result, no execution.
+        Past TOOL_BREAKER_OPEN_S the rec is dropped and the next call is a
+        half-open probe: success resets the counts, another failure
+        re-trips the breaker."""
+        key = (self._storm_scope(), name)
+        # getattr: __new__-built runners (tools_loader tests) skip __init__.
+        rec = getattr(self, "_storm_open", {}).get(key)
+        if rec is None:
+            return None
+        now = time.monotonic()
+        if now >= rec["until"]:
+            self._storm_open.pop(key, None)
+            return None
+        already = bool(rec["announced"])
+        rec["announced"] = True
+        if already:
+            text = (
+                f"{name} is still down ({rec['class']}). DO NOT RETRY — "
+                "you already told the user it is broken; do not announce "
+                "it again unless they ask.")
+        else:
+            text = (
+                f"OUTAGE — {name} is failing for this session "
+                f"({rec['class']}, {rec['hits']} failures in "
+                f"{int(TOOL_BREAKER_WINDOW_S)}s). DO NOT RETRY this tool "
+                "— tell the user ONCE, plainly, that it is not working "
+                "right now, then move on.")
+        return {
+            "ok": False,
+            "error": text,
+            "error_type": "CircuitOpen",
+            "error_class": rec["class"],
+            "circuit_open": True,
+            "already_announced": already,
+            "retry_after_s": max(0, int(rec["until"] - now)),
+        }
+
+    def _storm_record(self, name: str, outcome: Any) -> None:
+        """Feed one call outcome into the breaker: a clean success clears
+        this session's failure counts for the tool; a counted failure may
+        trip it open."""
+        scope = self._storm_scope()
+        cls = _storm_error_class(outcome)
+        # setdefault: __new__-built runners (tools_loader tests) skip __init__.
+        fails = self.__dict__.setdefault("_storm_fails", {})
+        open_map = self.__dict__.setdefault("_storm_open", {})
+        if cls is None:
+            if isinstance(outcome, dict) and outcome.get("ok") is True:
+                for k in [k for k in fails
+                          if k[0] == scope and k[1] == name]:
+                    fails.pop(k, None)
+            return
+        key = (scope, name, cls)
+        now = time.monotonic()
+        hits = [t for t in fails.get(key, [])
+                if now - t < TOOL_BREAKER_WINDOW_S]
+        hits.append(now)
+        fails[key] = hits
+        if len(hits) >= TOOL_BREAKER_TRIP:
+            open_map[(scope, name)] = {
+                "class": cls,
+                "hits": len(hits),
+                "until": now + TOOL_BREAKER_OPEN_S,
+                "announced": False,
+            }
+            logger.warning(
+                "storm breaker OPEN tool=%s scope=%s: %d %s failures "
+                "in %ds — calls short-circuit until +%ds",
+                name, scope, len(hits), cls,
+                int(TOOL_BREAKER_WINDOW_S), int(TOOL_BREAKER_OPEN_S))
 
     # Tools that already carry capture state — a reminder on them would
     # be noise (the capture IS the subject of these calls). The absorbed

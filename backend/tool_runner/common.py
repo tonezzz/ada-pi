@@ -292,6 +292,13 @@ _CALLER_SPEAKER: contextvars.ContextVar = contextvars.ContextVar(
 _CALLER_VERIFIED_AFFIRM: contextvars.ContextVar = contextvars.ContextVar(
     "ada_verified_affirm", default=False)
 
+# Per-call session key for the storm breaker — the provider passes its
+# own session_id so breaker state is per-session even though the runner
+# is shared (runner.session_id is a mutable field the LAST connected
+# provider wins — it cannot scope a shared breaker race-free).
+_CALLER_SESSION: contextvars.ContextVar = contextvars.ContextVar(
+    "ada_caller_session", default=None)
+
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
 # Per-page automation registry: one doc per CMS slug holding the switches
@@ -324,6 +331,66 @@ _CONFIRM_AUDIT_MAX = 200
 CONTROL_RATE_WINDOW_S = float(os.environ.get("ADA_CONTROL_RATE_WINDOW_S", "60"))
 CONTROL_MAX_PER_ENTITY = int(os.environ.get("ADA_CONTROL_MAX_PER_ENTITY", "5"))
 CONTROL_MAX_GLOBAL = int(os.environ.get("ADA_CONTROL_MAX_GLOBAL", "30"))
+
+# Per-session tool-storm circuit breaker (card ada-tool-retry-storm;
+# journal 2026-10-10 16:31:03-16:32:18 ICT — a dead calendar token
+# produced ~75s of identical calendar_read failures the model kept
+# retrying). Once the same tool fails TOOL_BREAKER_TRIP times with the
+# same error class inside TOOL_BREAKER_WINDOW_S, execute() returns a
+# synthesized outage result instead of running the tool again; the
+# circuit stays open for TOOL_BREAKER_OPEN_S, then lets one real call
+# through (half-open — success resets, another failure re-trips).
+TOOL_BREAKER_TRIP = int(os.environ.get("ADA_TOOL_BREAKER_TRIP", "2"))
+TOOL_BREAKER_WINDOW_S = float(os.environ.get("ADA_TOOL_BREAKER_WINDOW_S", "120"))
+TOOL_BREAKER_OPEN_S = float(os.environ.get("ADA_TOOL_BREAKER_OPEN_S", "300"))
+
+# Arg-shape failures (model typos — the tool_guide usage hint already
+# answers them) never count toward the breaker.
+_BREAKER_ARG_ERRORS = {"ValueError", "KeyError", "TypeError", "AttributeError"}
+
+# Fallback error-class buckets for failures that carry no exception
+# type (bare {"error": ...} dicts). First match wins.
+_BREAKER_TEXT_CLASSES = (
+    ("auth", re.compile(
+        r"auth|credential|unauthorized|\b401\b|revoked|expired", re.I)),
+    ("timeout", re.compile(r"timeout|timed out|deadline", re.I)),
+    ("acl", re.compile(
+        r"permission|denied|forbidden|\b403\b|access policy|control policy|acl",
+        re.I)),
+)
+
+
+def _storm_error_class(outcome: Any) -> str | None:
+    """Coarse error class for storm-breaker accounting, or None when the
+    outcome doesn't count. The exception type name wins verbatim —
+    CalendarAuthError, ReadTimeout and PermissionError (gate ACL
+    denials) land as their own classes. Confirm proposals — denials
+    whose message itself tells the caller how to retry (confirmed=true
+    or a minted cfm-/confirm_token) — and needs_confirm dicts are the
+    confirm flow working, not an outage; arg typos are model errors.
+    Bare {error} dicts fall back to a text signature."""
+    if isinstance(outcome, BaseException):
+        cls = type(outcome).__name__
+        msg = str(outcome)
+    elif isinstance(outcome, dict) and outcome.get("ok") is False:
+        if outcome.get("needs_confirm"):
+            return None
+        cls = str(outcome.get("error_type") or "")
+        msg = str(outcome.get("error") or outcome.get("err") or "")
+    else:
+        return None
+    if cls in _BREAKER_ARG_ERRORS:
+        return None
+    if cls == "PermissionError" and (
+            "confirmed=true" in msg or "confirm_token" in msg
+            or "cfm-" in msg):
+        return None
+    if cls:
+        return cls
+    for label, rx in _BREAKER_TEXT_CLASSES:
+        if rx.search(msg):
+            return label
+    return "error"
 
 # LLM callers occasionally use a synonym for a declared parameter. Map the
 # alias to the real name only when the method declares it and the caller did
