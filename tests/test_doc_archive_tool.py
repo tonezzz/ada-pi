@@ -23,12 +23,24 @@ class DocConfirmedGateTest(unittest.IsolatedAsyncioTestCase):
         self._allow.stop()
         with unittest.mock.patch.object(
                 self.runner.banks, "bank_allowed", return_value=False):
-            for tool in ("ada_doc_search", "ada_doc_get",
-                         "ada_doc_archive", "ada_doc_print"):
-                with self.assertRaises(PermissionError, msg=tool):
-                    await self.runner.execute(
+            # The four aliases resolve to the canonical `docs` tool, so
+            # the per-session storm breaker (ada-tool-retry-storm) trips
+            # after the 2nd terminal ACL denial — later calls get the
+            # synthesized do-not-retry result, still a denial (ok:false,
+            # never executed) rather than a raise.
+            for i, tool in enumerate(("ada_doc_search", "ada_doc_get",
+                                      "ada_doc_archive", "ada_doc_print")):
+                if i < 2:
+                    with self.assertRaises(PermissionError, msg=tool):
+                        await self.runner.execute(
+                            tool, {"query": "x", "slug": "x",
+                                   "source_dir": "/tmp", "confirmed": True})
+                else:
+                    out = await self.runner.execute(
                         tool, {"query": "x", "slug": "x",
                                "source_dir": "/tmp", "confirmed": True})
+                    self.assertFalse(out["ok"], tool)
+                    self.assertTrue(out.get("circuit_open"), out)
         self._allow.start()
 
     async def test_archive_denied_without_confirmed(self):

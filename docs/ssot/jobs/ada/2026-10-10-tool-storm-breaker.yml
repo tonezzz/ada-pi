@@ -1,0 +1,94 @@
+# SSOT Job: per-session tool-storm circuit breaker — a tool that fails
+# twice with the same error_class inside the window stops executing and
+# the model gets a synthesized 'do not retry — tell the user it is
+# broken' result. Card: ada-tool-retry-storm (chaba kanban).
+# Dispatch worktree: dispatch-wt-20261010-091644-add-a-per-session-circuit-brea.
+
+title: per-session tool-storm circuit breaker in the tool runner
+subtitle: same tool + same error_class x2 in window opens the circuit;
+  calls synthesize a narrate-once outage result instead of executing
+
+planning:
+  goal: |
+    Journal 2026-10-10 16:31:03-16:32:18 ICT: a dead calendar token
+    produced ~75s of identical calendar_read failures the model kept
+    retrying — each retry cost a live-session turn and Ada never
+    surfaced "the calendar is broken". Card asks: per-session circuit
+    breaker — same tool failing twice with the same error_class within
+    N seconds returns a synthesized 'do not retry — tell the user it is
+    broken' result instead of executing. Covers CalendarAuthError,
+    ReadTimeout, ACL denials. Verify: forced-failing tool stops after 2
+    calls; Ada narrates the outage once.
+  context: |
+    - The runner is a shared singleton (pwa_server.py:153) across all
+      voice/text sessions, so breaker state must be scoped per session —
+      one session's outage must not trip the circuit for another.
+    - Failures surface three ways: exceptions inside a tool method
+      ({ok: False, error_type} at the boundary), tools returning bare
+      {error} dicts, and dispatch-layer PermissionErrors (gates raise —
+      a refusal is not a tool result).
+    - Confirm proposals must NOT count: denials whose message tells the
+      caller how to retry (confirmed=true / confirm_token='cfm-...') are
+      the propose->restate->confirm flow working. needs_confirm dict
+      results are likewise flow (the _denial_breaker already handles
+      those storms). Arg typos (ValueError/KeyError/TypeError) are model
+      errors — the tool_guide usage hint answers them.
+  scope: |
+    - backend/tool_runner/common.py — TOOL_BREAKER_* knobs
+      (ADA_TOOL_BREAKER_TRIP/WINDOW_S/OPEN_S, defaults 2 / 120s / 300s),
+      _CALLER_SESSION contextvar (per-call session key, race-free like
+      the other caller_* vars), _storm_error_class() classifier.
+    - backend/tool_runner/__init__.py — _storm_fails/_storm_open state,
+      execute(session= kwarg) -> _CALLER_SESSION, _storm_check() early
+      in _execute_gated (synthesized result, nothing runs), and
+      _storm_record() on every outcome incl. gate + secondary denials.
+    - backend/realtime_provider.py — passes session=self.session_id at
+      all three tool_runner.execute() call sites.
+    - tests/test_tool_runner.py — StormBreakerTests (15 tests).
+    - tests/test_calendar_providers.py — revoked-token test now encodes
+      the breaker contract (3rd identical-class call is CircuitOpen,
+      still loud ok:false).
+    - tests/scenarios/tool_storm_breaker.yaml — offline scenario.
+
+implementation:
+  scope_key: |
+    _storm_scope(): provider session_id (contextvar) -> SpeakerSession
+    object id -> pinned owner/caller identity -> 'owner--' shared
+    bucket. REST calls land in the caller/owner bucket.
+  classes: |
+    error_type / exception name verbatim (CalendarAuthError,
+    ReadTimeout, PermissionError); bare error dicts fall back to
+    auth|timeout|acl|error text buckets.
+  open_behavior: |
+    First synthesized result: 'tell the user ONCE it is not working'
+    (already_announced=false). Repeat calls while open: 'still down, do
+    not announce again' (already_announced=true). After
+    TOOL_BREAKER_OPEN_S the circuit half-opens — one real probe runs;
+    success clears the counts, another failure re-trips.
+  skips: |
+    needs_confirm dicts, PermissionErrors whose text instructs
+    confirmed=true/confirm_token/cfm- (proposals), ValueError/KeyError/
+    TypeError/AttributeError (arg typos).
+
+verify:
+  - .venv/bin/python -m pytest tests/test_tool_runner.py -q — 255 pass
+    (15 new StormBreakerTests: trip at 2, per-session isolation,
+    announce-once, ACL denials trip, proposals/typos skip, half-open
+    probe, success reset)
+  - .venv/bin/python -m pytest tests/test_scenarios.py -q — 18 pass
+    (tool_storm_breaker: calendar_read forced-fails 2x, 3rd+4th calls
+    return circuit_open with narrate-once semantics, other tools still
+    execute)
+  - tests/test_tools_loader.py test_calendar_providers.py
+    test_ops_events.py test_provider_events.py test_web_search.py —
+    116 pass
+  - scripts/tool-lint.py — 3 PRE-EXISTING violations (voice_fx
+    descsize/coverage, yt_cached_list undeclared) — baseline debt on
+    this HEAD, unrelated files.
+
+not_verified_live: |
+  No ada service/MDDB on the dispatch host. On idc03 after deploy: the
+  breaker logs 'storm breaker OPEN tool=<name> scope=<sess-*> ...' in
+  the ada-ha-* journal when it trips; a live outage should show two
+  real failures then synthesized CircuitOpen results — and Ada saying
+  'the calendar isn't working' exactly once.

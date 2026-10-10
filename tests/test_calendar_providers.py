@@ -539,19 +539,25 @@ class CalendarGateTests(unittest.IsolatedAsyncioTestCase):
                     "re-run scripts/ada/google-calendar-auth.py"))},
             tz=TZ)
         runner._calendar_loaded = True
-        for tool, args in [
+        for i, (tool, args) in enumerate([
             ("calendar_read", {"action": "events"}),
             ("calendar_read", {"action": "calendars"}),
             ("calendar_read", {"action": "freebusy"}),
             ("tasks", {"action": "list"}),
             ("plan_day", {"day": "2026-09-22"}),
-        ]:
+        ]):
             out = await runner.execute(tool, args)
             self.assertFalse(out["ok"], tool)
-            self.assertEqual(
-                out["error_type"], "CalendarAuthError", tool)
             self.assertNotIn("events", out)
             self.assertNotIn("tasks", out)
+            if i == 2:
+                # ada-tool-retry-storm: the per-session storm breaker
+                # short-circuits the third identical-class calendar_read
+                # failure — still a loud ok:false, never a silent empty.
+                self.assertTrue(out.get("circuit_open"), out)
+            else:
+                self.assertEqual(
+                    out["error_type"], "CalendarAuthError", tool)
 
     async def test_unreachable_provider_is_ok_false_not_empty(self):
         runner = self._runner()

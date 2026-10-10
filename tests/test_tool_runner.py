@@ -3545,6 +3545,203 @@ class ResultContractTests(unittest.IsolatedAsyncioTestCase):
             await self.runner.execute("no_such_tool", {})
 
 
+class StormBreakerTests(unittest.IsolatedAsyncioTestCase):
+    """ada-tool-retry-storm (journal 16:31:03-16:32:18 ICT — a dead
+    calendar token produced ~75s of identical calendar_read retries):
+    the same tool failing TOOL_BREAKER_TRIP times with the same
+    error_class inside the window opens a per-session circuit — further
+    calls get a synthesized 'do not retry — it is broken' result instead
+    of executing. Covers real tool exceptions (CalendarAuthError,
+    ReadTimeout) and gate ACL denials (PermissionError); confirm
+    proposals and arg typos never count."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.ha_client._states.return_value = []
+        self.ha_client.sensors.return_value = []
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._banks = _hermetic_registry()
+
+    def _stub_gev(self, exc=None, value=None):
+        calls = {"n": 0}
+
+        async def fake(**_kwargs):
+            calls["n"] += 1
+            if exc is not None:
+                raise exc() if isinstance(exc, type) else exc
+            return value
+        self.runner.gev_command = fake
+        return calls
+
+    async def _gev(self, **kw):
+        return await self.runner.execute("gev_command", {"name": "x"}, **kw)
+
+    async def test_same_class_failure_twice_opens_circuit(self):
+        calls = self._stub_gev(exc=RuntimeError("relay down"))
+        for _ in range(2):
+            out = await self._gev()
+            self.assertFalse(out["ok"])
+            self.assertEqual(out["error_type"], "RuntimeError")
+        out = await self._gev()
+        self.assertTrue(out.get("circuit_open"))
+        self.assertEqual(out["error_type"], "CircuitOpen")
+        self.assertEqual(out["error_class"], "RuntimeError")
+        self.assertIn("DO NOT RETRY", out["error"])
+        # The tool itself was never invoked a third time.
+        self.assertEqual(calls["n"], 2)
+
+    async def test_different_error_classes_do_not_combine(self):
+        seq = [TimeoutError("timed out"), RuntimeError("nope"),
+               TimeoutError("timed out")]
+        calls = {"n": 0}
+
+        async def fake(**_kw):
+            calls["n"] += 1
+            raise seq[min(calls["n"], 3) - 1]
+        self.runner.gev_command = fake
+        for _ in range(3):
+            out = await self._gev()
+            self.assertFalse(out.get("circuit_open"), out)
+        self.assertEqual(calls["n"], 3)
+
+    async def test_read_timeout_class_trips(self):
+        # ReadTimeout is one of the card's named error classes.
+        class ReadTimeout(Exception):
+            pass
+        calls = self._stub_gev(exc=ReadTimeout("read timed out"))
+        await self._gev()
+        await self._gev()
+        out = await self._gev()
+        self.assertTrue(out.get("circuit_open"))
+        self.assertEqual(out["error_class"], "ReadTimeout")
+        self.assertEqual(calls["n"], 2)
+
+    async def test_calendar_auth_error_class_trips(self):
+        from backend.calendar_providers import CalendarAuthError
+        calls = self._stub_gev(
+            exc=CalendarAuthError("google: token revoked"))
+        await self._gev()
+        await self._gev()
+        out = await self._gev()
+        self.assertTrue(out.get("circuit_open"))
+        self.assertEqual(out["error_class"], "CalendarAuthError")
+        self.assertEqual(calls["n"], 2)
+
+    async def test_outage_is_announced_once_then_quiet(self):
+        self._stub_gev(exc=RuntimeError("down"))
+        await self._gev()
+        await self._gev()
+        first = await self._gev()
+        self.assertFalse(first["already_announced"])
+        self.assertIn("tell the user ONCE", first["error"])
+        again = await self._gev()
+        self.assertTrue(again["already_announced"])
+        self.assertIn("already told the user", again["error"])
+
+    async def test_breaker_scope_is_per_session(self):
+        calls = self._stub_gev(exc=RuntimeError("down"))
+        await self._gev(session="sess-a")
+        await self._gev(session="sess-a")
+        tripped = await self._gev(session="sess-a")
+        self.assertTrue(tripped.get("circuit_open"))
+        # Another session's calls still execute against the same runner.
+        self._stub_gev(value={"ok": True, "pong": 1})
+        out = await self._gev(session="sess-b")
+        self.assertTrue(out["ok"])
+        self.assertNotIn("circuit_open", out)
+
+    async def test_ownerless_calls_share_one_bucket(self):
+        self._stub_gev(exc=RuntimeError("down"))
+        await self._gev()
+        await self._gev()
+        out = await self._gev()
+        self.assertTrue(out.get("circuit_open"))
+
+    async def test_arg_typos_never_trip(self):
+        calls = self._stub_gev(exc=ValueError("invalid action 'bogus'"))
+        for _ in range(3):
+            out = await self._gev()
+            self.assertFalse(out.get("circuit_open"))
+        self.assertEqual(calls["n"], 3)
+
+    async def test_needs_confirm_results_never_trip(self):
+        calls = self._stub_gev(value={"needs_confirm": "do it?"})
+        for _ in range(3):
+            out = await self._gev()
+            self.assertFalse(out.get("circuit_open"))
+        self.assertEqual(calls["n"], 3)
+
+    async def test_success_resets_failure_counts(self):
+        seq = [RuntimeError("x"), None, RuntimeError("y"), RuntimeError("z")]
+        calls = {"n": 0}
+
+        async def fake(**_kw):
+            calls["n"] += 1
+            exc = seq[calls["n"] - 1]
+            if exc:
+                raise exc
+            return {"ok": True}
+        self.runner.gev_command = fake
+        for _ in range(4):
+            out = await self._gev()
+            self.assertFalse(out.get("circuit_open"), out)
+        self.assertEqual(calls["n"], 4)
+
+    async def test_half_open_probe_after_cooldown(self):
+        calls = self._stub_gev(exc=RuntimeError("down"))
+        await self._gev()
+        await self._gev()
+        out = await self._gev()
+        self.assertTrue(out.get("circuit_open"))
+        # Age the open record past TOOL_BREAKER_OPEN_S — the next call is
+        # a real probe, not another synthesized result.
+        for rec in self.runner._storm_open.values():
+            rec["until"] = 0
+        calls2 = self._stub_gev(value={"ok": True, "back": True})
+        out = await self._gev()
+        self.assertTrue(out["ok"])
+        self.assertEqual(calls2["n"], 1)
+
+    async def test_acl_denial_storm_opens_breaker(self):
+        # Secondary-speaker ACL denials raise PermissionError with no
+        # confirm token — a terminal denial, counted by the breaker.
+        kw = dict(speaker="person.kk", owner="person.tony")
+        for _ in range(2):
+            with self.assertRaises(PermissionError):
+                await self.runner.execute(
+                    "ada_forget", {"key": "x", "bank": "general"}, **kw)
+        # Third try short-circuits into the synthesized outage result
+        # instead of raising again.
+        out = await self.runner.execute(
+            "ada_forget", {"key": "x", "bank": "general"}, **kw)
+        self.assertTrue(out.get("circuit_open"))
+        self.assertEqual(out["error_class"], "PermissionError")
+
+    async def test_confirm_proposal_denials_never_trip(self):
+        # needs-confirmation denials carry a minted cfm- token — the
+        # confirm flow working, not an outage. Unlimited retries allowed.
+        for _ in range(3):
+            with self.assertRaises(PermissionError):
+                await self.runner.execute(
+                    "cms_publish_page",
+                    {"slug": "x", "title": "x", "content": "x",
+                     **_PAGE_META})
+        self.assertEqual(self.runner._storm_open, {})
+
+    async def test_calendar_auth_error_shape_trips(self):
+        # The journal case: the unconfigured calendar raises inside the
+        # method — twice lands the synthesized outage result.
+        self.runner._calendar = None
+        self.runner._calendar_loaded = True
+        await self.runner.execute("calendar_read", {"action": "events"})
+        await self.runner.execute("calendar_read", {"action": "events"})
+        out = await self.runner.execute(
+            "calendar_read", {"action": "events"})
+        self.assertTrue(out.get("circuit_open"))
+        self.assertEqual(out["error_class"], "RuntimeError")
+
+
 class NormalizeToolResultTests(unittest.TestCase):
     """Direct unit coverage of the normalizer's shape table."""
 
