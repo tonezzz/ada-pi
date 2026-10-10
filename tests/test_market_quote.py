@@ -211,18 +211,28 @@ class HonestyTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_unreachable_is_honest(self):
         client = FakeClient(fail=httpx.ConnectError("refused"))
+        runner = _runner()
         with patch.object(market.httpx, "AsyncClient", return_value=client):
-            out = await market.run(_runner(), kind="dxy")
+            out = await market.run(runner, kind="dxy")
         self.assertFalse(out["ok"])
         self.assertIn("couldn't reach", out["error"])
+        # transport outage -> one ops event via the context facade
+        emit = runner.context.emit_ops_event
+        emit.assert_called_once()
+        self.assertEqual(emit.call_args.args[0], "market_quote_api_down")
+        self.assertEqual(emit.call_args.kwargs["tool"],
+                         "ada_market_quote")
 
     async def test_server_error_surfaced(self):
         client = FakeClient({"/dollar_index": FakeResp(
             500, {"error": "db gone"})})
+        runner = _runner()
         with patch.object(market.httpx, "AsyncClient", return_value=client):
-            out = await market.run(_runner(), kind="dxy")
+            out = await market.run(runner, kind="dxy")
         self.assertFalse(out["ok"])
         self.assertEqual(out["error"], "db gone")
+        # HTTP>=400 is app-level, not a transport outage — no ops event
+        runner.context.emit_ops_event.assert_not_called()
 
     async def test_stale_flag_and_note(self):
         rows = {"data": [{"date": _d(30), "value": 99.0},

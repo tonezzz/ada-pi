@@ -1,0 +1,100 @@
+# SSOT Job: tools.d runner facade — runner.context.{mddb,ha_client,session_id,emit_ops_event}
+# Card: ada-toolsd-runner-facade (chaba kanban). Dispatch
+# 20261010-142058-tools-d-runner-facade-runner-c.
+
+title: tools.d runner facade — context is the one seam for runner services
+subtitle: Hand-rolled getattr(runner,"mddb") + raw-httpx endpoint fallbacks
+  replaced by the routed client; fixture injection becomes one seam
+
+planning:
+  goal: |
+    Formalize runner.context as the tools.d reach surface: mddb (the
+    ROUTED MddbClient — ops-store split + read-replica failover live
+    inside it), ha_client, session_id (per-call ContextVar first,
+    provider field fallback), emit_ops_event(). Migrate the three
+    named tools; retire env-var endpoint overrides (ADA_TRACK_MDBB).
+  decisions: |
+    - ToolContext keeps its dataclass shape and gains a `runner`
+      back-reference (repr=False, compare=False); mddb + session_id are
+      read-only properties so context can never diverge from runner
+      state. session_id prefers _CALLER_SESSION (the per-call
+      ContextVar the provider sets via execute()) over the shared
+      runner.session_id field — same shared-runner race class as the
+      identity vars.
+    - emit_ops_event(ev_type, detail, tool=...) mirrors the provider's
+      _emit_ops_event shape and forwards to
+      gemini_pool.emit_ops_event, whose `exc` arg is now optional —
+      non-quota events pass detail only. Throttled per tool, no-op
+      without mddb — safe on the fire-and-forget path.
+    - ada_track_device: all six mddb touch points (_mddb_get,
+      _mddb_docs, _mac_registry, _mddb_write, _watch_doc, the
+      resume_watches claim re-read) go through a module-local _mddb()
+      helper reading runner.context.mddb. The ADA_TRACK_MDBB raw-httpx
+      fallback is REMOVED — it bypassed the client's routing/failover
+      and only existed as a fixture seam. In chaba mode (mddb None)
+      the beacon source now degrades silently instead of re-dialing an
+      env URL — correct: the beacon fleet is Tony's own.
+    - ADA_TRACK_TAILSCALE_JSON / _LANSCAN_JSON / _LANSCAN_URL /
+      _PUSH_DRYRUN stay — they inject DATA (subprocess/file payloads,
+      push dry-run), not endpoint failover; orthogonal to the seam.
+    - ada_market_quote: _get() now reports api_down (every attempt
+      failed at transport/parse level) vs HTTP>=400 (app-level); only
+      the former emits market_quote_api_down via the facade.
+    - kanban (absorbs ada_board_write): the single _request() funnel
+      emits kanban_board_unreachable when board_client returns
+      status==0; ctx is plumbed through the action helpers — the one
+      funnel keeps it a shallow diff.
+    - NOT migrated: tools.d/eye.py still does getattr(runner,"mddb")
+      (works, but should adopt context.mddb); mixins still use
+      runner.mddb directly — the facade contract is for tools.d
+      authoring, in-repo mixins are the implementation itself.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-10"
+  steps:
+    - id: 1
+      label: "facade"
+      status: done
+      notes: "ToolContext: runner back-ref + mddb/session_id properties
+        + emit_ops_event; ToolRunner passes runner=self;
+        gemini_pool.emit_ops_event exc optional."
+    - id: 2
+      label: "ada_track_device"
+      status: done
+      notes: "6 hand-rolled client-or-httpx sites -> _mddb() facade
+        helper; ADA_TRACK_MDBB + _mddb_base deleted; docstring updated."
+    - id: 3
+      label: "ada_market_quote + kanban"
+      status: done
+      notes: "market: api_down split + market_quote_api_down event;
+        kanban: ctx plumbed through _request funnel,
+        kanban_board_unreachable on status==0."
+    - id: 4
+      label: "contract + tests"
+      status: done
+      notes: "docs/ada-tool-dev.md module contract rewritten around
+        runner.context; tests/test_tool_context.py new (9 tests);
+        test_track_device _runner injects context.mddb; market/kanban
+        unreachable tests assert the emit."
+
+invoke:
+  commands:
+    - ".venv/bin/python -m pytest tests/test_tool_context.py tests/test_track_device.py tests/test_kanban.py tests/test_market_quote.py tests/test_ops_events.py tests/test_gemini_pool.py -q"
+    - "python3 scripts/tool-lint.py"
+
+verification:
+  - "122 targeted tests pass (incl. 9 new ToolContext tests);
+    full suite 1217 passed / 2 failed — the failures are the
+    PRE-EXISTING tool-lint violations (voice_fx descsize,
+    yt_cached_list impl, voice_fx coverage) verified identical on
+    clean HEAD via stash; already documented in
+    2026-10-10-alias-hit-rollup.yml"
+  - "scenario tests: 18 pass incl. device_track_merge.yaml (the
+    scenario engine injects runner.mddb=FakeMddb; context.mddb
+    delegates to it — same seam)"
+  - "new test env note: this worktree had no .venv; created
+    .venv --without-pip + get-pip, installed httpx pytest pyyaml
+    google-genai fastapi numpy pillow ai-edge-litert qrcode uvicorn
+    (torch/speechbrain skipped — no test needed them)"

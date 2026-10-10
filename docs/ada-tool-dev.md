@@ -37,11 +37,26 @@ async def run(runner, **args):           # MUST be async
     return {"ok": True, ...}             # plain dict — JSON-serializable
 ```
 
-`runner` is the shared `ToolRunner`. Available:
+`runner` is the shared `ToolRunner`. Tools reach runner services through
+`runner.context` — the facade is the ONE seam (runner-facade,
+2026-10-10). Fixture injection in tests sets fakes on it
+(`runner.context.mddb = FakeMddb()`); env-var endpoint overrides like the
+retired `ADA_TRACK_MDBB` are not a contract.
 
-- `runner.mddb` — `MddbClient` (add/search/vector_search/get/update/delete)
-- `runner.banks` — `MemoryBankRegistry` (`bank_allowed`, `policy_for`, …)
+- `runner.context.mddb` — the routed `MddbClient`
+  (add/search/vector_search/get/update/delete). The ops-store split and
+  read-replica failover live inside the client — a tool that goes through
+  this inherits failover for free. `None` in chaba guest mode: degrade
+  gracefully; NEVER hand-roll an httpx endpoint fallback around it.
 - `runner.context.ha_client` — Home Assistant client
+- `runner.context.session_id` — the calling session's id (the per-call
+  ContextVar the provider sets via `execute()`; safe on the shared
+  runner — do NOT cache it at module level)
+- `runner.context.emit_ops_event(ev_type, detail, tool=...)` —
+  fire-and-forget ops-event doc to `ada-ha-events-<instance>` (throttled
+  per tool; no-op without mddb). Use it when a dependency outage should
+  reach the hourly digest, not just the spoken error.
+- `runner.banks` — `MemoryBankRegistry` (`bank_allowed`, `policy_for`, …)
 - `runner._memory_identity()` — the caller's resolved identity
   (ContextVar-safe; never cache it at module level)
 

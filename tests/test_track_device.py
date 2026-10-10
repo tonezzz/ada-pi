@@ -62,6 +62,7 @@ class FakeMddb:
 def _runner(mddb=None, states=None, logbook=None):
     r = MagicMock()
     r.mddb = mddb
+    r.context.mddb = mddb      # the facade seam (runner-facade card)
     ha = MagicMock()
     ha.base_url = "http://ha.local:8123"
     ha._states = AsyncMock(return_value=states or [])

@@ -216,10 +216,10 @@ def _resolve_in(cards: list[Any], cid: str) -> dict[str, Any] | None:
 
 
 async def _resolve(client: httpx.AsyncClient,
-                   cid: str) -> dict[str, Any] | None:
+                   cid: str, ctx: Any = None) -> dict[str, Any] | None:
     """Fetch the board and resolve a loose id — used to retry writes
     that came back 'no card'."""
-    data, err = await _request(client, "GET", "/cards")
+    data, err = await _request(client, "GET", "/cards", ctx=ctx)
     if err or not data:
         return None
     return _resolve_in(_cards_only(data.get("cards")), cid)
@@ -242,17 +242,27 @@ def _is_secondary(runner: Any) -> bool:
 
 
 async def _request(client: httpx.AsyncClient, method: str, path: str,
+                   ctx: Any = None,
                    **kw: Any) -> tuple[dict[str, Any] | None, str | None]:
-    data, err, _status = await board_client.request(
+    """board_client.request funnel. status 0 = board unreachable — emit
+    a throttled ops event through the runner.context facade so the
+    outage lands in the hourly digest (runner-facade, 2026-10-10)."""
+    data, err, status = await board_client.request(
         client, method, path, **kw)
+    if status == 0 and ctx is not None:
+        ctx.emit_ops_event(
+            "kanban_board_unreachable",
+            f"board-api unreachable during {method} {path}: {err}",
+            tool="kanban")
     return data, err
 
 
 async def _comment(client: httpx.AsyncClient, cid: str,
-                   text: str) -> tuple[bool, str | None]:
+                   text: str, ctx: Any = None) -> tuple[bool, str | None]:
     data, err = await _request(
         client, "POST", "/comment",
-        json={"id": cid, "from": "ada", "text": text[:_TEXT_MAX]})
+        json={"id": cid, "from": "ada", "text": text[:_TEXT_MAX]},
+        ctx=ctx)
     if err:
         return False, err
     return True, (data or {}).get("message", "comment added")
@@ -398,9 +408,9 @@ def _report_lookup(cards: list[dict[str, Any]], slug: str
     return out
 
 
-async def _list(args: dict[str, Any]) -> dict[str, Any]:
+async def _list(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        data, err = await _request(client, "GET", "/cards")
+        data, err = await _request(client, "GET", "/cards", ctx=ctx)
     if err:
         return {"ok": False, "error": err}
     assert data is not None
@@ -439,12 +449,12 @@ async def _list(args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-async def _read(args: dict[str, Any]) -> dict[str, Any]:
+async def _read(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     cid = _card_id(args)
     if not cid:
-        return await _list(args)
+        return await _list(ctx, args)
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        data, err = await _request(client, "GET", "/cards")
+        data, err = await _request(client, "GET", "/cards", ctx=ctx)
     if err:
         return {"ok": False, "error": err}
     assert data is not None
@@ -460,7 +470,8 @@ async def _read(args: dict[str, Any]) -> dict[str, Any]:
 
 async def _stale_check(client: httpx.AsyncClient, args: dict[str, Any],
                        cid: str,
-                       card: dict[str, Any] | None = None
+                       card: dict[str, Any] | None = None,
+                       ctx: Any = None
                        ) -> dict[str, Any] | None:
     """Optimistic-concurrency guard (ssot.apps.cms-reports.yml
     report_first_protocol#write_guard): when the caller passes
@@ -472,7 +483,7 @@ async def _stale_check(client: httpx.AsyncClient, args: dict[str, Any],
     if not exp:
         return None
     if card is None:
-        data, err = await _request(client, "GET", "/cards")
+        data, err = await _request(client, "GET", "/cards", ctx=ctx)
         if err:
             return {"ok": False, "error": err}
         card = _resolve_in(_cards_only(data.get("cards")), cid)
@@ -490,7 +501,7 @@ async def _stale_check(client: httpx.AsyncClient, args: dict[str, Any],
     return None
 
 
-async def _do_comment(args: dict[str, Any]) -> dict[str, Any]:
+async def _do_comment(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     cid = _card_id(args)
     text = str(args.get("text") or "").strip()
     if not cid:
@@ -498,15 +509,15 @@ async def _do_comment(args: dict[str, Any]) -> dict[str, Any]:
     if not text:
         return {"ok": False, "error": "comment text is required"}
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        stale = await _stale_check(client, args, cid)
+        stale = await _stale_check(client, args, cid, ctx=ctx)
         if stale:
             return stale
-        posted, msg = await _comment(client, cid, text)
+        posted, msg = await _comment(client, cid, text, ctx=ctx)
         if not posted and msg and "no card" in msg:
-            card = await _resolve(client, cid)
+            card = await _resolve(client, cid, ctx)
             if card is not None:
                 cid = str(card["id"])
-                posted, msg = await _comment(client, cid, text)
+                posted, msg = await _comment(client, cid, text, ctx=ctx)
     if not posted:
         return {"ok": False, "error": msg}
     return {"ok": True, "id": cid, "posted": text[:80],
@@ -533,7 +544,7 @@ def _filed_card_id(data: dict[str, Any] | None) -> str | None:
     return m.group(1) if m else None
 
 
-async def _file(args: dict[str, Any]) -> dict[str, Any]:
+async def _file(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     """Drop a new card onto the board — the voice-side capture of the
     request lifecycle. The card lands in backlog for triage, comms
     record 'ada'. Verify-after-write (card ada-phantom-card-claims): the
@@ -559,12 +570,13 @@ async def _file(args: dict[str, Any]) -> dict[str, Any]:
                     "error": "priority must be high|medium|low"}
         body["priority"] = pri
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        data, err = await _request(client, "POST", "/card", json=body)
+        data, err = await _request(client, "POST", "/card", json=body,
+                                   ctx=ctx)
         if err:
             return {"ok": False, "error": err}
         cid = _filed_card_id(data)
         verified = False
-        vdata, verr = await _request(client, "GET", "/cards")
+        vdata, verr = await _request(client, "GET", "/cards", ctx=ctx)
         if not verr and vdata is not None:
             cards = _cards_only(vdata.get("cards"))
             found = _resolve_in(cards, cid) if cid else None
@@ -598,7 +610,7 @@ async def _file(args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-async def _ask(args: dict[str, Any]) -> dict[str, Any]:
+async def _ask(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     """Raise a board request — the escalation path for decisions that
     are Tony's (gated moves, unclear triage). The request surfaces on
     the card and pings him via board-notify."""
@@ -619,13 +631,14 @@ async def _ask(args: dict[str, Any]) -> dict[str, Any]:
         if sug:
             body["suggested"] = sug
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        data, err = await _request(client, "POST", "/request", json=body)
+        data, err = await _request(client, "POST", "/request", json=body,
+                                   ctx=ctx)
         if err and "no card" in err:
-            card = await _resolve(client, cid)
+            card = await _resolve(client, cid, ctx)
             if card is not None:
                 body["id"] = cid = str(card["id"])
                 data, err = await _request(
-                    client, "POST", "/request", json=body)
+                    client, "POST", "/request", json=body, ctx=ctx)
     if err:
         return {"ok": False, "error": err}
     return {"ok": True, "id": cid,
@@ -671,6 +684,7 @@ def _gate_reason(card: dict[str, Any], target: str,
 
 async def _move(runner: Any, args: dict[str, Any],
                 confirmed: Any, confirm_token: Any) -> dict[str, Any]:
+    ctx = getattr(runner, "context", None)
     cid = _card_id(args)
     target = str(args.get("column") or "").strip().lower()
     evidence = str(args.get("evidence") or "").strip()
@@ -679,7 +693,7 @@ async def _move(runner: Any, args: dict[str, Any],
     if not target:
         return {"ok": False, "error": "a target column is required"}
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        data, err = await _request(client, "GET", "/cards")
+        data, err = await _request(client, "GET", "/cards", ctx=ctx)
         if err:
             return {"ok": False, "error": err}
         assert data is not None
@@ -696,7 +710,7 @@ async def _move(runner: Any, args: dict[str, Any],
             return {"ok": False,
                     "error": f"no column {target!r} — board columns: "
                              + ", ".join(sorted(columns))}
-        stale = await _stale_check(client, args, cid, card=card)
+        stale = await _stale_check(client, args, cid, card=card, ctx=ctx)
         if stale:
             return stale
         cur = str(card.get("column") or "backlog")
@@ -738,7 +752,7 @@ async def _move(runner: Any, args: dict[str, Any],
         # authorized — do the move, then write the audit comment as ada
         mdata, merr = await _request(
             client, "POST", "/action",
-            json={"id": cid, "do": "move", "column": target})
+            json={"id": cid, "do": "move", "column": target}, ctx=ctx)
         if merr:
             return {"ok": False, "error": merr}
         audit = f"moved {cur} -> {target}"
@@ -746,7 +760,7 @@ async def _move(runner: Any, args: dict[str, Any],
             audit += f" — verified: {evidence}"
         if reason is not None:
             audit += " (Tony confirmed)"
-        posted, cerr = await _comment(client, cid, audit)
+        posted, cerr = await _comment(client, cid, audit, ctx=ctx)
         out: dict[str, Any] = {
             "ok": True, "id": cid, "from": cur, "to": target,
             "message": (mdata or {}).get("message",
@@ -761,6 +775,7 @@ async def _move(runner: Any, args: dict[str, Any],
 
 
 async def _respond(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
+    ctx = getattr(runner, "context", None)
     if not _is_owner(runner):
         return {"ok": False,
                 "error": "answering board requests is restricted to the "
@@ -775,18 +790,19 @@ async def _respond(runner: Any, args: dict[str, Any]) -> dict[str, Any]:
     if not answer:
         return {"ok": False, "error": "answer text is required"}
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        stale = await _stale_check(client, args, cid)
+        stale = await _stale_check(client, args, cid, ctx=ctx)
         if stale:
             return stale
         body = {"id": cid, "request_id": rid,
                 "answer": answer[:_TEXT_MAX], "from": "ada"}
-        data, err = await _request(client, "POST", "/respond", json=body)
+        data, err = await _request(client, "POST", "/respond", json=body,
+                                   ctx=ctx)
         if err and "no card" in err:
-            card = await _resolve(client, cid)
+            card = await _resolve(client, cid, ctx)
             if card is not None:
                 body["id"] = cid = str(card["id"])
                 data, err = await _request(
-                    client, "POST", "/respond", json=body)
+                    client, "POST", "/respond", json=body, ctx=ctx)
     if err:
         return {"ok": False, "error": err}
     return {"ok": True, "id": cid, "request_id": rid,
@@ -799,6 +815,7 @@ async def run(runner: Any, confirmed: Any = None,
               confirm_token: Any = None, **args: Any) -> dict[str, Any]:
     action = str(args.get("action") or "list").strip().lower()
     action = _ACTION_SYNONYMS.get(action, action)
+    ctx = getattr(runner, "context", None)
     # design §6: board ops are Tony-tier — an identified non-owner voice
     # gets the read actions only.
     if action not in _SECONDARY_OK and _is_secondary(runner):
@@ -806,17 +823,17 @@ async def run(runner: Any, confirmed: Any = None,
                 "error": "board writes are the session owner's — ask "
                          "them to make the change in their own voice"}
     if action == "list":
-        return await _list(args)
+        return await _list(ctx, args)
     if action == "read":
-        return await _read(args)
+        return await _read(ctx, args)
     if action == "comment":
-        return await _do_comment(args)
+        return await _do_comment(ctx, args)
     if action == "move":
         return await _move(runner, args, confirmed, confirm_token)
     if action == "ask":
-        return await _ask(args)
+        return await _ask(ctx, args)
     if action == "file":
-        return await _file(args)
+        return await _file(ctx, args)
     if action == "respond":
         return await _respond(runner, args)
     return {"ok": False,

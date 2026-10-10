@@ -39,9 +39,14 @@ Fixture env (tests/scenarios + live debugging):
   ADA_TRACK_TAILSCALE_JSON  'tailscale status --json' output, inline or file
   ADA_TRACK_LANSCAN_JSON    network-scan-latest.json content, inline or file
   ADA_TRACK_LANSCAN_URL     override the /local/ digest URL
-  ADA_TRACK_MDBB            override the fallback beacon store URL
   ADA_TRACK_PUSH_DRYRUN=1   lost-mode pushes logged to runner._track_push_log
                             instead of hitting the relays
+
+MDDB access goes through runner.context.mddb — the runner's routed
+client (ops-split + read-replica failover live inside it). Unit tests
+inject a fake client there (runner-facade, 2026-10-10); the old
+ADA_TRACK_MDBB endpoint-override fallback is gone — in chaba mode
+(context.mddb is None) the beacon source simply goes silent.
 """
 from __future__ import annotations
 
@@ -143,11 +148,10 @@ _ALIASES = {
 }
 
 
-def _mddb_base() -> str:
-    return os.environ.get(
-        "ADA_TRACK_MDBB",
-        os.environ.get("MDDB_BASE_URL",
-                       "http://100.102.134.91:11023/v1")).rstrip("/")
+def _mddb(runner: Any) -> Any | None:
+    """The routed mddb client via the runner.context facade — None in
+    chaba guest mode (no beacon store; those sources go silent)."""
+    return getattr(getattr(runner, "context", None), "mddb", None)
 
 
 def _canon(name: Any) -> str:
@@ -237,43 +241,28 @@ def _tailnet() -> dict[str, dict[str, Any]]:
 async def _mddb_get(runner: Any, key: str) -> dict[str, Any] | None:
     """Point-read <device>/latest — /v1/search ordering is not guaranteed
     and 'latest' keys fall out of the window as history accumulates."""
-    cli = getattr(runner, "mddb", None)
-    if cli is not None:
-        try:
-            doc = await cli.get_document(_COLL, key, "en")
-        except Exception:
-            return None
-        if not isinstance(doc, dict):
-            return None
-        try:
-            return json.loads(doc.get("contentMd") or "{}")
-        except Exception:
-            return None
+    cli = _mddb(runner)
+    if cli is None:
+        return None
     try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.post(f"{_mddb_base()}/get",
-                             json={"collection": _COLL, "key": key,
-                                   "lang": "en"})
-            if r.status_code != 200:
-                return None
-            return json.loads(r.json().get("contentMd") or "{}")
+        doc = await cli.get_document(_COLL, key, "en")
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    try:
+        return json.loads(doc.get("contentMd") or "{}")
     except Exception:
         return None
 
 
 async def _mddb_docs(runner: Any, limit: int = 400) -> list[dict[str, Any]]:
-    cli = getattr(runner, "mddb", None)
+    cli = _mddb(runner)
+    if cli is None:
+        return []
     try:
-        if cli is not None:
-            docs = await cli.search_documents(
-                _COLL, query="*", limit=limit)
-            return docs if isinstance(docs, list) else []
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.post(f"{_mddb_base()}/search",
-                             json={"collection": _COLL, "query": "",
-                                   "limit": limit})
-            docs = r.json()
-            return docs if isinstance(docs, list) else []
+        docs = await cli.search_documents(_COLL, query="*", limit=limit)
+        return docs if isinstance(docs, list) else []
     except Exception:
         return []
 
@@ -283,18 +272,11 @@ async def _mac_registry(runner: Any) -> dict[str, dict[str, Any]]:
     (synced to mddb). Empty when unreachable — LAN matching just falls
     back to hostname."""
     out: dict[str, dict[str, Any]] = {}
-    doc = None
-    cli = getattr(runner, "mddb", None)
+    cli = _mddb(runner)
+    if cli is None:
+        return out
     try:
-        if cli is not None:
-            doc = await cli.get_document(_MACREG_COLL, _MACREG_KEY, "en")
-        else:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(f"{_mddb_base()}/get",
-                                 json={"collection": _MACREG_COLL,
-                                       "key": _MACREG_KEY, "lang": "en"})
-                if r.status_code == 200:
-                    doc = r.json()
+        doc = await cli.get_document(_MACREG_COLL, _MACREG_KEY, "en")
     except Exception:
         return out
     if not isinstance(doc, dict):
@@ -690,25 +672,19 @@ def _watch_key(canon: str) -> str:
 
 async def _mddb_write(runner: Any, op: str, key: str,
                       body: dict[str, Any] | None = None) -> bool:
-    """Upsert/delete a device-telemetry doc — same client/fallback split
-    as _mddb_get (mddb /add upserts on collection+key+lang)."""
+    """Upsert/delete a device-telemetry doc via the routed client
+    (mddb /add upserts on collection+key+lang)."""
     meta = {"kind": ["track-watch"], "device": [key.split("/", 1)[-1]]}
-    cli = getattr(runner, "mddb", None)
+    cli = _mddb(runner)
+    if cli is None:
+        return False
     try:
-        if cli is not None:
-            if op == "delete":
-                await cli.delete_document(_COLL, key)
-            else:
-                await cli.add_document(_COLL, key, "en",
-                                       json.dumps(body or {}), meta=meta)
-            return True
-        payload = {"collection": _COLL, "key": key, "lang": "en"}
-        if op != "delete":
-            payload.update({"contentMd": json.dumps(body or {}),
-                            "meta": meta})
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.post(f"{_mddb_base()}/{op}", json=payload)
-            return r.status_code == 200
+        if op == "delete":
+            await cli.delete_document(_COLL, key)
+        else:
+            await cli.add_document(_COLL, key, "en",
+                                   json.dumps(body or {}), meta=meta)
+        return True
     except Exception:
         return False
 
@@ -735,25 +711,24 @@ async def _drop_watch_doc(runner: Any, canon: str) -> None:
 
 
 async def _watch_doc(runner: Any, canon: str) -> dict[str, Any] | None:
-    """The persisted watch doc. Leader-read on the client path — a
-    follower read right after our own write can lag into a false
-    'deleted' verdict."""
-    cli = getattr(runner, "mddb", None)
-    if cli is not None:
-        try:
-            doc = await cli.get_document(_COLL, _watch_key(canon), "en",
-                                         prefer_leader=True)
-        except TypeError:
-            doc = await cli.get_document(_COLL, _watch_key(canon), "en")
-        except Exception:
-            return None
-        if not isinstance(doc, dict):
-            return None
-        try:
-            return json.loads(doc.get("contentMd") or "{}")
-        except Exception:
-            return None
-    return await _mddb_get(runner, _watch_key(canon))
+    """The persisted watch doc. Leader-read — a follower read right
+    after our own write can lag into a false 'deleted' verdict."""
+    cli = _mddb(runner)
+    if cli is None:
+        return None
+    try:
+        doc = await cli.get_document(_COLL, _watch_key(canon), "en",
+                                     prefer_leader=True)
+    except TypeError:
+        doc = await cli.get_document(_COLL, _watch_key(canon), "en")
+    except Exception:
+        return None
+    if not isinstance(doc, dict):
+        return None
+    try:
+        return json.loads(doc.get("contentMd") or "{}")
+    except Exception:
+        return None
 
 
 def _fp_restore(raw: Any) -> tuple | None:
@@ -1005,7 +980,7 @@ async def resume_watches(runner: Any) -> list[str]:
         _watches(runner)[canon] = watch
         await _persist_watch(runner, canon, watch)   # write the claim
         try:
-            cli = getattr(runner, "mddb", None)
+            cli = _mddb(runner)
             fresh = (await cli.get_document(
                 _COLL, key, "en", prefer_leader=True)) \
                 if cli is not None else await _mddb_get(runner, key)

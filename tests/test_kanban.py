@@ -154,10 +154,17 @@ class ListTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_list_unreachable_is_honest(self):
         client = FakeClient(fail=httpx.ConnectError("refused"))
+        runner = _runner()
         with patch.object(board.httpx, "AsyncClient", return_value=client):
-            out = await board.run(_runner(), action="list")
+            out = await board.run(runner, action="list")
         self.assertFalse(out["ok"])
         self.assertIn("couldn't reach", out["error"])
+        # transport outage -> one ops event via the context facade
+        emit = runner.context.emit_ops_event
+        emit.assert_called_once()
+        self.assertEqual(emit.call_args.args[0],
+                         "kanban_board_unreachable")
+        self.assertEqual(emit.call_args.kwargs["tool"], "kanban")
 
 
 class ReadCardTest(unittest.IsolatedAsyncioTestCase):

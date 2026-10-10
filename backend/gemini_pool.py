@@ -209,13 +209,15 @@ _EVENT_MIN_S = float(os.environ.get("ADA_QUOTA_EVENT_MIN_S", "300"))
 _event_at: dict[str, float] = {}
 
 
-def emit_ops_event(mddb: Any, tool: str, exc: BaseException,
+def emit_ops_event(mddb: Any, tool: str, exc: BaseException | None = None,
                    session_id: str = "", instance: str | None = None,
                    ev_type: str | None = None, detail: str = "") -> None:
     """Fire-and-forget ops event to ada-ha-events-<instance> — the hourly
     chaba report feed surfaces these, so quota burn lands in the digest
     before it reaches zero. Throttled per tool; no-op when mddb is absent
-    (chaba mode) or no event loop is running."""
+    (chaba mode) or no event loop is running. `exc` is optional — tools.d
+    modules emit non-quota events via runner.context.emit_ops_event with
+    just ev_type + detail."""
     if mddb is None:
         return
     try:
@@ -231,10 +233,15 @@ def emit_ops_event(mddb: Any, tool: str, exc: BaseException,
     collection = f"ada-ha-events-{instance}"
     session = str(session_id or "runner")
     ev = ev_type or f"{tool}_quota"
-    content = detail or (
-        f"{tool}: gemini call hit a quota/rate-limit error — "
-        f"key marked exhausted until the daily reset: "
-        f"{type(exc).__name__}: {exc}"[:200])
+    if detail:
+        content = detail
+    elif exc is not None:
+        content = (
+            f"{tool}: gemini call hit a quota/rate-limit error — "
+            f"key marked exhausted until the daily reset: "
+            f"{type(exc).__name__}: {exc}"[:200])
+    else:
+        content = f"{tool}: {ev}"
 
     async def _post() -> None:
         try:

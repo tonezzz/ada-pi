@@ -40,7 +40,7 @@ class ToolRunner(
     """Execute Ada tools for FastAPI and the voice provider."""
 
     def __init__(self, ha_client: HomeAssistantClient, habit_state_getter: Any | None = None, instance_id: str | None = None) -> None:
-        self.context = ToolContext(ha_client=ha_client, habit_state_getter=habit_state_getter)
+        self.context = ToolContext(ha_client=ha_client, habit_state_getter=habit_state_getter, runner=self)
         # CHABA_MEMORY=1 guest mode: file-backed public memory, no MDDB.
         self.chaba = chaba_memory.get_store() if chaba_memory.enabled() else None
         if self.chaba is not None:

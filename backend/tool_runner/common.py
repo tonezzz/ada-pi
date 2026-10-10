@@ -13,7 +13,7 @@ import os
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -829,8 +829,49 @@ def _confirm_fingerprint(tool: str, args: dict[str, Any]) -> str:
 
 @dataclass
 class ToolContext:
+    """tools.d reach surface — the ONE seam a dynamic tool uses for
+    everything it needs from the runner (card ada-toolsd-runner-facade).
+
+      ha_client      HomeAssistantClient for this instance.
+      mddb           the runner's ROUTED MddbClient — the ops-store
+                     split and read-replica failover live inside it, so
+                     tools inherit failover for free. None in chaba
+                     guest mode: the tool degrades, it never hand-rolls
+                     an httpx endpoint fallback around it.
+      session_id     the calling session's id — the per-call ContextVar
+                     the provider sets via execute() first (a shared
+                     runner can't race it), the provider-written runner
+                     field as fallback for REST/test callers.
+      emit_ops_event(ev_type, detail, tool=...)
+                     fire-and-forget ops-event doc to
+                     ada-ha-events-<instance> via
+                     gemini_pool.emit_ops_event — throttled per tool, a
+                     no-op without mddb. A dependency outage lands in
+                     the hourly digest, not just the spoken error.
+
+    Tests inject fakes through this seam (runner.context.mddb =
+    FakeMddb(), a stub ha_client) — env-var endpoint overrides are the
+    old way, not a contract.
+    """
     ha_client: HomeAssistantClient
     habit_state_getter: Any | None = None
+    runner: Any = field(default=None, repr=False, compare=False)
+
+    @property
+    def mddb(self) -> Any | None:
+        return getattr(self.runner, "mddb", None)
+
+    @property
+    def session_id(self) -> str | None:
+        return (_CALLER_SESSION.get()
+                or getattr(self.runner, "session_id", None))
+
+    def emit_ops_event(self, ev_type: str, detail: str = "",
+                       *, tool: str = "") -> None:
+        gemini_pool.emit_ops_event(
+            self.mddb, tool or "tools.d", None,
+            session_id=self.session_id or "",
+            ev_type=ev_type, detail=detail)
 
 
 class AdaMemoryStore:

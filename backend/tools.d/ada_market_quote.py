@@ -26,6 +26,10 @@ error path rather than guessing.
 Every quote carries as_of/age_days/stale — the trade automation is a
 daily job with known gaps (Thai holidays, stalled series), so the model
 must always say the date, never "today" unless as_of really is today.
+
+A hard transport failure posts an ops event through
+runner.context.emit_ops_event (throttled) so an api outage lands in the
+hourly digest, not just the spoken error (runner-facade, 2026-10-10).
 """
 
 from __future__ import annotations
@@ -161,10 +165,12 @@ def _quote(rows: list[dict[str, Any]], label: str, unit: str
 
 
 async def _get(client: httpx.AsyncClient, path: str, params: dict[str, Any]
-               ) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """One trade-api GET -> (rows, err). The api flakes on a cold
-    psycopg2 pool (empty body / dropped connection), so transport-level
-    failures get a single second attempt."""
+               ) -> tuple[list[dict[str, Any]] | None, str | None, bool]:
+    """One trade-api GET -> (rows, err, api_down). The api flakes on a
+    cold psycopg2 pool (empty body / dropped connection), so
+    transport-level failures get a single second attempt. api_down is
+    True only when every attempt failed at transport/parse level — the
+    outage class worth an ops event; an HTTP>=400 is app-level."""
     url = f"{_base_url()}{path}"
     err = None
     for attempt in (1, 2):
@@ -183,13 +189,13 @@ async def _get(client: httpx.AsyncClient, path: str, params: dict[str, Any]
                 else None
             return None, (str(msg) or
                           f"the market database returned HTTP "
-                          f"{resp.status_code}")
+                          f"{resp.status_code}"), False
         if not isinstance(data, dict):
             err = "the market database returned an unreadable response"
             continue
         rows = data.get("data")
-        return (rows if isinstance(rows, list) else [data]), None
-    return None, err
+        return (rows if isinstance(rows, list) else [data]), None, False
+    return None, err, True
 
 
 async def run(runner: Any, **args: Any) -> dict[str, Any]:
@@ -209,8 +215,15 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
     params = {"start_date": since, "limit": 500}
 
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        rows, err = await _get(client, path, params)
+        rows, err, api_down = await _get(client, path, params)
     if err:
+        if api_down:
+            ctx = getattr(runner, "context", None)
+            if ctx is not None:
+                ctx.emit_ops_event(
+                    "market_quote_api_down",
+                    f"ada_market_quote kind={kind}: {err}",
+                    tool="ada_market_quote")
         return {"ok": False, "error": err}
     assert rows is not None
     if not rows:
