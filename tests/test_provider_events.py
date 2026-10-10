@@ -1,10 +1,11 @@
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from google.genai import types
 
-from backend.realtime_provider import GeminiLiveProvider, _phantom_claim
+from backend.realtime_provider import (
+    GeminiLiveProvider, _claim_backing_call, _phantom_claim)
 
 
 class InterruptedSession:
@@ -379,6 +380,30 @@ class PhantomClaimRegexTests(unittest.TestCase):
         ):
             self.assertTrue(_phantom_claim(text), text)
 
+    def test_board_write_claims(self) -> None:
+        """Card ada-phantom-card-claims (session 67b02417a8): both
+        narrated phantom lines must trip the detector now."""
+        for text in (
+            "Done — I filed a card for it.",
+            "I posted a card on the board.",
+            "Moved the card to doing.",
+            "I put that on the board.",
+            "เปิดการ์ดให้ Devin จัดการเรื่องฟังเสียง เรียบร้อยแล้ว อยู่ใน Doing",
+            "เรื่องปฏิทินได้บันทึกไว้บนบอร์ดแล้ว",
+            "ลงบอร์ดแล้วครับ",
+        ):
+            self.assertTrue(_phantom_claim(text), text)
+
+    def test_board_non_claims(self) -> None:
+        for text in (
+            "I couldn't file the card — the board is down.",
+            "I can file a card for it if you want.",
+            "เดี๋ยวจะเปิดการ์ดให้นะ",          # intent, no done marker
+            "การ์ดใบนี้อยู่ใน doing ตั้งแต่เมื่อวาน",  # read-backed state
+            "I opened the card — it says low priority.",
+        ):
+            self.assertFalse(_phantom_claim(text), text)
+
     def test_negated_save_is_not_a_claim(self) -> None:
         self.assertFalse(_phantom_claim(
             "I couldn't get it saved — the write was refused."))
@@ -387,6 +412,104 @@ class PhantomClaimRegexTests(unittest.TestCase):
 
     def test_present_tense_intent_is_not_a_claim(self) -> None:
         self.assertFalse(_phantom_claim("I'll save that for you now."))
+
+
+class ClaimBackingCallTests(unittest.TestCase):
+    """Only a mutating/actuating call may back a narrated write claim —
+    a passed read must not whitewash it (card ada-phantom-card-claims)."""
+
+    def test_board_writes_back_a_claim(self) -> None:
+        for action in ("file", "create", "comment", "move", "ask",
+                       "respond"):
+            self.assertTrue(
+                _claim_backing_call("kanban", {"action": action}), action)
+        self.assertTrue(_claim_backing_call("ada_remember", {}))
+        self.assertTrue(_claim_backing_call("cms_publish_page", {}))
+        self.assertTrue(_claim_backing_call("devin", {"action": "dispatch"}))
+        self.assertTrue(
+            _claim_backing_call("cast_to_screen", {"action": "cast"}))
+
+    def test_reads_never_back_a_claim(self) -> None:
+        for name, args in (
+            ("kanban", {"action": "list"}),
+            ("kanban", {"action": "read"}),
+            ("tasks", {"action": "list"}),
+            ("ada_ops", {"action": "research"}),
+            ("docs", {"action": "get"}),
+            ("drive", {"action": "search"}),
+            ("yt", {"action": "status"}),
+            ("cast_to_screen", {"action": "list"}),
+            ("ada_memory_search", {"query": "x"}),
+            ("web_search", {"query": "x"}),
+            ("get_home_state", {}),
+            ("set_facial_expression", {"expression": "sassy"}),
+            ("ada_camera_snapshot", {"camera": "front"}),
+        ):
+            self.assertFalse(_claim_backing_call(name, args), name)
+
+    def test_camera_push_to_display_is_backing(self) -> None:
+        self.assertTrue(
+            _claim_backing_call("ada_camera_snapshot", {"screen": 2}))
+
+
+class PhantomKanbanTurnSession:
+    """One kanban call (faked through the runner) then a turn that
+    narrates a filed card — whether the ops event fires depends on
+    whether the call's action can back the claim."""
+
+    def __init__(self, provider, action):
+        self.provider = provider
+        self.action = action
+        self.responses = []
+        self._sent_call = False
+
+    async def receive(self):
+        if not self._sent_call:
+            self._sent_call = True
+            if self.action is not None:
+                yield types.LiveServerMessage(
+                    tool_call=types.LiveServerToolCall(function_calls=[
+                        types.FunctionCall(
+                            id="kb-1", name="kanban",
+                            args={"action": self.action})]))
+        yield types.LiveServerMessage(
+            server_content=types.LiveServerContent(
+                output_transcription=types.Transcription(
+                    text="Done — I filed a card for it on the board."),
+                turn_complete=True))
+        self.provider._closed = True
+
+    async def send_tool_response(self, *, function_responses):
+        self.responses.extend(function_responses)
+
+
+class PhantomWriteClaimGateTests(unittest.IsolatedAsyncioTestCase):
+    async def _run(self, action, result):
+        runner = MagicMock()
+        runner.execute = AsyncMock(return_value=result)
+        provider = GeminiLiveProvider(tool_runner=runner)
+        provider._session = PhantomKanbanTurnSession(provider, action)
+        provider._emit_ops_event = MagicMock()
+        async for _ in provider.events():
+            pass
+        return [c.args[0] for c in provider._emit_ops_event.call_args_list
+                if c.args and c.args[0] == "phantom_write_claim"]
+
+    async def test_read_call_does_not_back_a_write_claim(self):
+        fired = await self._run("list", {"ok": True, "cards": []})
+        self.assertEqual(len(fired), 1)
+
+    async def test_zero_call_claim_fires(self):
+        fired = await self._run(None, None)
+        self.assertEqual(len(fired), 1)
+
+    async def test_write_call_backs_the_claim(self):
+        fired = await self._run("file", {"ok": True, "id": "p1"})
+        self.assertEqual(fired, [])
+
+    async def test_failed_write_still_fires(self):
+        fired = await self._run("file", {"ok": False, "error": "nope"})
+        self.assertEqual(len(fired), 1)
 
 
 if __name__ == "__main__":

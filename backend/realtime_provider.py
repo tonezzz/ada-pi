@@ -253,10 +253,25 @@ _PHANTOM_CLAIM_RE = re.compile(
     # 2026-10-07 confirm-gate flake: Ada narrated "saved" over six
     # NOT-EXECUTED ada_remember denials — the write-claim wordset was
     # missing the exact verb the model reaches for.
-    r"|saved|stored|memori[sz]ed|jotted down|kept (?:a )?note)"
+    r"|saved|stored|memori[sz]ed|jotted down|kept (?:a )?note|filed)"
+    # board write claims (card ada-phantom-card-claims, session
+    # 67b02417a8 — two "card filed" narrations, zero file calls):
+    # "posted a card", "moved it to doing", "put that on the board".
+    # ('opened' is left out — "opened the card" is a read, not a write.)
+    r"|\b(?:posted|dropped|added|put|logged|raised|moved|created|made)\b"
+    r"[^.\n]{0,40}?\b(?:card|kanban|board)\b"
     r"|\b(?:is|are|now)\s+(?:showing|displayed|playing|up)\s+on\s+(?:the\s+)?screen\b"
     r"|\bon screen (?:now|\d)\b"
     r"|จดไว้|บันทึกไว้|บันทึกแล้ว|จำไว้|เก็บไว้|รับทราบ"
+    # board write claims in Thai — the phantom lines were
+    # "เปิดการ์ดให้ Devin จัดการ…เรียบร้อยแล้ว อยู่ใน Doing" and
+    # "บันทึกไว้บนบอร์ดแล้ว": write-verb + การ์ด/บอร์ด carrying a done
+    # marker (bare "อยู่ใน doing" stays out — a read-backed state report
+    # is honest).
+    r"|(?:เปิด|สร้าง|เพิ่ม|ย้าย|ปิด|ลง)\s*การ์ด[^.\n]{0,60}?(?:แล้ว|เรียบร้อย|เสร็จ)"
+    r"|การ์ด[^.\n]{0,30}?(?:เรียบร้อย|เสร็จแล้ว)"
+    r"|(?:ลง|ขึ้น)บอร์ด[^.\n]{0,20}?(?:แล้ว|เรียบร้อย|ไว้)"
+    r"|บันทึก[^.\n]{0,15}?บอร์ด"
     # display/cast completion claims in Thai — "แสดงผล...แล้ว", "ขึ้นจอ 3 แล้ว"
     r"|(?:แสดงผล|ขึ้น(?:ที่)?จอ|บนจอ|ส่ง(?:ไป)?(?:ที่)?จอ)[^.\n]{0,40}(?:แล้ว|เรียบร้อย)"
 )
@@ -275,6 +290,60 @@ def _phantom_claim(text: str) -> bool:
         if not _PHANTOM_NEGATION_RE.search(text[: m.start()][-48:]):
             return True
         m = _PHANTOM_CLAIM_RE.search(text, m.end())
+    return False
+
+
+# What can back a narrated write/done claim: a claim is honest only when
+# a call that could produce it returned ok this turn — a passed READ
+# must not whitewash it. Card ada-phantom-card-claims (session
+# 67b02417a8): two "card filed" narrations with zero write calls went
+# unflagged because the old gate counted ANY successful call — a kanban
+# list or memory_search — as cover. Tools absent from both maps
+# (searches, status/state reads) never back a claim.
+_CLAIM_BACKING_ACTIONS = {
+    # action-routed tools — only the write seats count. Read actions
+    # (kanban list/read, tasks list, cast list/status, yt status/
+    # transcript, docs search/get, drive search/get/show, ada_ops
+    # usage/health/check/research) fall through to False.
+    "kanban": frozenset({"file", "create", "new", "comment", "move",
+                         "ask", "respond"}),
+    "tasks": frozenset({"add", "done", "move"}),
+    "ada_ops": frozenset({"outcome"}),
+    "cms_edit": frozenset({"note", "delete", "automate", "edit"}),
+    "docs": frozenset({"archive", "print"}),
+    "drive": frozenset({"update"}),
+    "yt": frozenset({"cast", "stop"}),
+    "ada_persona": frozenset({"set", "reset", "set_voice"}),
+    "cast_to_screen": frozenset({
+        "nav", "play", "image", "audio", "cast", "shortcut", "stop",
+        "layout", "zoom", "unzoom", "uplink", "uplink-stop", "say"}),
+}
+_CLAIM_BACKING_TOOLS = frozenset({
+    # Whole-tool writes/actuations — every ok result can back a claim.
+    "ada_remember", "ada_forget", "calendar_write", "cms_publish_page",
+    "devin", "chat_send", "ada_enroll_speaker", "control_entity",
+    "tv_action", "gev_command", "cctv_wall", "vcast_gesture",
+    "ada_render_video", "ada_member_keys", "ada_device_acl",
+    "speaker_profiles", "ada_track_device", "voice_fx",
+    "ada_resolve_action", "report_habit_observation",
+})
+
+
+def _claim_backing_call(name: str, args: dict[str, Any]) -> bool:
+    """True when an ok result from this call could honestly back a
+    narrated write/done claim — mutating tools and the mutating seats of
+    action-routed tools."""
+    if name in _CLAIM_BACKING_TOOLS:
+        return True
+    acts = _CLAIM_BACKING_ACTIONS.get(name)
+    if acts is not None:
+        return str((args or {}).get("action") or "").strip().lower() in acts
+    if name == "ada_camera_snapshot":
+        # A frame pushed to a display is an actuation; a bare describe
+        # is a read (same split as the actuation budget).
+        args = args or {}
+        return bool(args.get("screen")) or str(
+            args.get("target") or "").strip().lower() in ("tv", "screen")
     return False
 
 
@@ -855,10 +924,10 @@ Conversation discipline:
 - Gather the minimum tool data needed, then answer — never enumerate devices, sensors, or settings to answer a memory or planning question.
 - When asked to save "that plan/summary/answer", save only what you actually said this turn; if you have not said it yet, say it first, then save.
 - If a tool, service, or lookup fails or is unavailable, say so plainly and offer the nearest fallback — never describe an imagined state.
-- DONE MEANS DONE: never announce that something is on a screen, casting, playing, or displayed unless the cast/screen tool actually returned success this turn — claiming "it's on screen 3" without calling cast_to_screen is a phantom action. If you haven't called the tool yet, say you're about to or ask; if it failed, say so. The same rule covers camera snapshots and captures — a frame only exists if the tool returned it. Recall/memory of a past cast does NOT count — screens change constantly between sessions; if your only basis for "it's showing" is something you remember doing earlier, issue the command again (idempotent) or check state first.
+- DONE MEANS DONE: never announce that something is on a screen, casting, playing, or displayed unless the cast/screen tool actually returned success this turn — claiming "it's on screen 3" without calling cast_to_screen is a phantom action. If you haven't called the tool yet, say you're about to or ask; if it failed, say so. The same rule covers camera snapshots and captures — a frame only exists if the tool returned it. Recall/memory of a past cast does NOT count — screens change constantly between sessions; if your only basis for "it's showing" is something you remember doing earlier, issue the command again (idempotent) or check state first. Board writes follow the same law: a kanban card exists only when kanban action='file' (or comment/move/ask) returned ok THIS turn — then you may say "on the board" with the card id. Narrating a filed/moved card from intent or memory is a phantom write: the board is the record, so if the tool didn't confirm it, it didn't happen — say the write didn't land and offer to retry.
 - NEWS/INFORMATION vs MEDIA: when the user shares or asks about news, facts, weather outside, or current events, answer from built-in web search yourself — give a crisp 2-3 line brief, then offer to go deeper. yt(action='cast')/vcast are ONLY for explicitly requested video/web playback on a screen — never cast information lookups instead of answering them.
 - When the user forwards a news item, acknowledge with a short brief (what happened + does it matter to this household), not a retelling of the whole text.
-- Request capture: when the user asks for work that cannot be done in this conversation — a build, a fix, a "remember to" or "for later" — file it on the board with kanban action='file' (title = the ask, note = one line of context) before the topic moves on, and say so in one short phrase ("on the board"). Complaints and wishes count as requests: "X is broken", "this button is too small", "I wish it did Y" are fix-requests — file them the same way WITHOUT asking permission first (the complaint is the request; asking "want me to file it?" adds a dead turn). Put the surface in the note (which page/card/app). A request that stays only in conversation is lost; do not over-file one-liners, questions, or things already on a card.
+- Request capture: when the user asks for work that cannot be done in this conversation — a build, a fix, a "remember to" or "for later" — file it on the board with kanban action='file' (title = the ask, note = one line of context) before the topic moves on, and — only once the tool returns ok — say so in one short phrase ("on the board, card <id>"). Complaints and wishes count as requests: "X is broken", "this button is too small", "I wish it did Y" are fix-requests — file them the same way WITHOUT asking permission first (the complaint is the request; asking "want me to file it?" adds a dead turn). Put the surface in the note (which page/card/app). A request that stays only in conversation is lost; do not over-file one-liners, questions, or things already on a card.
 - Idea momentum: filing is the floor, not the goal — Tony's standing order is that voiced ideas keep moving through the loop (card → spec → advice/options → dispatch) without waiting for an explicit "do it". After filing, if the idea needs a Tony decision, raise it as a kanban request with option buttons right away; if it needs nothing from him, note that it's ready to dispatch. Only genuinely Tony-gated things (spend, unprecedented production change, ambiguous direction) may stop at the card.
 
 Date & time:
@@ -4569,6 +4638,10 @@ class GeminiLiveProvider(RealtimeProvider):
         # "saved" narrated over a NOT-EXECUTED result surfaces as an
         # ops event, not just zero-tool-call phantoms.
         failed_results_this_turn = 0
+        # ok results from calls that can back a write/done claim — a
+        # passed READ must not whitewash a claim (session 67b02417a8:
+        # narrated cards over zero write calls went unflagged).
+        backing_calls_this_turn = 0
         # (name, normalized result) pairs this turn — the dead-turn
         # guard's retry nudge and synthesized fallback read the answer
         # back out of these when the model emits nothing speakable.
@@ -5130,6 +5203,9 @@ class GeminiLiveProvider(RealtimeProvider):
                         result = normalize_tool_result(result)
                         if result.get("ok") is False:
                             failed_results_this_turn += 1
+                        elif _claim_backing_call(
+                                str(call.name), dict(call.args or {})):
+                            backing_calls_this_turn += 1
                         turn_tool_results.append((str(call.name), result))
                         # tool= is the resolved canonical; emitted= keeps
                         # the as-called name (alias or typo) for the
@@ -5254,6 +5330,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     self._response_active = False
                     tool_calls_this_turn = 0
                     failed_results_this_turn = 0
+                    backing_calls_this_turn = 0
                     actuations_this_turn = 0
                     budget_hit = False
                     budget_nudged = False
@@ -5356,16 +5433,19 @@ class GeminiLiveProvider(RealtimeProvider):
                     barge_pending = False
                     input_transcript = ""
                     n_tools_this_turn = tool_calls_this_turn
-                    # A write claim is honest only when a tool ran and
-                    # nothing it touched failed — claiming "saved" over a
-                    # NOT-EXECUTED result is the same phantom class as
-                    # claiming one with no call at all (2026-10-07 flake).
+                    # A write claim is honest only when a call that can
+                    # back it returned ok this turn — claiming "saved"
+                    # over a NOT-EXECUTED result is the same phantom
+                    # class as claiming one with no call at all
+                    # (2026-10-07 flake), and a passed READ doesn't back
+                    # a write (card ada-phantom-card-claims: narrated
+                    # board cards while only reads/zero calls ran).
                     if _phantom_claim(assistant_turn_text) and (
-                            tool_calls_this_turn == 0
+                            backing_calls_this_turn == 0
                             or failed_results_this_turn):
                         _claim_basis = (
-                            "no tool call this turn"
-                            if tool_calls_this_turn == 0 else
+                            "no backing write call this turn"
+                            if backing_calls_this_turn == 0 else
                             f"{failed_results_this_turn} failed tool "
                             "result(s) this turn")
                         self._emit_ops_event(
@@ -5375,6 +5455,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         )
                     tool_calls_this_turn = 0
                     failed_results_this_turn = 0
+                    backing_calls_this_turn = 0
                     actuations_this_turn = 0
                     budget_hit = False
                     budget_nudged = False

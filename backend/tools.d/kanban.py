@@ -469,10 +469,33 @@ async def _do_comment(args: dict[str, Any]) -> dict[str, Any]:
             "message": msg or "comment added"}
 
 
+_CARD_CREATED_RE = re.compile(r"card\s+([a-z0-9][a-z0-9._-]*)",
+                              re.IGNORECASE)
+
+
+def _filed_card_id(data: dict[str, Any] | None) -> str | None:
+    """Pull the created card's id out of a POST /card response — the
+    field name isn't fixed, so check the known spots then the message
+    text ('card <id> created')."""
+    data = data or {}
+    for key in ("id", "card_id"):
+        cid = str(data.get(key) or "").strip()
+        if cid:
+            return cid
+    card = data.get("card")
+    if isinstance(card, dict) and card.get("id"):
+        return str(card["id"])
+    m = _CARD_CREATED_RE.search(str(data.get("message") or ""))
+    return m.group(1) if m else None
+
+
 async def _file(args: dict[str, Any]) -> dict[str, Any]:
     """Drop a new card onto the board — the voice-side capture of the
     request lifecycle. The card lands in backlog for triage, comms
-    record 'ada'."""
+    record 'ada'. Verify-after-write (card ada-phantom-card-claims): the
+    board IS the record — a 200 that landed nothing would let the
+    narration claim a card that silently drops the ask, so the tool
+    confirms the card is readable before reporting ok."""
     title = str(args.get("title") or "").strip()
     if not title:
         return {"ok": False, "error": "a card title is required"}
@@ -493,12 +516,42 @@ async def _file(args: dict[str, Any]) -> dict[str, Any]:
         body["priority"] = pri
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         data, err = await _request(client, "POST", "/card", json=body)
-    if err:
-        return {"ok": False, "error": err}
-    return {"ok": True,
-            "message": (data or {}).get("message", "card created"),
-            "note": "the card is on the board in backlog — triage picks "
-                    "it up from there"}
+        if err:
+            return {"ok": False, "error": err}
+        cid = _filed_card_id(data)
+        verified = False
+        vdata, verr = await _request(client, "GET", "/cards")
+        if not verr and vdata is not None:
+            cards = _cards_only(vdata.get("cards"))
+            found = _resolve_in(cards, cid) if cid else None
+            if found is None:
+                want = _slug(title)
+                titled = [c for c in cards
+                          if _slug(str(c.get("title") or "")) == want]
+                found = titled[0] if len(titled) == 1 else None
+            if found is None:
+                return {"ok": False,
+                        "error": "the board acknowledged the write but "
+                                 "no card appeared — it did not file. "
+                                 "Say the write didn't land; retry or "
+                                 "leave it for Tony."}
+            cid = str(found.get("id") or "") or cid
+            verified = True
+    out: dict[str, Any] = {
+        "ok": True,
+        "message": (data or {}).get("message", "card created"),
+        "note": "the card is on the board — triage picks it up from "
+                "there",
+    }
+    if cid:
+        out["id"] = cid
+        out["note"] = (f"card '{cid}' is on the board — say 'on the "
+                       "board' with the id so the claim stays checkable")
+    if not verified:
+        out["warning"] = ("couldn't verify the card landed — the board "
+                          "read failed after the write; check "
+                          "action='list' before claiming it's filed")
+    return out
 
 
 async def _ask(args: dict[str, Any]) -> dict[str, Any]:

@@ -1,0 +1,95 @@
+# SSOT Job: Phantom kanban writes — narrated cards that were never filed
+# Card: ada-phantom-card-claims (chaba kanban). Dispatch
+# 20261010-010520-ada-phantom-writes-narrates-ka (runner mn01).
+
+title: Phantom-write guard for kanban claims — detector gap + verify-after-write
+
+planning:
+  goal: |
+    Session 67b02417a8: Ada narrated "เปิดการ์ดให้ Devin จัดการเรื่องฟังเสียง
+    เรียบร้อยแล้ว อยู่ใน Doing" and later "เรื่องปฏิทินได้บันทึกไว้บนบอร์ดแล้ว"
+    — the journal showed NO kanban file call and no such card. The board is
+    the memory; a narrated-but-absent card silently drops Tony's ask.
+    Three layered fixes per the card's directions:
+      (a) instructions — board writes join DONE MEANS DONE (claim only on
+          an ok tool result this turn; speak the card id).
+      (b) kanban action='file' verifies the write (GET /cards after POST
+          /card) and returns the card id so narration carries a checkable
+          fact.
+      (c) phantom_write_claim detector — two holes closed:
+          i)  the claim regex had no board vocabulary (เปิดการ์ด/บอร์ด,
+              "filed/posted/moved ... card/board", "filed").
+          ii) the gate counted ANY successful tool call as cover — a
+              passed kanban list or memory_search whitewashed a write
+              claim. Now only an ok result from a call that can mutate
+              (write/actuation seats) backs the claim.
+  scope: |
+    - backend/realtime_provider.py — _PHANTOM_CLAIM_RE board vocabulary
+      (EN+TH); _CLAIM_BACKING_TOOLS/_CLAIM_BACKING_ACTIONS +
+      _claim_backing_call() classifier; events() tracks
+      backing_calls_this_turn and gates the ops event on
+      (backing==0 or failed>0); system-instruction DONE MEANS DONE +
+      request-capture lines extended.
+    - backend/tools.d/kanban.py — _file() verify-after-write: POST /card
+      then GET /cards; no card on the board -> ok:False honest error.
+      Result carries id + a speakable note naming the id. Unverifiable
+      read after a real write -> ok + warning, never a false failure.
+    - tests/test_kanban.py — FileTest: verified id, absent-card failure,
+      unverifiable-read warning, title-slug verify fallback.
+    - tests/test_provider_events.py — PhantomClaimRegexTests board
+      phrases (both observed phantom lines + negation/intent/read-state
+      non-claims); ClaimBackingCallTests for the classifier;
+      PhantomWriteClaimGateTests — end-to-end events() gate: read-only
+      call / zero calls / failed write fire, ok write call backs.
+  success_criteria:
+    - '"filed/posted/moved/put ... card/board" and the Thai phantom lines
+      trip _phantom_claim'
+    - 'a turn narrating a filed card over only kanban action=list (or no
+      calls) emits phantom_write_claim; over ok action=file it does not'
+    - 'kanban file returns ok:False when POST /card 200s but the card
+      never lands; ok+warning when the verify read fails'
+  risks:
+    - 'The tightened gate flags any claim-phrase turn with only read
+      calls — a state report like "card is in doing" after a read is
+      deliberately NOT in the regex (writes only), but borderline phrasing
+      may add ops-event noise; events are flags, not interventions.'
+    - 'Verify-after-write adds one GET /cards to every file — reads are
+      fast; on read failure the write still reports ok + warning.'
+  owner: tony
+  estimated_duration: 1 session
+
+processing:
+  status: done
+  started_at: "2026-10-10"
+  steps:
+    - id: 1
+      label: "Detector: board vocabulary in _PHANTOM_CLAIM_RE"
+      status: done
+      notes: "EN write-verbs + card/kanban/board objects; Thai verb+การ์ด with done markers, ลง/ขึ้นบอร์ด, บันทึก..บอร์ด. Bare state claims ('อยู่ใน doing', 'opened the card') stay out."
+    - id: 2
+      label: "Detector: backing-call gate"
+      status: done
+      notes: "_claim_backing_call classifies mutating seats (kanban write actions, tasks add/done/move, ada_ops outcome, cms_edit, docs archive/print, drive update, yt cast/stop, cast_to_screen actuations, whole-tool writers); events() counts ok backing results per turn."
+    - id: 3
+      label: "kanban file verify-after-write + card id"
+      status: done
+      notes: "_filed_card_id parses id/card_id/card.id or 'card <id>' from message; GET /cards resolves by id then title-slug; absent -> ok:False; read failure -> ok + warning."
+    - id: 4
+      label: "Instructions"
+      status: done
+      notes: "DONE MEANS DONE gains the board clause (claim only on this-turn ok, speak the card id); request-capture rule says 'on the board' only after the tool returns ok."
+    - id: 5
+      label: "Verify"
+      status: done
+      notes: "983 unittest discover — only pre-existing/environmental failures (test_devteam needs pytest absent from venv; 2 test_tool_audit lint tests CI-deselected, voice_fx/yt_cached_list debt identical on base). tool-lint parity confirmed via stash diff."
+
+invoke:
+  voice:
+    - '"put that on the board" -> kanban action=file -> ok verified -> "on the board, card <id>"'
+  env:
+    ADA_BOARD_API_URL: "board-api base (default https://tony-dell.taila0626a.ts.net/apps/board-api)"
+
+verification:
+  - "python -m unittest tests.test_kanban tests.test_provider_events  # 91 tests"
+  - "python -m unittest discover -s tests  # 983; only pre-existing failures"
+  - "python scripts/tool-lint.py  # same 3 pre-existing violations as base"
