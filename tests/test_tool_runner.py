@@ -1401,6 +1401,108 @@ class MetaVoiceMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out, {"ok": True, "name": "Nat"})
 
 
+class AclExplainTests(unittest.IsolatedAsyncioTestCase):
+    """ada_ops action='acl_explain' (card ada-acl-explain) — one call
+    answers 'why can <identity> do <thing>' by naming the deciding ACL
+    layer. The runner gates consume the same resolver, so the explain
+    verdict is the gate verdict."""
+
+    async def asyncSetUp(self):
+        self.ha_client = AsyncMock()
+        self.ha_client.base_url = "http://test:8123"
+        self.runner = ToolRunner(self.ha_client, instance_id="test")
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
+        path = Path(tempfile.mkdtemp()) / "banks.json"
+        path.write_text(json.dumps({
+            "banks": {
+                "general": {
+                    "scope": "shared", "instances": ["test"],
+                    "mddb_collection": "c-gen", "writable": True,
+                    "write_policy": "confirmed",
+                    "allowed_tools": ["ada_remember", "ada_outcome"],
+                    "status": "active"},
+                "personal": {
+                    "scope": "instance", "instances": ["test"],
+                    "mddb_collection": "c-p", "writable": True,
+                    "allowed_tools": ["ada_remember"],
+                    "status": "active"},
+            },
+            "person_policies": {
+                "person.kk": {"allow": ["general"]},
+            },
+            "control_policies": {
+                "person.kk": {"allow_domains": ["light", "switch"]},
+                "person.tony": {"full": True},
+            },
+        }))
+        self.runner._banks = MemoryBankRegistry(
+            path=str(path), instance="test", notebook_ids={})
+
+    async def test_explain_granted_names_layer(self):
+        out = await self.runner.execute("ada_ops", {
+            "action": "acl_explain", "identity": "person.kk",
+            "entity_id": "light.kitchen"})
+        self.assertTrue(out["allowed"])
+        self.assertEqual(out["verdict"], "allowed")
+        self.assertEqual(out["decided_by"], "control_policies")
+        self.assertTrue(out["trace"])
+
+    async def test_explain_denied_names_layer(self):
+        out = await self.runner.execute("ada_ops", {
+            "action": "acl_explain", "identity": "person.kk",
+            "entity_id": "cover.gate"})
+        self.assertFalse(out["allowed"])
+        self.assertEqual(out["verdict"], "denied")
+        self.assertEqual(out["decided_by"], "control_policies")
+        self.assertEqual(out["trace"][-1]["rule"], "allow_domains")
+
+    async def test_explain_full_identity(self):
+        out = await self.runner.execute("ada_ops", {
+            "action": "acl_explain", "identity": "person.tony",
+            "entity_id": "cover.gate"})
+        self.assertTrue(out["allowed"])
+        self.assertEqual(out["trace"][-1]["rule"], "full")
+
+    async def test_explain_bank_write_names_layer(self):
+        # kk may read 'general' (policy allow) but ada_forget isn't in
+        # the bank's allowed_tools — the write denies at a different
+        # layer than the read.
+        out = await self.runner.execute("ada_ops", {
+            "action": "acl_explain", "identity": "person.kk",
+            "bank": "general"})
+        self.assertTrue(out["allowed"])
+        out = await self.runner.execute("ada_ops", {
+            "action": "acl_explain", "identity": "person.kk",
+            "bank": "general", "tool": "ada_forget"})
+        self.assertFalse(out["allowed"])
+        self.assertEqual(out["decided_by"], "bank.allowed_tools")
+        out = await self.runner.execute("ada_ops", {
+            "action": "acl_explain", "identity": "person.kk",
+            "bank": "general", "tool": "ada_ops"})
+        # bank config lists the LEGACY name ada_outcome — the alias
+        # expansion lets the canonical ada_ops through.
+        self.assertTrue(out["allowed"])
+        self.assertEqual(out["verdict"], "needs_confirmation")
+        # kk's allow list doesn't include 'personal'.
+        out = await self.runner.execute("ada_ops", {
+            "action": "acl_explain", "identity": "person.kk",
+            "bank": "personal", "tool": "ada_remember"})
+        self.assertFalse(out["allowed"])
+        self.assertEqual(out["decided_by"], "person_policies")
+
+    async def test_explain_requires_subject(self):
+        out = await self.runner.execute(
+            "ada_ops", {"action": "acl_explain"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
+
+    async def test_explain_defaults_identity_to_session(self):
+        self.runner.session_caller_name = "user-kk"
+        out = await self.runner.execute("ada_ops", {
+            "action": "acl_explain", "entity_id": "light.kitchen"})
+        self.assertEqual(out["identity"], "user-kk")
+
+
 def _doc_registry(instance="test") -> MemoryBankRegistry:
     """Hermetic registry WITH a 'documents' bank — the photo/doc flows
     absorbed into chat_send are owner-tier (DRIVE_TOOLS bank gate), so a

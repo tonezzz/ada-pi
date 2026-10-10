@@ -331,6 +331,169 @@ class RegistryTests(unittest.TestCase):
             finally:
                 mb.GRANTS_PATH, mb._grants_cache = orig_path, orig_cache
 
+class AclDecisionTests(unittest.TestCase):
+    """Unified ACL resolver (card ada-acl-explain): acl_decision() is the
+    single function the gates delegate to — verdicts must match the old
+    bool APIs AND name the deciding layer."""
+
+    def _spec(self):
+        spec = json.loads(json.dumps(REGISTRY))
+        spec["banks"]["personal-kk"] = {
+            "scope": "person",
+            "instances": ["tony"],
+            "mddb_collection": "ada-ha-bank-personal-kk",
+            "writable": True,
+            "allowed_tools": ["ada_remember"],
+            "person_scope": "person.kk",
+            "status": "active",
+        }
+        spec["person_policies"] = {
+            "person.kk": {"allow": ["general", "personal-kk"]},
+            "person.tony": {"full": True},
+            "unknown": {"allow": ["general"]},
+        }
+        spec["control_policies"] = {
+            "person.kk": {"allow_domains": ["light", "media_player"],
+                          "deny_entities": ["media_player.bedroom_tv"]},
+            "person.tony": {"full": True},
+            "unknown": {"allow_domains": ["light"]},
+        }
+        return spec
+
+    def test_control_granted_names_layer(self):
+        reg = _registry(instance="tony", spec=self._spec())
+        d = reg.acl_decision("person.kk", entity_id="light.kitchen")
+        self.assertTrue(d["allowed"])
+        self.assertEqual(d["verdict"], "allowed")
+        self.assertEqual(d["decided_by"], "control_policies")
+        self.assertTrue(d["trace"])
+
+    def test_control_denied_names_layer(self):
+        reg = _registry(instance="tony", spec=self._spec())
+        d = reg.acl_decision("person.kk", entity_id="cover.gate")
+        self.assertFalse(d["allowed"])
+        self.assertEqual(d["verdict"], "denied")
+        self.assertEqual(d["decided_by"], "control_policies")
+        self.assertEqual(d["trace"][-1]["rule"], "allow_domains")
+
+    def test_control_ambiguous_grant_loses_to_deny(self):
+        # Ambiguous: a device grant EXISTS but deny_entities still wins —
+        # the trace must show the deciding layer, not the losing one.
+        import backend.memory_banks as mb
+        reg = _registry(instance="tony", spec=self._spec())
+        grants = {"person.kk": {
+            "media_player.bedroom_tv": {"by": "person.tony",
+                                        "granted_at": "2026-10-10T00:00:00+00:00"}}}
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+            json.dump(grants, f)
+            f.flush()
+            orig_path, orig_cache = mb.GRANTS_PATH, mb._grants_cache
+            try:
+                mb.GRANTS_PATH = mb.Path(f.name)
+                mb._grants_cache = (0.0, {})
+                d = reg.acl_decision(
+                    "person.kk", entity_id="media_player.bedroom_tv")
+                self.assertFalse(d["allowed"])
+                self.assertEqual(d["trace"][-1]["rule"], "deny_entities")
+                # ...and a grant on a non-denied entity decides allow,
+                # crediting the grant layer and its 'by' provenance.
+                grants["person.kk"]["cover.gate"] = {"by": "person.tony"}
+                f.seek(0)
+                f.truncate()
+                json.dump(grants, f)
+                f.flush()
+                mb._grants_cache = (0.0, {})
+                d3 = reg.acl_decision("person.kk", entity_id="cover.gate")
+                self.assertTrue(d3["allowed"])
+                self.assertEqual(d3["decided_by"], "device_grants")
+                self.assertIn("person.tony", d3["reason"])
+            finally:
+                mb.GRANTS_PATH, mb._grants_cache = orig_path, orig_cache
+
+    def test_control_full_policy_and_no_policy(self):
+        reg = _registry(instance="tony", spec=self._spec())
+        self.assertTrue(reg.acl_decision("person.tony",
+                                         entity_id="cover.gate")["allowed"])
+        d = reg.acl_decision("person.nobody", entity_id="cover.gate")
+        self.assertTrue(d["allowed"])  # unlisted named identity: no policy
+        self.assertIn("no control policy applies", d["reason"])
+        # anonymous: 'unknown' policy allows lights only
+        self.assertTrue(reg.acl_decision(None, entity_id="light.x")["allowed"])
+        self.assertFalse(reg.acl_decision(None, entity_id="switch.x")["allowed"])
+
+    def test_bank_access_and_write_layers(self):
+        reg = _registry(instance="tony", spec=self._spec())
+        # person_scope swap: kk's 'personal' is shadowed by personal-kk
+        d = reg.acl_decision("person.kk", bank="personal")
+        self.assertFalse(d["allowed"])
+        self.assertEqual(d["decided_by"], "person_scope")
+        # policy allow list
+        d = reg.acl_decision(None, bank="readonly")
+        self.assertFalse(d["allowed"])
+        self.assertEqual(d["decided_by"], "person_policies")
+        # write-side layers — 'general' lists ada_remember/ada_forget/
+        # ada_outcome; a tool outside that set denies at allowed_tools.
+        d = reg.acl_decision("person.kk", bank="general",
+                             tool="cms_edit")
+        self.assertFalse(d["allowed"])
+        self.assertEqual(d["decided_by"], "bank.allowed_tools")
+        d = reg.acl_decision("person.kk", bank="general",
+                             tool="ada_remember")
+        self.assertTrue(d["allowed"])
+        self.assertEqual(d["verdict"], "needs_confirmation")  # confirmed policy
+        self.assertTrue(d["requires_confirm"])
+        # alias expansion: bank lists the absorbed 'ada_outcome' name —
+        # with the runner's alias map, canonical 'ada_ops' inherits it.
+        d = reg.acl_decision("person.kk", bank="general", tool="ada_ops",
+                             tool_aliases={"ada_outcome": "ada_ops"})
+        self.assertTrue(d["allowed"])
+        d = reg.acl_decision("person.kk", bank="general", tool="ada_ops")
+        self.assertFalse(d["allowed"])  # no alias map -> no expansion
+        # read-only bank
+        d = reg.acl_decision("person.tony", bank="readonly",
+                             tool="ada_remember")
+        self.assertFalse(d["allowed"])
+        self.assertEqual(d["decided_by"], "bank.writable")
+        # unknown bank
+        d = reg.acl_decision("person.tony", bank="nope")
+        self.assertFalse(d["allowed"])
+        self.assertEqual(d["decided_by"], "registry")
+        # person-scoped bank foreign write
+        d = reg.acl_decision("person.tony", bank="personal-kk",
+                             tool="ada_remember")
+        self.assertFalse(d["allowed"])
+        self.assertEqual(d["decided_by"], "bank.person_scope")
+
+    def test_resolver_parity_with_bool_apis(self):
+        # acl_decision must return exactly what the bool APIs the gates
+        # used to call would have returned.
+        reg = _registry(instance="tony", spec=self._spec())
+        idents = ["person.kk", "person.tony", "person.nobody", None, "kk"]
+        entities = ["light.x", "cover.gate", "media_player.bedroom_tv",
+                    "switch.fan", "lock.front"]
+        for ident in idents:
+            for ent in entities:
+                self.assertEqual(
+                    reg.control_allowed(ent, ident),
+                    reg.acl_decision(ident, entity_id=ent)["allowed"],
+                    f"{ident} {ent}")
+        for ident in idents:
+            for name in list(reg.banks()) + ["nope"]:
+                self.assertEqual(
+                    name in reg.banks_for_person(ident),
+                    reg.acl_decision(ident, bank=name)["allowed"],
+                    f"{ident} bank={name}")
+                self.assertEqual(
+                    reg.bank_allowed(name, ident),
+                    reg.acl_decision(ident, bank=name)["allowed"],
+                    f"{ident} bank={name}")
+
+    def test_no_subject_is_error(self):
+        reg = _registry(instance="tony", spec=self._spec())
+        d = reg.acl_decision("person.kk")
+        self.assertFalse(d["ok"])
+        self.assertFalse(d["allowed"])
+
     def test_effective_status_lazy_expiry(self):
         doc = {"meta": {"status": ["active"], "valid_until": ["2020-01-01"]}}
         self.assertEqual(doc_effective_status(doc, today="2026-01-01"), "expired")

@@ -779,10 +779,11 @@ class ToolRunner(
         entity_id = str(args.get("entity_id") or "")
         if entity_id:
             ident = self.policy_identity()
-            if not self.banks.control_allowed(entity_id, ident):
+            decision = self.banks.acl_decision(ident, entity_id=entity_id)
+            if not decision["allowed"]:
                 logger.warning(
-                    "denied %s on %r for identity %r: control policy",
-                    name, entity_id, ident,
+                    "denied %s on %r for identity %r: control policy (%s)",
+                    name, entity_id, ident, decision.get("decided_by"),
                 )
                 raise PermissionError(
                     f"'{entity_id}' is outside this session's control policy"
@@ -864,28 +865,43 @@ class ToolRunner(
             bank = self.banks.bank(bank_name)
         except KeyError as exc:
             raise ValueError(str(exc)) from exc
-        if not self.banks.bank_allowed(bank.name, self.policy_identity()):
-            logger.warning(
-                "denied %s on %r for identity %r",
-                name, bank.name, self.policy_identity(),
-            )
-            allowed = ", ".join(
-                self.banks.banks_for_person(self.policy_identity())
-            )
-            raise PermissionError(
-                f"memory bank '{bank.name}' is not available for this speaker"
-                + (f" — allowed banks: {allowed}" if allowed else "")
-            )
-        if not bank.writable:
-            logger.warning("denied %s on %r: bank not writable", name, bank_name)
-            raise PermissionError(f"memory bank '{bank_name}' is read-only")
-        # Bank configs may still name an absorbed tool (ada_outcome held
-        # the outcome-write seat pre-merge) — resolve entries through
-        # _ALIASES so the canonical tool inherits the same authorization.
-        allowed_tools = {_ALIASES.get(t, t) for t in bank.allowed_tools}
-        if name not in allowed_tools:
-            logger.warning("denied %s on %r: tool not in allowed_tools", name, bank_name)
-            raise PermissionError(f"tool {name} is not allowed on memory bank '{bank_name}'")
+        # Unified ACL resolver: person_policies + person-scope + writable +
+        # allowed_tools decided in one walk (registry.acl_decision); the
+        # messages below keep their per-layer shape for the model.
+        ident = self.policy_identity()
+        decision = self.banks.acl_decision(
+            ident, bank=bank.name, tool=name, tool_aliases=_ALIASES)
+        if not decision["allowed"]:
+            layer = str(decision.get("decided_by") or "")
+            if layer == "bank.person_scope":
+                # Person-scope write privacy stays enforced where it
+                # always was — memory_ops._check_person_scope_write runs
+                # inside the tool and returns an {ok: False} result, not
+                # a dispatch-layer raise. The resolver reports the layer
+                # (acl_explain shows it); the gate defers enforcement.
+                pass
+            else:
+                logger.warning(
+                    "denied %s on %r for identity %r: %s",
+                    name, bank.name, ident, layer,
+                )
+                if layer in ("person_scope", "person_policies"):
+                    allowed = ", ".join(self.banks.banks_for_person(ident))
+                    raise PermissionError(
+                        f"memory bank '{bank.name}' is not available for "
+                        "this speaker"
+                        + (f" — allowed banks: {allowed}" if allowed else "")
+                    )
+                if layer == "bank.writable":
+                    raise PermissionError(
+                        f"memory bank '{bank_name}' is read-only")
+                if layer == "bank.allowed_tools":
+                    raise PermissionError(
+                        f"tool {name} is not allowed on memory bank "
+                        f"'{bank_name}'")
+                raise PermissionError(str(
+                    decision.get("reason")
+                    or f"{name} denied on '{bank_name}'"))
         if bank.write_policy == "confirmed":
             self._require_confirmation(
                 name, args, confirmed, confirm_token,

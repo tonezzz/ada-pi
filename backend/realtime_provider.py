@@ -3527,8 +3527,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     # research run in the background and speak their results.
                     "name": "ada_ops",
                     "description": (
-                        "Ops/meta — outcome|usage|health|check|research|report — see "
-                        "tool_guide; 'report' returns report freshness and starts a "
+                        "Ops/meta — outcome|usage|health|check|research|report|acl_explain "
+                        "— see tool_guide; 'report' returns report freshness and starts a "
                         "background refresh (answer cached numbers now, fresh lands next)."
                     ),
                     "behavior": types.Behavior.NON_BLOCKING,
@@ -3537,8 +3537,8 @@ class GeminiLiveProvider(RealtimeProvider):
                         "properties": {
                             "action": {
                                 "type": "string",
-                                "enum": ["outcome", "usage", "health", "check", "research", "report"],
-                                "description": "outcome=record a result on a memory/check; usage=token/cost report; health=memory-db vector health; check=purchase verification (background); research=multi-round web research (background); report=system report freshness + live refresh (node=name or default system-report, depth=leaf|subtree|full).",
+                                "enum": ["outcome", "usage", "health", "check", "research", "report", "acl_explain"],
+                                "description": "outcome=record a result on a memory/check; usage=token/cost report; health=memory-db vector health; check=purchase verification (background); research=multi-round web research (background); report=system report freshness + live refresh (node=name or default system-report, depth=leaf|subtree|full); acl_explain=why an identity can/can't act — needs entity_id= and/or bank= (+tool= for a bank write), identity= to check someone else.",
                             },
                             "node": {
                                 "type": "string",
@@ -3595,6 +3595,18 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "type": "string",
                                 "enum": ["standard", "deep", "leaf", "subtree", "full"],
                                 "description": "action=research: standard = 3 search rounds (default); deep = 5 — only when the user asks for a thorough report. action=report: refresh scope leaf|subtree (default)|full.",
+                            },
+                            "identity": {
+                                "type": "string",
+                                "description": "action=acl_explain: whose access to explain, e.g. 'person.kk' (default: this session's identity).",
+                            },
+                            "entity_id": {
+                                "type": "string",
+                                "description": "action=acl_explain: HA entity the identity wants to control, e.g. 'media_player.tv'.",
+                            },
+                            "tool": {
+                                "type": "string",
+                                "description": "action=acl_explain: with bank= — resolve a bank WRITE for this tool, not just bank access.",
                             },
                             "confirmed": {
                                 "type": "boolean",
