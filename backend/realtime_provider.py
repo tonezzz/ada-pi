@@ -1300,12 +1300,22 @@ class GeminiLiveProvider(RealtimeProvider):
         way (card ada-dead-turn-guard)."""
         if self._leak_active:
             return ""
-        m = (
-            self._tool_leak_re.search(text)
-            if self._tool_leak_re is not None else None
-        ) or _GENERIC_TOOL_LEAK_RE.search(text) or _ROLE_LEAK_RE.search(text)
-        if not m:
+        # Earliest POSITION across all detectors, not first matching
+        # detector — the prefix before m.start() is emitted verbatim, so a
+        # later declared-name match must not shadow an earlier generic or
+        # role-tag leak (the earlier leak would ride the prefix into
+        # assistant_transcript_delta — card ada-transcript-leak-storm).
+        matches = [
+            m for m in (
+                self._tool_leak_re.search(text)
+                if self._tool_leak_re is not None else None,
+                _GENERIC_TOOL_LEAK_RE.search(text),
+                _ROLE_LEAK_RE.search(text),
+            ) if m is not None
+        ]
+        if not matches:
             return text
+        m = min(matches, key=lambda mm: mm.start())
         self._leak_active = True
         self._tool_leaks_stripped += 1
         logger.warning(

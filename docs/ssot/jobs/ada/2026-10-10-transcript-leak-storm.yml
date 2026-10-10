@@ -1,0 +1,115 @@
+# SSOT Job: Transcript-leak storm — sanitizer write-back audit + earliest-match fix
+# Card: ada-transcript-leak-storm (chaba kanban). Dispatch 20261010-080533.
+
+title: Leak sanitizer prefix-write-back fix + dead-turn/reconnect interplay audit
+subtitle: Does 50c3abc/d614648 write sanitized text back into the transcript stream? Yes — partially unsanitized, via a detector-ordering bug
+
+planning:
+  goal: |
+    Audit the leak-sanitizer path from ada-dead-turn-guard (50c3abc) and
+    ada-context-budget (d614648): does the sanitizer itself ever write
+    unsanitized text into assistant_transcript_delta? Check the dead-turn
+    guard / memory-hit-cap interplay across a live_reconnecting storm,
+    and pin the invariant "tool-result text never appears in
+    assistant_transcript_delta" with a regression test.
+  findings: |
+    - BUG (fixed): _strip_tool_leak emits text[:m.start()] verbatim, but
+      `m` was the first non-None match in DETECTOR order
+      (_tool_leak_re -> _GENERIC_TOOL_LEAK_RE -> _ROLE_LEAK_RE), not the
+      earliest POSITION in the delta. A declared-name match sitting later
+      in the same delta shadowed an earlier generic `name{key:` or
+      role-tag leak — the earlier leak rode the emitted prefix straight
+      into assistant_transcript_delta. Example: "พบแล้ว\nuser\n
+      ada_remember{x:1}" emitted "พบแล้ว\nuser\n" (fabricated role tag
+      included). Fix: match all three detectors, take min(start).
+    - Tool-result text channels audited: results travel to the UI only on
+      the dedicated `tool_result` ProviderEvent (pwa forwards
+      {type:"tool_result"}) — never as transcript deltas. The observed
+      echo wrappers `Tool <name> returned:` and `<code_output>` are
+      already declared-detector shapes inside _tool_leak_re; once one
+      fires, _leak_active suppresses the rest of the turn (the raw hits
+      JSON included). The dead-turn fallback emits only a curated
+      _first_speakable_line (<=160 chars) of a hit — designed, capped.
+    - RESIDUAL GAP (not fixed): a bare raw-JSON echo with no wrapper —
+      the model regurgitating {"hits": [...]} verbatim — matches none of
+      the three detectors (no ident before '{', no role tag). Deltas
+      split inside the JSON evade any regex anyway; catching this class
+      needs a hold-back mechanism like _artifact_hold, not just another
+      detector. Noted for a follow-up card if observed in the wild.
+    - Reconnect interplay (storm trigger): a live_reconnecting rebuilds
+      the provider, so per-turn generator state dies with it —
+      turn_tool_results, assistant_turn_text, _dead_retried, _leak_active,
+      _artifact_hold all reset; ConversationMemory survives (shared).
+      (a) A dead turn landing on the fresh provider has empty
+      turn_tool_results -> _dead_turn_fallback([]) returns the honest
+      retry-ask instead of speaking the result — degraded but safe, no
+      leak. (b) _dead_retried resets per provider, so a flapping session
+      grants one retry nudge per reconnect — each nudge re-injects the
+      <=600-char result digest into server-side context (resumption
+      handle); bounded by the 1s->15s reconnect backoff, not unbounded.
+      (c) MEMORY_HIT_CONTENT_MAX is a module constant applied at the
+      tool boundary — unaffected by reconnects; with a resumption handle
+      the capped hits stay in server context, without one _prime_session
+      re-injects via session_prime_text which also applies
+      is_transcript_shaped (dumps skipped, not framed).
+      (d) pwa_server's post-resume replay suppression (suppress_target /
+      live_turn_text) compares sanitized-heard vs sanitized-replayed —
+      both sides pass through the same _strip_tool_leak/
+      _strip_speech_artifacts, so prefix matching stays consistent.
+      Dead-turn fallback text is client-side only, so a replay diverges
+      and is forwarded wholesale — correct, no double-speak.
+    - Sanitized text IS written back, by design: text[:m.start()] keeps
+      the speakable prefix, and _flush_artifact_hold emits the sanitized
+      held tail at turn_complete (suppressed when _leak_active). The fix
+      makes the prefix boundary the earliest leak of ANY detector.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-10"
+  steps:
+    - id: 1
+      label: "earliest-match fix"
+      status: done
+      notes: "backend/realtime_provider.py _strip_tool_leak — collect all
+        detector matches, strip at min(start); ops-event tool= extraction
+        unchanged (matched group's name prefix)."
+    - id: 2
+      label: "regression test"
+      status: done
+      notes: "tests/test_transcript_leak.py — 6 tests: ordering cases
+        (generic-before-declared, role-tag-before-declared,
+        code_output-before-generic, single-match unchanged) plus a storm
+        replay through provider.events() asserting joined
+        assistant_transcript_delta carries no '\"hits\"', 'returned:',
+        '{', 'ada_remember{', hit content, or hit key — while tool_result
+        events still carry the result; and a fully-leaked turn on a
+        text channel (no audio) goes dead-turn -> retry -> speaks the
+        plate rather than silence."
+    - id: 3
+      label: "interplay audit"
+      status: done
+      notes: "live_manager/pwa_server reconnect paths, _prime_session,
+        memory_ops session_prime_text, suppress_target replay logic —
+        findings above; no code change needed."
+
+invoke:
+  commands:
+    - "python3 -m pytest tests/test_transcript_leak.py -x -q"
+    - "python3 -m pytest tests/test_dead_turn.py tests/test_context_budget.py tests/test_speech_sanitize.py tests/test_provider_events.py -x -q"
+    - "grep -n 'min(matches' backend/realtime_provider.py"
+
+verification:
+  - "tests.test_transcript_leak: 6/6 pass — ordering cases prove the
+    prefix now stops at the earliest leak of any detector; the storm
+    replay asserts no tool-result bytes in assistant_transcript_delta
+    while tool_result events still deliver the payload"
+  - "dead_turn + context_budget + speech_sanitize + provider_events +
+    text_channel + ops_events + event_recorder: 81 tests, all pass — no
+    regression in the existing guard suites"
+  - "note: ran in a local .venv-test (system python3 has no project deps;
+    worktree has no .venv) — google-genai, pyyaml, httpx, numpy, pillow,
+    fastapi, websockets"
+  - "residual gap for follow-up: bare raw-JSON echo (no Tool-returned/
+    code_output wrapper) still passes the sanitizer — needs a hold-back
+    mechanism, not another regex"
