@@ -288,6 +288,50 @@ class MutationGateTest(unittest.TestCase):
         self.assertFalse(sess.enroll_calls)
 
 
+class CallerSessionTest(unittest.TestCase):
+    """_CALLER_SPEAKER_SESSION resolves the CALLING session's buffer —
+    an explicit None (text channel, speaker ID off, a provider that
+    reconnected before the session re-link) must never fall back to the
+    shared runner field and read another session's live audio
+    (card ada-speech-capture-degraded — same class as the 2026-09-29
+    stomp bug the contextvar was added for)."""
+
+    def setUp(self):
+        self.ident = _identifier()
+        self.tool = _load_tool()
+        self._get = patch.object(
+            speaker_id.SpeakerIdentifier, "get", return_value=self.ident)
+        self._get.start()
+        self.addCleanup(self._get.stop)
+
+    def test_match_uses_callers_session_over_shared_field(self):
+        from backend.tool_runner.common import _CALLER_SPEAKER_SESSION
+        caller_sess = _FakeSession(match={
+            "buffered_s": 12.0, "threshold": 0.45, "match": "พรศิริ",
+            "best": "พรศิริ", "score": 0.87})
+        other_sess = _FakeSession()  # shared-field decoy — never consulted
+        token = _CALLER_SPEAKER_SESSION.set(caller_sess)
+        try:
+            out = _run(self.tool, _runner(sess=other_sess), action="match")
+        finally:
+            _CALLER_SPEAKER_SESSION.reset(token)
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["match"], "พรศิริ")
+
+    def test_explicit_none_never_reads_shared_buffer(self):
+        from backend.tool_runner.common import _CALLER_SPEAKER_SESSION
+        live = _FakeSession(match={
+            "buffered_s": 12.0, "threshold": 0.45, "match": "พรศิริ",
+            "best": "พรศิริ", "score": 0.87})
+        token = _CALLER_SPEAKER_SESSION.set(None)
+        try:
+            out = _run(self.tool, _runner(sess=live), action="match")
+        finally:
+            _CALLER_SPEAKER_SESSION.reset(token)
+        self.assertFalse(out["ok"])
+        self.assertIn("not active", out["error"])
+
+
 class SpeakerIdStoreTest(unittest.TestCase):
     """The store pieces the tool rides on: resolve/rename/aliases persist."""
 
@@ -423,6 +467,44 @@ class EnrollRefusalTest(unittest.IsolatedAsyncioTestCase):
         out = await runner.ada_enroll_speaker(name="Tony")
         self.assertEqual(out["status"], "enrolled")
         self.assertEqual(out["name"], "Tony")
+
+    async def test_no_voice_session_never_captures_shared_buffer(self):
+        # A caller whose provider explicitly has no SpeakerSession (text
+        # channel, speaker ID off) must get the honest "not active" error
+        # — not a capture from whatever session last wrote the shared
+        # runner field.
+        from backend.tool_runner.common import _CALLER_SPEAKER_SESSION
+        runner = ToolRunner.__new__(ToolRunner)
+        runner.mddb = None
+        runner.memory = None
+        runner.chaba = None
+        runner.events = None
+        runner._denials = {}
+        runner._confirm_tokens = {}
+        runner.session_id = None
+        runner.current_speaker_ha_person = None
+        runner.session_caller_name = "testo"
+        runner.session_caller_ha_person = None
+        runner.session_owner_identity = "testo"
+        runner.event_log = None
+        runner.doc_log = None
+        live = _FakeSession(enroll_result={
+            "name": "Tony", "samples": 3, "ha_person": "person.tony",
+            "display_name": "Tony", "duration_s": 14.9})
+        runner.speaker_session = live
+        runner._banks = None
+        runner._instance_id = "test"
+        runner.context = SimpleNamespace(
+            ha_client=SimpleNamespace(
+                resolve_person=AsyncMock(return_value=None),
+                get_state=AsyncMock(return_value={})))
+        token = _CALLER_SPEAKER_SESSION.set(None)
+        try:
+            out = await runner.ada_enroll_speaker(name="Tony")
+        finally:
+            _CALLER_SPEAKER_SESSION.reset(token)
+        self.assertIn("not active", out["error"])
+        self.assertFalse(live.enroll_calls)
 
 
 class ForgetRedirectTest(unittest.IsolatedAsyncioTestCase):

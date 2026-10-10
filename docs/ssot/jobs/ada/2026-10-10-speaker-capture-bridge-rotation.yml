@@ -1,0 +1,98 @@
+# SSOT Job: speaker capture-bridge isolation + provider-rotation live tail
+# Card: ada-speech-capture-degraded. Dispatch 20261010-080529.
+# Evidence cited by the card (journal 16:3x ICT speaker_profiles results,
+# ada_enroll_speaker "0.0s captured — capture bridge may be dead" ~16:02,
+# transcripts b0698a4e9a / e47b155e99 / 73d7713ce8) was not staged in the
+# task dir or the worktree — root cause established by code trace +
+# regression tests, not by replaying those transcripts.
+
+title: Speaker bridge — per-session buffer isolation + fresh-context rotation re-prime
+subtitle: >
+  ada_enroll_speaker's "0.0s / capture bridge may be dead" fires only when
+  the resolved SpeakerSession._fed_bytes == 0. Two ways a live mic still
+  resolved to an unfed buffer: (1) provider reconnects created a fresh
+  provider whose .speaker_session was never re-linked, so tool calls
+  resolved through the shared tool_runner.speaker_session — whichever
+  session connected last; (2) the _CALLER_SPEAKER_SESSION contextvar
+  defaulted to None, so an explicit None (text/no-speaker session) fell
+  back to that same shared field and read ANOTHER session's buffer.
+  Separately, context-rotate reconnects primed the fresh Gemini session
+  with reconnect=None — the live transcript tail was never re-injected,
+  so mid-conversation topics (the Lisa clip) vanished after rotation.
+
+planning:
+  goal: |
+    Enrollment and speaker_profiles must always resolve the CALLING
+    session's capture buffer; a session with no voice buffer must report
+    "not active" honestly instead of silently reading a different
+    session's buffer. Provider rotation must carry the live conversation
+    tail so the model resumes the same conversation.
+  decisions: |
+    - _CALLER_SPEAKER_SESSION default None -> _IDENTITY_UNSET (same
+      convention as _CALLER_SPEAKER). Semantics: sentinel = non-ws caller
+      (REST/tests/scenario engine) -> shared runner field fallback is
+      fine; explicit None = this ws session has no voice buffer -> never
+      touch the shared field; a session object = use it. Applied in
+      ada_enroll_speaker and tools.d/speaker_profiles._speaker_session.
+    - SpeakerSession is a websocket-level object that survives provider
+      swaps, but the provider link did not: reconnect now re-links
+      new_provider.speaker_session and carries current_speaker /
+      current_speaker_ha_person forward (connect() only restored
+      ha_person from the shared — racy — runner field).
+    - Fresh-context reconnect (no resumption handle) now primes with
+      reconnect=(0.0, conversation.recent_context(max_turns=12,
+      max_chars=3000)). away_tier(0) = RESUME — the directive reads
+      "same conversation resuming, pick up where you left off" and
+      session_prime_text skips the stale recent-sessions summary and
+      headlines on <1h gaps. The old session tail was already persisted
+      via _mark_session_end on ws close; this covers in-place rotation.
+    - Text-only relay channels (?channel=telegram/line) never stream mic
+      PCM — SpeakerSession creation is skipped so channel sessions stop
+      clobbering tool_runner.speaker_session for the whole process.
+    - Reconnect prime uses session-scoped caller_name/caller_person
+      locals instead of the shared tool_runner fields (second connect
+      would re-pin another caller's identity onto this provider).
+    - Teardown clears shared-runner bindings only when they still hold
+      THIS session's values — a concurrent session's teardown can no
+      longer wipe another live session's speaker/owner binding.
+  files:
+    - backend/tool_runner/common.py — _CALLER_SPEAKER_SESSION default
+      -> _IDENTITY_UNSET
+    - backend/tool_runner/__init__.py — _is_secondary_turn stale-label
+      reader normalized to .get(None)
+    - backend/tool_runner/memory.py — ada_enroll_speaker sentinel-aware
+      session resolution
+    - backend/tools.d/speaker_profiles.py — _speaker_session sentinel
+      semantics
+    - pwa_server.py — skip SpeakerSession on channel sessions; reconnect
+      re-links speaker session + speaker identity; fresh-context prime
+      carries the live tail; scoped teardown clears
+    - tests/test_speaker_id.py — CaptureBridgeTest (fed session enrolls
+      >0s; unfed session reports bridge diag)
+    - tests/test_speaker_profiles_tool.py — caller-session isolation,
+      explicit-None never reads shared buffer, no-voice enroll refusal
+    - tests/test_memory_recall_extras.py — rotation prime carries live
+      tail (Lisa clip) and skips stale session summary
+  verify: |
+    PYTHONPATH=<deps>:. python3 -m unittest tests.test_speaker_id \
+      tests.test_speaker_profiles_tool tests.test_memory_recall_extras \
+      tests.test_memory_banks tests.test_tool_runner tests.test_scenarios
+    — all green (438 tests). Full suite has pre-existing env failures
+    (missing fastapi / PIL / ai_edge_litert) and pre-existing tool-lint
+    debt (voice_fx descsize/coverage, yt_cached_list undeclared) —
+    confirmed identical on the stashed baseline.
+    Live verify after staging deploy (idc02): speak ~3s, call
+    ada_enroll_speaker, expect duration_s > 0; force a context rotate
+    (long session) then ask a follow-up about the pre-rotation topic.
+  watch: |
+    - ops event live_reconnect resumed=false — every context-rotate now
+      injects the tail; check "prime injected" char counts ~2-3k.
+    - If "bridge may be dead" still fires on a real voice session, the
+      remaining suspect is the TTS-suppression feed gate
+      (pwa_server.py browser_to_provider: feed skipped while
+      provider._response_active or <0.6s since TTS) sticking on — not
+      observed in tests, needs live journal correlation.
+    - tool_runner shared fields remain racy across concurrent ws
+      sessions at CONNECT time (unconditional overwrite at lines
+      ~901-912); contextvars are the authoritative path now — shared
+      fields are only a legacy fallback.

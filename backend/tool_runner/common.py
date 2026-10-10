@@ -262,8 +262,11 @@ def normalize_tool_result(result: Any) -> dict[str, Any]:
 # ws connect (browser tab, HA satellite) stomped it mid-conversation and
 # ada_enroll_speaker read the *other* session's empty buffer — Tony's
 # enrollment reported "no audio arrived" while he was actively speaking.
+# default=_IDENTITY_UNSET (same convention as _CALLER_SPEAKER): a provider
+# passing an explicit None means THIS session has no voice buffer — it
+# must not fall back to the shared field and read another session's.
 _CALLER_SPEAKER_SESSION: contextvars.ContextVar = contextvars.ContextVar(
-    "caller_speaker_session", default=None)
+    "caller_speaker_session", default=_IDENTITY_UNSET)
 
 # Same shared-runner race for session_owner_identity: a second ws connect
 # overwrote the owner mid-session (2026-09-29 — Tony on the HA satellite

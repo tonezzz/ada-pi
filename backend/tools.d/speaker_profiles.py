@@ -85,13 +85,17 @@ def _identifier() -> Any:
 
 
 def _speaker_session(runner: Any) -> Any:
-    """The calling session's SpeakerSession — contextvar first (the
-    provider sets it per execute() call), the shared runner field as
-    fallback. Same lookup ada_enroll_speaker uses."""
+    """The calling session's SpeakerSession — the provider passes it per
+    execute() call; an explicit None means THIS session has no voice
+    buffer (text channel, speaker ID off) and must not fall back to
+    another session's live buffer via the shared runner field. The shared
+    field is only for non-ws callers (REST/tests). Same lookup
+    ada_enroll_speaker uses."""
     try:
-        from backend.tool_runner.common import _CALLER_SPEAKER_SESSION
+        from backend.tool_runner.common import (
+            _CALLER_SPEAKER_SESSION, _IDENTITY_UNSET)
         sess = _CALLER_SPEAKER_SESSION.get()
-        if sess is not None:
+        if sess is not _IDENTITY_UNSET:
             return sess
     except Exception:
         pass

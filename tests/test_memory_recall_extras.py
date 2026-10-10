@@ -103,6 +103,24 @@ class PrimeTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
+    async def test_rotate_reconnect_carries_live_tail(self):
+        # Context-rotate reconnect (card ada-speech-capture-degraded): a
+        # fresh Gemini session must get the live transcript tail — not
+        # just cross-session memory — or Ada forgets the last minutes
+        # mid-conversation (the Lisa-clip amnesia). away_seconds=0 lands
+        # the resume tier; the stale recent-sessions summary stays out.
+        fake = FakeMddb()
+        reg = build_registry("tony")
+        text = await memory_ops.session_prime_text(
+            fake, reg,
+            summary="Some old session summary",
+            away_seconds=0.0,
+            last_tail="User: play the Lisa clip\nAda: playing it now",
+        )
+        self.assertIn("same conversation resuming", text)
+        self.assertIn("Lisa clip", text)
+        self.assertNotIn("old session summary", text)
+
 
 class HeadlineTests(unittest.IsolatedAsyncioTestCase):
     """L0 hot-tier fetch: fresh CMS pages with a speakable summary,

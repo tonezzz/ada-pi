@@ -762,7 +762,14 @@ class MemoryMixin:
         # promotion — no voice buffer or speaker gating involved.
         if str(who or "speaker").strip().lower() == "guest":
             return await self.guest_register(str(name))
-        speaker_session = _CALLER_SPEAKER_SESSION.get() or self.speaker_session
+        # The calling session's own SpeakerSession — the provider passes it
+        # per call; an explicit None means this session has no voice buffer
+        # (text channel, speaker ID off) and must NOT fall back to another
+        # session's live buffer via the shared runner field.
+        _caller_ss = _CALLER_SPEAKER_SESSION.get()
+        speaker_session = (
+            self.speaker_session if _caller_ss is _IDENTITY_UNSET
+            else _caller_ss)
         if not ha_person:
             # Auto-resolve 'Name' -> person.<slug> so the enrollment maps to
             # the speaker's HA person (memory banks + actuation ACL follow)

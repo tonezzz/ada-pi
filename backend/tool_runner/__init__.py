@@ -151,7 +151,7 @@ class ToolRunner(
         # Stale label check: when the buffer has seen voiced chunks since
         # the label last re-confirmed, an aged-out identification is just
         # a stale guess — drop it (SPEAKER_STALE_S rationale above).
-        ss = _CALLER_SPEAKER_SESSION.get()
+        ss = _CALLER_SPEAKER_SESSION.get(None)
         if ss is not None:
             age = getattr(ss, "speaker_age_s", lambda: None)()
             if age is not None and age > SPEAKER_STALE_S:
