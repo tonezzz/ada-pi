@@ -35,6 +35,7 @@ import httpx
 from google import genai
 from google.genai import types
 
+from backend import gemini_pool
 from backend.mddb_client import MddbClient
 from backend.memory_banks import MemoryBankRegistry, _meta_first, _slug
 
@@ -219,8 +220,8 @@ class DecisionCheckEngine:
         self.registry = registry
         self.instance = instance
         self.ha_client = ha_client
-        self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = os.environ.get("DECISION_MODEL", DECISION_MODEL)
+        self.api_key = gemini_pool.next_key(self.model) or ""
         self._client = client
 
     @property
@@ -234,7 +235,11 @@ class DecisionCheckEngine:
     async def _generate(self, contents: list, config: Any, timeout: float | None = None) -> Any:
         """generate_content with bounded retry on free-tier 429s — the shared
         key is also used by other services, so quota hits are routine. Honors
-        the API's retryDelay hint, capped so a check can't stall forever."""
+        the API's retryDelay hint, capped so a check can't stall forever.
+        A quota error also marks (key, model) in gemini_pool and rotates to
+        the next configured key when one exists; a drained pool surfaces a
+        loud QuotaExhaustedError + ops event instead of a bare 429."""
+        injected = self._client is not None
         for attempt in range(3):
             try:
                 return await asyncio.wait_for(
@@ -245,8 +250,32 @@ class DecisionCheckEngine:
                 )
             except Exception as exc:
                 text = str(exc)
-                if "429" not in text or attempt == 2:
+                quota = gemini_pool.is_quota_error(exc)
+                if not quota or attempt == 2:
+                    if quota and not injected:
+                        gemini_pool.mark_exhausted(
+                            self.api_key, self.model, exc,
+                            tool="decision_check")
+                        gemini_pool.emit_ops_event(
+                            self.mddb, "decision_check", exc,
+                            instance=self.instance)
+                        raise gemini_pool.QuotaExhaustedError(
+                            f"gemini free-tier quota exhausted for "
+                            f"{self.model} — resets at the daily boundary "
+                            f"(midnight US/Pacific): {exc}"[:300]) from exc
                     raise
+                if not injected:
+                    gemini_pool.mark_exhausted(
+                        self.api_key, self.model, exc,
+                        tool="decision_check")
+                # Rotate to another configured key when the pool has one —
+                # the wait below only makes sense on the last key.
+                if not injected:
+                    nxt = gemini_pool.next_key(self.model)
+                    if nxt and nxt != self.api_key:
+                        self.api_key = nxt
+                        self._client = None
+                        continue
                 match = re.search(r"retry in ([\d.]+)s|retryDelay.*?(\d+)s", text)
                 delay = min(45.0, float(next(g for g in match.groups() if g)) + 2) if match else 10.0
                 logger.info("decision check: 429 quota, retry in %.0fs", delay)

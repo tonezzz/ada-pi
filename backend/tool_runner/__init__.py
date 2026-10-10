@@ -95,10 +95,6 @@ class ToolRunner(
         # Bound confirmations minted on denial: token -> {fp, at, tool}.
         # Single-use, TTL'd; see _mint_confirm_token/_consume_confirm_token.
         self._confirm_tokens: dict[str, dict[str, Any]] = {}
-        # Monotonic stamp of the last web_search_quota ops event — the
-        # throttle in WebMixin._emit_quota_ops_event keeps a 429 storm
-        # from flooding the ada-ha-events digest.
-        self._web_quota_event_at = 0.0
         # Structured ledger of confirm proposals/grants/consumptions — the
         # audit trail for "which action did the user actually approve?".
         self._confirm_audit: collections.deque[dict[str, Any]] = collections.deque(

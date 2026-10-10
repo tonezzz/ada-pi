@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 from PIL import Image
 
+from backend import gemini_pool
 from backend.document_check import (
     DocumentCheckEngine,
     decode_image,
@@ -110,6 +111,11 @@ class ImagingTests(unittest.TestCase):
 
 
 class IntakeTests(unittest.TestCase):
+    def setUp(self):
+        # doc_classify cache is content-hashed and module-global — the
+        # synthetic images below are byte-identical across tests.
+        gemini_pool.reset()
+
     def test_intake_happy_path(self):
         _, blob = _img()
         eng = _engine()

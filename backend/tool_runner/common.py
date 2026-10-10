@@ -20,6 +20,7 @@ from typing import Any
 
 from backend import memory_ops
 from backend import chaba_memory
+from backend import gemini_pool
 from backend import speech_sanitize
 from backend import write_outbox
 from backend import devin_dispatch as devin_dispatch_mod

@@ -11,6 +11,7 @@ from typing import Any
 from google import genai
 from google.genai import types
 
+from backend import gemini_pool
 from backend.usage_tracker import usage_ledger
 
 logger = logging.getLogger("voice.posture")
@@ -40,47 +41,67 @@ def _log_usage(response: Any, label: str) -> None:
 
 class GeminiPostureVerifier:
     def __init__(self, client: Any = None) -> None:
-        self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = os.environ.get("GEMINI_POSTURE_MODEL", "gemini-3.5-flash-lite")
+        self.api_key = gemini_pool.next_key(self.model) or ""
         self._client = client
+        self._injected = client is not None
+
+    async def _generate(self, **kwargs: Any) -> Any:
+        """Pooled generate_content — a quota error marks (key, model)
+        exhausted in gemini_pool and rotates to the next configured key;
+        the last key's failure propagates (callers degrade on it)."""
+        for _ in range(1 if self._injected
+                       else max(1, len(gemini_pool.configured_keys()))):
+            if self._client is None:
+                if not self.api_key:
+                    raise RuntimeError("GEMINI_API_KEY is not set")
+                self._client = genai.Client(api_key=self.api_key)
+            try:
+                return await asyncio.wait_for(
+                    self._client.aio.models.generate_content(**kwargs),
+                    timeout=15)
+            except Exception as exc:
+                if self._injected or not gemini_pool.is_quota_error(exc):
+                    raise
+                gemini_pool.mark_exhausted(
+                    self.api_key, self.model, exc, tool="posture_verify")
+                nxt = gemini_pool.next_key(self.model)
+                if nxt is None:
+                    raise
+                self.api_key = nxt
+                self._client = None
+        raise RuntimeError("unreachable")
 
     async def verify(self, jpeg: bytes) -> dict[str, object]:
-        if self._client is None:
-            if not self.api_key:
-                raise RuntimeError("GEMINI_API_KEY is not set")
-            self._client = genai.Client(api_key=self.api_key)
-        response = await asyncio.wait_for(
-            self._client.aio.models.generate_content(
-                model=self.model,
-                contents=[
-                    types.Part.from_text(text=(
-                        "Inspect this current camera frame of a person seated at a desk. "
-                        "Decide whether the person is visibly slouching: rounded or collapsed "
-                        "upper back, clearly forward head/neck, dropped shoulders, or a hunched "
-                        "seated posture. Do not call ordinary upright sitting, a slight camera "
-                        "angle, or briefly looking to the side slouching. If the upper body is "
-                        "too unclear, return slouching=false with low confidence."
-                    )),
-                    types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"),
-                ],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_json_schema={
-                        "type": "object",
-                        "properties": {
-                            "slouching": {"type": "boolean"},
-                            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                            "reason": {"type": "string"},
-                        },
-                        "required": ["slouching", "confidence", "reason"],
-                        "additionalProperties": False,
+        response = await self._generate(
+            model=self.model,
+            contents=[
+                types.Part.from_text(text=(
+                    "Inspect this current camera frame of a person seated at a desk. "
+                    "Decide whether the person is visibly slouching: rounded or collapsed "
+                    "upper back, clearly forward head/neck, dropped shoulders, or a hunched "
+                    "seated posture. Do not call ordinary upright sitting, a slight camera "
+                    "angle, or briefly looking to the side slouching. If the upper body is "
+                    "too unclear, return slouching=false with low confidence."
+                )),
+                types.Part.from_bytes(data=jpeg, mime_type="image/jpeg"),
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_json_schema={
+                    "type": "object",
+                    "properties": {
+                        "slouching": {"type": "boolean"},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "reason": {"type": "string"},
                     },
-                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                        disable=True
-                    ),
+                    "required": ["slouching", "confidence", "reason"],
+                    "additionalProperties": False,
+                },
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    disable=True
                 ),
             ),
-            timeout=15,
         )
         _log_usage(response, "posture verify")
         data = json.loads(response.text)
@@ -98,16 +119,13 @@ class GeminiClutterVerifier(GeminiPostureVerifier):
     """Confirm that a sustained local scene change is actually desk clutter."""
 
     async def verify_clutter(self, jpeg: bytes) -> dict[str, object]:
-        if self._client is None:
-            if not self.api_key: raise RuntimeError("GEMINI_API_KEY is not set")
-            self._client = genai.Client(api_key=self.api_key)
-        response = await asyncio.wait_for(self._client.aio.models.generate_content(
+        response = await self._generate(
             model=self.model,
             contents=[types.Part.from_text(text=("Inspect this desk camera frame. Decide whether the work surface is materially cluttered with misplaced objects, dishes, packaging, loose papers, or accumulated items. Do not count normal work equipment or a person. Return a conservative structured verdict.")), types.Part.from_bytes(data=jpeg, mime_type="image/jpeg")],
             config=types.GenerateContentConfig(response_mime_type="application/json", response_json_schema={
                 "type":"object","properties":{"cluttered":{"type":"boolean"},"confidence":{"type":"number","minimum":0,"maximum":1},"reason":{"type":"string"}},
                 "required":["cluttered","confidence","reason"],"additionalProperties":False},
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))), timeout=15)
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)))
         _log_usage(response, "clutter verify")
         data=json.loads(response.text); confidence=max(0.0,min(1.0,float(data.get("confidence",0))))
         return {"cluttered": bool(data.get("cluttered")), "confidence":confidence, "reason":str(data.get("reason",""))[:300]}

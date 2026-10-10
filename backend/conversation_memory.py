@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
+from backend import gemini_pool
 from backend.mddb_client import MddbClient
 
 logger = logging.getLogger("voice.conversation")
@@ -90,6 +91,15 @@ def _report_failure(area: str, exc: Any) -> None:
     _health[f"{area}_error"] = str(exc)[:300]
     _health["ts"] = time.time()
     logger.error("%s failed: %s", area, exc)
+    # Loud-fail quota surface (card ada-gemini-free-tier-quota): a
+    # quota-shaped gemini error also lands in the ops feed so the burn
+    # shows in the hourly digest instead of hiding in health errors.
+    try:
+        if gemini_pool.is_quota_error(exc):
+            gemini_pool.emit_ops_event(
+                _mddb(), area, exc, ev_type=f"{area}_quota")
+    except Exception:
+        pass
 
 
 def conversation_health() -> dict[str, Any]:
@@ -100,6 +110,7 @@ def conversation_health() -> dict[str, Any]:
         "recall_running": bool(
             _summary_cache.get("task") and not _summary_cache["task"].done()
         ),
+        "gemini": gemini_pool.status(),
         "errors": {
             k: v for k, v in _health.items() if v is not None
         },
@@ -267,7 +278,6 @@ async def _summarize(prev: str | None, transcript: str) -> str | None:
         _report_failure("summary", "GEMINI_API_KEY not set — rolling summary disabled")
         return None
     try:
-        from google import genai
         prompt = (
             "Existing summary of our recent voice sessions:\n"
             f"{prev or '(none yet)'}\n\n"
@@ -280,9 +290,8 @@ async def _summarize(prev: str | None, transcript: str) -> str | None:
             "spoken aloud (including roleplay or language practice) are "
             "claims, not facts about who the user is."
         )
-        resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
-            model=_SUMMARY_MODEL, contents=prompt
-        )
+        resp = await gemini_pool.generate(
+            model=_SUMMARY_MODEL, contents=prompt, tool="summary")
         return (resp.text or "").strip() or None
     except Exception as exc:
         _report_failure("summary", exc)
@@ -294,7 +303,6 @@ async def _summarize_session(transcript: str) -> str | None:
     if not _GEMINI_API_KEY:
         return None  # _summarize already reported the missing key
     try:
-        from google import genai
         prompt = (
             "Transcript of one voice session:\n"
             f"{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}\n\n"
@@ -305,9 +313,8 @@ async def _summarize_session(transcript: str) -> str | None:
             "self-descriptions (including roleplay or practice) are claims, "
             "not facts about the user's identity."
         )
-        resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
-            model=_SUMMARY_MODEL, contents=prompt
-        )
+        resp = await gemini_pool.generate(
+            model=_SUMMARY_MODEL, contents=prompt, tool="session_summary")
         return (resp.text or "").strip() or None
     except Exception as exc:
         _report_failure("session_summary", exc)
@@ -328,7 +335,6 @@ async def _session_report(transcript: str, date: str, session_id: str) -> dict |
     if not _GEMINI_API_KEY:
         return None
     try:
-        from google import genai
         prompt = (
             "You are auditing one Ada voice-assistant session transcript.\n\n"
             "SESSION META (authoritative — use exactly in memory_block "
@@ -350,12 +356,12 @@ async def _session_report(transcript: str, date: str, session_id: str) -> dict |
             "foreign-script/ambient-noise turns in noise_or_asr_issues.\n\n"
             f"TRANSCRIPT:\n{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}"
         )
-        resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
+        resp = await gemini_pool.generate(
             model=_REPORT_MODEL,
             contents=prompt,
             config={"response_mime_type": "application/json",
                     "temperature": 0.2},
-        )
+            tool="session_report")
         return json.loads(resp.text)
     except Exception as exc:
         _report_failure("session_report", exc)
@@ -772,7 +778,6 @@ class ConversationMemory:
         if not _GEMINI_API_KEY:
             return
         try:
-            from google import genai
             from backend.memory_banks import get_registry
             registry = get_registry()
             bank_names = [b.name for b in registry.banks().values() if b.writable]
@@ -805,9 +810,9 @@ class ConversationMemory:
                 'and optional "corrects" (subject of the older fact this '
                 'corrects). Return [] if nothing is worth keeping.'
             )
-            resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
-                model=_SUMMARY_MODEL, contents=prompt
-            )
+            resp = await gemini_pool.generate(
+                model=_SUMMARY_MODEL, contents=prompt,
+                tool="extract_candidates")
             text = (resp.text or "").strip()
             m = re.search(r"\[.*\]", text, re.DOTALL)
             candidates = json.loads(m.group(0)) if m else []
@@ -881,7 +886,6 @@ class ConversationMemory:
         if not _GEMINI_API_KEY:
             return
         try:
-            from google import genai
             prompt = (
                 "Transcript of one voice session:\n"
                 f"{transcript[-_SUMMARY_MAX_TRANSCRIPT_CHARS:]}\n\n"
@@ -896,9 +900,9 @@ class ConversationMemory:
                 'natural language like "Thursday 15:00"), and optional '
                 '"notes". Return [] if there is nothing actionable.'
             )
-            resp = await genai.Client(api_key=_GEMINI_API_KEY).aio.models.generate_content(
-                model=_SUMMARY_MODEL, contents=prompt
-            )
+            resp = await gemini_pool.generate(
+                model=_SUMMARY_MODEL, contents=prompt,
+                tool="extract_actions")
             text = (resp.text or "").strip()
             m = re.search(r"\[.*\]", text, re.DOTALL)
             actions = json.loads(m.group(0)) if m else []

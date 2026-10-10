@@ -21,6 +21,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from backend import conversation_memory as cm
+from backend import gemini_pool
 from backend.calendar_providers import parse_day
 
 logger = logging.getLogger("tools")
@@ -43,12 +44,11 @@ async def _llm(prompt: str) -> str | None:
             "rollup", "GEMINI_API_KEY not set — summary rollups disabled")
         return None
     try:
-        from google import genai
-        resp = await genai.Client(api_key=cm._GEMINI_API_KEY).aio.models.generate_content(
+        resp = await gemini_pool.generate(
             model=os.environ.get("ADA_ROLLUP_MODEL") or cm._REPORT_MODEL,
             contents=prompt,
             config={"temperature": 0.2},
-        )
+            tool="rollup")
         return (resp.text or "").strip() or None
     except Exception as exc:
         cm._report_failure("rollup", exc)
