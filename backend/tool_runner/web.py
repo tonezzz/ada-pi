@@ -11,26 +11,18 @@ from __future__ import annotations
 from .common import *  # noqa: F401,F403
 
 
-# 429/quota-shaped error text — the genai client raises APIError(code=429,
-# status='RESOURCE_EXHAUSTED') but older transports surface bare message
-# strings, so match both the structured fields and the message.
-_QUOTA_SHAPED_RE = re.compile(
-    r"\b429\b|resource_exhausted|rate.?limit|too many requests|quota",
-    re.I)
+# Quota detection/exhaustion/ops-event emit now live in
+# backend.gemini_pool (ada-gemini-free-tier-quota) — the names stay
+# re-exported here so existing patch targets and imports keep working.
+_is_quota_error = gemini_pool.is_quota_error
 
-# Quota-burn ops events are throttled runner-side — a 429 storm must not
-# spam the ada-ha-events digest; one event per window shows the burn.
-_QUOTA_EVENT_MIN_S = float(os.environ.get("ADA_QUOTA_EVENT_MIN_S", "300"))
+# Repeat-heavy grounded queries are served from a small in-process TTL
+# cache (card option C) — a cache hit never reaches the API at all.
+_WEB_CACHE_TTL_S = float(os.environ.get("ADA_WEB_CACHE_TTL_S", "900"))
 
 
-def _is_quota_error(exc: BaseException) -> bool:
-    """True when the exception looks like a 429/quota exhaustion, not an
-    ordinary failure (timeout, empty answer, bad request)."""
-    for attr in ("code", "status_code", "status"):
-        v = getattr(exc, attr, None)
-        if v == 429 or str(v).upper() == "RESOURCE_EXHAUSTED":
-            return True
-    return bool(_QUOTA_SHAPED_RE.search(str(exc)))
+def _cache_key(query: str) -> str:
+    return re.sub(r"\s+", " ", str(query or "").strip().lower())
 
 
 class WebMixin:
@@ -58,9 +50,25 @@ class WebMixin:
         if want not in ("auto", "gemini", "duckduckgo"):
             raise ValueError(f"unknown web_search provider {provider!r} "
                              "(auto|gemini|duckduckgo)")
+        ck = _cache_key(query)
+        if want == "auto":
+            hit = gemini_pool.cache_get("web_search", ck)
+            if hit is not None:
+                out = dict(hit)
+                out["cached"] = True
+                return out
+        model = os.environ.get("ADA_WEB_SEARCH_MODEL", "gemini-2.5-flash")
         quota_hit = False
         if want in ("auto", "gemini"):
             try:
+                # A drained pool skips the doomed request entirely — the
+                # caller gets the same quota-shaped path as a live 429
+                # (free fallback for auto, loud raise for gemini).
+                if gemini_pool.pool_exhausted(model):
+                    raise gemini_pool.QuotaExhaustedError(
+                        f"gemini free-tier quota exhausted for {model} — "
+                        "resets at the daily boundary (midnight "
+                        "US/Pacific)")
                 out = await self._web_search_gemini(query)
             except Exception as e:
                 quota_hit = _is_quota_error(e)
@@ -94,74 +102,42 @@ class WebMixin:
             "(cms_note_update on the matching page, or offer "
             "cms_publish_page for a new one)."
         )
+        # Cache only clean answers — a degraded/quota result must never be
+        # replayed later as if it were the grounded answer.
+        if not quota_hit:
+            gemini_pool.cache_put("web_search", ck, dict(out),
+                                  _WEB_CACHE_TTL_S)
         return out
 
     def _emit_quota_ops_event(self, exc: BaseException) -> None:
         """Fire-and-forget ops event to ada-ha-events-<instance> — the
         hourly chaba report feed surfaces these, so grounded-search quota
-        burn lands in the digest before it reaches zero. Runner-side
-        (same write_outbox pattern); throttled per-process so a 429 storm
-        cannot flood the index."""
-        if self.mddb is None:
-            return
-        try:
-            instance = self._instance_id or ada_instance_id()
-        except Exception:
-            return
-        now_mono = time.monotonic()
-        if now_mono - self._web_quota_event_at < _QUOTA_EVENT_MIN_S:
-            return
-        self._web_quota_event_at = now_mono
-        collection = f"ada-ha-events-{instance}"
-        session = str(self.session_id or "runner")
-        mddb = self.mddb
-
-        async def _post() -> None:
-            try:
-                now = datetime.now().astimezone()
-                await mddb.add_document(
-                    collection=collection,
-                    key=(f"ops-{session}-web_search_quota-"
-                         f"{now:%Y%m%d%H%M%S%f}"),
-                    lang="en",
-                    content_md=(
-                        "web_search: grounded gemini search hit a "
-                        "quota/rate-limit error — free duckduckgo fallback "
-                        f"engaged: {type(exc).__name__}: {exc}"[:200]),
-                    meta={
-                        "kind": ["ops-event"],
-                        "type": ["web_search_quota"],
-                        "instance": [instance],
-                        "tool": ["web_search"],
-                        "session_id": [session],
-                        "ts": [now.isoformat(timespec="seconds")],
-                    },
-                    timeout=30,
-                    tool="web_search",
-                    session_id=session,
-                )
-            except Exception:
-                logger.debug("web_search quota ops event emit failed",
-                             exc_info=True)
-
-        try:
-            asyncio.get_running_loop().create_task(_post())
-        except RuntimeError:
-            return  # no loop (unit tests, shutdown) — nothing to schedule
+        burn lands in the digest before it reaches zero. Shared emit in
+        gemini_pool (throttled per tool) — same feed shape as provider
+        _emit_ops_event / write_outbox dead-letters."""
+        gemini_pool.emit_ops_event(
+            self.mddb, "web_search", exc,
+            session_id=str(self.session_id or "runner"),
+            instance=self._instance_id or None,
+            ev_type="web_search_quota",
+            detail=(
+                "web_search: grounded gemini search hit a "
+                "quota/rate-limit error — free duckduckgo fallback "
+                f"engaged: {type(exc).__name__}: {exc}"[:200]))
 
     async def _web_search_gemini(self, query: str) -> dict[str, Any]:
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
+        if not gemini_pool.configured_keys():
             raise RuntimeError("web search unavailable: GEMINI_API_KEY not set")
-        from google import genai
         from google.genai import types
-        client = genai.Client(api_key=api_key)
         model = os.environ.get("ADA_WEB_SEARCH_MODEL", "gemini-2.5-flash")
-        resp = await client.aio.models.generate_content(
+        resp = await gemini_pool.generate(
             model=model,
             contents=str(query),
             config=types.GenerateContentConfig(
                 tools=[types.Tool(google_search=types.GoogleSearch())]),
+            tool="web_search",
+            mddb=self.mddb,
+            session_id=str(self.session_id or "runner"),
         )
         text = (resp.text or "").strip()
         if not text:

@@ -1663,15 +1663,14 @@ class ScreensMixin:
         session) and publish the WAV to the relay's /frame store — returns
         the public same-origin URL a vcast display can <audio>-fetch, or
         None on any failure (caller falls back to client-side TTS)."""
-        import base64, io, wave, urllib.request
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get(
-            "GOOGLE_API_KEY")
+        import base64, io, wave, urllib.error, urllib.request
+        model = os.environ.get(
+            "VCAST_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+        api_key = gemini_pool.next_key(model)
         if not api_key:
             return None
         try:
             from backend import voice_config
-            model = os.environ.get(
-                "VCAST_TTS_MODEL", "gemini-2.5-flash-preview-tts")
             def _synth() -> bytes | None:
                 # plain REST — the google-genai sync client dies inside
                 # to_thread with 'client has been closed'
@@ -1714,6 +1713,18 @@ class ScreensMixin:
                 "VCAST_PUBLIC_API",
                 "https://tony-dell.taila0626a.ts.net/api/input-bridge")
             return f"{pub}/frame?screen=0&token={token}"
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                # Quota-shaped: mark the key so later TTS calls skip the
+                # doomed request, and surface the burn in the ops feed —
+                # the client-side TTS fallback stays silent UX-wise.
+                gemini_pool.mark_exhausted(
+                    api_key, model, e, tool="vcast_tts")
+                gemini_pool.emit_ops_event(
+                    self.mddb, "vcast_tts", e,
+                    session_id=str(self.session_id or "runner"))
+            logger.exception("vcast tts failed")
+            return None
         except Exception:
             logger.exception("vcast tts failed")
             return None

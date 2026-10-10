@@ -36,6 +36,8 @@ from google.genai import types
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 
+from backend import gemini_pool
+
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
@@ -46,6 +48,9 @@ logger = logging.getLogger("documents.check")
 
 DOC_MODEL = os.environ.get("DOC_MODEL", "gemini-2.5-flash")
 DOC_TIMEOUT_S = float(os.environ.get("DOC_TIMEOUT_S", "60"))
+# Content-hash classify cache — re-uploads of the same image skip the API.
+_CLASSIFY_CACHE_TTL_S = float(
+    os.environ.get("ADA_DOC_CLASSIFY_CACHE_TTL_S", "86400"))
 RESULT_CAP = 20  # in-process result store: newest N intakes
 
 A4_PX = (2480, 3508)  # A4 portrait at 300 DPI
@@ -312,8 +317,8 @@ class DocumentCheckEngine:
     preview/download and (later) the print/archive tools."""
 
     def __init__(self, client: Any = None) -> None:
-        self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         self.model = DOC_MODEL
+        self.api_key = gemini_pool.next_key(self.model) or ""
         self._client = client
         self._held: OrderedDict[str, _Held] = OrderedDict()
 
@@ -434,6 +439,12 @@ class DocumentCheckEngine:
         return result
 
     async def _classify(self, image: bytes, image_mime: str) -> dict[str, Any]:
+        # Content-hash cache (card ada-gemini-free-tier-quota option C):
+        # a re-uploaded image skips the API call entirely.
+        ck = hashlib.sha256(image_mime.encode() + b"\x00" + image).hexdigest()
+        cached = gemini_pool.cache_get("doc_classify", ck)
+        if cached is not None:
+            return dict(cached)
         prompt = (
             "Classify this document image and answer with JSON. doc_type is one "
             "of: id_card, passport, deed, contract, receipt, letter, form, "
@@ -443,23 +454,68 @@ class DocumentCheckEngine:
             "sentence, what it is + who it belongs to if readable. doc_number: "
             "the main ID/serial/deed number if clearly readable."
         )
-        response = await self.client.aio.models.generate_content(
-            model=self.model,
-            contents=[
-                types.Part.from_text(text=prompt),
-                types.Part.from_bytes(data=image, mime_type=image_mime),
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_json_schema=CLASSIFY_SCHEMA,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(
-                    disable=True
-                ),
-            ),
-        )
+        # Pool walk: a quota-shaped failure marks (key, model) exhausted and
+        # the next configured key takes over; a drained pool raises
+        # QuotaExhaustedError so the intake result says "quota exhausted"
+        # plainly instead of an opaque API error.
+        injected = self._client is not None
+        attempts = 1 if injected else max(
+            1, len(gemini_pool.configured_keys()))
+        last_exc: BaseException | None = None
+        response = None
+        for _ in range(attempts):
+            if not injected:
+                key = gemini_pool.next_key(self.model)
+                if key is None:
+                    break
+                if key != self.api_key:
+                    self.api_key = key
+                    self._client = None
+            try:
+                response = await self.client.aio.models.generate_content(
+                    model=self.model,
+                    contents=[
+                        types.Part.from_text(text=prompt),
+                        types.Part.from_bytes(
+                            data=image, mime_type=image_mime),
+                    ],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_json_schema=CLASSIFY_SCHEMA,
+                        automatic_function_calling=(
+                            types.AutomaticFunctionCallingConfig(
+                                disable=True)),
+                    ),
+                )
+                break
+            except Exception as exc:
+                if injected or not gemini_pool.is_quota_error(exc):
+                    raise
+                gemini_pool.mark_exhausted(
+                    self.api_key, self.model, exc,
+                    tool="document_classify")
+                last_exc = exc
+        if response is None:
+            if last_exc is None and not gemini_pool.configured_keys():
+                raise RuntimeError("GEMINI_API_KEY is not set")
+            exc = gemini_pool.QuotaExhaustedError(
+                f"gemini free-tier quota exhausted for {self.model} — "
+                "resets at the daily boundary (midnight US/Pacific)"
+                + (f": {type(last_exc).__name__}: {last_exc}"
+                   if last_exc else ""))
+            try:
+                from backend.mddb_client import MddbClient
+                gemini_pool.emit_ops_event(
+                    MddbClient(), "document_classify", exc,
+                    ev_type="document_classify_quota")
+            except Exception:
+                pass
+            raise exc
         raw = response.text.strip()
         m = re.search(r"\{.*\}", raw, re.DOTALL)
-        return json.loads(m.group(0) if m else raw)
+        cls = json.loads(m.group(0) if m else raw)
+        gemini_pool.cache_put("doc_classify", ck, dict(cls), _CLASSIFY_CACHE_TTL_S)
+        return cls
 
 
 def decode_image(payload: dict[str, Any]) -> tuple[bytes | None, str]:

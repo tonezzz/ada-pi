@@ -26,6 +26,8 @@ from typing import Any, Awaitable, Callable
 from google import genai
 from google.genai import types
 
+from backend import gemini_pool
+
 logger = logging.getLogger(__name__)
 
 DEVTEAM_MODEL = os.environ.get("DEVTEAM_MODEL", "gemini-2.5-flash")
@@ -83,10 +85,10 @@ class DevTeam:
     """Requirement -> panel -> revised spec. Client injectable for tests."""
 
     def __init__(self, client: Any = None) -> None:
-        self.api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get(
-            "GOOGLE_API_KEY")
         self.model = os.environ.get("DEVTEAM_MODEL", DEVTEAM_MODEL)
+        self.api_key = gemini_pool.next_key(self.model) or ""
         self._client = client
+        self._injected = client is not None
 
     @property
     def client(self) -> Any:
@@ -117,6 +119,15 @@ class DevTeam:
             except Exception as exc:
                 text = str(exc)
                 transient = "429" in text or "503" in text or "UNAVAILABLE" in text
+                if transient and not self._injected \
+                        and gemini_pool.is_quota_error(exc):
+                    gemini_pool.mark_exhausted(
+                        self.api_key, self.model, exc, tool="devteam")
+                    nxt = gemini_pool.next_key(self.model)
+                    if nxt and nxt != self.api_key:
+                        self.api_key = nxt
+                        self._client = None
+                        continue
                 if not transient or attempt == 2:
                     raise
                 match = re.search(

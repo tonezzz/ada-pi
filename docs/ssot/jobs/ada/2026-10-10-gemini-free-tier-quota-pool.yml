@@ -1,0 +1,112 @@
+# SSOT Job: gemini free-tier quota — key pool, cache, loud-fail
+# Card: ada-gemini-free-tier-quota (kanban). Dispatch 20261010-080517.
+
+title: Gemini free-tier quota — shared key pool, answer caches, loud-fail surface
+subtitle: Options card — checked wired keys first; picked C+D plus a B-ready key pool
+
+planning:
+  goal: |
+    Every side-tool generateContent call (web_search grounding, document
+    classify, CMS edit LLM, session summaries/rollups, decision/devteam
+    checks, posture/clutter verify, vcast TTS) shares one free-tier
+    Gemini key — 20 req/day per project per model. Once exhausted, calls
+    silently degraded or kept retrying doomed requests; nothing told
+    Tony the quota was gone.
+  wiring_audit: |
+    Checked ~/.config/secrets on idc01 (same file family as idc03):
+    exactly ONE active GEMINI_API_KEY value is wired — the same sha is
+    shared by ada-ha-tony.env, ada-ha-michael.env, ada-dev.env,
+    ada-pi-pwa.env and mddb-gemini.env. _attic-20261007 holds one
+    retired key (different sha). ada-ha-tony-keys.json is only Ada
+    device keys — no Gemini material. ADA_VISION_API_KEY is ollama, not
+    Gemini. => Option A (billing project) and option B (N projects) both
+    require Tony to provision new GCP resources — they cannot be
+    completed from the repo. Picked: C (cache) + D (loud-fail) plus a
+    key-pool that makes B/A zero-code-change once keys exist.
+  decisions: |
+    - backend/gemini_pool.py is the single authority: configured_keys()
+      reads GEMINI_API_KEY, GEMINI_API_KEYS (comma list), numbered
+      GEMINI_API_KEY_2..9 and GOOGLE_API_KEY; next_key(model)
+      round-robins keys that still have quota FOR THAT MODEL (quota is
+      per-project-per-model-day); mark_exhausted() parks a (key, model)
+      pair until the free-tier reset (midnight US/Pacific);
+      pool_exhausted() lets callers skip doomed requests;
+      QuotaExhaustedError is deliberately quota-shaped and says "tell
+      the user plainly".
+    - D (loud-fail): emit_ops_event() generalizes the web_search_quota
+      event — throttled per tool per ADA_QUOTA_EVENT_MIN_S window into
+      ada-ha-events-<instance> (hourly digest). Every site now emits on
+      quota: web_search, document_classify, cms_edit, summary,
+      session_summary, session_report, extract_candidates,
+      extract_actions, rollup, decision_check, devteam, posture_verify,
+      vcast_tts. conversation_health() gains a 'gemini' pool-status
+      block (key counts, last quota error per tool, reset time — never
+      key material).
+    - C (cache+debounce): web_search caches clean answers per
+      normalized query (ADA_WEB_CACHE_TTL_S, default 900s) — degraded
+      results are never cached; doc classify caches per image sha256
+      (ADA_DOC_CLASSIFY_CACHE_TTL_S, default 24h).
+    - A drained pool short-circuits: web_search auto goes straight to
+      the DDG fallback annotated quota_exhausted; generate() walks all
+      configured keys then raises QuotaExhaustedError which propagates
+      to the tool error surface — Ada says the quota is spent.
+    - ADA_GEMINI_SIMULATE_EXHAUSTED=1 forces the drained state for the
+      card's forced-exhaust verification.
+    - realtime_provider (live session) and ada_render_video (Veo,
+      paid-only) deliberately keep direct env reads — different quota
+      class.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-10"
+  steps:
+    - id: 1
+      label: "wiring audit"
+      status: done
+      notes: "1 active key shared by all 5 env files; 1 retired key in
+        _attic; keys.json is Ada device keys only. A/B need new GCP
+        resources -> implemented C+D + B-ready pool."
+    - id: 2
+      label: "gemini_pool module"
+      status: done
+      notes: "backend/gemini_pool.py — key pool, per-(key,model)
+        exhaustion to PT-midnight reset, emit_ops_event (throttled per
+        tool), TTL cache, generate() failover, status(), reset() test
+        hook, ADA_GEMINI_SIMULATE_EXHAUSTED lever."
+    - id: 3
+      label: "call-site wiring"
+      status: done
+      notes: "web.py (pool+generate, query cache, skip-when-drained),
+        document_check (pool rotate, sha cache, loud quota summary, ops
+        event), cms._cms_llm (generate), conversation_memory x5 +
+        _report_failure emits quota events, summary_rollups._llm,
+        decision_check (mark+rotate inside existing 429 retry, loud
+        final raise), devteam (mark+rotate), posture_verifier (pooled
+        _generate), screens._vcast_tts (mark+emit on HTTP 429)."
+    - id: 4
+      label: "health + docs"
+      status: done
+      notes: "conversation_health()['gemini'] = pool status;
+        .env.example documents GEMINI_API_KEYS/_2..9,
+        ADA_GEMINI_SIMULATE_EXHAUSTED, cache TTLs."
+
+verify:
+  automated: |
+    .venv/bin/python -m pytest tests/test_gemini_pool.py — 21 passed
+    related suites (web_search, document_check, decision_check, devteam,
+    posture_verifier, summary_rollups, context_awareness, ops_events,
+    tool_runner, provider_events, tools_loader, cms_regen, secret_drop,
+    mddb_client, memory_banks) — 499 passed total
+    scripts/tool-lint.py — 3 PRE-EXISTING violations (voice_fx
+    descsize/coverage, yt_cached_list impl) — same on HEAD, untouched.
+  live_pending: |
+    On idc03 after deploy:
+    - ADA_GEMINI_SIMULATE_EXHAUSTED=1 in a test env -> web_search auto
+      still answers via DDG marked quota_exhausted/degraded and Ada
+      relays "quota spent"; provider=gemini raises loudly.
+    - 48h journal check: quota errors appear as web_search_quota /
+      *_quota ops events in ada-ha-events-tony (hourly digest), not
+      silent per-call 429s.
+    - Drop a second/billing key into GEMINI_API_KEYS on ada-ha-tony.env
+      (options A/B) — pool picks it up with no code change.

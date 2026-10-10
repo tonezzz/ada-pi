@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("GEMINI_API_KEY", "x")
 
+from backend import gemini_pool  # noqa: E402
 from backend.tool_runner import ToolRunner  # noqa: E402
 from backend.tool_runner.web import _is_quota_error  # noqa: E402
 
@@ -64,6 +65,9 @@ class QuotaShapeTests(unittest.TestCase):
 class WebSearchFallbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
+        # Answer cache, exhaustion marks and the ops-event throttle are
+        # module-global in gemini_pool — isolate each test.
+        gemini_pool.reset()
         self.ha_client = AsyncMock()
         self.ha_client.base_url = "http://test:8123"
         self.runner = ToolRunner(self.ha_client, instance_id="test")

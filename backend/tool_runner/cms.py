@@ -660,12 +660,13 @@ class CmsMixin:
         return out
 
     async def _cms_llm(self, prompt: str) -> str:
-        from google import genai
-        client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
-        resp = await client.aio.models.generate_content(
+        resp = await gemini_pool.generate(
             model=os.environ.get("ADA_CMS_EDIT_MODEL",
                                  "gemini-3.5-flash-lite"),
-            contents=prompt)
+            contents=prompt,
+            tool="cms_edit",
+            mddb=self.mddb,
+            session_id=str(self.session_id or "runner"))
         return (resp.text or "").strip()
 
     async def _cms_edit_sections(
