@@ -94,6 +94,24 @@ verify:
       tests/test_memory_recall_extras.py -q                     # 85 passed
   - python3 scripts/ada/memory-pending.py list                  # empty queue
 
+verify_attempt3: |
+  Post-merge re-verification on origin/main @ 172f25e (dispatch
+  20261011-061546, card was held only by the stale merge-conflict
+  request — a992a40 had already landed the work):
+  - python3 -c 'import backend.memory_write_guard'              # exit 0
+  - python3 backend/memory_write_guard.py --selftest            # SELFTEST-OK
+  - pytest tests/test_memory_pending.py -q                      # 23 passed
+  - pytest test_tool_runner+memory_banks+recall_extras+
+    write_guard -q                                              # 390 passed
+  - python3 scripts/tool-lint.py                                # clean
+  - live smoke (isolated dir + stub guest store): stage ok,
+    injection refused at stage (scan-before-stage), approve
+    lands verbatim, re-approve refused (single-use), reject ->
+    refused; queue drains to 0.
+  - card-pipeline --api: plan=pass structure=pass audit=skip
+    benchmark=blocked->self-answered (binary acceptance, no
+    before/after metric exists) verify=pass (1/1 expected_goals).
+
 notes: |
   Approver surface = card comms + CLI (no new UI): staging posts an
   events.md line (surfaced by the existing ada-review digest) and, when
