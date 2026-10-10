@@ -357,6 +357,45 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class CaptureBridgeTest(unittest.IsolatedAsyncioTestCase):
+    """Mic-capture bridge (card ada-speech-capture-degraded): once feed()
+    has run, enroll_from_buffer must have real audio — the "capture
+    bridge may be dead" diagnostic is only honest when nothing ever
+    arrived on the session (e.g. a text-only relay, or a provider the
+    reconnect path failed to re-link)."""
+
+    async def _sess(self, ident):
+        async def _noop(name, conf):
+            return None
+        return speaker_id.SpeakerSession(ident, _noop)
+
+    async def test_fed_session_enrolls_with_audio(self):
+        ident = speaker_id.SpeakerIdentifier()
+        ident._enrolled, ident._prints, ident._metadata = {}, {}, {}
+        sess = await self._sess(ident)
+        # One MIN_CHUNK of non-zero PCM16 (rms >> SILENCE_RMS): identify
+        # misses (no enrolled profiles) so the voiced chunk accrues in
+        # _pending_voice for the enroll.
+        voiced = b"\x11\x22" * (speaker_id.MIN_CHUNK_BYTES // 2)
+        await sess.feed(voiced)
+        if sess._task is not None:
+            await sess._task
+        with patch.object(ident, "_compute_embedding",
+                          return_value=_vec(9)), \
+                patch.object(ident, "_save_enrolled"):
+            out = sess.enroll_from_buffer("Tony")
+        self.assertGreater(out["duration_s"], 0)
+        self.assertEqual(out["name"], "Tony")
+
+    async def test_unfed_session_reports_bridge_diag(self):
+        ident = speaker_id.SpeakerIdentifier()
+        ident._enrolled, ident._prints, ident._metadata = {}, {}, {}
+        sess = await self._sess(ident)
+        with self.assertRaises(ValueError) as ctx:
+            sess.enroll_from_buffer("Tony")
+        self.assertIn("capture bridge may be dead", str(ctx.exception))
+
+
 class ShadowModeTest(unittest.TestCase):
     """ADA_SPEAKER_SHADOW_MODEL: the shadow backend scores every identify
     probe in parallel but never changes the primary decision."""

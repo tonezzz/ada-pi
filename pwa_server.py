@@ -978,7 +978,12 @@ async def voice_socket(ws: WebSocket) -> None:
     # session — memory identity then falls back to the issued-key name, so
     # an admin can faithfully test a restricted-key (e.g. testo) experience.
     no_speaker_id = (ws.query_params.get("no_speaker_id") or "").lower() in ("1", "true")
-    if SPEAKER_ID_ENABLED and not no_speaker_id:
+    # Text-only relay channels (telegram/line) never stream mic audio —
+    # a SpeakerSession there can never be fed, so speaker tools on it
+    # would only ever report "the capture bridge may be dead", and it
+    # clobbers the shared tool_runner.speaker_session fallback real
+    # voice sessions resolve through.
+    if SPEAKER_ID_ENABLED and not no_speaker_id and not channel:
         try:
             identifier = SpeakerIdentifier.get()
             speaker_identifier = identifier
@@ -1427,18 +1432,41 @@ async def voice_socket(ws: WebSocket) -> None:
                         new_provider = create_provider(
                             tool_runner=tool_runner, session_id=session_id,
                             conversation=conversation,
-                            caller_name=tool_runner.session_caller_name,
-                            caller_person=tool_runner.session_caller_ha_person,
+                            # Use THIS session's caller identity — the shared
+                            # tool_runner fields belong to whichever session
+                            # connected last and can re-pin another caller's
+                            # owner onto this provider.
+                            caller_name=caller_name,
+                            caller_person=caller_person,
                             channel=channel,
                         )
                         await new_provider.connect(resumption_handle=handle)
+                        # Re-link per-session speaker state — a fresh
+                        # provider defaults these to None, orphaning the
+                        # capture bridge (speaker tools then fall back to
+                        # the shared runner field — possibly a different
+                        # session's unfed buffer — and report "the capture
+                        # bridge may be dead" on a live mic) and dropping
+                        # the identified-speaker label until re-detection.
+                        new_provider.speaker_session = speaker_session
+                        new_provider.current_speaker = old.current_speaker
+                        new_provider.current_speaker_ha_person = (
+                            old.current_speaker_ha_person)
                         provider_ref[0] = new_provider
                         conversation.log_event(
                             "live_reconnect", resumed=bool(handle))
                         if not handle:
-                            # Fresh Gemini context — re-prime so the new
-                            # session starts aware of recent/general memory.
-                            await _prime_session(new_provider)
+                            # Fresh Gemini context — re-prime with memory
+                            # AND this session's live transcript tail. A
+                            # context-rotate deliberately drops the token
+                            # window, so without the tail the new session
+                            # forgets the last minutes mid-conversation
+                            # (the resume tier reads "same conversation
+                            # resuming — pick up where you left off").
+                            await _prime_session(
+                                new_provider,
+                                reconnect=(0.0, conversation.recent_context(
+                                    max_turns=12, max_chars=3000)))
                         await ws.send_text(json.dumps({"type": "ready", "session": session_id}))
                         logger.info("session=%s provider reconnected (resumed=%s)", session_id, bool(handle))
                         break
@@ -1514,12 +1542,20 @@ async def voice_socket(ws: WebSocket) -> None:
         if speaker_session is not None:
             with suppress(Exception):
                 await speaker_session.close()
-            tool_runner.speaker_session = None
-        # Drop the identified-speaker binding with the session — it must
-        # not carry into the next session on this shared runner.
-        tool_runner.current_speaker_ha_person = None
-        tool_runner.session_caller_ha_person = None
-        tool_runner.session_owner_identity = None
+            if tool_runner.speaker_session is speaker_session:
+                tool_runner.speaker_session = None
+        # Drop this session's identity bindings — they must not carry into
+        # the next session on this shared runner. Clear only when the field
+        # still holds THIS session's value: a concurrent session's teardown
+        # must not wipe another live session's bindings.
+        last_spk = getattr(provider_ref[0], "current_speaker_ha_person", None)
+        if (last_spk is not None
+                and tool_runner.current_speaker_ha_person == last_spk):
+            tool_runner.current_speaker_ha_person = None
+        if tool_runner.session_caller_ha_person == caller_person:
+            tool_runner.session_caller_ha_person = None
+        if tool_runner.session_owner_identity == (caller_person or caller_name):
+            tool_runner.session_owner_identity = None
         with suppress(Exception):
             await ws.close()
         if not no_persist:
