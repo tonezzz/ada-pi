@@ -163,8 +163,12 @@ class AdaChatCard extends HTMLElement {
     await this._ensureSession();
     const scheme = location.protocol === "https:" ? "wss" : "ws";
     const key = this._apiKey();
+    // channel=chat marks this as a text-channel session (like the
+    // telegram/line relays): text-chat instructions, no voice stack —
+    // and its turns carry the [chat] label in the shared voice+chat
+    // history so Ada's voice sessions can read them.
     const url = `${scheme}://${location.host}${this._apiBase()}/ws`
-      + `?device_id=${encodeURIComponent(this._deviceId())}`
+      + `?device_id=${encodeURIComponent(this._deviceId())}&channel=chat`
       + (key ? `&api_key=${encodeURIComponent(key)}` : "");
     const ws = new WebSocket(url);
     this._ws = ws;
@@ -205,6 +209,14 @@ class AdaChatCard extends HTMLElement {
         break;
       case "user_transcript":
         this._addMsg("You (voice)", ev.text, "mine");
+        break;
+      case "channel_activity":
+        // Unified voice+chat history: a turn that happened on one of the
+        // user's OTHER live sessions (voice, telegram, line). Rendered
+        // dimmed with the surface label — same timeline, not a reply.
+        this._addMsg(
+          `${ev.role === "assistant" ? "Ada" : "You"} [${ev.via || "?"}]`,
+          ev.text || "", "channel");
         break;
       case "bark":
       case "notify_voice":
@@ -318,6 +330,10 @@ class AdaChatCard extends HTMLElement {
                               background: rgba(5,35,48,.9); color: #aef8ff;
                               font: 12px system-ui, sans-serif; cursor: pointer;
                               vertical-align: 1px; }
+        .msg.channel { align-self: center; background: none; max-width: 92%;
+                       color: #9adfe7; font-size: 12.5px; padding: 2px;
+                       opacity: .75; }
+        .msg.channel .who { color: #f2a008; }
         .msg.streaming { opacity: .75; }
         .composer { display: flex; gap: 8px; margin-top: 10px; }
         .composer input { flex: 1; min-height: 44px; padding: 10px 14px;

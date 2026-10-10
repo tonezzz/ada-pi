@@ -1284,6 +1284,7 @@ async def session_prime_text(
     away_seconds: float | None = None,
     last_tail: str = "",
     person_entity: str | None = None,
+    channel_context: str = "",
 ) -> str | None:
     """Build the session-start context injection: the rolling recent-sessions
     summary plus a few facts from the personal/general banks, so Ada starts
@@ -1324,6 +1325,16 @@ async def session_prime_text(
         )
     if summary and not (directive and (away_seconds or 0) < 3600):
         parts.append(f"Recent sessions: {summary.strip()}")
+    # Unified voice+chat history (card ada-reads-text-chat): recent turns
+    # from this owner's other channels — live sibling sessions and/or the
+    # persisted shared tail. Always allowed through: it is capped by age,
+    # so it is never stale thread content like bank facts can be.
+    if str(channel_context or "").strip():
+        parts.append(
+            "Your other chat channels (the voice session, text chat and "
+            "relays share one history — you can see these messages and "
+            "the user may refer to them):\n"
+            + channel_context.strip())
     # L0 hot headlines — fresh report/digest one-liners. Skipped on short
     # reconnects like facts; announced_at stamping means they surface once.
     if not (directive and (away_seconds or 0) < 3600):

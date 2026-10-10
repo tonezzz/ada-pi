@@ -28,10 +28,15 @@ if str(ROOT) not in sys.path:
 
 from backend.conversation_memory import (
     ConversationMemory,
+    channel_tail_text,
     last_session_end,
+    read_channel_tails,
     recent_summary,
+    record_channel_tail,
     record_session_end,
 )
+from backend import conversation_memory as _conv_mem
+from backend.instance import ada_instance_id
 from backend.realtime_provider import create_provider
 from backend import memory_ops, voice_fx
 from backend.home_assistant import HomeAssistantClient
@@ -819,12 +824,116 @@ async def _mark_session_end(conversation: ConversationMemory, session_id: str = 
     _last_session_end = {"ts": time.time(), "tail": tail}
     if tool_runner.mddb is not None:
         await record_session_end(tool_runner.mddb, tail)
+        # Refresh this instance's shared channel tail so other backends
+        # (the ada-pi-pwa chat card) see how this session ended.
+        with suppress(Exception):
+            await record_channel_tail(
+                tool_runner.mddb, conversation.owner_identity,
+                channel_tail_text(owner=conversation.owner_identity))
     if CHABA_MODE and chaba is not None:
         with suppress(Exception):
             chaba.append_session_log(session_id, tail)
 
 
-async def _prime_session_task(provider: Any, ws: WebSocket) -> None:
+async def _mirror_turn(
+    session_id: str,
+    conversation: ConversationMemory,
+    role: str,
+    text: str,
+) -> None:
+    """Copy a turn into same-owner sibling sessions — a labelled
+    transcript line plus a silent context note — so live voice, text-chat
+    and relay sessions share one history (card ada-reads-text-chat).
+
+    Same-owner only: a guest's channel never bleeds into the owner's
+    session or vice versa. no_persist sessions neither send nor receive."""
+    owner = conversation.owner_identity
+    if not owner or getattr(conversation, "no_persist", False):
+        return
+    via = conversation.channel or "voice"
+    if role == "user":
+        note = (
+            f"(system) {via} channel: the user sent you a message there "
+            f"just now — {str(text).strip()[:400]!r}. It is handled on "
+            "that channel; keep it as context, do not answer it again "
+            "here.")
+    else:
+        note = (
+            f"(system) {via} channel: you replied to the user there just "
+            f"now — {str(text).strip()[:400]!r}. Context only, no reply "
+            "needed.")
+    for sid, sess in list(_live_sessions.items()):
+        if sid == session_id:
+            continue
+        conv = sess.get("conversation")
+        if (conv is None or conv.owner_identity != owner
+                or getattr(conv, "no_persist", False)):
+            continue
+        conv.add_channel_mirror(role, text, via)
+        # UI mirror: the sibling client renders the turn as a dimmed
+        # channel line — the shared history is visible, not just implied.
+        sibling_ws = sess.get("ws")
+        if sibling_ws is not None:
+            with suppress(Exception):
+                await sibling_ws.send_text(json.dumps({
+                    "type": "channel_activity",
+                    "via": via, "role": role,
+                    "session_id": session_id,
+                    "text": str(text)[:500],
+                }))
+        pref = sess.get("provider")
+        p = pref[0] if pref else None
+        if p is not None:
+            with suppress(Exception):
+                p.queue_context_note(note)
+
+
+async def _flush_channel_tail(conversation: ConversationMemory) -> None:
+    """Persist the shared per-owner channel tail so OTHER ada backends
+    (e.g. ada-ha-tony reading the ada-pi-pwa chat) see it too."""
+    if (tool_runner.mddb is None
+            or getattr(conversation, "no_persist", False)):
+        return
+    owner = conversation.owner_identity
+    tail = channel_tail_text(owner=owner)
+    with suppress(Exception):
+        await record_channel_tail(tool_runner.mddb, owner, tail)
+
+
+async def _channel_prime_context(
+    conversation: ConversationMemory | None, exclude_session: str | None
+) -> str:
+    """Unified voice+chat tail for session prime: live sibling-session
+    turns on this backend plus persisted tails written by OTHER ada
+    instances (the ada-pi-pwa chat card). Owner-strict — anonymous
+    sessions get no shared history."""
+    owner = getattr(conversation, "owner_identity", None)
+    if not owner:
+        return ""
+    parts: list[str] = []
+    local = channel_tail_text(owner=owner, exclude_session=exclude_session)
+    if local:
+        parts.append(local)
+    if tool_runner.mddb is not None:
+        try:
+            persisted = await asyncio.wait_for(
+                read_channel_tails(
+                    tool_runner.mddb, owner,
+                    exclude_instance=ada_instance_id()),
+                timeout=6.0)
+        except Exception:
+            persisted = []
+        for body in persisted:
+            body = body.strip()
+            if body and body not in local:
+                parts.append(body)
+    return "\n".join(parts)
+
+
+async def _prime_session_task(
+    provider: Any, ws: WebSocket,
+    conversation: ConversationMemory | None = None,
+) -> None:
     """Background session prime: resolve reconnect context (may hit MDDB)
     then inject the session-start text. Runs after 'ready' is sent so a
     stalled MDDB can't hold up the client handshake."""
@@ -832,11 +941,13 @@ async def _prime_session_task(provider: Any, ws: WebSocket) -> None:
         reconnect = await asyncio.wait_for(_reconnect_context(ws), timeout=6.0)
     except Exception:
         reconnect = None
-    await _prime_session(provider, reconnect=reconnect)
+    await _prime_session(provider, reconnect=reconnect,
+                         conversation=conversation)
 
 
 async def _prime_session(
-    provider: Any, reconnect: tuple[float | None, str] | None = None
+    provider: Any, reconnect: tuple[float | None, str] | None = None,
+    conversation: ConversationMemory | None = None,
 ) -> None:
     """Inject session-start context (recent-sessions summary + top personal/
     general memories) so Ada starts aware of general info instead of blank.
@@ -852,6 +963,9 @@ async def _prime_session(
         return
     try:
         away_s, tail = reconnect if reconnect else (None, "")
+        conv = conversation or getattr(provider, "conversation", None)
+        channel_ctx = await _channel_prime_context(
+            conv, exclude_session=provider.session_id)
         text = await memory_ops.session_prime_text(
             tool_runner.mddb,
             tool_runner.banks,
@@ -859,6 +973,7 @@ async def _prime_session(
             away_seconds=away_s,
             last_tail=tail,
             person_entity=tool_runner.policy_identity(),
+            channel_context=channel_ctx,
         )
         if text:
             t0 = time.monotonic()
@@ -940,6 +1055,11 @@ async def voice_socket(ws: WebSocket) -> None:
     # Fallback identity for memory routing/extraction until speaker ID
     # identifies the voice (then _on_speaker updates this).
     conversation.speaker_identity = tool_runner.session_caller_name
+    # Unified voice+chat history: the surface label (voice/chat/telegram/
+    # line) plus the pinned owner — turns merge and mirror only between
+    # same-owner sessions (card ada-reads-text-chat).
+    conversation.channel = channel or "voice"
+    conversation.owner_identity = tool_runner.session_owner_identity
     # Test hook: ?no_persist=1 skips transcript persist, extraction,
     # summaries and the session-end marker so scenario runs never pollute
     # real memory (banks are unaffected — explicit ada_remember still writes).
@@ -1163,7 +1283,8 @@ async def voice_socket(ws: WebSocket) -> None:
         await ws.send_text(json.dumps({"type": "ready", "session": session_id}))
     except Exception:
         return
-    asyncio.create_task(_prime_session_task(provider_ref[0], ws))
+    asyncio.create_task(
+        _prime_session_task(provider_ref[0], ws, conversation))
 
     audio_fh = None
     if AUDIO_ARCHIVE_ENABLED:
@@ -1263,9 +1384,14 @@ async def voice_socket(ws: WebSocket) -> None:
                                     session_id, len(img), mime)
                                 await provider_ref[0].send_image_turn(
                                     img, mime, cap)
-                                conversation.add_user(
+                                _img_line = (
                                     f"[image received {len(img)}B] "
                                     + cap[:200])
+                                conversation.add_user(_img_line)
+                                await _mirror_turn(
+                                    session_id, conversation, "user",
+                                    _img_line)
+                                await _flush_channel_tail(conversation)
                             except Exception as exc:
                                 logger.warning(
                                     "session=%s image turn failed: %s",
@@ -1291,6 +1417,13 @@ async def voice_socket(ws: WebSocket) -> None:
                                     # Text turns produce no input transcription,
                                     # so record the user side explicitly.
                                     conversation.add_user(chat_text[:4000])
+                                    # Unified history: siblings see the
+                                    # message live; other backends get it
+                                    # via the shared persisted tail.
+                                    await _mirror_turn(
+                                        session_id, conversation, "user",
+                                        chat_text[:4000])
+                                    await _flush_channel_tail(conversation)
                                 except Exception as exc:
                                     logger.warning("session=%s text turn failed: %s", session_id, exc)
                                     with suppress(Exception):
@@ -1353,10 +1486,27 @@ async def voice_socket(ws: WebSocket) -> None:
                         # Transcribed speech is a user turn even without
                         # client VAD frames — arm the same stall nudge.
                         speech_state["pending_at"] = time.monotonic()
+                        # Unified history: voice turns reach live text/
+                        # relay siblings and the shared persisted tail.
+                        _utext = str(event.data.get("text") or "")
+                        if _utext:
+                            await _mirror_turn(
+                                session_id, conversation, "user", _utext)
+                            await _flush_channel_tail(conversation)
                     elif event.type in (
                             "assistant_transcript_delta",
                             "response_completed", "response_interrupted"):
                         speech_state["pending_at"] = None
+                        if event.type == "response_completed":
+                            # Mirror Ada's own reply to siblings so the
+                            # shared history carries both sides; skip
+                            # mirrored turns to avoid re-echoing them.
+                            _tt = conversation.turns()
+                            if (_tt and _tt[-1]["role"] == "assistant"
+                                    and not _tt[-1].get("mirrored")):
+                                await _mirror_turn(
+                                    session_id, conversation, "assistant",
+                                    _tt[-1]["text"])
                     if event.type == "response_interrupted":
                         await ws.send_text(json.dumps({"type": "clear_audio"}))
                     if event.type == "response_started":
@@ -1466,7 +1616,8 @@ async def voice_socket(ws: WebSocket) -> None:
                             await _prime_session(
                                 new_provider,
                                 reconnect=(0.0, conversation.recent_context(
-                                    max_turns=12, max_chars=3000)))
+                                    max_turns=12, max_chars=3000)),
+                                conversation=conversation)
                         await ws.send_text(json.dumps({"type": "ready", "session": session_id}))
                         logger.info("session=%s provider reconnected (resumed=%s)", session_id, bool(handle))
                         break
@@ -2337,7 +2488,13 @@ async def chat_transcript(request: Request, max_turns: int = 200) -> dict:
                 "ended_at": datetime.fromtimestamp(ts, timezone.utc).isoformat(),
                 "tail": tail,
             }
-    return {"live_sessions": sessions, "last_session_end": last_end}
+    return {
+        "live_sessions": sessions,
+        "last_session_end": last_end,
+        # Unified voice+chat history: raw shared-log turns across all
+        # live/recent sessions on this backend, channel-labelled.
+        "channel_history": _conv_mem.channel_log()[-200:],
+    }
 
 
 @app.get("/api/cms/pages")

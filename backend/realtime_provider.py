@@ -4730,6 +4730,22 @@ class GeminiLiveProvider(RealtimeProvider):
         finally:
             self._flush_scheduled = False
 
+    def queue_context_note(self, text: str) -> None:
+        """Queue a silent context note for the next safe delivery point —
+        same deferred path as non-urgent notifies (turn_complete=False, no
+        reply triggered). Used for cross-channel mirror notes that must
+        never interrupt or be answered."""
+        self._pending_notifications.append(text)
+        if not self._flush_scheduled:
+            self._flush_scheduled = True
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No loop (unit-test/sync caller) — leave the note queued.
+                self._flush_scheduled = False
+                return
+            loop.create_task(self._flush_soon())
+
     async def _send_context_note(self, text: str) -> None:
         """Append context WITHOUT triggering a response (turn_complete=False)
         — the note lands in session state for later reference only."""
