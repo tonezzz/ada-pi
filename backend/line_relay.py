@@ -378,6 +378,10 @@ class LineRelay:
         self.sessions: dict[Any, ChatSession] = {}
         self.http: httpx.AsyncClient | None = None
         self._imgs: dict[str, tuple[bytes, float, str]] = {}
+        # Most recent chat a turn was delivered into — the default target
+        # for /send when 'to' is empty. The old fallback (first allowed
+        # user) pushed persona sends into the owner's DM.
+        self._recent_chat: tuple[str, float] | None = None
         self._names: dict[str, str] = {}  # userId -> display label cache
         self._refused: dict[tuple[str, str], float] = {}
 
@@ -551,6 +555,7 @@ class LineRelay:
                             reply_token: str | None) -> None:
         """One text turn to a persona backend; reply tagged
         [persona->sender] in rooms."""
+        self._recent_chat = (chat_id, time.monotonic())
         sess = self._session(skey, user_id, persona_url, caller)
         disp = _display_name(persona, turn_text)
         try:
@@ -860,8 +865,21 @@ class LineRelay:
             except Exception:
                 return JSONResponse({"ok": False,
                                      "error": "bad json"}, status_code=422)
-            uid = str(body.get("to") or "").strip() or \
-                next(iter(_allowed_users()), "")
+            uid = str(body.get("to") or body.get("chat_id") or "").strip()
+            # Display-name shortcut: personas pass 'to=กุ้ง' meaning a room
+            # member — resolve through the profile-name cache, else leave
+            # it (a bad id makes LINE 400 either way, but resolving keeps
+            # the message deliverable).
+            if uid and not re.match(r"^[UCR][0-9a-f]{10,}$", uid):
+                hit = next((k for k, v in self._names.items()
+                            if v.lower() == uid.lower()), "")
+                if hit:
+                    uid = hit
+            if not uid and self._recent_chat and \
+                    time.monotonic() - self._recent_chat[1] < 600:
+                uid = self._recent_chat[0]
+            if not uid:
+                uid = next(iter(_allowed_users()), "")
             if not uid:
                 return JSONResponse({"ok": False,
                                      "error": "no target"}, status_code=400)
