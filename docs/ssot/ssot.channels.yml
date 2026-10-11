@@ -1,0 +1,79 @@
+title: Ada Channel / Multi-Connection Standard
+subtitle: How voice, chat, and relay sessions coexist — identity, history, reconnect
+icon: 🔌
+status: operational
+updated: '2026-10-11'
+
+# Multi-connection standard — verified against pwa_server.py / line_relay /
+# tg_relay / realtime_provider 2026-10-11 (dispatch + session 5b0d97f477 work).
+
+ideas:
+  - One Ada, many surfaces: the same person should be able to talk on
+    voice, type in the chat card, or message on Telegram/LINE without
+    losing context or leaking to other people.
+  - Sessions are per-websocket; provider swaps (rotate, go_away, stall)
+    are invisible to the client and must preserve the pending request.
+  - Identity is pinned at connect time from the issued key and never
+    changes mid-session (policy P1) — this is what keeps shared history
+    safe.
+
+channels:
+  voice:
+    surface: PWA/kiosk /ws (no channel param)
+    mode: audio duplex + TTS + avatar/expression tools + camera frames
+    identity: speaker-id runs live (enrolled speakers map to HA persons);
+      falls back to the issued-key identity
+    notes: mic-level VAD + barge-in; local_speech_started/stopped pump
+  chat:
+    surface: PWA chat card (?channel=chat)
+    mode: text-only Gemini Live — no TTS, no avatar tools, no speaker-id
+    identity: issued key / pinned owner
+  telegram:
+    surface: tg_relay -> /ws?channel=telegram
+    mode: text-only; per-TG-user api key resolves the owner
+    notes: voice notes transcribed (faster-whisper, TG_VOICE_TRANSCRIBE
+      gate) then echo -> Ada turn -> result
+  line:
+    surface: line_relay -> /ws?channel=line
+    mode: text-only; LINE webhook signature verified, per-user key
+
+shared_history:
+  rule: turns merge and mirror only between sessions with the same
+    owner_identity — never across owners (privacy is owner-strict)
+  live_mirror: each turn is mirrored to same-owner live siblings as a
+    "[via <channel>]" transcript line (marked mirrored so it never
+    re-logs) + a silent queue_context_note (turn_complete=False — never
+    triggers a reply) + a channel_activity ws event for the UI
+  durable_tail: per-owner rolling doc channel-tail-<owner>-<instance>
+    in ada-ha-recall-summary-shared — deliberately NOT instance-suffixed
+    so ada-pi-pwa chat turns are readable by ada-ha-tony voice;
+    age-capped (~6h), turn-capped (8 turns / ~1400 chars)
+  prime: session start merges live + persisted other-instance tails into
+    session_prime_text — Ada answers "what did I just type on LINE?"
+  exclusions: no_persist scenario/test sessions neither send nor receive
+
+reconnect:
+  with_handle: session_resumption handle -> silent resume, mid-turn safe;
+    partial assistant audio suppressed so nothing replays
+  without_handle: fresh Gemini context -> _prime_session runs the resume
+    tier: "same conversation resuming — pick up where you left off" +
+    the live transcript tail (12 turns / 3000 chars)
+  mid_utterance: provider.close() stashes the in-flight input transcript
+    as pending_user_turn; the reconnect appends it to the prime tail as
+    "User (cut off by the reconnect): ..." — survives rotate, stall-kill,
+    and drops (added 2026-10-11 after session 5b0d97f477 re-greeted)
+  rotation: context-rotate clears the resumption handle deliberately —
+    the token window resets but the tail carries the conversation
+
+ops:
+  - Every connect/turn logs to ConversationMemory.session_items (kind,
+    channel, owner) — session reports show how each channel behaved.
+  - Channel dashboards: channel_history API + channel_activity events.
+  - New channel? Add a relay that resolves user -> api key, connect with
+    ?channel=<name>, and it inherits text-only mode + shared history for
+    free. No new provider type needed.
+
+related:
+  - docs/ssot/jobs/ada/2026-10-10-unified-voice-chat-history.yml (design)
+  - backend/realtime_provider.py (text_only, pending_user_turn)
+  - pwa_server.py (_prime_session reconnect tail, _mirror_turn)
