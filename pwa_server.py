@@ -1271,10 +1271,38 @@ async def voice_socket(ws: WebSocket) -> None:
         await provider_ref[0].connect()
     except Exception as exc:
         logger.exception("session=%s provider connect failed", session_id)
-        with suppress(Exception):
-            await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
-            await ws.close(code=1011)
-        return
+        # Text channels degrade to OpenRouter instead of dying (card
+        # ada-chat-or-fallback). Voice has no equivalent path — fail loudly.
+        if channel:
+            try:
+                from backend.openrouter_provider import OpenRouterTextProvider
+                fallback = OpenRouterTextProvider(
+                    tool_runner=tool_runner, session_id=session_id,
+                    conversation=conversation, channel=channel)
+                await fallback.connect()
+                provider_ref[0] = fallback
+                logger.warning(
+                    "session=%s degraded to openrouter fallback "
+                    "(model=%s)", session_id, fallback.model)
+                with suppress(Exception):
+                    await ws.send_text(json.dumps({
+                        "type": "degraded",
+                        "message": "Live backend unreachable — degraded to "
+                                   "text-only fallback, tools offline."}))
+            except Exception as exc2:
+                logger.exception(
+                    "session=%s fallback connect failed", session_id)
+                with suppress(Exception):
+                    await ws.send_text(json.dumps({
+                        "type": "error",
+                        "message": f"primary: {exc}; fallback: {exc2}"}))
+                    await ws.close(code=1011)
+                return
+        else:
+            with suppress(Exception):
+                await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
+                await ws.close(code=1011)
+            return
     # Test hook: ?simulate_unknown_speaker=1 injects the unrecognized-speaker
     # note without real audio (text-driven scenario tests).
     if (ws.query_params.get("simulate_unknown_speaker") or "").lower() in ("1", "true"):
