@@ -1210,12 +1210,17 @@ class GeminiLiveProvider(RealtimeProvider):
         self.voice = voice_config.current_voice()
         self.video_resolution = os.environ.get("GEMINI_VIDEO_RESOLUTION", "high").lower()
         base_instructions = instructions or os.environ.get("GEMINI_LIVE_INSTRUCTIONS") or DEFAULT_ADA_INSTRUCTIONS
+        # Per-instance identity (OPS-0476): a non-Ada persona lane sets
+        # ADA_IDENTITY_INSTRUCTIONS to replace this paragraph entirely —
+        # otherwise it would be told to introduce itself as Ada while
+        # serving as e.g. Kaewta. Default keeps the Ada text verbatim.
         self.instructions = (
             f"{base_instructions}\n\n"
-            "Your name is Ada (เอด้า in Thai). KK calls you แก้วตา as a "
-            "nickname — acknowledge it warmly if she uses it, but introduce "
-            "yourself as Ada and never invent other names; if asked your name "
-            "repeatedly, answer Ada every time."
+            + (os.environ.get("ADA_IDENTITY_INSTRUCTIONS")
+               or "Your name is Ada (เอด้า in Thai). KK calls you แก้วตา as a "
+                  "nickname — acknowledge it warmly if she uses it, but introduce "
+                  "yourself as Ada and never invent other names; if asked your name "
+                  "repeatedly, answer Ada every time.")
             + ("" if self.text_only else
                " You have a visible animated face. Use the "
                "set_facial_expression tool to select the expression that best matches "
