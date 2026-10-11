@@ -1,0 +1,79 @@
+# SSOT Job: cast_to_screen URL pre-check — two-vantage dead verdict
+# Card: cast-precheck-vantage. Dispatch 20261011-065755.
+
+title: cast_to_screen URL pre-check is vantage-blind — re-probe LAN URLs
+subtitle: idc03 can't route 192.168.2.x; 'dead' now needs the LAN side to agree
+
+planning:
+  goal: |
+    2026-10-10 (card investigate-gev-youtube-local-media-fail):
+    cast_to_screen play http://192.168.2.67/apps/yt-live/<file>.mp4 to
+    screen 9 refused with "URL is unreachable (TimeoutError)" even
+    though the file serves 206 on the LAN and on tailnet. The
+    _frame_check HEAD probe runs from the Ada backend host — idc03 —
+    which has no route to 192.168.2.x, so every LAN-only URL read as
+    dead and was uncastable.
+    The card's option list is truncated in the board note (ends at
+    "(a) downgrade the"); implemented the superset: keep the dead
+    verdict but only after the DISPLAY's side of the world agrees.
+  decisions: |
+    - _frame_vantage_blind(url): True when the backend's failure proves
+      nothing — literal non-global IP (RFC1918/loopback/link-local/
+      CGNAT incl. tailnet 100.x), a hostname that resolves only to
+      non-global addresses, or a hostname the backend can't resolve at
+      all (LAN-only name). Public hosts return False — a transport
+      failure there is vantage-independent and stays 'dead' with no
+      extra hop.
+    - _lan_frame_probe(url): re-HEAD via `ssh $ADA_CCTV_SSH curl -sSI
+      -m 8 <url>` (tony-dell-m2m — sits on 192.168.2.x with the
+      displays; the same m2m lane _cctv_grab/_yt_publish already use).
+      curl rc 5/6/7/28 (resolve/proxy/connect/timeout) => dead from the
+      vantage that matters => {'dead': 'lan-probe ...'}. Other rc (255
+      ssh down, missing curl) or loopback targets => None, inconclusive.
+    - Inconclusive re-probe downgrades to 'warn' ("unreachable from this
+      backend ... display may still fetch it — proceeding unverified"),
+      surfaced as frame_warn; the post-cast screen_state/render_warn
+      ground-truth check already catches a black pane.
+    - _frame_hdr_verdict(url, get_hdr): shared Content-Type /
+      X-Frame-Options / CSP-frame-ancestors verdict for both probe
+      paths — the LAN re-probe also returns content_type, so
+      action='cast' routes LAN media correctly (mp4 -> play).
+    - Loopback URLs are a third vantage (the display's own localhost) —
+      _lan_frame_probe declines them outright.
+  owner: tony
+
+processing:
+  status: done
+  steps:
+    - id: 1
+      label: "two-vantage probe"
+      status: done
+      notes: "backend/tool_runner/screens.py — URLError branch of
+        _frame_check re-probes non-public hosts via _lan_frame_probe
+        before 'dead'; header verdict extracted to _frame_hdr_verdict."
+    - id: 2
+      label: "tests"
+      status: done
+      notes: "tests/test_tool_runner.py — CastLanProbeTests (10 cases:
+        vantage detection, curl rc mapping, loopback skip, public-host
+        no-hop) + CastToScreenRouteTests e2e (LAN mp4 casts when the
+        LAN vantage reaches it)."
+
+invoke:
+  trigger: "cast_to_screen action=cast|nav|play with an http(s) url"
+  entry: "backend/tool_runner/screens.py ScreensMixin._frame_check"
+
+verification:
+  - "pytest tests/test_tool_runner.py -k 'CastLanProbe or
+    lan_url_casts or CastToScreenRoute' -> 16 passed"
+  - "pytest tests/ -x -q -> 1264 passed, 1 skipped (run with the main
+    checkout's .venv interpreter; worktree has no .venv)"
+  - "python3 scripts/tool-lint.py -> clean (60 pre-existing warnings)"
+
+notes: |
+  Live check after next idc03 deploy: cast_to_screen play
+  http://192.168.2.67/apps/yt-live/<file>.mp4 on screen 9 should cast
+  instead of refusing (the ssh vantage tony-dell-m2m must answer from
+  idc03 — same lane ada_camera_snapshot uses, already proven there).
+  If the LAN vantage is ever down, LAN casts still proceed with a
+  frame_warn rather than refusing.

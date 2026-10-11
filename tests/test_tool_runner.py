@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch, ANY
 
 from backend.memory_banks import MemoryBankRegistry
 from backend.tool_runner import AdaMemoryStore, ToolRunner
+from backend.tool_runner.screens import ScreensMixin
 
 
 # Report meta contract fields every cms_publish_page call must carry
@@ -2460,6 +2461,137 @@ class CastToScreenRouteTests(unittest.IsolatedAsyncioTestCase):
                 1, "play", url="https://vid.test/x.mp4", confirmed=True)
         self.assertIn("render_warn", out)
         self.assertNotIn("action_fixed", out)
+
+    async def test_lan_url_casts_when_lan_vantage_reaches_it(self):
+        # cast-precheck-vantage (2026-10-11): idc03 has no route to
+        # 192.168.2.x — the backend's timeout must not refuse the cast
+        # when the LAN vantage (the display's side) can fetch the file.
+        import urllib.error
+        url = "http://192.168.2.67/apps/yt-live/demo.mp4"
+        with patch("urllib.request.urlopen",
+                   side_effect=urllib.error.URLError(
+                       TimeoutError("timed out"))), \
+                patch.object(
+                    ScreensMixin, "_lan_frame_probe",
+                    staticmethod(lambda u: {"content_type": "video/mp4"})):
+            out = await self.runner.cast_to_screen(1, "play", url=url)
+        self.assertTrue(out["ok"])
+        self.assertEqual(self.pubbed[-1]["msg"]["type"], "play")
+        self.assertEqual(self.pubbed[-1]["msg"]["url"], url)
+
+
+class CastLanProbeTests(unittest.TestCase):
+    """cast-precheck-vantage (2026-10-11): the pre-flight HEAD ran only
+    from the backend host, which may sit off the displays' LAN — a
+    transport-dead probe to a non-public host is re-HEADed via the
+    ADA_CCTV_SSH vantage before 'dead' is declared."""
+
+    def test_vantage_blind_covers_non_public_hosts(self):
+        blind = ToolRunner._frame_vantage_blind
+        self.assertTrue(blind("http://192.168.2.67/x.mp4"))
+        self.assertTrue(blind("http://10.0.0.5/"))
+        self.assertTrue(blind("http://172.16.4.9/"))
+        self.assertTrue(blind("http://[fd00::1]/cam"))
+        self.assertTrue(blind("http://127.0.0.1:8080/x"))
+        self.assertFalse(blind("http://8.8.8.8/"))
+        self.assertFalse(blind("https://1.1.1.1/x"))
+
+    def test_vantage_blind_hostname_resolution(self):
+        blind = ToolRunner._frame_vantage_blind
+        with patch("socket.getaddrinfo", side_effect=OSError("no dns")):
+            # A name the backend cannot resolve at all may be LAN-only.
+            self.assertTrue(blind("http://nas.lan/x"))
+        lan = [(2, 1, 6, "", ("192.168.2.5", 0))]
+        with patch("socket.getaddrinfo", return_value=lan):
+            self.assertTrue(blind("http://ha.local/"))
+        pub = [(2, 1, 6, "", ("8.8.8.8", 0))]
+        with patch("socket.getaddrinfo", return_value=pub):
+            self.assertFalse(blind("https://example.com/"))
+
+    def test_lan_probe_parses_response_headers(self):
+        proc = SimpleNamespace(
+            returncode=0,
+            stdout="HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\n"
+                   "Accept-Ranges: bytes\r\n\r\n",
+            stderr="")
+        with patch("subprocess.run", return_value=proc):
+            out = ToolRunner._lan_frame_probe("http://192.168.2.67/a.mp4")
+        self.assertEqual(out["content_type"], "video/mp4")
+        self.assertNotIn("dead", out)
+
+    def test_lan_probe_surfaces_frame_warnings(self):
+        proc = SimpleNamespace(
+            returncode=0,
+            stdout="HTTP/1.1 200 OK\r\nX-Frame-Options: DENY\r\n"
+                   "Content-Type: text/html\r\n\r\n",
+            stderr="")
+        with patch("subprocess.run", return_value=proc):
+            out = ToolRunner._lan_frame_probe("http://192.168.2.67/page")
+        self.assertIn("forbids iframe", out["warn"])
+
+    def test_lan_probe_dead_when_lan_side_also_fails(self):
+        proc = SimpleNamespace(
+            returncode=7, stdout="",
+            stderr="curl: (7) Failed to connect to 192.168.2.67")
+        with patch("subprocess.run", return_value=proc):
+            out = ToolRunner._lan_frame_probe("http://192.168.2.67/a.mp4")
+        self.assertIn("dead", out)
+        self.assertIn("lan-probe", out["dead"])
+
+    def test_lan_probe_inconclusive_when_vantage_down(self):
+        # ssh failure (255) or an unexpected rc means the probe never
+        # ran — inconclusive, not dead.
+        for rc in (255, 2):
+            proc = SimpleNamespace(returncode=rc, stdout="", stderr="")
+            with patch("subprocess.run", return_value=proc):
+                self.assertIsNone(ToolRunner._lan_frame_probe(
+                    "http://192.168.2.67/a.mp4"))
+
+    def test_lan_probe_skips_loopback_targets(self):
+        # A loopback URL means the DISPLAY's own localhost — neither the
+        # backend's nor tony-dell's probe can see it.
+        for url in ("http://127.0.0.1:8080/x", "http://localhost:9/y"):
+            self.assertIsNone(ToolRunner._lan_frame_probe(url))
+
+    def test_frame_check_public_url_stays_dead_without_lan_hop(self):
+        import urllib.error
+        with patch("urllib.request.urlopen",
+                   side_effect=urllib.error.URLError(
+                       TimeoutError("timed out"))), \
+                patch.object(ScreensMixin, "_lan_frame_probe") as probe:
+            out = ToolRunner._frame_check("https://8.8.8.8/x")
+        self.assertIn("dead", out)
+        probe.assert_not_called()
+
+    def test_frame_check_lan_url_uses_probe_verdict(self):
+        import urllib.error
+        dead = urllib.error.URLError(TimeoutError("timed out"))
+        with patch("urllib.request.urlopen", side_effect=dead), \
+                patch.object(
+                    ScreensMixin, "_lan_frame_probe",
+                    staticmethod(lambda u: {"content_type": "video/mp4"})):
+            out = ToolRunner._frame_check("http://192.168.2.67/a.mp4")
+        self.assertEqual(out, {"content_type": "video/mp4"})
+
+    def test_frame_check_lan_url_dead_when_both_vantages_fail(self):
+        import urllib.error
+        dead = urllib.error.URLError(TimeoutError("timed out"))
+        with patch("urllib.request.urlopen", side_effect=dead), \
+                patch.object(
+                    ScreensMixin, "_lan_frame_probe",
+                    staticmethod(lambda u: {"dead": "lan-probe curl rc=7"})):
+            out = ToolRunner._frame_check("http://192.168.2.67/a.mp4")
+        self.assertIn("dead", out)
+
+    def test_frame_check_lan_url_warns_when_probe_inconclusive(self):
+        import urllib.error
+        dead = urllib.error.URLError(TimeoutError("timed out"))
+        with patch("urllib.request.urlopen", side_effect=dead), \
+                patch.object(ScreensMixin, "_lan_frame_probe",
+                             staticmethod(lambda u: None)):
+            out = ToolRunner._frame_check("http://192.168.2.67/a.mp4")
+        self.assertNotIn("dead", out)
+        self.assertIn("unverified", out["warn"])
 
 
 class TvInputMismatchTests(unittest.IsolatedAsyncioTestCase):
