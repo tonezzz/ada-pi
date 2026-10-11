@@ -151,9 +151,13 @@ chat_send: >-
   snapshot) finishes in a background job whose result arrives as a
   system note — say it's being sent, relay the outcome when the note
   lands. camera='<VMS channel>' attaches a fresh snapshot;
-  image_url='<url>' reuses a camwall thumb or cast_url you already
-  produced — never arbitrary web URLs. 'to' overrides the default owner
-  chat. photo='pick' starts a Google Photos picker (texts picker_uri);
+  image_url='<url>' must be a REAL IMAGE FILE (jpg/png — camwall thumb,
+  hosted photo asset like the cam-snap URLs) — NEVER a page URL.
+  view_url/cast_url/public_url from CMS results are web PAGES, not
+  images: to share a page, put the link in 'text'; to show it on a
+  display, cast_to_screen. 'to' defaults to the room you're replying
+  in — set it only to send somewhere else. photo='pick' starts a
+  Google Photos picker (texts picker_uri);
   photo='picked' polls session_id and sends/casts the choice (screen=,
   show=). A photo= 'not configured' error means the Photos auth is
   missing server-side — tell the user photo picking isn't set up yet
