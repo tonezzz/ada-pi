@@ -1680,7 +1680,17 @@ class ScreensMixin:
         oembed 404 caught a 'Video unavailable' cast 2026-09-29),
         'content_type' lets the caller reroute still images off 'play',
         'dead' marks a URL that cannot be fetched at all (DNS/connrefused
-        — an invented or stale URL renders as a silent black pane)."""
+        — an invented or stale URL renders as a silent black pane).
+
+        'dead' is only declared once the DISPLAY's side of the world
+        agrees: the backend host's vantage is not the display's (idc03
+        has no route to the 192.168.2.x LAN the vcast displays live on —
+        2026-10-10 a yt-live .mp4 serving 206 on the LAN was refused as
+        'unreachable'). A transport-dead probe to a non-public host is
+        re-HEADed via _lan_frame_probe; only when that vantage also fails
+        (or the host is public) is the URL dead. An inconclusive re-probe
+        downgrades to 'warn' so the display can still try — the post-cast
+        verify catches a black pane."""
         import urllib.request
         import urllib.error
         import urllib.parse
@@ -1716,16 +1726,106 @@ class ScreensMixin:
                     or "timed out" in str(reason).lower() \
                     or "Name or service" in str(reason) \
                     or "refused" in str(reason).lower():
+                if ScreensMixin._frame_vantage_blind(url):
+                    remote = ScreensMixin._lan_frame_probe(url)
+                    if remote is not None:
+                        return remote
+                    out["warn"] = (
+                        f"{url} is unreachable from this backend and the "
+                        "LAN re-probe was inconclusive — its host sits on "
+                        "a network this host cannot route to, so the "
+                        "display may still fetch it. Cast is proceeding "
+                        "unverified.")
+                    return out
                 out["dead"] = f"{type(reason).__name__}: {reason}"
                 return out
             return out  # other transport errors: let the display try
         except Exception:
             return out
-        hdrs = resp.headers
-        ctype = (hdrs.get("Content-Type") or "").split(";")[0].strip()
+        return ScreensMixin._frame_hdr_verdict(url, resp.headers.get)
+
+    @staticmethod
+    def _frame_vantage_blind(url: str) -> bool:
+        """True when this backend failing to reach the URL's host proves
+        nothing about what the display can fetch: the host is a
+        non-public address (RFC1918/loopback/link-local/CGNAT — a literal
+        IP, a name that resolves only to one, or a name that doesn't
+        resolve here at all). Public hosts return False — a transport
+        failure there is vantage-independent."""
+        import ipaddress
+        import socket
+        import urllib.parse
+        host = (urllib.parse.urlsplit(url).hostname or "").strip("[]")
+        if not host:
+            return False
+        try:
+            return not ipaddress.ip_address(host).is_global
+        except ValueError:
+            pass
+        try:
+            infos = socket.getaddrinfo(
+                host, None, proto=socket.IPPROTO_TCP)
+        except OSError:
+            # Unresolvable from the backend — a LAN-only name the
+            # display's DNS may still know.
+            return True
+        return bool(infos) and all(
+            not ipaddress.ip_address(i[4][0]).is_global for i in infos)
+
+    @staticmethod
+    def _lan_frame_probe(url: str) -> dict[str, Any] | None:
+        """Re-HEAD a URL from the LAN vantage — curl over ssh to
+        ADA_CCTV_SSH (tony-dell, which sits on 192.168.2.x with the
+        displays). Returns a _frame_check-shaped dict, or None when the
+        probe itself is inconclusive: the ssh vantage is down, or the
+        target is loopback (the display's own localhost is a third
+        vantage neither side can see)."""
+        import ipaddress
+        import shlex
+        import subprocess
+        import urllib.parse
+        host = (urllib.parse.urlsplit(url).hostname or "").strip("[]")
+        try:
+            if ipaddress.ip_address(host).is_loopback:
+                return None
+        except ValueError:
+            if host.lower().rstrip(".") == "localhost":
+                return None
+        ssh = os.environ.get("ADA_CCTV_SSH", "tony-dell-m2m")
+        try:
+            proc = subprocess.run(
+                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8",
+                 ssh, "curl -sSI -m 8 " + shlex.quote(url)],
+                capture_output=True, text=True, timeout=20)
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            # curl rc 5/6/7/28 = resolve/proxy/connect/timeout — the LAN
+            # vantage can't fetch it either, so 'dead' finally means
+            # dead. Other rc (255 ssh, missing curl) is inconclusive.
+            if proc.returncode in {5, 6, 7, 28}:
+                err = (proc.stderr or "").strip().replace("\n", " ")[-140:]
+                return {"dead": (f"lan-probe curl rc={proc.returncode}"
+                                 + (f": {err}" if err else ""))}
+            return None
+        hdrs = {}
+        for ln in proc.stdout.splitlines():
+            if ":" in ln:
+                k, v = ln.split(":", 1)
+                hdrs[k.strip().lower()] = v.strip()
+        return ScreensMixin._frame_hdr_verdict(
+            url, lambda k: hdrs.get(k.lower()))
+
+    @staticmethod
+    def _frame_hdr_verdict(url: str, get_hdr) -> dict[str, Any]:
+        """Shared header->verdict mapping for _frame_check and the LAN
+        re-probe: {content_type, warn} from Content-Type /
+        X-Frame-Options / CSP frame-ancestors."""
+        out: dict[str, Any] = {}
+        ctype = (get_hdr("Content-Type") or "").split(";")[0].strip()
         if ctype:
             out["content_type"] = ctype
-        xfo = (hdrs.get("X-Frame-Options") or "").upper()
+        xfo = (get_hdr("X-Frame-Options") or "").upper()
         if xfo.startswith(("DENY", "SAMEORIGIN")):
             out["warn"] = (
                 f"{url} forbids iframe embedding "
@@ -1733,7 +1833,7 @@ class ScreensMixin:
                 "blank. Pick a different source or snapshot the feed "
                 "instead of nav-ing the page.")
             return out
-        csp = hdrs.get("Content-Security-Policy") or ""
+        csp = get_hdr("Content-Security-Policy") or ""
         m = re.search(r"frame-ancestors\s+([^;]+)", csp, re.I)
         if m and "'*'" not in m.group(1) and "https:" not in m.group(1):
             out["warn"] = (
