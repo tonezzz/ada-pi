@@ -5078,7 +5078,8 @@ class GeminiLiveProvider(RealtimeProvider):
                                         sensors = await self.home_assistant_client.sensors(limit=50)
                                     result = {"output": sensors}
                                 elif query:
-                                    devices = await self.home_assistant_client.search_entities(query)
+                                    devices = await self.home_assistant_client.search_entities(
+                                        query, limit=limit)
                                     result = {"output": devices}
                                 else:
                                     devices = await self.home_assistant_client.entities()

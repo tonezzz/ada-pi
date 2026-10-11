@@ -54,6 +54,65 @@ class HomeAssistantClientTests(unittest.IsolatedAsyncioTestCase):
             ["light.office_lamp", "switch.office_lamp_usb"],
         )
 
+    async def test_entities_keeps_actuator_sharing_object_id_with_switch(self):
+        # Tuya curtain/gate motors expose cover.gate_motor beside a
+        # switch.gate_motor sibling. The object_id dedup must only collapse
+        # simple on/off loads — an actuator domain is never a duplicate, so
+        # the cover stays findable and controllable.
+        client = AsyncMock()
+        client.get.return_value = FakeResponse([
+            {"entity_id": "switch.gate_motor", "state": "unavailable",
+             "attributes": {}},
+            {"entity_id": "cover.gate_motor", "state": "unknown",
+             "attributes": {"friendly_name": "Gate motor"}},
+        ])
+        home = HomeAssistantClient(client=client)
+        entities = await home.entities()
+        self.assertEqual(
+            sorted(item["entity_id"] for item in entities),
+            ["cover.gate_motor", "switch.gate_motor"],
+        )
+
+    async def test_search_entities_finds_unknown_and_unavailable_devices(self):
+        # cover.gate_motor rests at 'unknown' permanently (no position
+        # feedback); a flapping Tuya device reads 'unavailable' in bursts.
+        # Neither may be filtered out — they return flagged available:False.
+        client = AsyncMock()
+        client.get.return_value = FakeResponse([
+            {"entity_id": "cover.gate_motor", "state": "unknown",
+             "attributes": {"friendly_name": "Gate motor"}},
+            {"entity_id": "switch.gate_light", "state": "unavailable",
+             "attributes": {"friendly_name": "Gate light"}},
+            {"entity_id": "light.office", "state": "on",
+             "attributes": {"friendly_name": "Office"}},
+        ])
+        home = HomeAssistantClient(client=client)
+        results = await home.search_entities("gate")
+        by_id = {item["entity_id"]: item for item in results}
+        self.assertIn("cover.gate_motor", by_id)
+        self.assertIn("switch.gate_light", by_id)
+        self.assertFalse(by_id["cover.gate_motor"]["available"])
+        self.assertFalse(by_id["switch.gate_light"]["available"])
+        self.assertEqual(by_id["cover.gate_motor"]["state"], "unknown")
+        self.assertEqual(by_id["switch.gate_light"]["state"], "unavailable")
+
+    async def test_search_entities_ranks_unavailable_below_available(self):
+        # Unavailable entities stay mentionable but rank behind an
+        # available entity at the same match score.
+        client = AsyncMock()
+        client.get.return_value = FakeResponse([
+            {"entity_id": "light.gate_flap", "state": "unavailable",
+             "attributes": {"friendly_name": "Gate flap"}},
+            {"entity_id": "light.gate_spot", "state": "on",
+             "attributes": {"friendly_name": "Gate spot"}},
+        ])
+        home = HomeAssistantClient(client=client)
+        results = await home.search_entities("gate")
+        self.assertEqual(
+            [item["entity_id"] for item in results],
+            ["light.gate_spot", "light.gate_flap"],
+        )
+
     async def test_power_calls_allow_listed_home_assistant_service(self):
         client = AsyncMock()
         client.post.return_value = FakeResponse([])
