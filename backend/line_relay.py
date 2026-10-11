@@ -737,6 +737,8 @@ class LineRelay:
         # default to ada. Group images have no caption — default persona.
         persona, turn = _route(text if mtype == "text" else "", is_group)
         if persona is None:
+            logger.info("ignored unaddressed %s msg from %s (no persona mention)",
+                        src_type, user_id)
             return  # unaddressed room chatter — ignore per spec
         disp = _display_name(persona, text)
         if is_group and caller is None:
