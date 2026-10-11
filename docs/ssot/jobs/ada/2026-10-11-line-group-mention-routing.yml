@@ -43,13 +43,30 @@ planning:
       markAsReadToken per current LINE docs; LINE_PUBLIC_IMG_BASE repo
       default updated idc01 -> idc03 edge (157.85.102.125.sslip.io).
 
-verification:
-  - tests/test_line_relay_group.py — 18 tests: backend map parse + /ws
-    normalization, mention variants/boundaries/first-wins, lead strip,
-    route defaults, group route+tag, unaddressed ignore, unallowed group
-    ignore, unmapped refusal rate-limit, offline persona, DM default,
-    unauthorized DM, join greeting, markAsReadToken, voice save/ack/
-    mirror, unmapped-clip drop, transcript routing. All pass.
+verification: |
+  tests/test_line_relay_group.py — 21 tests: backend map parse + /ws
+  normalization, mention variants/boundaries/first-wins, lead strip,
+  route defaults + unknown-default ignore, group route+tag, unaddressed
+  ignore, unallowed group ignore, unmapped refusal rate-limit, offline
+  persona, DM default, unauthorized DM, join greeting + replyToken,
+  room-source /room/ profile endpoint, markAsReadToken, voice save/ack/
+  mirror, unmapped-clip drop, transcript routing. All pass.
+  Full suite via unittest discovery (no pytest in this venv): 1276 run,
+  only pre-existing env-dep errors (pytest/ai_edge_litert/hailo absent —
+  identical on the clean tree). tool-lint clean.
+
+hardening (dispatch 20261011-170000, attempt 3): |
+  - _route now validates the resolved default persona against
+    LINE_NAME_BACKENDS — a LINE_DEFAULT_PERSONA naming no configured
+    persona resolves to ignore (logged), where before it KeyError'd
+    _name_backends()[name] and killed the handle_event task. Group
+    images route through _route too so the same guard applies.
+  - _sender_label picks the member-profile endpoint by event source
+    type — 'room' sources use /v2/bot/room/{id}/member/{uid} (they
+    404'd on /group/ and always fell back to the caller name).
+  - join greeting now sends via the event's replyToken (free reply,
+    not a push message).
+  - get_event_loop -> get_running_loop in the voice transcribe path.
 
 followups:
   - idc03 ada-line-relay unit env still needs LINE_ALLOWED_GROUP_IDS (the
@@ -58,10 +75,8 @@ followups:
     outside this worktree.
   - user-nhong key must be minted on each reachable persona backend
     (auth.create_key / ada_member_keys) before nhong's mention routes —
-    scoped per-backend tier (card answers: kk guest of ada-ha / member of
+    scoped per-backend tier (card answers kk guest of ada-ha / member of
     tony-ha; tony member of kk-ha).
-  - chaba backend RESOLVED mid-dispatch (board answer): ada-chaba, a
+  - chaba backend RESOLVED mid-dispatch (board answer) — ada-chaba, a
     dedicated instance on idc03 :8008 — keep 'chaba:' empty in
     LINE_NAME_BACKENDS until it's provisioned.
-  - Group 'room' sources reuse the group profile endpoint for the sender
-    label — falls back to caller name if LINE 404s it.
