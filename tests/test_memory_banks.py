@@ -133,6 +133,54 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("single", reg.banks())
         self.assertEqual(reg.bank("single").mddb_collection, "ada-ha-bank-single-tony")
 
+    def test_instances_readonly_mount(self):
+        spec = {
+            "banks": {
+                "general": {
+                    "scope": "shared",
+                    "instances": ["tony"],
+                    "instances_readonly": {"tony-dev": "tony"},
+                    "mddb_collection": "ada-ha-bank-general",
+                    "kinds": ["note"],
+                    "writable": True,
+                    "write_policy": "direct",
+                    "allowed_tools": ["ada_remember"],
+                    "status": "active",
+                },
+                "instanced": {
+                    "scope": "instance",
+                    "instances": ["tony"],
+                    "instances_readonly": {"tony-dev": "tony"},
+                    "mddb_collection": "ada-ha-bank-personal-{instance}",
+                    "kinds": ["note"],
+                    "writable": True,
+                    "write_policy": "direct",
+                    "allowed_tools": ["ada_remember"],
+                    "status": "active",
+                },
+                "unassigned": {
+                    "scope": "shared",
+                    "instances": ["tony"],
+                    "mddb_collection": "ada-ha-bank-other",
+                    "kinds": ["note"],
+                    "status": "active",
+                },
+            }
+        }
+        reg = _registry(instance="tony-dev", spec=spec)
+        banks = reg.banks()
+        # Read-only mount: visible to the dev instance, write path forced off.
+        self.assertIn("general", banks)
+        self.assertFalse(banks["general"].writable)
+        self.assertEqual(banks["general"].allowed_tools, [])
+        # {instance} expands to the mapped prod id, not the dev id.
+        self.assertEqual(
+            banks["instanced"].mddb_collection, "ada-ha-bank-personal-tony"
+        )
+        self.assertFalse(banks["instanced"].writable)
+        # An unlisted dev instance is skipped like any unassigned instance.
+        self.assertNotIn("unassigned", banks)
+
     def test_unknown_bank_error_lists_available(self):
         reg = _registry(instance="tony")
         with self.assertRaises(KeyError) as ctx:

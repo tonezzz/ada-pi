@@ -188,10 +188,18 @@ class MemoryBankRegistry:
 
     def _add(self, name: str, spec: dict[str, Any]) -> None:
         instances = spec.get("instances") or []
-        if self.instance not in instances:
+        ro_map = spec.get("instances_readonly") or {}
+        readonly = self.instance not in instances and self.instance in ro_map
+        if self.instance not in instances and not readonly:
             return  # not assigned to this instance — silently skipped by design
+        # Read-only mount (card ada-memory-dev-lane-runtime): a dev twin
+        # loads the bank exactly as its mapped prod instance — {instance}
+        # expands to the mapped ID, never the dev ID — but writable and
+        # allowed_tools are forced off so a dev-lane read can never
+        # become a dev-lane write.
+        eff_instance = ro_map.get(self.instance, self.instance)
         collection = str(spec.get("mddb_collection") or "").replace(
-            "{instance}", self.instance
+            "{instance}", eff_instance
         )
         if not _NAME_RE.match(name):
             self._error(f"bank {name!r}: invalid bank name")
@@ -222,9 +230,9 @@ class MemoryBankRegistry:
             notebooklm_group=spec.get("notebooklm_group") or None,
             notebooklm_id=spec.get("notebooklm_id") or None,
             kinds=list(spec.get("kinds") or ["note"]),
-            writable=bool(spec.get("writable")),
+            writable=bool(spec.get("writable")) and not readonly,
             write_policy=str(spec.get("write_policy") or "confirmed"),
-            allowed_tools=list(spec.get("allowed_tools") or []),
+            allowed_tools=[] if readonly else list(spec.get("allowed_tools") or []),
             status=str(spec.get("status") or "planned"),
             person_scope=spec.get("person_scope") or None,
             key_scope=list(spec.get("key_scope") or []),
