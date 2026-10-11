@@ -92,3 +92,11 @@ tools:
     policy: owner_only
     secondary_allowed: false
     timeout_s: 15
+  # percussion (2026-10-10): music layer on the Nest sonify page —
+  # style/mood/instrument presets via input-bridge /percussion POST.
+  # Ada voice: "make it polyphia", "blue chords", "add guitar".
+  percussion:
+    module: percussion
+    policy: owner_only
+    secondary_allowed: false
+    timeout_s: 10
