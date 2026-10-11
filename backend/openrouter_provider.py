@@ -18,7 +18,9 @@ heuristic below covers every context prefix the session loop emits.
 
 Config:
   OPENROUTER_API_KEY            required — same key the fleet rotates
-  ADA_OR_FALLBACK_MODEL         default google/gemma-4-31b-it:free
+  ADA_OR_FALLBACK_MODEL         model id, or comma-separated fallback
+                                chain tried in order (default
+                                nvidia/nemotron-3-super-120b-a12b:free)
 """
 from __future__ import annotations
 
@@ -35,7 +37,12 @@ from .realtime_provider import ProviderEvent, RealtimeProvider, DEFAULT_ADA_INST
 logger = logging.getLogger(__name__)
 
 OR_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "google/gemma-4-31b-it:free"
+# 2026-10-11 probe: google-hosted gemma :free models 400 upstream on this
+# account ("API key not valid" from the provider); nvidia/liquid/apodex
+# :free serve fine. Chain ordered big→small.
+DEFAULT_MODELS = ("nvidia/nemotron-3-super-120b-a12b:free",
+                  "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+                  "liquid/lfm-2.5-2.6b:free")
 
 DEGRADED_NOTE = (
     "(system) DEGRADED MODE: the Gemini voice/live backend is unreachable "
@@ -67,7 +74,10 @@ class OpenRouterTextProvider(RealtimeProvider):
         self.tool_runner = tool_runner
         self.session_id = session_id or "unknown"
         self.conversation = conversation
-        self.model = os.environ.get("ADA_OR_FALLBACK_MODEL", DEFAULT_MODEL)
+        self.models = [m.strip() for m in os.environ.get(
+            "ADA_OR_FALLBACK_MODEL", ",".join(DEFAULT_MODELS)).split(",")
+            if m.strip()]
+        self.model = self.models[0] if self.models else DEFAULT_MODELS[0]
         self.api_key = os.environ.get("OPENROUTER_API_KEY", "")
         self._queue: asyncio.Queue[ProviderEvent] = asyncio.Queue()
         self._closed = False
@@ -123,18 +133,35 @@ class OpenRouterTextProvider(RealtimeProvider):
 
     async def _complete(self) -> None:
         started = time.monotonic()
+        reply = ""
+        last_err: Exception | None = None
         try:
             async with httpx.AsyncClient(timeout=60) as client:
-                r = await client.post(
-                    OR_URL,
-                    headers={"Authorization": f"Bearer {self.api_key}",
-                             "Content-Type": "application/json"},
-                    json={"model": self.model,
-                          "messages": self._history[-24:],
-                          "max_tokens": 600})
-            r.raise_for_status()
-            reply = (r.json().get("choices") or [{}])[0] \
-                .get("message", {}).get("content") or ""
+                for model in self.models:
+                    try:
+                        r = await client.post(
+                            OR_URL,
+                            headers={
+                                "Authorization": f"Bearer {self.api_key}",
+                                "Content-Type": "application/json"},
+                            json={"model": model,
+                                  "messages": self._history[-24:],
+                                  "max_tokens": 600})
+                        r.raise_for_status()
+                        reply = (r.json().get("choices") or [{}])[0] \
+                            .get("message", {}).get("content") or ""
+                        reply = reply.strip()
+                        if reply:
+                            self.model = model
+                            break
+                    except Exception as exc:
+                        last_err = exc
+                        logger.warning(
+                            "session=%s openrouter model %s failed: %s",
+                            self.session_id, model, exc)
+                if not reply and last_err is not None:
+                    raise last_err
+            reply = reply.strip()
             reply = reply.strip()
             if not reply:
                 return
