@@ -177,12 +177,18 @@ def _strip_lead_mention(text: str, name: str | None) -> str:
 
 def _route(text: str, is_group: bool) -> tuple[str | None, str]:
     """(persona, turn_text) for a message — None persona means ignore.
-    Groups need a mention or LINE_DEFAULT_PERSONA; DMs default to ada."""
+    Groups need a mention or LINE_DEFAULT_PERSONA; DMs default to ada.
+    A default naming no configured persona also resolves to ignore —
+    an env typo must not crash the turn on _name_backends()[name]."""
     persona = _mention_persona(text)
     if persona is None:
         persona = _default_persona() if is_group else "ada"
-    if persona is None:
-        return None, text
+        if persona is None:
+            return None, text
+        if persona not in _name_backends():
+            logger.warning("default persona %r not in LINE_NAME_BACKENDS"
+                           " — ignoring", persona)
+            return None, text
     return persona, _strip_lead_mention(text, persona)
 
 
@@ -461,18 +467,24 @@ class LineRelay:
                      "text": f"(image failed: {caption or url})"}]
 
     async def _sender_label(self, user_id: str, group_id: str | None,
-                            caller: str | None) -> str:
-        """Display label for the [persona->sender] reply tag: the group
-        profile's displayName when LINE will tell us, else the caller key
-        minus its 'user-' prefix, else the userId tail."""
+                            caller: str | None,
+                            kind: str = "group") -> str:
+        """Display label for the [persona->sender] reply tag: the room
+        profile's displayName when LINE will tell us (kind is the event
+        source type — 'room' sources use the /room/ member endpoint),
+        else the caller key minus its 'user-' prefix, else the userId
+        tail."""
         if user_id in self._names:
             return self._names[user_id]
         label = ""
         if group_id:
+            if kind not in ("group", "room"):
+                kind = "group"
             try:
                 assert self.http is not None
                 r = await self.http.get(
-                    f"{LINE_API}/v2/bot/group/{group_id}/member/{user_id}",
+                    f"{LINE_API}/v2/bot/{kind}/{group_id}"
+                    f"/member/{user_id}",
                     headers={"Authorization": f"Bearer {CHANNEL_TOKEN}"})
                 if r.status_code == 200:
                     label = str(r.json().get("displayName") or "")
@@ -581,7 +593,8 @@ class LineRelay:
         if is_group and caller is None:
             return  # unmapped member — same gate as a routed text turn
         label = await self._sender_label(
-            user_id, group_id if is_group else None, caller)
+            user_id, group_id if is_group else None, caller,
+            kind=(ev.get("source") or {}).get("type") or "group")
         try:
             data, mime = await self._fetch_content(str(msg.get("id") or ""))
         except Exception as exc:
@@ -599,7 +612,7 @@ class LineRelay:
                 chat_id, "Couldn't save that clip — try again.",
                 reply_token=reply_token)
             return
-        transcript = await asyncio.get_event_loop().run_in_executor(
+        transcript = await asyncio.get_running_loop().run_in_executor(
             None, _transcribe, clip)
         if transcript:
             await self.send_text(chat_id, f'\U0001f399 "{transcript}"',
@@ -622,7 +635,7 @@ class LineRelay:
         persona, turn = _route(transcript, is_group)
         if persona is None:
             return
-        persona_url = _name_backends()[persona]
+        persona_url = _name_backends().get(persona)
         if not persona_url:
             await self.send_text(
                 chat_id, f"[{persona}->{label}] {persona} isn't home "
@@ -650,7 +663,8 @@ class LineRelay:
             await self.send_text(
                 chat_id,
                 f"Ada relay here. groupId={group_id} — the owner can "
-                "enable this room via LINE_ALLOWED_GROUP_IDS.")
+                "enable this room via LINE_ALLOWED_GROUP_IDS.",
+                reply_token=reply_token)
             return
         if is_group and group_id not in _allowed_groups():
             logger.info("ignoring event in unallowed %s %s",
@@ -694,19 +708,16 @@ class LineRelay:
             return
         # Route: groups need a mention (or LINE_DEFAULT_PERSONA), DMs
         # default to ada. Group images have no caption — default persona.
-        if mtype == "text":
-            persona, turn = _route(text, is_group)
-        else:
-            persona = _default_persona() if is_group else "ada"
-            turn = ""
+        persona, turn = _route(text if mtype == "text" else "", is_group)
         if persona is None:
             return  # unaddressed room chatter — ignore per spec
         if is_group and caller is None:
             await self._refuse_group_member(chat_id, user_id, reply_token)
             return
-        persona_url = _name_backends()[persona]
+        persona_url = _name_backends().get(persona)
         label = await self._sender_label(
-            user_id, group_id if is_group else None, caller)
+            user_id, group_id if is_group else None, caller,
+            kind=src_type)
         if not persona_url:
             await self.send_text(
                 chat_id,

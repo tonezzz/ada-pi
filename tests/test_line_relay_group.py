@@ -19,9 +19,14 @@ from backend import line_relay
 
 
 def _ev(text=None, user_id="Ukk1", group_id="G1", mtype="text",
-        msg_id="m1", mark_token="T1", etype="message", **msg_kw):
-    src = {"type": "group", "groupId": group_id, "userId": user_id} \
-        if group_id else {"type": "user", "userId": user_id}
+        msg_id="m1", mark_token="T1", etype="message", src_type=None,
+        **msg_kw):
+    if group_id:
+        key = "roomId" if src_type == "room" else "groupId"
+        src = {"type": src_type or "group", key: group_id,
+               "userId": user_id}
+    else:
+        src = {"type": "user", "userId": user_id}
     msg = {"id": msg_id, "type": mtype, **msg_kw}
     if text is not None:
         msg["text"] = text
@@ -111,6 +116,13 @@ class MentionParseTests(unittest.TestCase):
         with patch.dict(os.environ, {"LINE_DEFAULT_PERSONA": "kaewta"}):
             self.assertEqual(r("random chatter", True),
                              ("kaewta", "random chatter"))
+
+    def test_route_unknown_default_ignored(self):
+        """LINE_DEFAULT_PERSONA naming no configured persona must not
+        crash on _name_backends()[name] — it resolves to ignore."""
+        with patch.dict(os.environ, {"LINE_DEFAULT_PERSONA": "ghost"}):
+            self.assertEqual(line_relay._route("random chatter", True),
+                             (None, "random chatter"))
 
 
 class GroupEventTests(unittest.IsolatedAsyncioTestCase):
@@ -213,6 +225,37 @@ class GroupEventTests(unittest.IsolatedAsyncioTestCase):
         [call] = self._sent(relay)
         self.assertEqual(call[0], "G1")
         self.assertIn("groupId=G1", call[1])
+        # join events carry a replyToken — the free reply path, not push
+        self.assertEqual(
+            relay.send_text.await_args_list[0].kwargs.get("reply_token"),
+            "RT")
+
+    async def test_unknown_default_persona_no_crash(self):
+        """A LINE_DEFAULT_PERSONA typo must not KeyError the turn."""
+        relay = _relay()
+        with patch.dict(os.environ, {"LINE_DEFAULT_PERSONA": "ghost"}):
+            await relay.handle_event(_ev("random chatter"))
+        self.assertEqual(_FakeSession.made, [])
+        relay._deliver.assert_not_awaited()
+        relay.send_text.assert_not_awaited()
+
+    async def test_room_source_uses_room_profile_endpoint(self):
+        """'room'-type events fetch the member profile under /room/,
+        not /group/ (which 404s rooms)."""
+        relay = _relay()
+        http_get = AsyncMock(return_value=MagicMock(status_code=200))
+        http_get.return_value.json.return_value = {"displayName": "Nhong"}
+        relay.http.get = http_get
+        env = {"LINE_ALLOWED_GROUP_IDS": "R1",
+               "LINE_USER_CALLERS": "Unhong1:user-nhong"}
+        with patch.dict(os.environ, env):
+            await relay.handle_event(_ev(
+                "ada hi", group_id="R1", src_type="room",
+                user_id="Unhong1"))
+        url = http_get.await_args.args[0]
+        self.assertIn("/v2/bot/room/R1/member/Unhong1", url)
+        _, msgs = relay._deliver.await_args.args[:2]
+        self.assertTrue(msgs[0]["text"].startswith("[ada->Nhong] "))
 
     async def test_mark_read_uses_event_token(self):
         relay = _relay()

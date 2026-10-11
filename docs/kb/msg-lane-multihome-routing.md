@@ -17,7 +17,9 @@ A message lane carries a message only when it is **addressed**.
 - **Unaddressed room chatter never reaches a persona.** This is the
   noise rule: without it every member message would hit the default
   backend. Escape hatch: `LINE_DEFAULT_PERSONA` names one catch-all
-  persona for unaddressed messages — off by default.
+  persona for unaddressed messages — off by default, and it must name
+  a persona in `LINE_NAME_BACKENDS` (an unknown name is logged and
+  treated as unset, never a crash).
 - **DMs are unchanged.** A 1:1 chat has no addressing problem — it
   defaults to `ada` (ADA_WS_URL), and an explicit mention still
   re-routes.
@@ -46,8 +48,9 @@ empty so mentions get the isn't-home reply instead of a dead socket).
 
 Room replies are tagged `[persona->sender]` so members can tell who a
 line answers and which persona spoke. `sender` is the member's LINE
-group displayName when the API will share it, else their caller name
-minus `user-`, else the userId tail.
+group displayName when the API will share it (`/v2/bot/group/…` for
+`group` sources, `/v2/bot/room/…` for `room` sources), else their
+caller name minus `user-`, else the userId tail.
 
 ## Identity — `LINE_USER_CALLERS`
 
