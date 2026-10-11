@@ -1,0 +1,49 @@
+# CMS public publish lane — OPS-0474. Tony asked Kaewta (ada-kk) to explain
+# the web-publish function and then to send the public URL of a CMS page —
+# she could not produce it. This scenario is that repro.
+#
+# Correct behavior:
+#   1. explains publish = cms_publish_page with public=yes (meta.public),
+#      URL lands at surf-thailand.com/kk-ha/<slug>.html within ~15min
+#      (Thai turns speak the URL with spaces — accept both forms)
+#   2. publishing with public=yes returns public_url in the result
+#   3. asked for the link on LINE, she sends the apex URL — never tailnet
+name: cms_public_url_lane
+tier: smoke
+turns:
+  - user: >-
+      How do I publish a CMS page to the public website? Explain the steps
+      and what the link looks like.
+    expect:
+      response_contains_any:
+        - public=yes
+        - meta.public
+        - "public flag"
+        - surf-thailand.com
+        - surf thailand
+        - "public"
+      timeout_s: 90
+      settle_s: 8
+  - user: >-
+      Publish a page for me: slug kk-site-test, title "KK site test",
+      content "publish lane smoke test page" — and make it public.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 90
+      settle_s: 10
+  - user: Yes, go ahead.
+    expect:
+      calls_any: [cms_publish_page]
+      timeout_s: 90
+      settle_s: 10
+  - user: >-
+      Send me the URL of that page on LINE so I can share it with someone
+      outside.
+    expect:
+      call_args_contain:
+        chat_send: ["surf-thailand.com/kk-ha/kk-site-test"]
+      timeout_s: 90
+      settle_s: 8
+cleanup:
+  mddb_delete:
+    - {collection: ada-cms-pages-kk, key: "kk-site-test", langs: [en, th]}

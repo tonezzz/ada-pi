@@ -42,7 +42,7 @@ def _meta_str(meta: dict[str, Any], name: str, default: str = "") -> str:
 
 
 # Public static lane — cms-publish-site.py renders public-flagged pages to
-# www.surf-thailand.com/<tenant>/<slug>.html (ssot.cms.yml). Tenant comes
+# surf-thailand.com/<tenant>/<slug>.html (ssot.cms.yml). Tenant comes
 # from ADA_CMS_PUBLIC_BASE when set (per-instance env), else derived from
 # the collection name: ada-cms-pages -> tony-ha, ada-cms-pages-<x> -> <x>-ha.
 def _cms_public_base() -> str:
@@ -55,7 +55,7 @@ def _cms_public_base() -> str:
         tenant = f"{CMS_COLLECTION[len('ada-cms-pages-'):]}-ha"
     else:
         return ""
-    return f"https://www.surf-thailand.com/{tenant}/"
+    return f"https://surf-thailand.com/{tenant}/"
 
 
 def cms_index_rows(
@@ -185,7 +185,7 @@ class CmsMixin:
         # fields too: Ada needs summary/updated/freshness BEFORE deciding
         # to drill deeper (the report-first ritual). kind lets a 'list'
         # row be told apart (page vs report) now that reports list too.
-        for name in ("kind", "generated_by", "report_role", "parent",
+        for name in ("kind", "generated_by", "report_role", "parent", "public",
                      "summary", "domain", "fresh_for", "confidence",
                      "supersedes", "timeline"):
             v = first(name)
@@ -351,6 +351,10 @@ class CmsMixin:
         page = self._cms_page_summary(doc)
         page["content"] = doc.get("contentMd") or doc.get("content") or ""
         page["lang"] = doc.get("lang") or "en"
+        if _meta_str(doc.get("meta"), "public").lower() in ("true", "yes", "1"):
+            _pb = _cms_public_base()
+            if _pb:
+                page["public_url"] = f"{_pb}{key}.html"
         if fallback:
             page["fallback"] = True
         return page
@@ -523,7 +527,7 @@ class CmsMixin:
                     "shows status=published.",
         }
         # Public lane — the static publisher (cms-publish-site.py, runs on
-        # idc02) renders opted-in pages to www.surf-thailand.com/<tenant>/.
+        # idc02) renders opted-in pages to surf-thailand.com/<tenant>/.
         # The URL is returned whenever the page is flagged public, even
         # though the file lands only on the next publisher run — say
         # "public link goes live shortly", not "already live".
