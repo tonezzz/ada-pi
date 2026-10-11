@@ -424,7 +424,7 @@ cms_publish_page: >-
   confidence= high|medium|low|unverified. updated/timeline are stamped
   automatically. Optional: links= comma-separated related slugs;
   supersedes= the replaced slug. public='yes' opts the page into the
-  www.surf-thailand.com/<tenant>/<slug>.html static lane — only when the
+  surf-thailand.com/<tenant>/<slug>.html static lane — only when the
   owner asked for a shareable link; a personal-data gate still applies.
   The result returns public_url when flagged — share that, not view_url,
   for people outside the tailnet.
