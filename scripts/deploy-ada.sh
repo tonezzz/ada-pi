@@ -35,6 +35,17 @@ die() { printf '[deploy] FAIL: %s\n' "$*" >&2; exit 1; }
 cd "$REPO" 2>/dev/null || die "repo $REPO not found"
 git rev-parse --git-dir >/dev/null 2>&1 || die "$REPO is not a git checkout"
 
+# --- 0. self-drift check ---------------------------------------------------
+# The installed copy at ~/.local/bin/deploy-ada.sh predating gates was the
+# 2026-10-10 outage enabler (.venv symlink shipped to prod undetected). If
+# this copy differs from the canonical repo copy, refuse — reinstall with:
+#   install -m 0755 scripts/deploy-ada.sh ~/.local/bin/deploy-ada.sh
+canon="$REPO/scripts/deploy-ada.sh"
+self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+if [[ "$self" != "$canon" && -f "$canon" ]] && ! cmp -s "$self" "$canon"; then
+    die "deploy script drifted from canonical $canon — reinstall it"
+fi
+
 # --- 1. snapshot a dirty tree --------------------------------------------
 if [[ -n "$(git status --porcelain)" ]]; then
     snap="wip/deploy-snapshot-$(date +%Y%m%d-%H%M%S)"
@@ -154,6 +165,10 @@ python3 scripts/tool-lint.py || die "tool-lint failed — deploy aborted before 
 # --- 3c. unit tests -------------------------------------------------------
 log "gate: pytest tests/ -x -q"
 [[ -x .venv/bin/python ]] || die ".venv/bin/python missing — cannot run tests, deploy aborted"
+# interpreter sanity — a symlink-loop or gutted venv passes -x but dies at
+# runtime with 203/EXEC (2026-10-10 outage). One import is the cheapest proof.
+.venv/bin/python -c "import fastapi" 2>/dev/null \
+    || die ".venv interpreter broken (imports fail) — deploy aborted"
 .venv/bin/python -m pytest tests/ -x -q || die "pytest failed — deploy aborted before restart"
 
 # --- 4. restart + verify --------------------------------------------------
