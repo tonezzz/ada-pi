@@ -18,7 +18,7 @@ heuristic below covers every context prefix the session loop emits.
 
 Config:
   OPENROUTER_API_KEY            required — same key the fleet rotates
-  ADA_OR_FALLBACK_MODEL         default qwen/qwen3-4b:free
+  ADA_OR_FALLBACK_MODEL         default google/gemma-4-31b-it:free
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ from .realtime_provider import ProviderEvent, RealtimeProvider, DEFAULT_ADA_INST
 logger = logging.getLogger(__name__)
 
 OR_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "qwen/qwen3-4b:free"
+DEFAULT_MODEL = "google/gemma-4-31b-it:free"
 
 DEGRADED_NOTE = (
     "(system) DEGRADED MODE: the Gemini voice/live backend is unreachable "
