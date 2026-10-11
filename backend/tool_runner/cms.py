@@ -41,6 +41,23 @@ def _meta_str(meta: dict[str, Any], name: str, default: str = "") -> str:
     return str(v) if v is not None else default
 
 
+# Public static lane — cms-publish-site.py renders public-flagged pages to
+# www.surf-thailand.com/<tenant>/<slug>.html (ssot.cms.yml). Tenant comes
+# from ADA_CMS_PUBLIC_BASE when set (per-instance env), else derived from
+# the collection name: ada-cms-pages -> tony-ha, ada-cms-pages-<x> -> <x>-ha.
+def _cms_public_base() -> str:
+    base = os.environ.get("ADA_CMS_PUBLIC_BASE", "").strip()
+    if base:
+        return base if base.endswith("/") else base + "/"
+    if CMS_COLLECTION == "ada-cms-pages":
+        tenant = "tony-ha"
+    elif CMS_COLLECTION.startswith("ada-cms-pages-"):
+        tenant = f"{CMS_COLLECTION[len('ada-cms-pages-'):]}-ha"
+    else:
+        return ""
+    return f"https://www.surf-thailand.com/{tenant}/"
+
+
 def cms_index_rows(
     docs: list[dict[str, Any]],
     now: datetime,
@@ -351,6 +368,7 @@ class CmsMixin:
         links: str = "",
         supersedes: str = "",
         confidence: str = "",
+        public: str = "",
     ) -> dict[str, Any]:
         """Create or update a miniapp page. Upserts by (slug, lang) — 'en'
         and 'th' variants of the same slug coexist; the viewer toggles.
@@ -427,6 +445,16 @@ class CmsMixin:
             meta["supersedes"] = [supersedes.strip()]
         if confidence.strip():
             meta["confidence"] = [confidence.strip()]
+        # Public opt-in — page-level flag the static-site publisher reads
+        # (cms-publish-site.py). 'yes'/'true' sets it, 'no'/'false' clears,
+        # empty leaves the existing flag alone. The publisher's personal-
+        # data scan is the hard gate under this flag — flagging a page
+        # public does not guarantee it ships.
+        p = public.strip().lower()
+        if p in ("yes", "true", "1", "on"):
+            meta["public"] = ["true"]
+        elif p in ("no", "false", "0", "off"):
+            meta.pop("public", None)
         # Timeline — append-only audit of what changed and when. Cap at 40
         # entries; visible via cms_get_page meta and the report pages.
         tl = [x for x in meta.get("timeline", []) if isinstance(x, str)]
@@ -494,6 +522,18 @@ class CmsMixin:
                     "action='nav', url=<cast_url>) — only after this result "
                     "shows status=published.",
         }
+        # Public lane — the static publisher (cms-publish-site.py, runs on
+        # idc02) renders opted-in pages to www.surf-thailand.com/<tenant>/.
+        # The URL is returned whenever the page is flagged public, even
+        # though the file lands only on the next publisher run — say
+        # "public link goes live shortly", not "already live".
+        if str((meta.get("public") or [""])[0]).lower() in ("true", "yes", "1"):
+            _pb = _cms_public_base()
+            out["public_url"] = f"{_pb}{slug}.html" if _pb else ""
+            out["note"] += (" This page is public-flagged — share "
+                            "public_url for anyone outside the tailnet.")
+        elif p in ("no", "false", "0", "off"):
+            out["note"] += " Public flag cleared — the publisher will drop it on the next run."
         if not meta_check["ok"] or meta_check["warnings"]:
             out["meta_contract"] = meta_check
         return out
