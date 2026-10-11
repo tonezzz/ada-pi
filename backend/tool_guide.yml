@@ -577,3 +577,14 @@ voice_fx: >-
   actuation). action='status' shows flags; 'set' toggles
   (feature=, enabled=). Voice triggers: 'sci-fi mode on/off' (master),
   'system operation(s) on/off' (sys_ops), 'memory narration' (sci_fx).
+
+percussion: >-
+  Music layer for the Nest percussion display — style presets
+  (rock/ballad/funky/electronic/edm/hardrock/rockballad/polyphia), mood
+  harmony (blue/bright/tense/calm — blue = blues min7 stabs), and
+  instrument layers (bass/stab/pad/lead/guitar/clap/ride/tamb/rim;
+  guitar = riffs + pitch bends, polyphia style adds harmonized double
+  lead). Empty style returns to pure ops-sonify. Changes land on the
+  next bar within ~30s — the page polls the input-bridge control
+  endpoint. Use for "make it funky", "blue chords", "add a bass line",
+  "play polyphia".

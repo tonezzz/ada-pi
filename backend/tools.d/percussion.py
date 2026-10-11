@@ -21,12 +21,8 @@ INS = {"bass","stab","pad","lead","guitar","clap","ride","tamb","rim"}
 DECLARATION = {
     "name": "percussion",
     "description": (
-        "Control the Nest percussion display: set musical style "
-        "(rock/ballad/funky/electronic/edm/hardrock/rockballad/polyphia), "
-        "mood (blue/bright/tense/calm — blue = bluesy min7 stabs), and "
-        "instrument layers (bass/stab/pad/lead/guitar/clap/ride/tamb/rim). "
-        "Pass empty style to go back to pure ops-sonify. Changes apply "
-        "within ~30s on the next bar."
+        "Nest percussion display music layer: style/mood/instruments. "
+        "See tool_guide."
     ),
     "parameters": {
         "type": "object",
