@@ -27,7 +27,7 @@
 set -euo pipefail
 
 REPO="${ADA_REPO:-$HOME/CascadeProjects/ada-pi}"
-SERVICES="${ADA_SERVICES:-ada-ha-tony ada-ha-michael ada-pi-pwa ada-dev ada-line-relay ada-tg-relay}"
+SERVICES="${ADA_SERVICES:-ada-ha-tony ada-ha-michael ada-pi-pwa ada-dev ada-kk-dev ada-kk ada-line-relay ada-tg-relay}"
 
 log() { printf '[deploy] %s\n' "$*"; }
 die() { printf '[deploy] FAIL: %s\n' "$*" >&2; exit 1; }
