@@ -189,10 +189,16 @@ class HomeAssistantClient:
             }
             # Some integrations expose one physical load as both light.foo and
             # switch.foo. Keep the richer domain while preserving similarly named
-            # devices whose actual Home Assistant object IDs differ.
-            existing = entities_by_object_id.get(object_id)
+            # devices whose actual Home Assistant object IDs differ. The collapse
+            # only applies to the simple on/off domains — a cover/button/
+            # media_player sharing an object_id is a different actuator, never a
+            # duplicate load (Tuya gate motors ship a switch.gate_motor sibling
+            # beside cover.gate_motor; deduping on object_id erased the cover
+            # and the physical gate became unfindable).
+            key = object_id if domain in CONTROLLABLE_DOMAINS else entity_id
+            existing = entities_by_object_id.get(key)
             if existing is None or DOMAIN_PRIORITY[domain] < DOMAIN_PRIORITY[existing["domain"]]:
-                entities_by_object_id[object_id] = entity
+                entities_by_object_id[key] = entity
         entities = list(entities_by_object_id.values())
         return sorted(entities, key=lambda entity: (entity["domain"], entity["name"].lower()))
 
@@ -216,7 +222,14 @@ class HomeAssistantClient:
 
         scored = [(score(entity), entity) for entity in all_entities]
         scored = [pair for pair in scored if pair[0] > 0]
-        scored.sort(key=lambda pair: (-pair[0], pair[1]["name"].lower()))
+        # unknown/unavailable entities stay in results — a Tuya cover resting
+        # at 'unknown' is still the physical gate the user means — but rank
+        # below available entities on equal score, flagged via available:False.
+        scored.sort(key=lambda pair: (
+            -pair[0],
+            not pair[1].get("available", True),
+            pair[1]["name"].lower(),
+        ))
         return [entity for _, entity in scored[:limit]]
 
     async def set_power(self, entity_id: str, turn_on: bool) -> dict[str, Any]:

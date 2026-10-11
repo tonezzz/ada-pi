@@ -77,7 +77,7 @@ class HaMixin:
         query = str(query or "").strip()
         if kind == "device":
             if query:
-                return await self.search_home_devices(query)
+                return await self.search_home_devices(query, limit=int(limit))
             return await self.list_home_devices()
         if kind == "sensor":
             if query:
@@ -106,8 +106,8 @@ class HaMixin:
             }]
         return devices
 
-    async def search_home_devices(self, query: str) -> list[dict[str, Any]]:
-        return await self.context.ha_client.search_entities(str(query))
+    async def search_home_devices(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        return await self.context.ha_client.search_entities(str(query), limit=int(limit))
 
     async def control_entity(
         self,

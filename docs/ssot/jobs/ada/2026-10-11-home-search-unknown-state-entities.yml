@@ -1,0 +1,97 @@
+# SSOT Job: unknown/unavailable entities stay discoverable in home_search
+# Card: home-search-unknown-state-entities. Dispatch 20261011-082400.
+
+title: home_search keeps unknown/unavailable devices findable — object_id dedup no longer erases actuator domains
+subtitle: No state filter existed; the real hiding path was the same-object_id collapse dropping cover.gate_motor behind a switch sibling
+
+planning:
+  goal: |
+    Card premise: Tuya curtain-type covers (cover.gate_motor on
+    michael-ha) rest at state 'unknown' permanently — no position
+    feedback — and flapping Tuya devices read 'unavailable' in 10-25s
+    bursts. Verify home_search kind=device and
+    /api/home-assistant/entities never treat those states as absent:
+    unknown stays discoverable, unavailable stays mentionable
+    (annotated/ranked down, never dropped).
+  findings: |
+    - No unknown/unavailable filter existed anywhere in the pipeline.
+      HomeAssistantClient.entities() has always included every
+      DISCOVERABLE_DOMAINS entity and flags them
+      available:false + state — the /api/home-assistant/entities
+      handler, home_search kind=device, the realtime fast-path, and
+      AdaMemoryStore.search_devices all pass that shape through.
+    - The actual hiding mechanism: entities() dedups by HA object_id
+      across ALL discoverable domains, keeping the highest
+      DOMAIN_PRIORITY entry. A switch.gate_motor / light.gate_motor /
+      input_boolean.gate_motor sibling (Tuya ships these for curtain
+      motors) silently erased cover.gate_motor — the cover vanished
+      from search and the gate was uncontrollable by voice, regardless
+      of its state.
+    - home_search's declared limit= was dropped on kind=device:
+      search_home_devices called search_entities() with the built-in
+      default of 5 while the tool declares default 10.
+  decisions: |
+    - The object_id collapse now applies only inside
+      CONTROLLABLE_DOMAINS (light/fan/switch/input_boolean) — the
+      'same physical load as light.foo + switch.foo' case it was
+      built for. cover/button/media_player entities are keyed by
+      their full entity_id — a different actuator is never a
+      duplicate load.
+    - search_entities keeps every scored match but sorts equal-score
+      results available-first — unavailable devices stay mentionable
+      while a live device wins a tie.
+    - search_home_devices takes limit= (default 10, matching the
+      declared schema) and both home_search and the provider
+      fast-path pass limit through to search_entities.
+    - Available flag semantics unchanged: available:false on
+      'unknown' and 'unavailable' — the model explains; nothing is
+      filtered.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-11"
+  steps:
+    - id: 1
+      label: "audit filter claim"
+      status: done
+      notes: "Grepped every consumer of entities()/search_entities
+        (runner ha.py, realtime_provider fast-path, pwa_server
+        /api/home-assistant/entities, AdaMemoryStore, frontend
+        app.js). No state-based exclusion — available:false flag
+        only; frontend disables the power button, still renders."
+    - id: 2
+      label: "dedup + ranking fix"
+      status: done
+      notes: "entities(): dedup key = object_id only for
+        CONTROLLABLE_DOMAINS, else entity_id. search_entities():
+        availability tiebreak after score. ha.py + realtime_provider:
+        limit= passthrough."
+    - id: 3
+      label: "regression tests"
+      status: done
+      notes: "test_home_assistant.py +3: actuator sibling not
+        shadowed by switch.gate_motor; unknown+unavailable entities
+        returned by search_entities flagged available:false;
+        unavailable ranks below available on equal score."
+
+invoke:
+  commands:
+    - "python3 scripts/tool-lint.py"
+    - "ADA_INSTANCE_ID=test .venv/bin/python -m unittest tests.test_tool_runner tests.test_home_assistant"
+
+verification:
+  - "python3 scripts/tool-lint.py — clean (exit 0): 46 declared, 92
+    aliases, 60 pre-existing warnings"
+  - "tests.test_home_assistant: 13/13 incl. the three new
+    cover.gate_motor cases — unknown and unavailable entities appear
+    in search_entities('gate') results flagged available:false"
+  - "full suite: tests.test_tool_runner + tests.test_home_assistant —
+    287 tests OK under ADA_INSTANCE_ID=test with the ada-pi venv
+    python (the five plan_day failures without the env var are
+    pre-existing env requirements, not this change)"
+  - "live check pending deploy: on ada-ha-michael, home_search
+    query='gate' kind='device' must return cover.gate_motor flagged
+    available:false even while its state is 'unknown'; the same set
+    now also shows any switch.gate_motor sibling instead of hiding
+    the cover behind it"
