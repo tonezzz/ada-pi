@@ -108,6 +108,20 @@ class MentionParseTests(unittest.TestCase):
         self.assertEqual(s("@ada: hi", "ada"), "hi")
         self.assertEqual(s("tell ada hi", "ada"), "tell ada hi")
 
+    def test_name_th(self):
+        """Thai-script message -> Thai persona display name in tags."""
+        with patch.dict(os.environ,
+                        {"LINE_NAME_TH": "kaewta:แก้วตา,chaba:ชบา"}):
+            self.assertEqual(line_relay._name_th()["kaewta"],
+                             "แก้วตา")
+            d = line_relay._display_name
+            self.assertEqual(d("kaewta", "สวัสดีค่ะ"), "แก้วตา")
+            self.assertEqual(d("kaewta", "hi there"), "kaewta")
+            self.assertEqual(d("ada", "สวัสดีค่ะ"), "ada")
+        # unset -> always ascii
+        self.assertEqual(line_relay._display_name("kaewta", "สวัสดี"),
+                         "kaewta")
+
     def test_route(self):
         r = line_relay._route
         self.assertEqual(r("ada, hi", True), ("ada", "hi"))
@@ -168,6 +182,17 @@ class GroupEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(to, "G1")
         self.assertTrue(msgs[0]["text"].startswith("[kaewta->kk] "))
         self.assertIn("pong", msgs[0]["text"])
+
+    async def test_thai_message_uses_thai_name(self):
+        with patch.dict(os.environ,
+                        {"LINE_NAME_TH": "kaewta:แก้วตา,chaba:ชบา"}):
+            relay = _relay()
+            await relay.handle_event(
+                _ev("kaewta สวัสดีค่ะ อาหารเย็นมีอะไรบ้าง"))
+            [sess] = _FakeSession.made
+            self.assertEqual(sess.ws_url, "ws://127.0.0.1:8007/ws")
+            msgs = relay._deliver.await_args.args[1]
+            self.assertTrue(msgs[0]["text"].startswith("[แก้วตา->"))
 
     async def test_unaddressed_group_message_ignored(self):
         relay = _relay()

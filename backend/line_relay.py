@@ -175,6 +175,31 @@ def _strip_lead_mention(text: str, name: str | None) -> str:
     return text[m.end():].strip() if m else text
 
 
+_THAI_RE = re.compile(r"[\u0e00-\u0e7f]")
+
+
+def _name_th() -> dict[str, str]:
+    """LINE_NAME_TH='kaewta:แก้วตา,chaba:ชบา' -> {persona: thai display
+    name}. Thai-script messages get the Thai persona name in reply tags."""
+    out: dict[str, str] = {}
+    for part in os.environ.get("LINE_NAME_TH", "").split(","):
+        if ":" not in part:
+            continue
+        name, _, th = part.partition(":")
+        name, th = name.strip().lower(), th.strip()
+        if name and th:
+            out[name] = th
+    return out
+
+
+def _display_name(persona: str, text: str) -> str:
+    """Reply-tag persona name: Thai form when the incoming message is
+    Thai-script and a name is configured, else the ascii persona id."""
+    if text and _THAI_RE.search(text):
+        return _name_th().get(persona, persona)
+    return persona
+
+
 def _route(text: str, is_group: bool) -> tuple[str | None, str]:
     """(persona, turn_text) for a message — None persona means ignore.
     Groups need a mention or LINE_DEFAULT_PERSONA; DMs default to ada.
@@ -527,14 +552,15 @@ class LineRelay:
         """One text turn to a persona backend; reply tagged
         [persona->sender] in rooms."""
         sess = self._session(skey, user_id, persona_url, caller)
+        disp = _display_name(persona, turn_text)
         try:
             reply, images = await sess.send_turn(turn_text)
         except Exception as exc:
             logger.warning("user %s turn failed: %s", user_id, exc)
-            reply, images = (f"{persona} didn't answer that turn — the "
+            reply, images = (f"{disp} didn't answer that turn — the "
                              "session dropped. Try again."), []
             self.sessions.pop(skey, None)
-        tag = f"[{persona}->{label}] " if is_group else ""
+        tag = f"[{disp}->{label}] " if is_group else ""
         msgs: list[dict] = [{"type": "text",
                              "text": (tag + (reply or "(no reply)"))
                              [:REPLY_CHUNK]}]
@@ -635,10 +661,11 @@ class LineRelay:
         persona, turn = _route(transcript, is_group)
         if persona is None:
             return
+        disp = _display_name(persona, transcript)
         persona_url = _name_backends().get(persona)
         if not persona_url:
             await self.send_text(
-                chat_id, f"[{persona}->{label}] {persona} isn't home "
+                chat_id, f"[{disp}->{label}] {disp} isn't home "
                          "yet — try another name.")
             return
         skey = (chat_id, user_id, persona) if is_group \
@@ -711,6 +738,7 @@ class LineRelay:
         persona, turn = _route(text if mtype == "text" else "", is_group)
         if persona is None:
             return  # unaddressed room chatter — ignore per spec
+        disp = _display_name(persona, text)
         if is_group and caller is None:
             await self._refuse_group_member(chat_id, user_id, reply_token)
             return
@@ -721,7 +749,7 @@ class LineRelay:
         if not persona_url:
             await self.send_text(
                 chat_id,
-                f"[{persona}->{label}] {persona} isn't home yet — try "
+                f"[{disp}->{label}] {disp} isn't home yet — try "
                 "another name.",
                 reply_token=reply_token)
             return
@@ -743,9 +771,9 @@ class LineRelay:
                 logger.warning("user %s image turn failed: %s",
                                user_id, exc)
                 reply, images = (
-                    f"Couldn't pass that photo to {persona} — try "
+                    f"Couldn't pass that photo to {disp} — try "
                     "again.", [])
-            tag = f"[{persona}->{label}] " if is_group else ""
+            tag = f"[{disp}->{label}] " if is_group else ""
             msgs = [{"type": "text",
                      "text": (tag + (reply or "(no reply)"))
                      [:REPLY_CHUNK]}]
@@ -767,7 +795,7 @@ class LineRelay:
             reply, images = (f"{persona} didn't answer that turn — the "
                              "session dropped. Try again."), []
             self.sessions.pop(skey, None)
-        tag = f"[{persona}->{label}] " if is_group else ""
+        tag = f"[{disp}->{label}] " if is_group else ""
         msgs = [{"type": "text",
                  "text": (tag + (reply or "(no reply)"))[:REPLY_CHUNK]}]
         for url, cap in images[:3]:

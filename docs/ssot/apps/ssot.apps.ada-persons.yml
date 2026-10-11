@@ -18,6 +18,7 @@ personas:
       Primary Ada instance (idc03). Also the implicit default — the relay
       falls back to ADA_WS_URL for the 'ada' name.
   kaewta:
+    name_th: "แก้วตา"
     backend: ada-kk
     ws: ws://127.0.0.1:8007/ws
     home: kk
@@ -27,6 +28,7 @@ personas:
       KK's home assistant instance — separate process, separate memory
       scope; reached only when the room addresses her by name.
   chaba:
+    name_th: "ชบา"
     backend: ada-chaba
     ws: ws://127.0.0.1:8008/ws
     home: shared (tony-ha lane)
