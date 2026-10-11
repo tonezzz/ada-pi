@@ -4588,6 +4588,16 @@ class GeminiLiveProvider(RealtimeProvider):
                 )
             )
         excluded = {s.strip() for s in os.environ.get("ADA_EXCLUDED_TOOLS", "").split(",") if s.strip()}
+        # Allowlist mode (OPS-0476): when ADA_INCLUDED_TOOLS names a keep-
+        # list, everything NOT named is excluded — merged/renamed tools can
+        # no longer slip onto a restricted lane (the home_search class).
+        # Folded into `excluded` so the instruction-strip logic below
+        # behaves identically for both modes.
+        included = {s.strip() for s in os.environ.get("ADA_INCLUDED_TOOLS", "").split(",") if s.strip()}
+        if included:
+            excluded |= {fd.get("name") for fd in
+                         config["tools"][0]["function_declarations"]
+                         } - included
         if excluded:
             config["tools"][0]["function_declarations"] = [
                 fd for fd in config["tools"][0]["function_declarations"]
