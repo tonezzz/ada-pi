@@ -472,12 +472,22 @@ class LineRelay:
             r = await self.http.get(url, timeout=120)
             if r.status_code != 200 or len(r.content) < 500:
                 raise RuntimeError(f"fetch {r.status_code} {len(r.content)}B")
-            import secrets
-            nonce = secrets.token_urlsafe(12)
             mime = (r.headers.get("content-type")
                     or "image/jpeg").split(";")[0]
+            # Not-an-image guard: a fetched HTML page (e.g. the CMS SPA
+            # cast_url pasted as image_url) used to be re-labelled jpeg —
+            # LINE rendered a broken tile. Verify the bytes are a real
+            # image before hosting; anything else is a fetch failure.
+            if not mime.startswith("image/") and \
+                    not (r.content[:3] == b"\xff\xd8\xff"
+                         or r.content[:8].startswith(b"\x89PNG")
+                         or r.content[:4] in (b"RIFF", b"GIF8")):
+                raise RuntimeError(
+                    f"fetched {mime}, not an image ({len(r.content)}B)")
             if not mime.startswith("image/"):
                 mime = "image/jpeg"
+            import secrets
+            nonce = secrets.token_urlsafe(12)
             self._imgs[nonce] = (r.content, time.time(), mime)
             pnonce = nonce + "-p"
             self._imgs[pnonce] = (self._preview_jpeg(r.content),
