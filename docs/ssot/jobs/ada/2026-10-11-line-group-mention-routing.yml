@@ -1,0 +1,67 @@
+# SSOT Job: LINE group mention-routing — one chaba bot, per-persona
+# backends. Card: line-multihome-group. Dispatch
+# 20261011-163937-line-group-tony-kk-nhong-per-s (attempt 2).
+
+title: >
+  Shared LINE group (tony+kk+nhong) routes addressed turns to each
+  member's home persona; unaddressed chatter is ignored
+
+subtitle: >
+  The chaba bot (@339sbrov) sits in one shared group. A member names a
+  persona (ada|kaewta|chaba) and the relay opens a per-(group, sender,
+  persona) WS session to that backend, replies tagged [persona->sender].
+
+planning:
+  goal: |
+    Implement Tony's updated spec (2026-10-11): mention-triggered
+    routing, no default-to-Ada flood, per-sender identity via
+    LINE_USER_CALLERS, voice notes following the tg voice rule + a
+    mirror to the speaker's home (DM) channel.
+  decisions: |
+    - LINE_NAME_BACKENDS "name:ws-url,..." is the persona registry the
+      relay parses; 'ada' falls back to ADA_WS_URL, a bare host:port gets
+      /ws appended, and an empty URL ('chaba:') marks a known-but-offline
+      persona that answers "isn't home yet" rather than being ignored.
+    - Mention parse: first configured persona name at a word boundary
+      (case-insensitive, optional '@'); a leading 'name,' / '@name:' is
+      stripped as addressing noise. Unaddressed room text -> ignore
+      unless LINE_DEFAULT_PERSONA is set.
+    - Rooms have no admin fallback — an unmapped member's routed message
+      earns a 1/h refusal echoing their userId (same rule tg_relay
+      applies to group senders). Rooms must be in
+      LINE_ALLOWED_GROUP_IDS; the bot's join greeting prints the groupId
+      for allowlisting.
+    - Reply tag [persona->sender]: sender label = LINE group profile
+      displayName (cached) -> caller name minus 'user-' -> userId tail.
+    - Voice: audio messages save to LINE_VOICE_CORPUS_DIR (manifest
+      JSONL, per-sender slug — same as tg), ack in-channel; with
+      LINE_VOICE_TRANSCRIBE=1 the transcript routes like text. Group
+      clips also push the ack/transcript to the speaker's DM
+      (LINE_VOICE_DM_MIRROR, default on).
+    - Latent bugs fixed along the way: _mark_read was being passed the
+      replyToken as a chat userId (always 400s) — now posts the event's
+      markAsReadToken per current LINE docs; LINE_PUBLIC_IMG_BASE repo
+      default updated idc01 -> idc03 edge (157.85.102.125.sslip.io).
+
+verification:
+  - tests/test_line_relay_group.py — 18 tests: backend map parse + /ws
+    normalization, mention variants/boundaries/first-wins, lead strip,
+    route defaults, group route+tag, unaddressed ignore, unallowed group
+    ignore, unmapped refusal rate-limit, offline persona, DM default,
+    unauthorized DM, join greeting, markAsReadToken, voice save/ack/
+    mirror, unmapped-clip drop, transcript routing. All pass.
+
+followups:
+  - idc03 ada-line-relay unit env still needs LINE_ALLOWED_GROUP_IDS (the
+    group id prints in the join greeting / logs), LINE_NAME_BACKENDS,
+    LINE_USER_CALLERS for nhong, and the optional voice envs — ops change
+    outside this worktree.
+  - user-nhong key must be minted on each reachable persona backend
+    (auth.create_key / ada_member_keys) before nhong's mention routes —
+    scoped per-backend tier (card answers: kk guest of ada-ha / member of
+    tony-ha; tony member of kk-ha).
+  - chaba backend RESOLVED mid-dispatch (board answer): ada-chaba, a
+    dedicated instance on idc03 :8008 — keep 'chaba:' empty in
+    LINE_NAME_BACKENDS until it's provisioned.
+  - Group 'room' sources reuse the group profile endpoint for the sender
+    label — falls back to caller name if LINE 404s it.

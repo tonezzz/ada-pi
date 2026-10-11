@@ -2,15 +2,39 @@
 
 LINE has no polling API — the Messaging API delivers events by POSTing to a
 configured webhook URL. This module serves that webhook on a local port
-(Caddy proxies /webhook/line -> LINE_LISTEN on idc01) and relays text
+(Caddy proxies /webhook/line -> LINE_LISTEN on idc03) and relays text
 messages to Ada over the same websocket protocol the TG relay uses.
+
+Group rooms (docs/kb/msg-lane-multihome-routing.md): an allowed group's
+messages are MENTION-routed — a member addresses a persona by name
+("ada, ..." / "@kaewta ...") and the turn goes to that persona's own
+backend over LINE_NAME_BACKENDS, answered "[persona->sender] ...".
+Unaddressed group chatter is ignored unless LINE_DEFAULT_PERSONA names a
+catch-all. Sender identity is the per-member LINE_USER_CALLERS key —
+there is no admin fallback in a room.
 
 Env:
     LINE_CHANNEL_ACCESS_TOKEN  — Messaging API channel token (outbound)
     LINE_CHANNEL_SECRET        — Basic-settings channel secret; verifies the
                                  X-Line-Signature HMAC on every webhook POST
-    LINE_ALLOWED_USER_IDS      — comma list of LINE userIds that may chat
+    LINE_ALLOWED_USER_IDS      — comma list of LINE userIds that may DM
+    LINE_ALLOWED_GROUP_IDS     — comma list of groupIds/roomIds that may chat
     LINE_USER_CALLERS          — "<userId>:<key-name>,..." per-user identity
+    LINE_NAME_BACKENDS         — "<persona>:<ws-base>,..." mention routing
+                                 (e.g. "ada:ws://127.0.0.1:8002,kaewta:
+                                 ws://127.0.0.1:8007"); empty URL ("chaba:")
+                                 = known-but-offline persona. 'ada' defaults
+                                 to ADA_WS_URL when unlisted.
+    LINE_DEFAULT_PERSONA       — persona for unaddressed group messages
+                                 (unset = ignore them)
+    LINE_VOICE_CORPUS_DIR      — default ~/.local/share/ada-voice-corpus/line;
+                                 audio clips from enrolled senders land here
+                                 (local only — like tg_relay's voice rule)
+    LINE_VOICE_TRANSCRIBE      — "1" transcribes clips (faster-whisper) and
+                                 routes the transcript like a text turn
+    LINE_WHISPER_MODEL         — default base
+    LINE_VOICE_DM_MIRROR       — default 1: group voice ack/transcript is
+                                 also pushed to the speaker's DM lane
     LINE_WEBHOOK_LISTEN        — host:port, default 127.0.0.1:8912
     LINE_WEBHOOK_PATH          — default /webhook/line
     ADA_WS_URL / ADA_API_KEY / ADA_KEYS_FILE — same as tg_relay
@@ -28,7 +52,9 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -51,8 +77,27 @@ REPLY_CHUNK = 4900  # LINE text message limit is 5000 chars
 # hosted transiently on this relay and proxied out via Caddy /relay-img/*.
 LINE_PUBLIC_IMG_BASE = os.environ.get(
     "LINE_PUBLIC_IMG_BASE",
-    "https://157.85.110.99.sslip.io/relay-img")
+    "https://157.85.102.125.sslip.io/relay-img")
 IMG_TTL_S = float(os.environ.get("LINE_IMG_TTL_S", "3600"))
+
+# Voice corpus: audio clips from enrolled senders (allowed DM users /
+# mapped room members — the same gate a reply sits behind) are saved for
+# speaker-id training. Private by design: local disk only, no forwarding.
+VOICE_CORPUS_DIR = Path(os.environ.get(
+    "LINE_VOICE_CORPUS_DIR",
+    str(Path.home() / ".local" / "share" / "ada-voice-corpus" / "line")))
+
+_MIME_EXT = {
+    "audio/m4a": ".m4a",
+    "audio/mp4": ".m4a",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/x-m4a": ".m4a",
+    "video/mp4": ".mp4",
+}
+
+_REFUSAL_GAP_S = 3600  # don't spam a room — one refusal per sender per hour
 
 ADA_KEYS_FILE = os.environ.get(
     "ADA_KEYS_FILE",
@@ -78,22 +123,101 @@ def _user_callers() -> dict[str, str]:
     return out
 
 
-def _key_for_user(user_id: str) -> str:
-    """API key for this user: mapped caller's issued key, else the default."""
-    name = _user_callers().get(user_id)
+def _allowed_groups() -> set[str]:
+    return {c.strip() for c in
+            os.environ.get("LINE_ALLOWED_GROUP_IDS", "").split(",")
+            if c.strip()}
+
+
+def _name_backends() -> dict[str, str]:
+    """LINE_NAME_BACKENDS -> {persona: ws_url}. An empty URL marks a
+    known-but-offline persona; 'ada' falls back to ADA_WS_URL. A bare
+    ws://host:port gets the conventional /ws path appended."""
+    out: dict[str, str] = {}
+    for part in os.environ.get("LINE_NAME_BACKENDS", "").split(","):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        name, url = part.split(":", 1)
+        name, url = name.strip().lower(), url.strip()
+        if name:
+            if url and re.match(r"^wss?://[^/]+$", url):
+                url += "/ws"
+            out[name] = url
+    out.setdefault("ada", ADA_WS_URL)
+    return out
+
+
+def _default_persona() -> str | None:
+    return os.environ.get("LINE_DEFAULT_PERSONA", "").strip().lower() or None
+
+
+def _mention_persona(text: str) -> str | None:
+    """First configured persona name addressed in the text — word-bounded,
+    case-insensitive, optional leading '@'. Returns the canonical
+    (lowercased) persona name or None."""
+    best: tuple[int, str] | None = None
+    for name in _name_backends():
+        m = re.search(r"(?<![\w])@?" + re.escape(name) + r"(?![\w])",
+                      text, flags=re.IGNORECASE)
+        if m and (best is None or m.start() < best[0]):
+            best = (m.start(), name)
+    return best[1] if best else None
+
+
+def _strip_lead_mention(text: str, name: str | None) -> str:
+    """Drop a leading 'ada,' / '@ada:' address token — routing noise the
+    persona doesn't need to see."""
+    if not name:
+        return text
+    m = re.match(r"\s*@?" + re.escape(name) + r"\s*[:,;\-–—]?\s+",
+                 text, flags=re.IGNORECASE)
+    return text[m.end():].strip() if m else text
+
+
+def _route(text: str, is_group: bool) -> tuple[str | None, str]:
+    """(persona, turn_text) for a message — None persona means ignore.
+    Groups need a mention or LINE_DEFAULT_PERSONA; DMs default to ada."""
+    persona = _mention_persona(text)
+    if persona is None:
+        persona = _default_persona() if is_group else "ada"
+    if persona is None:
+        return None, text
+    return persona, _strip_lead_mention(text, persona)
+
+
+def _key_by_name(name: str | None) -> str:
+    """Issued API key for a caller name, else the admin default."""
     if not name:
         return ADA_API_KEY
     try:
         keys = json.loads(Path(ADA_KEYS_FILE).read_text())
-        entry = keys.get(name) or {}
-        key = entry.get("key")
+        key = (keys.get(name) or {}).get("key")
         if key:
             return key
-        logger.warning("user %s caller %r has no issued key — using default",
-                       user_id, name)
+        logger.warning("caller %r has no issued key — using default", name)
     except Exception as exc:
         logger.warning("keys file read failed (%s) — using default", exc)
     return ADA_API_KEY
+
+
+_whisper_model = None
+
+
+def _transcribe(path) -> str:
+    """Free-first voice transcription — faster-whisper locally, model via
+    LINE_WHISPER_MODEL (default base). Gated by LINE_VOICE_TRANSCRIBE=1."""
+    if os.environ.get("LINE_VOICE_TRANSCRIBE") != "1":
+        return ""
+    global _whisper_model
+    if _whisper_model is None:
+        from faster_whisper import WhisperModel
+        size = os.environ.get("LINE_WHISPER_MODEL", "base")
+        _whisper_model = WhisperModel(
+            size, device="cpu", compute_type="int8")
+        logger.info("whisper model %s loaded", size)
+    segments, _ = _whisper_model.transcribe(str(path), beam_size=1)
+    return " ".join(seg.text.strip() for seg in segments).strip()
 
 
 def _images_from(results: list[dict]) -> list[tuple[str, str]]:
@@ -113,10 +237,15 @@ def _images_from(results: list[dict]) -> list[tuple[str, str]]:
 
 
 class ChatSession:
-    """One Ada WS session per LINE user, kept for continuity."""
+    """One persona WS session per (chat, sender, persona) — in a group each
+    member gets their own caller key and their own session per persona."""
 
-    def __init__(self, user_id: str, relay: "LineRelay") -> None:
+    def __init__(self, user_id: str, relay: "LineRelay",
+                 ws_url: str | None = None,
+                 caller: str | None = None) -> None:
         self.user_id = user_id
+        self.ws_url = ws_url or ADA_WS_URL
+        self.caller = caller  # LINE_USER_CALLERS name; None -> default key
         self.relay = relay
         self.ws = None
         self._rx_task: asyncio.Task | None = None
@@ -127,7 +256,8 @@ class ChatSession:
     async def ensure(self) -> None:
         if self.ws is not None:
             return
-        url = f"{ADA_WS_URL}?api_key={_key_for_user(self.user_id)}&channel=line"
+        url = (f"{self.ws_url}?api_key={_key_by_name(self.caller)}"
+               "&channel=line")
         self.ws = await websockets.connect(
             url, max_size=8 * 1024 * 1024, ping_interval=20)
         self._rx_task = asyncio.create_task(self._reader())
@@ -212,9 +342,13 @@ class ChatSession:
 
 class LineRelay:
     def __init__(self) -> None:
-        self.sessions: dict[str, ChatSession] = {}
+        # session key: (chat_id, sender_id, persona) in a room,
+        # (user_id, persona) in a DM
+        self.sessions: dict[Any, ChatSession] = {}
         self.http: httpx.AsyncClient | None = None
         self._imgs: dict[str, tuple[bytes, float, str]] = {}
+        self._names: dict[str, str] = {}  # userId -> display label cache
+        self._refused: dict[tuple[str, str], float] = {}
 
     def _verify(self, body: bytes, signature: str) -> bool:
         mac = hmac.new(CHANNEL_SECRET.encode(), body, hashlib.sha256)
@@ -238,13 +372,16 @@ class LineRelay:
         mime = r.headers.get("content-type") or "image/jpeg"
         return r.content, mime.split(";")[0]
 
-    async def _mark_read(self, user_id: str) -> None:
-        """Show the read tick as soon as Ada starts on the message.
-        markAsRead takes the chat identity (userId here), not a replyToken,
-        so it never interferes with the replyMessage call."""
+    async def _mark_read(self, ev: dict) -> None:
+        """Show the read tick as soon as a persona starts on the message —
+        the event's markAsReadToken marks the whole chat read up to it.
+        Absent when the OA's Chat mode is off (LINE auto-marks then)."""
+        token = ev.get("markAsReadToken")
+        if not token:
+            return
         try:
             r = await self.line("markAsRead",
-                                {"chat": {"userId": user_id}})
+                                {"markAsReadToken": token})
             if r.status_code != 200:
                 logger.info("markAsRead %s: %s", r.status_code, r.text[:120])
         except Exception as exc:
@@ -323,16 +460,207 @@ class LineRelay:
             return [{"type": "text",
                      "text": f"(image failed: {caption or url})"}]
 
+    async def _sender_label(self, user_id: str, group_id: str | None,
+                            caller: str | None) -> str:
+        """Display label for the [persona->sender] reply tag: the group
+        profile's displayName when LINE will tell us, else the caller key
+        minus its 'user-' prefix, else the userId tail."""
+        if user_id in self._names:
+            return self._names[user_id]
+        label = ""
+        if group_id:
+            try:
+                assert self.http is not None
+                r = await self.http.get(
+                    f"{LINE_API}/v2/bot/group/{group_id}/member/{user_id}",
+                    headers={"Authorization": f"Bearer {CHANNEL_TOKEN}"})
+                if r.status_code == 200:
+                    label = str(r.json().get("displayName") or "")
+            except Exception as exc:
+                logger.info("group profile %s/%s failed: %s",
+                            group_id, user_id, exc)
+        if not label:
+            label = re.sub(r"^user-", "", caller or "") or user_id[-6:]
+        self._names[user_id] = label
+        return label
+
+    async def _refuse_group_member(self, chat_id: str, user_id: str,
+                                   reply_token: str | None) -> None:
+        """Rate-limited 'not authorized' for an unmapped room member —
+        echoes the userId once an hour so the owner can whitelist it."""
+        last = self._refused.get((chat_id, user_id), 0.0)
+        if time.monotonic() - last < _REFUSAL_GAP_S:
+            return
+        self._refused[(chat_id, user_id)] = time.monotonic()
+        await self.send_text(
+            chat_id,
+            f"Not authorized in this room. LINE userId: {user_id} — the "
+            "owner can whitelist it in LINE_USER_CALLERS.",
+            reply_token=reply_token)
+
+    def _session(self, skey: Any, user_id: str, persona_url: str,
+                 caller: str | None) -> ChatSession:
+        sess = self.sessions.get(skey)
+        if sess is None or sess.ws_url != persona_url:
+            sess = ChatSession(user_id, self, ws_url=persona_url,
+                               caller=caller)
+            self.sessions[skey] = sess
+        return sess
+
+    async def _deliver_turn(self, skey: Any, chat_id: str, user_id: str,
+                            persona: str, persona_url: str,
+                            caller: str | None, label: str,
+                            turn_text: str, is_group: bool,
+                            reply_token: str | None) -> None:
+        """One text turn to a persona backend; reply tagged
+        [persona->sender] in rooms."""
+        sess = self._session(skey, user_id, persona_url, caller)
+        try:
+            reply, images = await sess.send_turn(turn_text)
+        except Exception as exc:
+            logger.warning("user %s turn failed: %s", user_id, exc)
+            reply, images = (f"{persona} didn't answer that turn — the "
+                             "session dropped. Try again."), []
+            self.sessions.pop(skey, None)
+        tag = f"[{persona}->{label}] " if is_group else ""
+        msgs: list[dict] = [{"type": "text",
+                             "text": (tag + (reply or "(no reply)"))
+                             [:REPLY_CHUNK]}]
+        for url, cap in images[:3]:
+            msgs.extend(await self._image_msgs(url, cap))
+        try:
+            await self._deliver(chat_id, msgs[:5], reply_token=reply_token)
+        except Exception as exc:
+            logger.warning("user %s reply send failed: %s", user_id, exc)
+
+    async def _save_voice_clip(
+            self, msg: dict, data: bytes, mime: str, kind: str,
+            chat_id: str, user_id: str, caller: str | None,
+            label: str) -> tuple[Path, int]:
+        """Save an audio clip into the local voice corpus + one manifest
+        line — the same rule tg_relay applies. Returns (path, secs)."""
+        slug = re.sub(r"[^A-Za-z0-9_-]+", "-",
+                      caller or label or user_id).strip("-").lower() \
+            or "unknown"
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        ext = _MIME_EXT.get(mime, ".m4a")
+        dest_dir = VOICE_CORPUS_DIR / slug
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / f"{stamp}{ext}"
+        n = 1
+        while dest.exists():
+            dest = dest_dir / f"{stamp}-{n}{ext}"
+            n += 1
+        dest.write_bytes(data)
+        duration = int((msg.get("duration") or 0) / 1000)  # LINE ms -> s
+        entry = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "sender": slug,
+            "sender_id": user_id,
+            "chat_id": chat_id,
+            "kind": kind,
+            "duration_s": duration,
+            "message_id": msg.get("id"),
+            "mime": mime or None,
+            "path": str(dest),
+        }
+        with (VOICE_CORPUS_DIR / "manifest.jsonl").open("a") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        logger.info("chat %s saved %s clip %s (%ds)",
+                    chat_id, kind, dest, duration)
+        return dest, duration
+
+    async def _handle_audio(self, ev: dict, msg: dict, chat_id: str,
+                            user_id: str, group_id: str | None,
+                            is_group: bool, caller: str | None,
+                            reply_token: str | None) -> None:
+        """Voice rule in-channel: enrolled senders' clips are saved to the
+        local corpus and acked; with LINE_VOICE_TRANSCRIBE=1 the transcript
+        routes like a text turn. Group clips also mirror the ack/transcript
+        to the speaker's home channel (their DM lane)."""
+        if is_group and caller is None:
+            return  # unmapped member — same gate as a routed text turn
+        label = await self._sender_label(
+            user_id, group_id if is_group else None, caller)
+        try:
+            data, mime = await self._fetch_content(str(msg.get("id") or ""))
+        except Exception as exc:
+            logger.warning("user %s audio fetch failed: %s", user_id, exc)
+            await self.send_text(
+                chat_id, "Couldn't fetch that voice clip — try again.",
+                reply_token=reply_token)
+            return
+        try:
+            clip, duration = await self._save_voice_clip(
+                msg, data, mime, "audio", chat_id, user_id, caller, label)
+        except Exception as exc:
+            logger.warning("user %s audio save failed: %s", user_id, exc)
+            await self.send_text(
+                chat_id, "Couldn't save that clip — try again.",
+                reply_token=reply_token)
+            return
+        transcript = await asyncio.get_event_loop().run_in_executor(
+            None, _transcribe, clip)
+        if transcript:
+            await self.send_text(chat_id, f'\U0001f399 "{transcript}"',
+                                 reply_token=reply_token)
+        else:
+            await self.send_text(
+                chat_id, f"Saved {duration}s voice clip to the corpus.",
+                reply_token=reply_token)
+        if is_group and os.environ.get("LINE_VOICE_DM_MIRROR", "1") != "0":
+            try:
+                mirror = (f'\U0001f399 "{transcript}"' if transcript
+                          else f"(voice clip saved — {duration}s)")
+                await self.send_text(user_id, mirror)
+            except Exception as exc:
+                logger.info("voice dm-mirror to %s failed: %s",
+                            user_id, exc)
+        if not transcript:
+            return
+        await self._mark_read(ev)
+        persona, turn = _route(transcript, is_group)
+        if persona is None:
+            return
+        persona_url = _name_backends()[persona]
+        if not persona_url:
+            await self.send_text(
+                chat_id, f"[{persona}->{label}] {persona} isn't home "
+                         "yet — try another name.")
+            return
+        skey = (chat_id, user_id, persona) if is_group \
+            else (user_id, persona)
+        await self._deliver_turn(
+            skey, chat_id, user_id, persona, persona_url, caller, label,
+            f"[LINE group from {label}] {turn}" if is_group else turn,
+            is_group, None)
+
     async def handle_event(self, ev: dict[str, Any]) -> None:
         src = ev.get("source") or {}
         user_id = src.get("userId")
         reply_token = ev.get("replyToken")
-        if not user_id:
-            return
+        src_type = src.get("type") or "user"
+        group_id = src.get("groupId") or src.get("roomId")
+        is_group = src_type in ("group", "room") and bool(group_id)
+        chat_id = group_id if is_group else user_id  # reply/push target
         etype = ev.get("type")
+        if etype == "join" and is_group:
+            # Bot added to a room — surface the id for allowlisting.
+            logger.info("joined %s %s", src_type, group_id)
+            await self.send_text(
+                chat_id,
+                f"Ada relay here. groupId={group_id} — the owner can "
+                "enable this room via LINE_ALLOWED_GROUP_IDS.")
+            return
+        if is_group and group_id not in _allowed_groups():
+            logger.info("ignoring event in unallowed %s %s",
+                        src_type, group_id)
+            return
+        if not user_id or not chat_id:
+            return
         if etype == "follow":  # user added the bot
             await self.send_text(
-                user_id, f"Ada LINE relay online. userId={user_id}",
+                chat_id, f"Ada LINE relay online. userId={user_id}",
                 reply_token=reply_token)
             return
         if etype != "message":
@@ -340,71 +668,101 @@ class LineRelay:
         msg = ev.get("message") or {}
         mtype = msg.get("type")
         text = (msg.get("text") or "").strip() if mtype == "text" else ""
-        if mtype == "image":
-            if user_id not in _allowed_users():
-                await self.send_text(
-                    user_id,
-                    f"Not authorized. Your LINE userId is {user_id}.",
-                    reply_token=reply_token)
-                return
-            await self._mark_read(reply_token)
-            sess = self.sessions.setdefault(
-                user_id, ChatSession(user_id, self))
-            try:
-                img, mime = await self._fetch_content(
-                    str(msg.get("id") or ""))
-                reply, images = await sess.send_image_turn(
-                    img, mime,
-                    f"[via LINE from user {user_id}] The user sent this "
-                    "photo — describe it and respond naturally.")
-            except Exception as exc:
-                logger.warning("user %s image turn failed: %s",
-                               user_id, exc)
-                reply, images = (
-                    "Couldn't pass that photo to Ada — try again.", [])
-            msgs = [{"type": "text",
-                     "text": (reply or "(no reply)")[:REPLY_CHUNK]}]
-            for url, cap in images[:3]:
-                msgs.extend(await self._image_msgs(url, cap))
-            try:
-                await self._deliver(user_id, msgs[:5],
-                                    reply_token=reply_token)
-            except Exception as exc:
-                logger.warning("user %s img-reply failed: %s", user_id, exc)
-            return
-        if mtype != "text":
-            await self.send_text(
-                user_id, f"(got {mtype}, text or photos only)",
-                reply_token=reply_token)
-            return
-        if not text:
-            return
-        if user_id not in _allowed_users():
+        caller = _user_callers().get(user_id)
+        # Auth: a DM needs LINE_ALLOWED_USER_IDS; a room member needs a
+        # LINE_USER_CALLERS entry — there is no admin fallback in a room,
+        # because that would hand the owner key to every member.
+        if not is_group and user_id not in _allowed_users():
             logger.info("unauthorized line user %s", user_id)
             await self.send_text(
-                user_id,
+                chat_id,
                 f"Not authorized. Your LINE userId is {user_id} — ask the "
                 "owner to add it to LINE_ALLOWED_USER_IDS.",
                 reply_token=reply_token)
             return
-        sess = self.sessions.setdefault(
-            user_id, ChatSession(user_id, self))
-        await self._mark_read(reply_token)
+        if mtype == "audio":
+            await self._handle_audio(ev, msg, chat_id, user_id, group_id,
+                                     is_group, caller, reply_token)
+            return
+        if mtype not in ("text", "image"):
+            if not is_group:
+                await self.send_text(
+                    chat_id, f"(got {mtype}, text, voice or photos only)",
+                    reply_token=reply_token)
+            return
+        if mtype == "text" and not text:
+            return
+        # Route: groups need a mention (or LINE_DEFAULT_PERSONA), DMs
+        # default to ada. Group images have no caption — default persona.
+        if mtype == "text":
+            persona, turn = _route(text, is_group)
+        else:
+            persona = _default_persona() if is_group else "ada"
+            turn = ""
+        if persona is None:
+            return  # unaddressed room chatter — ignore per spec
+        if is_group and caller is None:
+            await self._refuse_group_member(chat_id, user_id, reply_token)
+            return
+        persona_url = _name_backends()[persona]
+        label = await self._sender_label(
+            user_id, group_id if is_group else None, caller)
+        if not persona_url:
+            await self.send_text(
+                chat_id,
+                f"[{persona}->{label}] {persona} isn't home yet — try "
+                "another name.",
+                reply_token=reply_token)
+            return
+        skey = (chat_id, user_id, persona) if is_group \
+            else (user_id, persona)
+        sess = self._session(skey, user_id, persona_url, caller)
+        await self._mark_read(ev)
+        if mtype == "image":
+            try:
+                img, mime = await self._fetch_content(
+                    str(msg.get("id") or ""))
+                where = (f"[via LINE group from {label}]"
+                         if is_group else f"[via LINE from user {user_id}]")
+                reply, images = await sess.send_image_turn(
+                    img, mime,
+                    f"{where} The user sent this photo — describe it and "
+                    "respond naturally.")
+            except Exception as exc:
+                logger.warning("user %s image turn failed: %s",
+                               user_id, exc)
+                reply, images = (
+                    f"Couldn't pass that photo to {persona} — try "
+                    "again.", [])
+            tag = f"[{persona}->{label}] " if is_group else ""
+            msgs = [{"type": "text",
+                     "text": (tag + (reply or "(no reply)"))
+                     [:REPLY_CHUNK]}]
+            for url, cap in images[:3]:
+                msgs.extend(await self._image_msgs(url, cap))
+            try:
+                await self._deliver(chat_id, msgs[:5],
+                                    reply_token=reply_token)
+            except Exception as exc:
+                logger.warning("user %s img-reply failed: %s",
+                               user_id, exc)
+            return
+        turn_text = (f"[LINE group from {label}] {turn}"
+                     if is_group else turn)
         try:
-            reply, images = await sess.send_turn(text)
+            reply, images = await sess.send_turn(turn_text)
         except Exception as exc:
             logger.warning("user %s turn failed: %s", user_id, exc)
-            reply, images = ("Ada didn't answer that turn — her session "
-                             "dropped. Try again."), []
-            sess = ChatSession(user_id, self)
-            self.sessions[user_id] = sess
-        msgs: list[dict] = [{"type": "text",
-                             "text": (reply or "(no reply)")[:REPLY_CHUNK]}]
+            reply, images = (f"{persona} didn't answer that turn — the "
+                             "session dropped. Try again."), []
+            self.sessions.pop(skey, None)
+        tag = f"[{persona}->{label}] " if is_group else ""
+        msgs = [{"type": "text",
+                 "text": (tag + (reply or "(no reply)"))[:REPLY_CHUNK]}]
         for url, cap in images[:3]:
             msgs.extend(await self._image_msgs(url, cap))
         try:
-            await self._deliver(user_id, msgs[:5],
-                                reply_token=reply_token if len(text) else None)
+            await self._deliver(chat_id, msgs[:5], reply_token=reply_token)
         except Exception as exc:
             logger.warning("user %s reply send failed: %s", user_id, exc)
 

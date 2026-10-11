@@ -1,0 +1,74 @@
+title: Ada Personas & Backends
+subtitle: "Named personas reachable over message lanes — one LINE bot, many homes (line-multihome-group)"
+icon: 🎭
+status: operational
+updated: '2026-10-11'
+
+# Registry of the personas a member can address in a shared room and the
+# isolated ada backend each one fronts. Consumed by the relay via
+# LINE_NAME_BACKENDS — keep this file and the unit env in sync.
+
+personas:
+  ada:
+    backend: ada-ha-tony
+    ws: ws://127.0.0.1:8002/ws
+    home: tony
+    status: live
+    notes: >
+      Primary Ada instance (idc03). Also the implicit default — the relay
+      falls back to ADA_WS_URL for the 'ada' name.
+  kaewta:
+    backend: ada-kk
+    ws: ws://127.0.0.1:8007/ws
+    home: kk
+    status: live
+    notes: >
+      KK's home assistant instance — separate process, separate memory
+      scope; reached only when the room addresses her by name.
+  chaba:
+    backend: ada-chaba
+    ws: ws://127.0.0.1:8008/ws
+    home: shared (tony-ha lane)
+    status: decided, pending provisioning
+    notes: >
+      The bot itself is @339sbrov 'chaba' — its own lane, not an ada
+      alias. Card request 'chaba-backend' resolved 2026-10-11 to a
+      dedicated ada-chaba instance on idc03 :8008 (ecosystem/ops prompt).
+      Until it is provisioned, keep 'chaba:' with an empty URL in
+      LINE_NAME_BACKENDS so mentions answer "isn't home yet" instead of
+      hitting a dead socket.
+
+routing:
+  trigger: >
+    Mention by name anywhere in the message (word-bounded,
+    case-insensitive, optional '@'). First name in the text wins; a
+    leading 'name,' / '@name:' is stripped before the turn ships.
+  unaddressed: >
+    Ignored (noise rule — a shared room must not spam Ada). Optional
+    catch-all via LINE_DEFAULT_PERSONA.
+  reply_tag: "[persona->sender]"
+  sessions: >
+    One WS session per (group, sender, persona); sender identity resolves
+    LINE_USER_CALLERS -> issued key per member — no admin fallback in a
+    room.
+  voice: >
+    Clips save to the local corpus + ack in-channel (tg voice rule);
+    LINE_VOICE_TRANSCRIBE=1 transcribes and routes the transcript like
+    text; group clips mirror the ack/transcript to the speaker's DM
+    (LINE_VOICE_DM_MIRROR).
+
+# Per-backend caller tier (card answers 2026-10-11): a member's issued
+# key must exist on EACH persona backend they can reach, scoped to the
+# tier their name carries there — kk is a guest of ada-ha but a member
+# of tony-ha; tony is a member of kk-ha. The relay only resolves the
+# name -> key; the backend's keys file owns the tier.
+members:
+  tony: {caller: user-tony, home_persona: ada, tier: "member of kk-ha"}
+  kk: {caller: user-kk, home_persona: kaewta,
+       tier: "guest of ada-ha; member of tony-ha"}
+  nhong: {caller: user-nhong, home_persona: tbd, note: key mint pending}
+
+related:
+  - docs/kb/msg-lane-multihome-routing.md (standard)
+  - backend/line_relay.py (_name_backends, _mention_persona, _route)
+  - docs/ssot/jobs/ada/2026-10-11-line-group-mention-routing.yml
