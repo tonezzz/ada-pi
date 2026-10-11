@@ -21,6 +21,7 @@ personas:
     backend: ada-kk
     ws: ws://127.0.0.1:8007/ws
     home: kk
+    gender: female
     status: live
     notes: >
       KK's home assistant instance — separate process, separate memory
@@ -29,6 +30,7 @@ personas:
     backend: ada-chaba
     ws: ws://127.0.0.1:8008/ws
     home: shared (tony-ha lane)
+    gender: female
     status: decided, pending provisioning
     notes: >
       The bot itself is @339sbrov 'chaba' — its own lane, not an ada
