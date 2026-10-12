@@ -1,0 +1,11 @@
+name: page-snapshot
+tier: full
+turns:
+  # Render an existing public page into a sendable image — the
+  # deterministic plan/diagram path (kk travel-plan ask, 2026-10-12).
+  - user: "Use page_snapshot on https://surf-thailand.com/kk-ha/hello-world.html and tell me the image_url it gives you."
+    expect:
+      calls_any: ["page_snapshot"]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 2
