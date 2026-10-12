@@ -272,7 +272,7 @@ class WebSearchPoolWiringTests(unittest.IsolatedAsyncioTestCase):
         env = {"GEMINI_API_KEY": "k1"}
         with patch.dict(os.environ, env):
             gemini_pool.mark_exhausted(
-                "k1", "gemini-2.5-flash", _quota_exc())
+                "k1", "gemini-3.5-flash-lite", _quota_exc())
             self.runner._web_search_gemini = AsyncMock(
                 side_effect=AssertionError("doomed request must be skipped"))
             out = await self.runner.web_search("flood news")
@@ -283,7 +283,7 @@ class WebSearchPoolWiringTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_gemini_answer_cached_per_query(self):
         gemini_out = {"answer": "grounded", "sources": [],
-                      "provider": "gemini", "model": "gemini-2.5-flash"}
+                      "provider": "gemini", "model": "gemini-3.5-flash-lite"}
         self.runner._web_search_gemini = AsyncMock(
             return_value=dict(gemini_out))
         first = await self.runner.web_search("same query")
@@ -298,7 +298,7 @@ class WebSearchPoolWiringTests(unittest.IsolatedAsyncioTestCase):
         await self.runner.web_search("q")
         self.runner._web_search_gemini = AsyncMock(return_value={
             "answer": "grounded", "sources": [], "provider": "gemini",
-            "model": "gemini-2.5-flash"})
+            "model": "gemini-3.5-flash-lite"})
         await self.runner.web_search("q")
         # the degraded first answer must not have been replayed — gemini
         # was consulted again for the same query

@@ -57,7 +57,7 @@ class WebMixin:
                 out = dict(hit)
                 out["cached"] = True
                 return out
-        model = os.environ.get("ADA_WEB_SEARCH_MODEL", "gemini-2.5-flash")
+        model = os.environ.get("ADA_WEB_SEARCH_MODEL", "gemini-3.5-flash-lite")
         quota_hit = False
         if want in ("auto", "gemini"):
             try:
@@ -129,7 +129,7 @@ class WebMixin:
         if not gemini_pool.configured_keys():
             raise RuntimeError("web search unavailable: GEMINI_API_KEY not set")
         from google.genai import types
-        model = os.environ.get("ADA_WEB_SEARCH_MODEL", "gemini-2.5-flash")
+        model = os.environ.get("ADA_WEB_SEARCH_MODEL", "gemini-3.5-flash-lite")
         resp = await gemini_pool.generate(
             model=model,
             contents=str(query),
