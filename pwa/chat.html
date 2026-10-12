@@ -11,10 +11,26 @@
              padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
              display: flex; justify-content: center; }
       ada-chat-card { width: 100%; max-width: 760px; margin-top: 18px; }
+      /* embedded (HA dashboard tab): fill the iframe instead of the
+         centered-column look */
+      html.framed, html.framed body { height: 100%; }
+      html.framed body { padding: 0; display: block; }
+      html.framed ada-chat-card { max-width: none; margin-top: 0;
+        width: 100%; height: 100%; }
     </style>
+    <script>
+      if (window.self !== window.top) {
+        document.documentElement.classList.add("framed");
+      }
+    </script>
   </head>
   <body>
     <ada-chat-card></ada-chat-card>
+    <script>
+      if (window.self !== window.top) {
+        document.querySelector("ada-chat-card").setAttribute("full", "");
+      }
+    </script>
     <script src="cards/ada-chat-card.js"></script>
   </body>
 </html>

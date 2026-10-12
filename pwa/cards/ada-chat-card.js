@@ -305,6 +305,13 @@ class AdaChatCard extends HTMLElement {
         .card { border: 1px solid #0d4a63; border-radius: 14px; background: #04141c;
                 padding: 18px; max-width: 720px; display: flex; flex-direction: column;
                 min-height: 420px; }
+        /* full-bleed variant for dashboard iframes (chat.html sets [full]
+           when window.self !== window.top) — drops the centered-column
+           look so the card fills the frame edge to edge. */
+        :host([full]) { height: 100%; }
+        :host([full]) .card { max-width: none; min-height: 0; height: 100%;
+                border-left: 0; border-right: 0; border-radius: 0; }
+        :host([full]) #acc-log { max-height: none; }
         .head { display: flex; align-items: center; justify-content: space-between;
                 gap: 10px; margin-bottom: 10px; }
         h1 { margin: 0; color: #aef8ff; font-size: 20px; }
