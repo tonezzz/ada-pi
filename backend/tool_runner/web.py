@@ -50,6 +50,9 @@ class WebMixin:
         if want not in ("auto", "gemini", "duckduckgo"):
             raise ValueError(f"unknown web_search provider {provider!r} "
                              "(auto|gemini|duckduckgo)")
+        # Maps shortlinks (maps.app.goo.gl/...) are opaque to search —
+        # expand them first so the grounded query names the real place.
+        query = await self._resolve_place_links(query)
         ck = _cache_key(query)
         if want == "auto":
             hit = gemini_pool.cache_get("web_search", ck)
@@ -108,6 +111,57 @@ class WebMixin:
             gemini_pool.cache_put("web_search", ck, dict(out),
                                   _WEB_CACHE_TTL_S)
         return out
+
+    async def _resolve_place_links(self, query: str) -> str:
+        """Expand map shortlinks in the query into 'name (lat,lng)'.
+
+        Members paste maps.app.goo.gl / goo.gl/maps links verbatim; the
+        redirect target carries /place/<name>/@lat,lng or !3d!4d coords
+        — cheap to fetch, turns an unsearchable token into a real place
+        the grounded search (and later the Places tool) can answer for.
+        No key needed; failures fall through and the link stays as-is.
+        """
+        links = re.findall(
+            r"https?://(?:maps\.app\.goo\.gl|goo\.gl/maps|"
+            r"maps\.google\.\S+|www\.google\.\S*/maps)\S*", query)
+        if not links:
+            return query
+        import httpx
+        notes: list[str] = []
+        try:
+            async with httpx.AsyncClient(
+                    timeout=15.0, follow_redirects=True) as client:
+                for link in links[:2]:
+                    try:
+                        r = await client.get(link)
+                        place = self._place_from_maps_url(str(r.url))
+                        if place:
+                            notes.append(f"link {link[:40]}... resolves "
+                                         f"to place: {place}")
+                    except Exception as exc:
+                        logger.info("place link expand %s failed: %s",
+                                    link[:50], exc)
+        except Exception:
+            pass
+        if notes:
+            return query + "\n[resolved place: " + "; ".join(notes) + "]"
+        return query
+
+    @staticmethod
+    def _place_from_maps_url(url: str) -> str:
+        """'name (lat,lng)' from a resolved maps URL, else ''."""
+        import urllib.parse as _up
+        m = re.search(r"/place/([^/@?]+)", url)
+        name = _up.unquote_plus(m.group(1)) if m else ""
+        q = _up.parse_qs(_up.urlparse(url).query)
+        if not name and q.get("q"):
+            name = q["q"][0]
+        m2 = (re.search(r"!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)", url)
+              or re.search(r"@(-?\d+\.\d+),(-?\d+\.\d+)", url))
+        coords = f"{m2.group(1)},{m2.group(2)}" if m2 else ""
+        if not name and not coords:
+            return ""
+        return f"{name} ({coords})" if coords else name
 
     def _emit_quota_ops_event(self, exc: BaseException) -> None:
         """Fire-and-forget ops event to ada-ha-events-<instance> — the
