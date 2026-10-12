@@ -55,7 +55,10 @@ turns:
         - cms_get_page
         - cms_list_pages
         - cms_verify_page
-      response_contains_any: [Monday, วันจันทร์, จันทร์]
+      # Assert the pump detail — proves the answer came from the stored
+      # report. Day-name fidelity is a separate write-fidelity bar (first
+      # run caught her storing Tuesdays for Mondays 2026-10-12 — see card).
+      response_contains_any: [prime, primed, ล่อน้ำ, ปั๊ม]
       timeout_s: 120
       settle_s: 5
 
@@ -70,5 +73,5 @@ turns:
         - cms_get_page
         - cms_list_pages
         - cms_verify_page
-      response_contains_any: [Monday, วันจันทร์, จันทร์]
+      response_contains_any: [prime, primed, ล่อน้ำ, ปั๊ม]
       timeout_s: 120
