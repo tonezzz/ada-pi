@@ -607,3 +607,11 @@ page_snapshot: >-
   URL. For raw image files use chat_send image_url directly — this tool
   is for turning PAGES into images. Errors are honest: say the render
   service is unreachable rather than inventing a URL.
+
+conv_journal: >-
+  Builds a conversation report page from the LINE room journal —
+  action='build' (default) compiles today's entries (chat= names the
+  room dir, date= YYYY-MM-DD) into a CMS report with embedded media
+  links; action='list' shows which rooms/days have journals. The
+  report writes to this lane's CMS collection automatically — recall
+  it later with cms_read on the returned key.

@@ -87,6 +87,10 @@ IMG_CACHE_DIR = Path(os.environ.get(
 # Voice corpus: audio clips from enrolled senders (allowed DM users /
 # mapped room members — the same gate a reply sits behind) are saved for
 # speaker-id training. Private by design: local disk only, no forwarding.
+MEDIA_ARCHIVE_DIR = Path(os.environ.get(
+    "LINE_MEDIA_ARCHIVE_DIR",
+    os.path.expanduser("~/.local/share/ada/line-media")))
+
 VOICE_CORPUS_DIR = Path(os.environ.get(
     "LINE_VOICE_CORPUS_DIR",
     str(Path.home() / ".local" / "share" / "ada-voice-corpus" / "line")))
@@ -432,6 +436,54 @@ class LineRelay:
         mime = r.headers.get("content-type") or "image/jpeg"
         return r.content, mime.split(";")[0]
 
+    def _chat_dir(self, chat_id: str) -> Path:
+        slug = re.sub(r"[^A-Za-z0-9_-]+", "-", chat_id).strip("-") \
+            or "chat"
+        d = MEDIA_ARCHIVE_DIR / slug
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _journal(self, chat_id: str, entry: dict) -> None:
+        """One line per event for the conversation-report builder --
+        <archive>/<chat>/journal-YYYY-MM-DD.jsonl. Best-effort: a write
+        failure must never break message flow."""
+        try:
+            entry.setdefault("ts",
+                             datetime.now().isoformat(timespec="seconds"))
+            day = datetime.now().strftime("%Y-%m-%d")
+            with (self._chat_dir(chat_id)
+                  / f"journal-{day}.jsonl").open("a") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            logger.info("journal write failed: %s", exc)
+
+    def _archive_media(self, msg: dict, data: bytes, mime: str,
+                       kind: str, chat_id: str, label: str) -> str:
+        """Persist inbound media bytes under
+        <archive>/<chat>/<messageId>.<ext> + manifest line, and return a
+        durable public /relay-img/arch/ URL -- received media outlives
+        LINE's content retention and stays resendable. Mirrors the
+        voice-corpus scheme."""
+        import secrets
+        d = self._chat_dir(chat_id)
+        mid = str(msg.get("id") or secrets.token_hex(6))
+        ext = _MIME_EXT.get(mime, ".bin")
+        dest = d / f"{mid}{ext}"
+        if not dest.exists():
+            dest.write_bytes(data)
+        url = f"{LINE_PUBLIC_IMG_BASE}/arch/{d.name}/{mid}{ext}"
+        try:
+            with (MEDIA_ARCHIVE_DIR / "manifest.jsonl").open("a") as fh:
+                fh.write(json.dumps({
+                    "ts": datetime.now().isoformat(timespec="seconds"),
+                    "sender": label, "chat_id": chat_id, "kind": kind,
+                    "message_id": mid, "mime": mime,
+                    "path": str(dest), "url": url},
+                    ensure_ascii=False) + "\n")
+        except Exception as exc:
+            logger.info("media manifest write failed: %s", exc)
+        return url
+
     async def _mark_read(self, ev: dict) -> None:
         """Show the read tick as soon as a persona starts on the message —
         the event's markAsReadToken marks the whole chat read up to it.
@@ -661,6 +713,11 @@ class LineRelay:
             reply, images = (f"{disp} didn't answer that turn — the "
                              "session dropped. Try again."), []
             self.sessions.pop(skey, None)
+        self._journal(chat_id, {"dir": "in", "from": label,
+                                "persona": disp, "kind": "text",
+                                "text": turn_text})
+        self._journal(chat_id, {"dir": "out", "from": disp,
+                                "kind": "text", "text": reply or ""})
         tag = f"[{disp}->{label}] " if is_group else ""
         msgs: list[dict] = [{"type": "text",
                              "text": (tag + (reply or "(no reply)"))
@@ -866,6 +923,11 @@ class LineRelay:
             try:
                 img, mime = await self._fetch_content(
                     str(msg.get("id") or ""))
+                media_url = self._archive_media(
+                    msg, img, mime, "image", chat_id, label)
+                self._journal(chat_id, {"dir": "in", "from": label,
+                                        "kind": "image",
+                                        "url": media_url})
                 where = (f"[via LINE group from {label}]"
                          if is_group else f"[via LINE from user {user_id}]")
                 reply, images = await sess.send_image_turn(
@@ -878,6 +940,9 @@ class LineRelay:
                 reply, images = (
                     f"Couldn't pass that photo to {disp} — try "
                     "again.", [])
+            self._journal(chat_id, {"dir": "out", "from": disp,
+                                    "kind": "text",
+                                    "text": reply or ""})
             tag = f"[{disp}->{label}] " if is_group else ""
             msgs = [{"type": "text",
                      "text": (tag + (reply or "(no reply)"))
@@ -900,6 +965,11 @@ class LineRelay:
             reply, images = (f"{persona} didn't answer that turn — the "
                              "session dropped. Try again."), []
             self.sessions.pop(skey, None)
+        self._journal(chat_id, {"dir": "in", "from": label,
+                                "persona": disp, "kind": "text",
+                                "text": turn})
+        self._journal(chat_id, {"dir": "out", "from": disp,
+                                "kind": "text", "text": reply or ""})
         tag = f"[{disp}->{label}] " if is_group else ""
         msgs = [{"type": "text",
                  "text": (tag + (reply or "(no reply)"))[:REPLY_CHUNK]}]
@@ -1103,11 +1173,28 @@ class LineRelay:
                         nonce, len(data), mime, ua)
             return Response(data, media_type=mime)
 
+        async def arch_img(request):
+            """Serve archived inbound media -- durable URLs the conv
+            reports + resends reference. Path is <chat>/<file>; same
+            unguessable-address trust level as the nonce lane."""
+            from starlette.responses import Response
+            rest = request.path_params.get("rest", "")
+            if ".." in rest.split("/"):
+                return JSONResponse({"ok": False}, status_code=400)
+            f = MEDIA_ARCHIVE_DIR / rest
+            if not f.is_file():
+                return JSONResponse({"ok": False}, status_code=404)
+            import mimetypes
+            mime = mimetypes.guess_type(f.name)[0] or "image/jpeg"
+            return Response(f.read_bytes(), media_type=mime)
+
         app = Starlette(routes=[
             Route(LINE_PATH, webhook, methods=["POST"]),
             Route("/webhook/line-health", health, methods=["GET"]),
             Route("/send", send, methods=["POST"]),
             Route("/relay-img/{nonce}", img, methods=["GET"]),
+            Route("/relay-img/arch/{rest:path}", arch_img,
+                  methods=["GET"]),
         ])
         host, _, port = LINE_LISTEN.rpartition(":")
         server = uvicorn.Server(uvicorn.Config(

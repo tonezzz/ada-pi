@@ -1,0 +1,13 @@
+name: conv-journal
+tier: full
+turns:
+  # Conversation-report builder — compiles the LINE relay's per-room
+  # journal + archived media into a CMS report page (Tony ask
+  # 2026-10-12). 'list' is the deterministic live call — 'build'
+  # depends on journaled traffic existing.
+  - user: "Use conv_journal with action list and tell me what journal days exist."
+    expect:
+      calls_any: ["conv_journal"]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 2
