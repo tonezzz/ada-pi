@@ -6,9 +6,11 @@
 #   1. Seed — save request; she may cms_read first (honest availability
 #      check) and PROPOSE the page (publish is confirm-gated).
 #   2. Confirm — "yes" must trigger the actual write.
-#   3. Recall — a question covered by that report must be answered via
-#      cms_read (the buttons/dials/switches), nothing else.
-#   4. Repeat — second ask still answered from CMS only.
+#   3. Reconnect — a FRESH session drops the page from context; recall
+#      can now only come through CMS.
+#   4. Recall — the covered question must be answered via cms_read
+#      (the buttons/dials/switches), nothing else.
+#   5. Repeat — second ask still answered from CMS only.
 #
 # tier: full — writes a real page into the dev collection (no cleanup:
 # pages in -dev are disposable; add a cleanup block if clutter grows).
@@ -42,6 +44,8 @@ turns:
       response_nonempty: true
       timeout_s: 120
       settle_s: 5
+
+  - reconnect: {away_s: 2}
 
   - user: >-
       When is the garden watering scheduled, and what do I need to do
