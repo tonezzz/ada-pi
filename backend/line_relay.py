@@ -210,20 +210,29 @@ def _display_name(persona: str, text: str) -> str:
     return persona
 
 
-def _route(text: str, is_group: bool) -> tuple[str | None, str]:
+def _route(text: str, is_group: bool, room: str = "",
+           pinned: dict | None = None) -> tuple[str | None, str]:
     """(persona, turn_text) for a message — None persona means ignore.
-    Groups need a mention or LINE_DEFAULT_PERSONA; DMs default to ada.
-    A default naming no configured persona also resolves to ignore —
-    an env typo must not crash the turn on _name_backends()[name]."""
+    Groups need a mention, a room pin, or LINE_DEFAULT_PERSONA; DMs
+    default to ada. Interview-room rule: mentioning a persona pins it
+    to that room — subsequent unaddressed messages keep routing to the
+    pinned persona until another name is mentioned (switch). A default
+    naming no configured persona resolves to ignore — an env typo must
+    not crash the turn on _name_backends()[name]."""
     persona = _mention_persona(text)
     if persona is None:
-        persona = _default_persona() if is_group else "ada"
+        persona = ((pinned or {}).get(room)
+                   or _default_persona()) if is_group else "ada"
         if persona is None:
             return None, text
         if persona not in _name_backends():
             logger.warning("default persona %r not in LINE_NAME_BACKENDS"
                            " — ignoring", persona)
             return None, text
+    elif is_group and room and pinned is not None:
+        if pinned.get(room) != persona:
+            logger.info("room %s persona pin -> %s", room, persona)
+        pinned[room] = persona
     return persona, _strip_lead_mention(text, persona)
 
 
@@ -392,6 +401,8 @@ class LineRelay:
         # for /send when 'to' is empty. The old fallback (first allowed
         # user) pushed persona sends into the owner's DM.
         self._recent_chat: dict[str, tuple[str, float]] = {}
+        # Interview-room pins: room chat_id -> last-mentioned persona.
+        self._room_pin: dict[str, str] = {}
         self._names: dict[str, str] = {}  # userId -> display label cache
         self._refused: dict[tuple[str, str], float] = {}
 
@@ -683,7 +694,8 @@ class LineRelay:
         if not transcript:
             return
         await self._mark_read(ev)
-        persona, turn = _route(transcript, is_group)
+        persona, turn = _route(transcript, is_group, chat_id,
+                                   self._room_pin)
         if persona is None:
             return
         disp = _display_name(persona, transcript)
@@ -760,7 +772,8 @@ class LineRelay:
             return
         # Route: groups need a mention (or LINE_DEFAULT_PERSONA), DMs
         # default to ada. Group images have no caption — default persona.
-        persona, turn = _route(text if mtype == "text" else "", is_group)
+        persona, turn = _route(text if mtype == "text" else "",
+                                   is_group, chat_id, self._room_pin)
         if persona is None:
             logger.info("ignored unaddressed %s msg from %s (no persona mention)",
                         src_type, user_id)
@@ -938,7 +951,12 @@ class LineRelay:
                     status_code=403)
             msgs: list[dict] = []
             if body.get("text"):
-                msgs += [{"type": "text", "text": str(body["text"])[:4900]}]
+                text = str(body["text"])
+                # Who's-talking label: queued sends carry no persona tag
+                # unlike turn replies — prefix [instance] on room targets.
+                if inst and uid.startswith("C"):
+                    text = f"[{inst}] " + text
+                msgs += [{"type": "text", "text": text[:4900]}]
             if body.get("image_url"):
                 msgs += await self._image_msgs(
                     str(body["image_url"]), str(body.get("caption") or ""))
