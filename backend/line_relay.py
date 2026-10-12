@@ -497,9 +497,15 @@ class LineRelay:
         # resolve them against LINE_URL_BASE so lanes can send them
         # verbatim. Absolute http(s) URLs pass through untouched.
         if url.startswith("/"):
-            base = os.environ.get(
-                "LINE_URL_BASE", "http://100.102.134.91:11023")
-            url = base.rstrip("/") + url
+            # Malformed path-embedded URLs first — lanes sometimes emit
+            # '/image_url=https://cdn/x.jpg'; recover the inner URL.
+            m = re.search(r"https?://\S+", url)
+            if m:
+                url = m.group(0)
+            else:
+                base = os.environ.get(
+                    "LINE_URL_BASE", "http://100.102.134.91:11023")
+                url = base.rstrip("/") + url
         try:
             r = await self.http.get(url, timeout=120, follow_redirects=True)
             if r.status_code != 200 or len(r.content) < 500:
