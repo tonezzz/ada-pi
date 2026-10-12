@@ -1157,6 +1157,15 @@ class GeminiLiveProvider(RealtimeProvider):
         # synthesis, no avatar tools — the reply ships as plain text.
         self.channel = channel
         self.text_only = bool(channel)
+        # Lane tool surface (declaration + dispatch level): populated by
+        # the session-config build when ADA_INCLUDED_TOOLS /
+        # ADA_EXCLUDED_TOOLS are set. The declaration strip alone is not
+        # airtight — instructions still describe stripped tools, and the
+        # model can emit them anyway; _tool_excluded refuses them at
+        # dispatch so an excluded tool can never execute (2026-10-12
+        # kk-cms-only bench caught ada_session_recall running on a lane
+        # where it was not declared).
+        self._excluded_tools: set[str] = set()
         # Speaker ID state — initialized before tool_runner so the sync below works
         self.current_speaker: str | None = None
         self.current_speaker_ha_person: str | None = None
@@ -1889,6 +1898,12 @@ class GeminiLiveProvider(RealtimeProvider):
             asyncio.get_running_loop().create_task(_probe())
         except RuntimeError:
             return
+
+    def _tool_excluded(self, name: Any) -> bool:
+        if not self._excluded_tools:
+            return False
+        n = str(name or "")
+        return n in self._excluded_tools or _resolve_alias(n)[0] in self._excluded_tools
 
     def _recall_gated(self) -> bool:
         """True when a confident ada_memory_search hit is fresh enough that
@@ -4603,6 +4618,7 @@ class GeminiLiveProvider(RealtimeProvider):
             excluded |= {fd.get("name") for fd in
                          config["tools"][0]["function_declarations"]
                          } - included
+        self._excluded_tools = set(excluded)
         if excluded:
             config["tools"][0]["function_declarations"] = [
                 fd for fd in config["tools"][0]["function_declarations"]
@@ -5051,6 +5067,20 @@ class GeminiLiveProvider(RealtimeProvider):
                             result = {"error": (
                                 "Actuation limit for this turn reached — stop and tell the "
                                 "user what you were trying to control instead of retrying.")}
+                        elif self._tool_excluded(call.name):
+                            # Undeclared call: instructions still describe
+                            # stripped tools, so the model can emit them
+                            # anyway. Refuse at dispatch — the lane surface
+                            # is a hard gate, not just a prompt hint.
+                            logger.info(
+                                "session=%s refused undeclared tool %s "
+                                "(lane surface)", self.session_id, call.name)
+                            self.conversation.log_event(
+                                "tool_denied", tool=str(call.name),
+                                reason="lane_excluded")
+                            result = {"error": (
+                                f"{call.name} is not available on this "
+                                "lane — answer with the tools you have.")}
                         elif call.name == "set_facial_expression" and requested in EXPRESSION_NAMES:
                             yield ProviderEvent("expression", {"name": requested})
                             result = {"output": f"Ada is now {requested}"}
