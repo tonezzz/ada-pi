@@ -79,6 +79,10 @@ LINE_PUBLIC_IMG_BASE = os.environ.get(
     "LINE_PUBLIC_IMG_BASE",
     "https://157.85.102.125.sslip.io/relay-img")
 IMG_TTL_S = float(os.environ.get("LINE_IMG_TTL_S", "3600"))
+# Delivered photos must outlive relay restarts — cache on disk too.
+IMG_CACHE_DIR = Path(os.environ.get(
+    "LINE_IMG_CACHE_DIR",
+    str(Path.home() / ".local/state/ada-line-relay/img-cache")))
 
 # Voice corpus: audio clips from enrolled senders (allowed DM users /
 # mapped room members — the same gate a reply sits behind) are saved for
@@ -520,6 +524,8 @@ class LineRelay:
             pnonce = nonce + "-p"
             self._imgs[pnonce] = (self._preview_jpeg(r.content),
                                   time.time(), "image/jpeg")
+            self._img_persist(nonce, r.content, mime)
+            self._img_persist(pnonce, self._imgs[pnonce][0], "image/jpeg")
             msgs: list[dict] = [{"type": "image",
                                  "originalContentUrl":
                                      f"{LINE_PUBLIC_IMG_BASE}/{nonce}",
@@ -867,6 +873,34 @@ class LineRelay:
                 ts = hit[1]
                 if time.time() - ts > IMG_TTL_S:
                     self._imgs.pop(nonce, None)
+            for f in IMG_CACHE_DIR.glob("*"):
+                try:
+                    if time.time() - f.stat().st_mtime > IMG_TTL_S:
+                        f.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def _img_persist(self, nonce: str, data: bytes, mime: str) -> None:
+        try:
+            IMG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            (IMG_CACHE_DIR / nonce).write_bytes(data)
+            (IMG_CACHE_DIR / (nonce + ".mime")).write_text(mime)
+        except OSError as exc:
+            logger.warning("relay-img persist %s failed: %s", nonce, exc)
+
+    def _img_load(self, nonce: str):
+        """Disk fallback after a restart — repopulates _imgs on hit."""
+        try:
+            f = IMG_CACHE_DIR / nonce
+            if not f.is_file():
+                return None
+            mime = (IMG_CACHE_DIR / (nonce + ".mime")).read_text().strip()
+            data = f.read_bytes()
+            hit = (data, f.stat().st_mtime, mime)
+            self._imgs[nonce] = hit
+            return hit
+        except OSError:
+            return None
 
     async def _webhook_server(self) -> None:
         if not CHANNEL_SECRET:
@@ -914,6 +948,12 @@ class LineRelay:
                 lookup = uid.lower()
                 if lookup.startswith("person."):
                     lookup = lookup.split(".", 1)[1]
+                if lookup in ("owner", "me"):
+                    # 'owner' is a standing alias — lanes saying
+                    # to=owner mean the relay owner, not a literal id.
+                    hit = next(iter(_allowed_users()), "")
+                    if hit:
+                        uid = hit
                 hit = next((k for k, v in self._names.items()
                             if v.lower() == lookup), "")
                 if not hit:
@@ -982,6 +1022,8 @@ class LineRelay:
             from starlette.responses import Response
             nonce = request.path_params.get("nonce", "")
             hit = self._imgs.get(nonce)
+            if not hit:
+                hit = self._img_load(nonce)  # post-restart disk fallback
             ua = request.headers.get("user-agent", "")[:60]
             if not hit:
                 logger.warning("relay-img MISS %s (ua=%s)", nonce, ua)
