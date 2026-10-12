@@ -122,6 +122,8 @@ class LiveSessionManager:
         await (await self._ready_provider()).send_video(jpeg)
 
     async def send_text_turn(self, message: str) -> None:
+        from backend import input_polish
+        message = await input_polish.maybe_polish(message)
         await (await self._ready_provider()).send_text_turn(message)
 
     async def send_habit_alert(self, jpeg: bytes, alert: str) -> None:
