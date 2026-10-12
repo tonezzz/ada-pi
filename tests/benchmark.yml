@@ -51,6 +51,7 @@ policy:
     - deep_dive_flood_report
     - cms_publish_handshake
     - cms_ops_assessment
+    - kk_cms_only_seeded_recall   # seeds a page into ada-cms-pages-kk-dev
     - cms_rich_blocks
     - cms_translate
     - cms_reorganize
@@ -231,6 +232,8 @@ usage:
             acceptable to consume most of one day's grounded budget
   memory:   weekly — Wednesday 03:30 (manual, on-request)
   tools:    weekly — Friday 03:30 (manual, on-request)
+  kk_memory_cms: on-request only (requires the kk-cms-only bench env on
+                ada-kk-dev — not the production parity profile)
   full:     on-request only (~1h, can exceed the daily grounded quota —
             run when voice use is low; DDG fallback keeps results landing)
   dub:      on-request / before closing yt-voice-dub-* cards — artifact
@@ -266,6 +269,15 @@ suites:
     - cms_translate
     - cms_rich_blocks
     - cms_reorganize
+
+  # kk-dev CMS-only-memory experiment — Kaewta with bank/session-recall
+  # tools stripped; CMS is her only memory, tools report availability
+  # honestly. Requires the kk-cms-only bench profile on ada-kk-dev
+  # (scripts/ada/kk-bench-env.py --profile kk-cms-only --apply).
+  kk_memory_cms:
+    - kk_cms_only_seeded_recall
+    - kk_cms_only_honest_miss
+    - kk_cms_only_no_memory_leak
 
   # Memory & identity — the recall correctness core.
   memory:

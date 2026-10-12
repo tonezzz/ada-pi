@@ -1,0 +1,54 @@
+# CMS-only memory experiment (idea: Kaewta reports honestly from reports).
+# Lane: ada-kk-dev @ ws://127.0.0.1:8009/ws with the kk-cms-only tool
+# profile (memory/bank tools excluded — CMS is her only memory).
+#
+# What this exercises:
+#   1. Seed — a report is published into ada-cms-pages-kk-dev by the model.
+#   2. Recall — a question covered by that report must be answered via
+#      cms_read (the buttons/dials/switches), nothing else.
+#   3. Repeat — second ask still answered from CMS only.
+#
+# tier: full — writes a real page into the dev collection (no cleanup:
+# pages in -dev are disposable; add a cleanup block if clutter grows).
+name: kk_cms_only_seeded_recall
+tier: full
+
+turns:
+  - user: >-
+      Please save a report page: the garden watering schedule is Mondays
+      and Thursdays at 6am, and the pump must be primed first.
+    expect:
+      calls_any: [cms_publish_page]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 5
+
+  - user: >-
+      When is the garden watering scheduled, and what do I need to do
+      before it runs?
+    expect:
+      calls_any: [cms_read, cms_get_page, cms_list_pages]
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_read
+        - cms_get_page
+        - cms_list_pages
+        - cms_verify_page
+      response_contains_any: [Monday, วันจันทร์]
+      timeout_s: 120
+      settle_s: 5
+
+  - user: >-
+      Sorry, what was the watering schedule again?
+    expect:
+      calls_any: [cms_read, cms_get_page, cms_list_pages]
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_read
+        - cms_get_page
+        - cms_list_pages
+        - cms_verify_page
+      response_contains_any: [Monday, วันจันทร์]
+      timeout_s: 120
