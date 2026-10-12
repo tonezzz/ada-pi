@@ -375,6 +375,46 @@ class TgRelay:
             logger.warning("chat %s photo %s failed: %s", chat_id, url, exc)
             await self.send_text(chat_id, f"(image failed: {caption or url})")
 
+    async def send_voice(self, chat_id: int, ogg: bytes,
+                         caption: str = "", duration_ms: int = 0) -> None:
+        """Push an OGG/Opus voice bubble via sendVoice — TG takes a direct
+        multipart upload (no public URL needed, unlike LINE)."""
+        assert self.http is not None
+        resp = await self.http.post(
+            f"{TG_API}/bot{BOT_TOKEN}/sendVoice",
+            data={"chat_id": str(chat_id),
+                  "caption": caption[:1000],
+                  "duration": str(max(0, int(duration_ms) // 1000))},
+            files={"voice": ("voice.ogg", ogg, "audio/ogg")})
+        if not resp.json().get("ok"):
+            raise RuntimeError(str(resp.json()))
+
+    def _wav_to_ogg(self, wav: bytes) -> bytes:
+        """WAV (any rate) -> OGG/Opus 24kHz mono via PyAV — the format
+        sendVoice needs for a native voice bubble."""
+        import io
+        import av
+        inp = av.open(io.BytesIO(wav))
+        ist = inp.streams.audio[0]
+        buf = io.BytesIO()
+        out = av.open(buf, mode="w", format="ogg")
+        ost = out.add_stream("libopus", rate=24000)
+        ost.layout = "mono"
+        resampler = av.audio.resampler.AudioResampler(
+            format="fltp", layout="mono", rate=24000)
+        for frame in inp.decode(ist):
+            for rf in resampler.resample(frame):
+                for pkt in ost.encode(rf):
+                    out.mux(pkt)
+        for rf in resampler.resample(None):
+            for pkt in ost.encode(rf):
+                out.mux(pkt)
+        for pkt in ost.encode(None):
+            out.mux(pkt)
+        out.close()
+        inp.close()
+        return buf.getvalue()
+
     async def _download_file(self, file_id: str) -> tuple[bytes, str]:
         """TG media messages carry file_ids — resolve via getFile, then
         download from the file host. Returns (bytes, file_path)."""
@@ -652,7 +692,8 @@ class TgRelay:
                                      "error": "no target"}, status_code=400)
             # chat_send posts image_url; keep photo_url as the legacy alias.
             photo = body.get("photo_url") or body.get("image_url")
-            if not (body.get("text") or photo):
+            audio_b64 = str(body.get("audio_b64") or "")
+            if not (body.get("text") or photo or audio_b64):
                 return JSONResponse({"ok": False,
                                      "error": "nothing to send"},
                                     status_code=400)
@@ -662,6 +703,13 @@ class TgRelay:
                 if photo:
                     await self.send_photo(cid, str(photo),
                                           str(body.get("caption") or ""))
+                if audio_b64:
+                    import base64
+                    ogg = await asyncio.to_thread(
+                        self._wav_to_ogg, base64.b64decode(audio_b64))
+                    await self.send_voice(
+                        cid, ogg, str(body.get("caption") or ""),
+                        int(body.get("duration_ms") or 0))
                 return JSONResponse({"ok": True, "chat_id": cid})
             except Exception as exc:
                 return JSONResponse({"ok": False, "error": str(exc)},

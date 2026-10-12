@@ -204,7 +204,9 @@ class ChatMixin:
             relays = ["line", "telegram"]
         audio_b64, duration_ms = "", 0
         say_text = str(say or "").strip()
-        if say_text and "line" in relays:
+        want_voice = ("line" in relays or "telegram" in relays
+                      or "tg" in relays)
+        if say_text and want_voice:
             try:
                 from backend import tts as ada_tts
                 pcm = await ada_tts.synth_pcm(
@@ -220,7 +222,7 @@ class ChatMixin:
             except Exception as exc:
                 summary_bits.append(f"voice: tts error ({exc})")
         elif say_text:
-            summary_bits.append("voice: LINE only — skipped")
+            summary_bits.append("voice: line/telegram only — skipped")
         for svc in relays:
             svc = svc.strip()
             if svc == "line":
@@ -237,7 +239,7 @@ class ChatMixin:
                        "chat_id": to,
                        "instance": os.environ.get(
                            "ADA_INSTANCE_ID", "")}
-            if svc == "line" and audio_b64:
+            if audio_b64 and svc in ("line", "telegram", "tg"):
                 payload.update({"audio_b64": audio_b64,
                                 "audio_mime": "audio/wav",
                                 "duration_ms": duration_ms})
