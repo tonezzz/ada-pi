@@ -1331,6 +1331,40 @@ async def fetch_headlines(mddb: MddbClient) -> list[dict[str, str]]:
     return picks
 
 
+CMS_CATALOG_PRIME = os.environ.get(
+    "ADA_CMS_CATALOG_PRIME", "").strip().lower() in ("1", "true", "yes")
+CMS_CATALOG_MAX = int(os.environ.get("ADA_CMS_CATALOG_MAX", "40"))
+
+
+async def fetch_cms_catalog(mddb: MddbClient) -> list[str]:
+    """Compact always-on catalog of the lane CMS collection — opt-in via
+    ADA_CMS_CATALOG_PRIME. Member lanes where CMS is the content memory:
+    the model cannot answer "do you have X" honestly if the catalog is
+    not in front of it. Deterministic — no tool call needed to know a
+    page exists; cms_read still fetches detail."""
+    docs = await mddb.search_documents(
+        collection=HEADLINE_COLLECTION,
+        filter_meta={"status": ["active"]},
+        limit=CMS_CATALOG_MAX,
+    )
+    lines: list[str] = []
+    for d in docs or []:
+        key = str(d.get("key") or "")
+        title = _headline_meta_first(d, "title") or key
+        summary = _headline_meta_first(d, "summary")
+        n_img = (d.get("content_md") or d.get("contentMd") or "").count("![")
+        bits = []
+        if summary:
+            bits.append(summary[:80])
+        if n_img:
+            bits.append(f"{n_img} image" + ("s" if n_img != 1 else ""))
+        line = f"- {key}: {title}"
+        if bits:
+            line += " — " + "; ".join(bits)
+        lines.append(line)
+    return lines
+
+
 async def session_prime_text(
     mddb: MddbClient,
     registry: MemoryBankRegistry,
@@ -1405,6 +1439,21 @@ async def session_prime_text(
                      "fetch the page for detail only if asked:"]
             lines += [f"- {h['title']}: {h['text']}" for h in heads]
             parts.append("\n".join(lines))
+    # CMS catalog prime — opt-in lane flag; the lane's page inventory is
+    # reference state (like persona style), not staleable news, so it
+    # primes on every session including short reconnects.
+    if CMS_CATALOG_PRIME:
+        try:
+            catalog = await asyncio.wait_for(
+                fetch_cms_catalog(mddb), timeout=8.0)
+        except Exception as exc:
+            logger.debug("cms catalog prime failed: %s", exc)
+            catalog = []
+        if catalog:
+            parts.append(
+                "Your CMS pages — read one for detail before saying you "
+                "do not have the content or asking the user for it:\n"
+                + "\n".join(catalog))
     # Speaker's saved style preferences — applies even on short reconnects
     # (it's a style contract, not stale content).
     if person_entity:

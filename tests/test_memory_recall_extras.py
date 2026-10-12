@@ -418,3 +418,42 @@ class VerdictHintTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CmsCatalogTests(unittest.IsolatedAsyncioTestCase):
+    """ADA_CMS_CATALOG_PRIME catalog: every active CMS doc lists as a
+    one-line inventory; images counted so 'photos' asks map to pages."""
+
+    def _doc(self, key: str, body: str = "", **meta):
+        m = {"status": ["active"], "title": [key]}
+        m.update(meta)
+        return {"key": key, "content_md": body, "meta": m}
+
+    async def test_lists_active_docs_with_summary_and_image_count(self):
+        fake = FakeMddb()
+        coll = fake._coll("ada-cms-pages")
+        coll["photos"] = self._doc(
+            "photos", "# P\n\n![a](u1)\n![b](u2)\n![c](u3)",
+            summary=["beach photos"], title=["Beach photos"])
+        coll["gone"] = self._doc(
+            "gone", status=["superseded"], summary=["old"])
+        lines = await memory_ops.fetch_cms_catalog(fake)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("photos: Beach photos", lines[0])
+        self.assertIn("3 images", lines[0])
+
+    async def test_prime_includes_catalog_only_when_flagged(self):
+        from unittest import mock
+        fake = FakeMddb()
+        fake._coll("ada-cms-pages")["p1"] = self._doc(
+            "p1", summary=["a page"])
+        reg = build_registry("tony")
+        with mock.patch.object(memory_ops, "CMS_CATALOG_PRIME", True):
+            text = await memory_ops.session_prime_text(
+                fake, reg, summary=None, person_entity=None)
+        self.assertIn("Your CMS pages", text)
+        self.assertIn("p1", text)
+        with mock.patch.object(memory_ops, "CMS_CATALOG_PRIME", False):
+            text = await memory_ops.session_prime_text(
+                fake, reg, summary=None, person_entity=None)
+        self.assertFalse(text and "Your CMS pages" in text)
