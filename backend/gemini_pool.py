@@ -314,6 +314,25 @@ def cache_put(namespace: str, key: str, value: Any, ttl_s: float) -> None:
 
 # ---------------------------------------------------------------- generate
 
+def rest_client(api_key: str | None = None) -> Any:
+    """genai client for REST side-calls (decision checks, polish, devteam,
+    doc checks, vision verify). When ADA_GEMINI_REST_BASE_URL is set the
+    call rides the LiteLLM gateway /v1beta route — ordered paid→free→OR
+    chains + spend logging — authenticated by ADA_GEMINI_REST_API_KEY (a
+    LiteLLM virtual key), not the raw Google key. The Live ws session in
+    realtime_provider never uses this: ws stays direct to Google.
+    """
+    from google import genai
+    base = os.environ.get("ADA_GEMINI_REST_BASE_URL", "").strip()
+    if base:
+        from google.genai import types
+        key = os.environ.get("ADA_GEMINI_REST_API_KEY") or api_key
+        return genai.Client(
+            api_key=key,
+            http_options=types.HttpOptions(base_url=base))
+    return genai.Client(api_key=api_key or os.environ.get("GEMINI_API_KEY"))
+
+
 async def generate(model: str, contents: Any, config: Any = None,
                    client: Any = None, timeout: float | None = None,
                    tool: str = "", mddb: Any = None,
@@ -340,7 +359,7 @@ async def generate(model: str, contents: Any, config: Any = None,
         if key is None:
             break
         try:
-            call = genai.Client(api_key=key).aio.models.generate_content(
+            call = rest_client(key).aio.models.generate_content(
                 model=model, contents=contents, config=config)
             if timeout:
                 return await asyncio.wait_for(call, timeout=timeout)

@@ -55,7 +55,7 @@ class GeminiPostureVerifier:
             if self._client is None:
                 if not self.api_key:
                     raise RuntimeError("GEMINI_API_KEY is not set")
-                self._client = genai.Client(api_key=self.api_key)
+                self._client = gemini_pool.rest_client(self.api_key)
             try:
                 return await asyncio.wait_for(
                     self._client.aio.models.generate_content(**kwargs),

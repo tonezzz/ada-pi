@@ -229,7 +229,7 @@ class DecisionCheckEngine:
         if self._client is None:
             if not self.api_key:
                 raise RuntimeError("GEMINI_API_KEY is not set")
-            self._client = genai.Client(api_key=self.api_key)
+            self._client = gemini_pool.rest_client(self.api_key)
         return self._client
 
     async def _generate(self, contents: list, config: Any, timeout: float | None = None) -> Any:
