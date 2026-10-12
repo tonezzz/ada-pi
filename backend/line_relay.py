@@ -489,6 +489,13 @@ class LineRelay:
         The served content-type must match the real bytes — LINE renders
         a blank image when a JPEG thumb is labelled image/png."""
         assert self.http is not None
+        # CMS docs embed site-relative paths (/api/documents/x.jpg) —
+        # resolve them against LINE_URL_BASE so lanes can send them
+        # verbatim. Absolute http(s) URLs pass through untouched.
+        if url.startswith("/"):
+            base = os.environ.get(
+                "LINE_URL_BASE", "http://100.102.134.91:11023")
+            url = base.rstrip("/") + url
         try:
             r = await self.http.get(url, timeout=120, follow_redirects=True)
             if r.status_code != 200 or len(r.content) < 500:
