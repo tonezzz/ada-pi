@@ -165,6 +165,16 @@ def _require_api_key(request: Request) -> None:
         raise HTTPException(status_code=401, detail="invalid or missing api key")
 
 
+def _cms_read_gate(request: Request) -> None:
+    """CMS reads are key-gated unless ADA_CMS_ANON_READ=1 — member lanes
+    (kk-ha 2026-10-12) where the CF/edge gate IS the member boundary and
+    household members open the dashboard tab without a lane key.
+    Writes (regenerate/edit/spawn) stay key-gated regardless."""
+    if os.environ.get("ADA_CMS_ANON_READ") == "1":
+        return
+    _require_api_key(request)
+
+
 def _require_dispatch(request: Request) -> str:
     """Auth + the 'dispatch' key capability; returns the caller name.
 
@@ -2613,7 +2623,7 @@ async def chat_transcript(request: Request, max_turns: int = 200) -> dict:
 @app.get("/api/cms/pages")
 async def cms_list_pages(request: Request, limit: int = 500) -> dict:
     """List miniapp pages (slug/title/format/updated). Read-only, key-gated."""
-    _require_api_key(request)
+    _cms_read_gate(request)
     return {"pages": await tool_runner.cms_list_pages(limit=limit)}
 
 
@@ -2621,7 +2631,7 @@ async def cms_list_pages(request: Request, limit: int = 500) -> dict:
 async def cms_get_page(request: Request, slug: str, lang: str = "en") -> dict:
     """Fetch one miniapp page's content by slug (+ ?lang=th for the Thai
     variant; falls back to en). Read-only, key-gated."""
-    _require_api_key(request)
+    _cms_read_gate(request)
     try:
         page = await tool_runner.cms_get_page(slug, lang)
     except ValueError as exc:
@@ -2634,7 +2644,7 @@ async def cms_get_page(request: Request, slug: str, lang: str = "en") -> dict:
 @app.get("/api/cms/pages/{slug}/verify")
 async def cms_verify_page(request: Request, slug: str) -> dict:
     """Parse-check a page against its declared format. Read-only, key-gated."""
-    _require_api_key(request)
+    _cms_read_gate(request)
     try:
         report = await tool_runner.cms_verify_page(slug)
     except ValueError as exc:
