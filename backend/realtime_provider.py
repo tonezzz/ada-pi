@@ -3199,7 +3199,8 @@ class GeminiLiveProvider(RealtimeProvider):
                     "description": (
                         "Send a LINE/Telegram message in the background — 'queued' returns "
                         "first, the outcome lands later as a system note. camera=/image_url= "
-                        "attach an image; photo=/doc= run the picker/upload flows."
+                        "attach an image; photo=/doc= run the picker/upload flows; say= sends "
+                        "a voice message (LINE only)."
                     ),
                     "parameters_json_schema": {
                         "type": "object",
@@ -3223,6 +3224,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             "to": {
                                 "type": "string",
                                 "description": "Optional explicit LINE userId or Telegram chat_id; default = owner.",
+                            },
+                            "say": {
+                                "type": "string",
+                                "description": "Voice-note text — synthesized to speech (your voice) and pushed as a LINE voice message. LINE only; keep it short and speakable.",
                             },
                             "photo": {
                                 "type": "string",

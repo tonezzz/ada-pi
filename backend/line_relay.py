@@ -539,6 +539,52 @@ class LineRelay:
             return [{"type": "text",
                      "text": f"(image failed: {caption or url})"}]
 
+    def _audio_msgs(self, b64: str, duration_ms: int) -> list[dict]:
+        """audio_b64 (WAV bytes, base64) -> LINE audio push message.
+
+        LINE audio bubbles accept only AAC/m4a — transcode via PyAV
+        (bundled ffmpeg libs, backend/requirements.txt), then host the
+        file on the same public /relay-img lane images use so LINE's CDN
+        can pull it. Falls back to a text notice on any encode failure.
+        """
+        import base64
+        import io
+        import secrets
+        try:
+            import av
+            data = base64.b64decode(b64)
+            inp = av.open(io.BytesIO(data))
+            ist = inp.streams.audio[0]
+            buf = io.BytesIO()
+            out = av.open(buf, mode="w", format="ipod")
+            ost = out.add_stream("aac", rate=24000)
+            ost.layout = "mono"
+            resampler = av.audio.resampler.AudioResampler(
+                format="fltp", layout="mono", rate=24000)
+            for frame in inp.decode(ist):
+                for rf in resampler.resample(frame):
+                    for pkt in ost.encode(rf):
+                        out.mux(pkt)
+            for rf in resampler.resample(None):
+                for pkt in ost.encode(rf):
+                    out.mux(pkt)
+            for pkt in ost.encode(None):
+                out.mux(pkt)
+            out.close()
+            inp.close()
+            m4a = buf.getvalue()
+            nonce = "aud-" + secrets.token_urlsafe(12)
+            self._imgs[nonce] = (m4a, time.time(), "audio/mp4")
+            self._img_persist(nonce, m4a, "audio/mp4")
+            return [{"type": "audio",
+                     "originalContentUrl":
+                         f"{LINE_PUBLIC_IMG_BASE}/{nonce}",
+                     "duration": max(1, int(duration_ms or 0))}]
+        except Exception as exc:
+            logger.warning("audio encode/host failed: %s", exc)
+            return [{"type": "text",
+                     "text": "(voice clip could not be delivered)"}]
+
     async def _sender_label(self, user_id: str, group_id: str | None,
                             caller: str | None,
                             kind: str = "group") -> str:
@@ -1020,6 +1066,10 @@ class LineRelay:
             if body.get("image_url"):
                 msgs += await self._image_msgs(
                     str(body["image_url"]), str(body.get("caption") or ""))
+            if body.get("audio_b64"):
+                msgs += self._audio_msgs(
+                    str(body["audio_b64"]),
+                    int(body.get("duration_ms") or 0))
             if not msgs:
                 return JSONResponse({"ok": False,
                                      "error": "nothing to send"},

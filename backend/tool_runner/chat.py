@@ -20,7 +20,7 @@ class ChatMixin:
                         to: str = "", photo: str = "", doc: str = "",
                         key: str = "", op: str = "",
                         session_id: str = "", screen: int = 0,
-                        show: bool = True) -> dict[str, Any]:
+                        show: bool = True, say: str = "") -> dict[str, Any]:
         """Queue an outbound LINE/Telegram message in the background and
         return immediately. camera names a VMS channel (snapped on the
         shim); image_url is any fetchable image (camwall thumb, cast_url).
@@ -54,17 +54,17 @@ class ChatMixin:
                 key=str(key or ""), op=str(op or ""))
         return await self._chat_send_queue(
             channel=channel, text=text, image_url=image_url,
-            camera=camera, to=to)
+            camera=camera, to=to, say=say)
 
     async def _chat_send_queue(self, channel: str, text: str,
                                image_url: str, camera: str,
-                               to: str) -> dict[str, Any]:
+                               to: str, say: str = "") -> dict[str, Any]:
         import asyncio
         import secrets
         job_id = "chat-" + secrets.token_hex(4)
         asyncio.create_task(self._chat_send_run(
             job_id, channel=channel, text=text, image_url=image_url,
-            camera=camera, to=to))
+            camera=camera, to=to, say=say))
         return {"status": "queued", "job_id": job_id, "channel": channel,
                 "note": "Running in the background. Tell the user the "
                         "message is being sent — a system note will report "
@@ -163,7 +163,7 @@ class ChatMixin:
 
     async def _chat_send_run(self, job_id: str, channel: str, text: str,
                              image_url: str, camera: str,
-                             to: str) -> None:
+                             to: str, say: str = "") -> None:
         """Background worker: resolve the image (VMS snap or direct URL),
         POST to the relay /send endpoints, then surface the result to the
         live session via /api/notify."""
@@ -202,6 +202,25 @@ class ChatMixin:
                   if c.strip()]
         if "both" in relays or "all" in relays:
             relays = ["line", "telegram"]
+        audio_b64, duration_ms = "", 0
+        say_text = str(say or "").strip()
+        if say_text and "line" in relays:
+            try:
+                from backend import tts as ada_tts
+                pcm = await ada_tts.synth_pcm(
+                    say_text, mddb=self.mddb, tool="chat_send_say",
+                    session_id=str(self.session_id or ""))
+                if pcm:
+                    import base64 as _b64
+                    audio_b64 = _b64.b64encode(
+                        ada_tts.pcm_to_wav(pcm)).decode()
+                    duration_ms = ada_tts.pcm_duration_ms(pcm)
+                else:
+                    summary_bits.append("voice: tts failed (text only)")
+            except Exception as exc:
+                summary_bits.append(f"voice: tts error ({exc})")
+        elif say_text:
+            summary_bits.append("voice: LINE only — skipped")
         for svc in relays:
             svc = svc.strip()
             if svc == "line":
@@ -218,6 +237,10 @@ class ChatMixin:
                        "chat_id": to,
                        "instance": os.environ.get(
                            "ADA_INSTANCE_ID", "")}
+            if svc == "line" and audio_b64:
+                payload.update({"audio_b64": audio_b64,
+                                "audio_mime": "audio/wav",
+                                "duration_ms": duration_ms})
             try:
                 req = urllib.request.Request(
                     ep, data=json.dumps(payload).encode(),
