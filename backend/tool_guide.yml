@@ -433,6 +433,12 @@ cms_publish_page: >-
   The result returns public_url when flagged — share that, not view_url,
   for people outside the tailnet.
 
+  PUBLIC-PAGE RULE (2026-10-12): when the ask is a public/shareable page —
+  or you announce one — you MUST pass public=yes. Without it the page
+  exists only in the CMS and the web page never updates; saying "I
+  published/updated the page" while omitting public=yes is a false
+  public claim. When unsure, say which surface you actually wrote to.
+
 cms_edit: >-
   'note' appends a one-line timeline note to a page (note=, optional
   summary=/lang=) — merges into Timeline, no confirmation; use it after
