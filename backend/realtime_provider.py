@@ -153,7 +153,7 @@ CMS_INSTRUCTIONS = (
     "(high|medium|low|unverified) — cms_publish_page REJECTS calls missing them; updated and "
     "timeline are stamped automatically. "
     "Page content is written as markdown, html, yaml, or slides markdown. "
-    "PUBLIC LANE: public=yes on cms_publish_page flags the page for the public website — the result returns public_url (surf-thailand.com/<tenant>/<slug>.html); it goes live within ~15 min via the static publisher. Share public_url for anyone outside the tailnet — view/cast URLs do not reach them. Only flag public when the owner asks for a shareable link. "
+    "PUBLIC LANE: public=yes on cms_publish_page flags the page for the public website — the result returns public_url (surf-thailand.com/<tenant>/<slug>.html); it goes live within ~15 min via the static publisher. Share public_url for anyone outside the tailnet — view/cast URLs do not reach them. Only flag public when the owner asks for a shareable link. If a read result has no public_url, the page is NOT public — never guess or construct a surf-thailand.com URL yourself; flag public=yes (when the owner asked to share) and use the returned public_url, or tell the owner it is not published. "
     "For 'what's new', 'status', or inventory/library questions — 'what videos do we have cached', "
     "'what pages do we have', 'which documents are in the archive' — read the 'reports-index' page first — it lists every "
     "report with a one-line summary and staleness flag; only cms_read action='get' the linked page when the "

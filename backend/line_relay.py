@@ -881,8 +881,24 @@ class LineRelay:
             # it (a bad id makes LINE 400 either way, but resolving keeps
             # the message deliverable).
             if uid and not re.match(r"^[UCR][0-9a-f]{10,}$", uid):
+                lookup = uid.lower()
+                if lookup.startswith("person."):
+                    lookup = lookup.split(".", 1)[1]
                 hit = next((k for k, v in self._names.items()
-                            if v.lower() == uid.lower()), "")
+                            if v.lower() == lookup), "")
+                if not hit:
+                    hit = next((u for u, n in _user_callers().items()
+                                if n.lower() in
+                                (lookup, f"user-{lookup}")), "")
+                if not hit:
+                    # LINE_PERSON_ALIASES="tony=user-tonezzzz,kk=user-kk"
+                    aliases = dict(p.split("=", 1) for p in
+                                   os.environ.get("LINE_PERSON_ALIASES",
+                                                  "").split(",") if "=" in p)
+                    target = aliases.get(lookup, "")
+                    if target:
+                        hit = next((u for u, n in _user_callers().items()
+                                    if n.lower() == target.lower()), "")
                 if hit:
                     uid = hit
             if not uid and self._recent_chat and \
