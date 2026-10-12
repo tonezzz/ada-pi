@@ -983,6 +983,19 @@ class LineRelay:
             if not uid:
                 return JSONResponse({"ok": False,
                                      "error": "no target"}, status_code=400)
+            # Lane lock — a locked lane ALWAYS lands in its default room;
+            # any resolved target (to=owner, display names, stray ids) is
+            # rewritten instead of refused, so nothing silently dies.
+            locked = {x.strip() for x in
+                      os.environ.get("LINE_LANE_LOCK", "").split(",")
+                      if x.strip()}
+            if inst in locked:
+                forced = (_lane_env_map("LINE_LANE_DEFAULT").get(inst)
+                          or "")
+                if forced and uid != forced:
+                    logger.info("lane lock: %s send to %s rewritten -> %s",
+                                inst, uid, forced)
+                    uid = forced
             # Hard gate — LINE_LANE_ALLOW scopes a lane's reachable rooms:
             # a member lane can never address a chat outside its set,
             # explicit to= included (kk never reaches tony's DM).
