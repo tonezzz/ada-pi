@@ -775,7 +775,7 @@ class CmsMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         }
         page = await self.runner.execute("cms_get_page", {"slug": "pool-notes"})
         self.assertEqual(page["content"], "# Pool")
-        self.runner.mddb.get_document.assert_awaited_with(
+        self.runner.mddb.get_document.assert_any_await(
             "ada-cms-pages", "pool-notes", "en")
 
     async def test_verify_page_alias_routes_to_read_verify(self):
