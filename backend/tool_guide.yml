@@ -596,3 +596,14 @@ percussion: >-
   next bar within ~30s — the page polls the input-bridge control
   endpoint. Use for "make it funky", "blue chords", "add a bass line",
   "play polyphia".
+
+page_snapshot: >-
+  Renders a web page to a sendable PNG — url= is the page address
+  (e.g. the public_url cms_publish returned for a plan/report page),
+  full_page= captures the whole scroll height (default true), slug=
+  names the hosted asset. Flow: write the plan/report as a CMS page,
+  publish it, snapshot the public_url, then chat_send
+  image_url=<result> VERBATIM — never rewrite or shorten the returned
+  URL. For raw image files use chat_send image_url directly — this tool
+  is for turning PAGES into images. Errors are honest: say the render
+  service is unreachable rather than inventing a URL.

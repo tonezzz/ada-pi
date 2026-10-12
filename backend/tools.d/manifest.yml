@@ -100,3 +100,13 @@ tools:
     policy: owner_only
     secondary_allowed: false
     timeout_s: 10
+  # page_snapshot (2026-10-12, kk travel-plan ask): render any page URL to
+  # a sendable PNG via playlived headless Chrome + the input-bridge asset
+  # hop. Read-policy: produces an artifact only; secondary_allowed so
+  # members can ask for renders of their own pages. 90s for browser
+  # launch + nav + shot.
+  page_snapshot:
+    module: page_snapshot
+    policy: read
+    secondary_allowed: true
+    timeout_s: 90
