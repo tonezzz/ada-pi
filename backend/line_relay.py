@@ -469,7 +469,7 @@ class LineRelay:
         a blank image when a JPEG thumb is labelled image/png."""
         assert self.http is not None
         try:
-            r = await self.http.get(url, timeout=120)
+            r = await self.http.get(url, timeout=120, follow_redirects=True)
             if r.status_code != 200 or len(r.content) < 500:
                 raise RuntimeError(f"fetch {r.status_code} {len(r.content)}B")
             mime = (r.headers.get("content-type")
