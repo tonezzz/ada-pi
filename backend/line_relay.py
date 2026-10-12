@@ -148,6 +148,16 @@ def _name_backends() -> dict[str, str]:
     return out
 
 
+def _lane_env_map(name: str) -> dict[str, str]:
+    """LINE_LANE_*="kk:C822..,kk-dev:C822.." -> {instance: chat_id}."""
+    out: dict[str, str] = {}
+    for pair in os.environ.get(name, "").split(","):
+        if ":" in pair:
+            inst, chat = pair.split(":", 1)
+            out[inst.strip()] = chat.strip()
+    return out
+
+
 def _default_persona() -> str | None:
     return os.environ.get("LINE_DEFAULT_PERSONA", "").strip().lower() or None
 
@@ -381,7 +391,7 @@ class LineRelay:
         # Most recent chat a turn was delivered into — the default target
         # for /send when 'to' is empty. The old fallback (first allowed
         # user) pushed persona sends into the owner's DM.
-        self._recent_chat: tuple[str, float] | None = None
+        self._recent_chat: dict[str, tuple[str, float]] = {}
         self._names: dict[str, str] = {}  # userId -> display label cache
         self._refused: dict[tuple[str, str], float] = {}
 
@@ -565,7 +575,7 @@ class LineRelay:
                             reply_token: str | None) -> None:
         """One text turn to a persona backend; reply tagged
         [persona->sender] in rooms."""
-        self._recent_chat = (chat_id, time.monotonic())
+        self._recent_chat[persona] = (chat_id, time.monotonic())
         sess = self._session(skey, user_id, persona_url, caller)
         disp = _display_name(persona, turn_text)
         try:
@@ -901,14 +911,31 @@ class LineRelay:
                                     if n.lower() == target.lower()), "")
                 if hit:
                     uid = hit
-            if not uid and self._recent_chat and \
-                    time.monotonic() - self._recent_chat[1] < 600:
-                uid = self._recent_chat[0]
+            inst = str(body.get("instance") or "").strip()
+            if not uid and inst:
+                hit = self._recent_chat.get(inst)
+                if hit and time.monotonic() - hit[1] < 600:
+                    uid = hit[0]
+            if not uid and inst:
+                uid = _lane_env_map("LINE_LANE_DEFAULT").get(inst, "")
             if not uid:
                 uid = next(iter(_allowed_users()), "")
             if not uid:
                 return JSONResponse({"ok": False,
                                      "error": "no target"}, status_code=400)
+            # Hard gate — LINE_LANE_ALLOW scopes a lane's reachable rooms:
+            # a member lane can never address a chat outside its set,
+            # explicit to= included (kk never reaches tony's DM).
+            allow = _lane_env_map("LINE_LANE_ALLOW")
+            allowed_set = {c.strip() for c in
+                           allow.get(inst, "").split("+") if c.strip()}
+            if inst in allow and uid not in allowed_set:
+                logger.warning("send denied: instance %s -> %s not in "
+                               "LINE_LANE_ALLOW", inst, uid)
+                return JSONResponse(
+                    {"ok": False,
+                     "error": f"target {uid} outside lane allowlist"},
+                    status_code=403)
             msgs: list[dict] = []
             if body.get("text"):
                 msgs += [{"type": "text", "text": str(body["text"])[:4900]}]

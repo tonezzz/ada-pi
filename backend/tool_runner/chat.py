@@ -215,7 +215,9 @@ class ChatMixin:
                 continue
             payload = {"text": text, "image_url": url,
                        "caption": text or cam, "to": to,
-                       "chat_id": to}
+                       "chat_id": to,
+                       "instance": os.environ.get(
+                           "ADA_INSTANCE_ID", "")}
             try:
                 req = urllib.request.Request(
                     ep, data=json.dumps(payload).encode(),
