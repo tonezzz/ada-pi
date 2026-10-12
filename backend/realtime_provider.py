@@ -991,6 +991,47 @@ def _result_hash(result: Any) -> str:
 _RESULT_FULL_CAP = 200_000
 
 
+# Token diet (OPS-0509): every tool round re-bills the whole context
+# window — a fat cms_read/memory payload inflates every later turn.
+# Long string leaves get truncated per-field first; if the serialized
+# result still exceeds ADA_TOOL_RESULT_MAX_CHARS it degrades to a
+# preview + pointer note so the model answers instead of re-reading.
+_TOOL_RESULT_MAX_CHARS = int(os.environ.get(
+    "ADA_TOOL_RESULT_MAX_CHARS", "6000"))
+_TOOL_RESULT_FIELD_CAP = int(os.environ.get(
+    "ADA_TOOL_RESULT_FIELD_CAP", "1800"))
+
+
+def _cap_tool_result(result):
+    """Bound the payload sent back in a FunctionResponse."""
+    def _trim(v):
+        if isinstance(v, str) and len(v) > _TOOL_RESULT_FIELD_CAP:
+            return (v[:_TOOL_RESULT_FIELD_CAP]
+                    + f"…[truncated {len(v) - _TOOL_RESULT_FIELD_CAP} "
+                      "chars — ask for the specific section if needed]")
+        if isinstance(v, dict):
+            return {k: _trim(x) for k, x in v.items()}
+        if isinstance(v, list):
+            out = [_trim(x) for x in v[:20]]
+            if len(v) > 20:
+                out.append(f"…[{len(v) - 20} more items omitted]")
+            return out
+        return v
+    capped = _trim(result)
+    try:
+        size = len(json.dumps(capped, default=str))
+    except Exception:
+        return capped
+    if size > _TOOL_RESULT_MAX_CHARS:
+        return {"truncated": True, "original_chars": size,
+                "note": "result too large for live context — ask for a "
+                        "specific field/section instead of the whole doc",
+                "preview": json.dumps(capped, default=str,
+                                      ensure_ascii=False)[
+                    :_TOOL_RESULT_FIELD_CAP]}
+    return capped
+
+
 def _full_result_payload(result: Any) -> Any:
     """Full-fidelity result for the call-log trace doc; head-truncated
     past _RESULT_FULL_CAP (the hash still pins the complete payload)."""
@@ -5536,7 +5577,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         function_responses.append(types.FunctionResponse(
                             id=call.id,
                             name=_call_name or "set_facial_expression",
-                            response=result,
+                            response=_cap_tool_result(result),
                             # The expression tool often arrives before audio.
                             # WHEN_IDLE lets Gemini continue the spoken reply;
                             # SILENT would add the result to context without
