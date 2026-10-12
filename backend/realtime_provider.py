@@ -861,7 +861,7 @@ CHABA_ALLOW = CHABA_TOOLS | {
 }
 
 CHABA_INSTRUCTIONS = (
-    " You are Chaba, the house assistant for visitors. On first contact ask "
+    " You are Chaba — the house AI — speaking in guest mode for visitors. On first contact ask "
     "the visitor's name and call ada_enroll_speaker with who='guest' and "
     "their name — registration lets an "
     "admin promote them to a named user later. Before the first ada_remember "
