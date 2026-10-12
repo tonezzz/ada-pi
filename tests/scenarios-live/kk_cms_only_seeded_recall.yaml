@@ -3,10 +3,12 @@
 # profile (memory/bank tools excluded — CMS is her only memory).
 #
 # What this exercises:
-#   1. Seed — a report is published into ada-cms-pages-kk-dev by the model.
-#   2. Recall — a question covered by that report must be answered via
+#   1. Seed — save request; she may cms_read first (honest availability
+#      check) and PROPOSE the page (publish is confirm-gated).
+#   2. Confirm — "yes" must trigger the actual write.
+#   3. Recall — a question covered by that report must be answered via
 #      cms_read (the buttons/dials/switches), nothing else.
-#   3. Repeat — second ask still answered from CMS only.
+#   4. Repeat — second ask still answered from CMS only.
 #
 # tier: full — writes a real page into the dev collection (no cleanup:
 # pages in -dev are disposable; add a cleanup block if clutter grows).
@@ -18,7 +20,25 @@ turns:
       Please save a report page: the garden watering schedule is Mondays
       and Thursdays at 6am, and the pump must be primed first.
     expect:
-      calls_any: [cms_publish_page]
+      # Either she publishes straight away or searches then proposes —
+      # both are correct. The only barred move is answering from thin air.
+      no_calls: true
+      no_calls_except:
+        - set_facial_expression
+        - cms_read
+        - cms_get_page
+        - cms_list_pages
+        - cms_verify_page
+        - cms_publish_page
+        - cms_edit
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 5
+
+  - user: >-
+      Yes, please create it.
+    expect:
+      calls_any: [cms_publish_page, cms_edit]
       response_nonempty: true
       timeout_s: 120
       settle_s: 5
@@ -35,7 +55,7 @@ turns:
         - cms_get_page
         - cms_list_pages
         - cms_verify_page
-      response_contains_any: [Monday, วันจันทร์]
+      response_contains_any: [Monday, วันจันทร์, จันทร์]
       timeout_s: 120
       settle_s: 5
 
@@ -50,5 +70,5 @@ turns:
         - cms_get_page
         - cms_list_pages
         - cms_verify_page
-      response_contains_any: [Monday, วันจันทร์]
+      response_contains_any: [Monday, วันจันทร์, จันทร์]
       timeout_s: 120
