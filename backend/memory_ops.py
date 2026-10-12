@@ -1452,7 +1452,10 @@ async def session_prime_text(
         if catalog:
             parts.append(
                 "Your CMS pages — read one for detail before saying you "
-                "do not have the content or asking the user for it:\n"
+                "do not have the content or asking the user for it. "
+                "To share a page or its images in chat, send its "
+                "URLs with chat_send (image_url for images); to put "
+                "it on screen, cast it:\n"
                 + "\n".join(catalog))
     # Speaker's saved style preferences — applies even on short reconnects
     # (it's a style contract, not stale content).
