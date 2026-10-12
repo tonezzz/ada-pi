@@ -351,7 +351,18 @@ class CmsMixin:
         page = self._cms_page_summary(doc)
         page["content"] = doc.get("contentMd") or doc.get("content") or ""
         page["lang"] = doc.get("lang") or "en"
-        if _meta_str(doc.get("meta"), "public").lower() in ("true", "yes", "1"):
+        public = _meta_str(doc.get("meta"), "public").lower() in \
+            ("true", "yes", "1")
+        if not public:
+            # per-lang flag asymmetry: the en variant may be flagged public
+            # while this th read is not — check the sibling before telling
+            # her there is no public_url (she guessed /kk/ once, 2026-10-12).
+            sibling = await self.mddb.get_document(
+                CMS_COLLECTION, key, "th" if lang == "en" else "en")
+            public = bool(sibling) and \
+                _meta_str(sibling.get("meta"), "public").lower() in \
+                ("true", "yes", "1")
+        if public:
             _pb = _cms_public_base()
             if _pb:
                 page["public_url"] = f"{_pb}{key}.html"
