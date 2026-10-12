@@ -113,10 +113,14 @@ def cms_index_rows(
                 "fresh": _meta_str(meta, "fresh_for") or "-",
                 "stale": stale(meta),
                 "langs": [],
+                "public": _meta_str(meta, "public").lower()
+                          in ("true", "yes", "1"),
             }
             by_slug[slug] = row
         if lang not in row["langs"]:
             row["langs"].append(lang)
+        if _meta_str(meta, "public").lower() in ("true", "yes", "1"):
+            row["public"] = True
         upd = _meta_str(meta, "updated")
         if upd > (row["updated"] if row["updated"] != "-" else ""):
             row["updated"] = upd
@@ -859,6 +863,7 @@ class CmsMixin:
             return
         now = datetime.now(timezone.utc)
         rows, overflow = cms_index_rows(docs, now)
+        pub_base = _cms_public_base()
         lines = [f"# Reports index — {now:%Y-%m-%d %H:%M}Z\n",
                  "Brief summaries of every report page — read the linked page",
                  "only when the summary isn't enough.\n",
@@ -867,9 +872,11 @@ class CmsMixin:
         for r in rows:
             flag = " ⚠STALE" if r["stale"] else ""
             summ = (r["summary"] or r["title"])[:80]
-            lines.append(f"| {r['slug']} | {r['kind']} | {r['domain']} | "
-                         f"{r['updated'][:16]}{flag} | {r['fresh']} | "
-                         f"{summ} |")
+            link = (f"{pub_base}{r['slug']}.html"
+                    if r["public"] and pub_base else f"#/{r['slug']}")
+            lines.append(f"| [{r['slug']}]({link}) | {r['kind']} | "
+                         f"{r['domain']} | {r['updated'][:16]}{flag} | "
+                         f"{r['fresh']} | {summ} |")
         if overflow:
             more = ", ".join(
                 f"+{n} {dom}" for dom, n in

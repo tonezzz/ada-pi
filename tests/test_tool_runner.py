@@ -466,11 +466,13 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         await self.runner._cms_reports_index()
         args, _ = self.runner.mddb.add_document.await_args
         md = args[3]
-        self.assertEqual(md.count("| cached-videos-report |"), 1)
-        self.assertEqual(md.count("| cam-a |"), 1)
+        # slug cells are markdown links — public pages get their static
+        # .html URL, internal pages the miniapp-relative #/slug fragment
+        self.assertEqual(md.count("[cached-videos-report](#/"), 1)
+        self.assertEqual(md.count("[cam-a](#/"), 1)
         self.assertNotIn("gone-page", md)
-        self.assertLess(md.index("| cached-videos-report |"),
-                        md.index("| cam-a |"))
+        self.assertLess(md.index("[cached-videos-report]("),
+                        md.index("[cam-a]("))
 
     async def test_delete_requires_confirmed(self):
         with self.assertRaises(PermissionError):
@@ -845,7 +847,8 @@ class CmsDiscoveryTests(unittest.IsolatedAsyncioTestCase):
     dedupes lang variants + caps each domain."""
 
     def _cms_doc(self, slug, title, updated, lang="en", domain="",
-                 summary="", status="active", kind="page"):
+                 summary="", status="active", kind="page",
+                 public=""):
         return {
             "key": slug, "lang": lang, "contentMd": f"# {title}",
             "meta": {
@@ -853,6 +856,7 @@ class CmsDiscoveryTests(unittest.IsolatedAsyncioTestCase):
                 "status": [status], "updated": [updated],
                 **({"domain": [domain]} if domain else {}),
                 **({"summary": [summary]} if summary else {}),
+                **({"public": [public]} if public else {}),
             },
         }
 
