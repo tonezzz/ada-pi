@@ -3260,7 +3260,10 @@ class GeminiLiveProvider(RealtimeProvider):
                             },
                             "image_url": {
                                 "type": "string",
-                                "description": "URL of an existing image to send (camwall thumb or a cast_url you already produced).",
+                                "description": ("URL of an existing image to send (camwall thumb or a cast_url "
+                                "you already produced). For CMS page images, cms_read the page "
+                                "first and copy the asset URL verbatim — never construct or "
+                                "guess a URL; a guessed URL fetches 404 and the image is dropped."),
                             },
                             "to": {
                                 "type": "string",
