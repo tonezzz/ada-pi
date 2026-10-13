@@ -1,0 +1,14 @@
+name: trip-calendar
+tier: smoke
+turns:
+  # Trip-calendar page family generator (chaba card
+  # ada-trip-calendar-pages, 2026-10-13). Assert the tool is declared +
+  # dispatches with a well-formed call; the generator may legitimately
+  # report zero events for a nonsense slug — the contract is an honest
+  # structured result the model relays, not a fabricated page set.
+  - user: "Call trip_calendar with slug 'smoke-nonexistent-trip' and dates 2030-01-01 to 2030-01-03, then tell me honestly what it returned."
+    expect:
+      calls_any: ["trip_calendar"]
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 2

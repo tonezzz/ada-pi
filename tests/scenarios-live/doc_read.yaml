@@ -1,0 +1,14 @@
+name: doc-read
+tier: smoke
+turns:
+  # Document reader for LINE file ingest (chaba card
+  # line-file-doc-ingest, 2026-10-13). The live call is a well-formed but
+  # missing archive URL — the contract under test is that the tool is
+  # declared, dispatches, and returns an honest ok:false the model
+  # relays, not that a fixture doc exists on the host.
+  - user: "Call doc_read with path_or_url '/relay-img/arch/nonexistent/nope.pdf' and tell me honestly what it returns."
+    expect:
+      calls_any: ["doc_read"]
+      response_nonempty: true
+      timeout_s: 60
+      settle_s: 2

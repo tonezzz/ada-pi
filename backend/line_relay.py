@@ -103,7 +103,23 @@ _MIME_EXT = {
     "audio/wav": ".wav",
     "audio/x-m4a": ".m4a",
     "video/mp4": ".mp4",
+    # Inbound file messages (tickets, contracts, exports) — the archive
+    # extension follows the declared mime so doc_read and humans see the
+    # real format, not .bin.
+    "application/pdf": ".pdf",
+    "application/msword": ".doc",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "text/csv": ".csv",
+    "text/plain": ".txt",
 }
+
+# Inbound message types whose bytes come back from the api-data content
+# endpoint besides image/audio (which have their own branches) — LINE
+# 'file' documents (PDF tickets, sheets) and 'video' clips. sticker,
+# location, imagemap and template carry no fetchable blob.
+_MEDIA_INBOUND = ("file", "video")
 
 _REFUSAL_GAP_S = 3600  # don't spam a room — one refusal per sender per hour
 
@@ -884,16 +900,18 @@ class LineRelay:
             await self._handle_audio(ev, msg, chat_id, user_id, group_id,
                                      is_group, caller, reply_token)
             return
-        if mtype not in ("text", "image"):
+        if mtype not in ("text", "image") + _MEDIA_INBOUND:
             if not is_group:
                 await self.send_text(
-                    chat_id, f"(got {mtype}, text, voice or photos only)",
+                    chat_id,
+                    f"(got {mtype}, text, voice, photos or files only)",
                     reply_token=reply_token)
             return
         if mtype == "text" and not text:
             return
         # Route: groups need a mention (or LINE_DEFAULT_PERSONA), DMs
-        # default to ada. Group images have no caption — default persona.
+        # default to ada. Group images/files have no caption — default
+        # persona.
         persona, turn = _route(text if mtype == "text" else "",
                                    is_group, chat_id, self._room_pin)
         if persona is None:
@@ -955,6 +973,53 @@ class LineRelay:
             except Exception as exc:
                 logger.warning("user %s img-reply failed: %s",
                                user_id, exc)
+            return
+        if mtype in _MEDIA_INBOUND:
+            # Inbound document/media (tickets, contracts, clips): archive
+            # the bytes under the durable /relay-img/arch/ URL, journal
+            # kind=<mtype>, then hand the persona a synthetic text turn
+            # naming the file so it can react (doc_read reads the
+            # archived file back inline).
+            fname = str(msg.get("fileName") or "").strip()
+            noun = "document" if mtype == "file" else mtype
+            try:
+                data, mime = await self._fetch_content(
+                    str(msg.get("id") or ""))
+                if mime == "application/octet-stream" and fname:
+                    import mimetypes
+                    mime = mimetypes.guess_type(fname)[0] or mime
+                media_url = self._archive_media(
+                    msg, data, mime, mtype, chat_id, label)
+                self._journal(chat_id, {"dir": "in", "from": label,
+                                        "kind": mtype, "url": media_url,
+                                        "name": fname, "mime": mime,
+                                        "size": msg.get("fileSize")})
+                where = (f"[via LINE group from {label}]"
+                         if is_group else f"[via LINE from user {user_id}]")
+                reply, images = await sess.send_turn(
+                    f"{where} [{noun} received: {fname or 'unnamed'} "
+                    f"{mime} {media_url}] — doc_read can extract its "
+                    "contents if the user wants it processed.")
+            except Exception as exc:
+                logger.warning("user %s %s turn failed: %s",
+                               user_id, mtype, exc)
+                reply, images = (f"Couldn't pass that {noun} to {disp} — "
+                                 "try again."), []
+            self._journal(chat_id, {"dir": "out", "from": disp,
+                                    "kind": "text",
+                                    "text": reply or ""})
+            tag = f"[{disp}->{label}] " if is_group else ""
+            msgs = [{"type": "text",
+                     "text": (tag + (reply or "(no reply)"))
+                     [:REPLY_CHUNK]}]
+            for url, cap in images[:3]:
+                msgs.extend(await self._image_msgs(url, cap))
+            try:
+                await self._deliver(chat_id, msgs[:5],
+                                    reply_token=reply_token)
+            except Exception as exc:
+                logger.warning("user %s %s-reply failed: %s",
+                               user_id, mtype, exc)
             return
         turn_text = (f"[LINE group from {label}] {turn}"
                      if is_group else turn)

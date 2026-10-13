@@ -1,33 +1,9 @@
-# Drop-in tools for Ada — each entry maps a tool name to a module in this
-# directory. See docs/ada-tool-dev.md for the authoring contract.
-#
-# policy:
-#   read        — callable by any identified session, no confirmation
-#   confirmed   — requires confirmed=true after a spoken yes
-#   owner_only  — restricted to owner identities (full person_policies)
-# secondary_allowed: let non-owner identified speakers call it (default false)
-# timeout_s: hard cap on run() (default 20)
 tools:
-  # tools-merge-meta-voice (2026-10-05): ada_mddb_health folded into the
-  # builtin ada_ops action='health'; tools-merge-devin-mcp folded
-  # ada_devteam_review into devin_read action='review'. Both names stay
-  # callable as tool_runner._ALIASES rows; the drop-in modules are retired.
-  # ada-kanban-access (2026-10-08): ada_board_write folded into the kanban
-  # tool — the design's board surface (list/read/comment/move/ask/file/
-  # respond) under Ada's triage authority. The old name stays callable
-  # via tool_runner._ALIASES. secondary_allowed=true so the in-module
-  # gate can keep list/read reachable on a non-owner turn (design §6)
-  # while writes stay owner-tier.
   kanban:
     module: kanban
     policy: read
     secondary_allowed: true
-    # Board writes through Caddy take ~45-75s while board-api rebuilds
-    # under flock — a move is GET+POST+comment. Needs headroom.
     timeout_s: 180
-  # voice-fx (2026-10-09): sci-fi narration toggle — per-caller flag for
-  # 'bark' machine-voice asides on deep-memory calls. read+set; secondary
-  # callers may toggle their own flag (it's keyed to their caller name).
   voice_fx:
     module: voice_fx
     policy: read
@@ -43,70 +19,48 @@ tools:
     policy: owner_only
     secondary_allowed: false
     timeout_s: 10
-  # speaker-profile-tool (2026-10-07): voiceprint admin — list/match are
-  # reads reachable on secondary turns (the wrong-name merge flow needs
-  # them while a non-owner voice is identified); remove/re-enroll/alias
-  # are gated in-module to full-access identities or the profile's own
-  # bound person (self-service).
   speaker_profiles:
     module: speaker_profiles
     policy: read
     secondary_allowed: true
     timeout_s: 60
-  # ada-market-tool (2026-10-08): market quotes from the trade DB via
-  # trade-api — FX (24 ccy), Thai gold + USD spot, DXY, WTI/Brent.
-  # Read-only lookups; gold/FX questions come from any identified
-  # speaker, so secondary turns may call it too.
   ada_market_quote:
     module: ada_market_quote
     policy: read
     secondary_allowed: true
     timeout_s: 20
-  # veo-video-render (2026-10-08): text/image-to-video via Veo
-  # predictLongRunning — submit + bounded ~120s poll + download + relay
-  # publish. 'read' policy matches ada_render_image (outbound artifact
-  # to own infra, each call is a billed render); the 220s budget covers
-  # the poll window + mp4 download + publish. A render that outlives the
-  # poll returns pending + operation= for a no-rebill resume.
   ada_render_video:
     module: ada_render_video
     policy: read
     secondary_allowed: false
     timeout_s: 220
-  # ada-look-tool (2026-10-10): what the /apps/eye/ page's in-browser
-  # detector sees — reads the ada-ha-scenario-reports eye/latest doc the
-  # page republishes every ?pub=N seconds (nest-edge-vision phase 4).
-  # Read-only; secondary_allowed matches the ungated camera-describe
-  # path — 'what do you see' is a household question.
   ada_look:
     module: eye
     policy: read
     secondary_allowed: true
     timeout_s: 10
-  # member-invite (2026-10-09): per-member PWA invite + approval gate —
-  # mint pending keys (invite), clear the gate (approve/reject), revoke,
-  # re-pair. Owner-only: member onboarding is never a secondary turn's
-  # call. Standard: docs/kb/ada-member-invite.md.
   ada_member_keys:
     module: ada_member_keys
     policy: owner_only
     secondary_allowed: false
     timeout_s: 15
-  # percussion (2026-10-10): music layer on the Nest sonify page —
-  # style/mood/instrument presets via input-bridge /percussion POST.
-  # Ada voice: "make it polyphia", "blue chords", "add guitar".
   percussion:
     module: percussion
     policy: owner_only
     secondary_allowed: false
     timeout_s: 10
-  # page_snapshot (2026-10-12, kk travel-plan ask): render any page URL to
-  # a sendable PNG via playlived headless Chrome + the input-bridge asset
-  # hop. Read-policy: produces an artifact only; secondary_allowed so
-  # members can ask for renders of their own pages. 90s for browser
-  # launch + nav + shot.
   page_snapshot:
     module: page_snapshot
     policy: read
     secondary_allowed: true
     timeout_s: 90
+  doc_read:
+    module: doc_read
+    policy: read
+    secondary_allowed: true
+    timeout_s: 60
+  trip_calendar:
+    module: trip_calendar
+    policy: read
+    secondary_allowed: true
+    timeout_s: 120
