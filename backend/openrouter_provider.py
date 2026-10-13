@@ -32,7 +32,12 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from .realtime_provider import ProviderEvent, RealtimeProvider, DEFAULT_ADA_INSTRUCTIONS
+from .realtime_provider import (
+    ProviderEvent,
+    RealtimeProvider,
+    DEFAULT_ADA_INSTRUCTIONS,
+    _now_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +91,12 @@ class OpenRouterTextProvider(RealtimeProvider):
         self._ops_events_sent = 0
         self._history: list[dict] = [{
             "role": "system",
+            # Same clock injection as the Live path — degraded sessions
+            # otherwise have no 'now' and hallucinate dates (Kaewta wrong
+            # date 2026-10-13 while ada-kk sat on OpenRouter during
+            # free-key 1011s).
             "content": (instructions or DEFAULT_ADA_INSTRUCTIONS)
+            + _now_context()
             + "\n\n" + DEGRADED_NOTE,
         }]
         self._response_active = False
