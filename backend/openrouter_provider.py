@@ -168,7 +168,12 @@ class OpenRouterTextProvider(RealtimeProvider):
             self._probe = probe
             decls = (cfg.get("tools") or [{}])[0].get(
                 "function_declarations") or []
-            self._gemini_decls = [d for d in decls if isinstance(d, dict)]
+            self._gemini_decls = [
+                {k: v for k, v in d.items() if k != "behavior"}
+                for d in decls if isinstance(d, dict)]
+            # behavior (NON_BLOCKING etc.) is BidiGenerateContent-only —
+            # REST generateContent 400s on it and the gateway would
+            # silently fall back to OpenRouter where images are lost.
             # Lane instruction set already carries identity + context tail —
             # reuse it verbatim so a text session sounds identical to Live.
             self._system = ((cfg.get("system_instruction") or self._system)
