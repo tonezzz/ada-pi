@@ -20,6 +20,12 @@ A message lane carries a message only when it is **addressed**.
   persona for unaddressed messages — off by default, and it must name
   a persona in `LINE_NAME_BACKENDS` (an unknown name is logged and
   treated as unset, never a crash).
+- **Room pin (interview-room rule).** A mapped member's mention pins
+  the room to that persona — unaddressed follow-ups keep routing there
+  until another name is mentioned (switch). Only mapped members
+  consult or set the pin: an unmapped member's mention must never
+  reroute everyone's follow-ups, and a stranger's chatter must not
+  ride someone else's pin into a refusal.
 - **DMs are unchanged.** A 1:1 chat has no addressing problem — it
   defaults to `ada` (ADA_WS_URL), and an explicit mention still
   re-routes.
@@ -66,11 +72,30 @@ LINE_USER_CALLERS="U<tony>:user-tony,U<kk>:user-kk,U<nhong>:user-nhong"
 - Sessions are keyed `(group, sender, persona)` — each member×persona
   pair is its own WS session with its own key, so owner_identity stays
   clean per person on each backend.
-- Minting a member key: `ada_member_keys` tool / `auth.create_key(name)`
-  on the target backend, then add the `U…:user-<name>` pair to the unit
-  env. The key must exist on **each** persona backend the member may
-  reach — scoped to their tier there (2026-10-11 card answers: kk is a
-  guest of ada-ha but a member of tony-ha; tony is a member of kk-ha).
+- **One key value, every backend.** The relay reads ONE keys file and
+  presents the same key string to whichever persona backend the mention
+  routes to — so a member's key must authenticate the *same value* on
+  each reachable backend. `create_key` can't do this alone (it mints a
+  fresh random value per call); enrol the value on the other backends
+  with `auth.import_key`, which carries that backend's own metadata:
+
+  ```
+  # mint once, under the relay's env (ADA_KEYS_FILE = ada-ha-tony's
+  # keys file on idc03)
+  python3 -c "from backend import auth; \
+      print(auth.create_key('user-nhong', ha_person='person.nhong'))"
+  # -> ada-XXXX...  then on EACH other reachable backend (ada-kk, ...),
+  # under THAT backend's env so ADA_KEYS_FILE resolves to its own file:
+  python3 -c "from backend import auth; \
+      assert auth.import_key('user-nhong', 'ada-XXXX...', \
+          ha_person='person.nhong', apps=['chat'])"
+  ```
+
+  `import_key` refuses a taken name or a value already registered under
+  another name; the per-backend `ha_person`/`apps` are what scope the
+  member's tier there (2026-10-11 card answers: kk is a guest of ada-ha
+  but a member of tony-ha; tony is a member of kk-ha). Then add the
+  `U…:user-<name>` pair to the relay unit env (`LINE_USER_CALLERS`).
 
 ## Room gating — `LINE_ALLOWED_GROUP_IDS`
 

@@ -68,15 +68,36 @@ hardening (dispatch 20261011-170000, attempt 3): |
     not a push message).
   - get_event_loop -> get_running_loop in the voice transcribe path.
 
+hardening-2 (dispatch 20261013-182818, attempt 4): |
+  - Room persona pin is now member-only: handle_event no longer hands
+    _room_pin to _route for unmapped senders, so a stranger's mention
+    can't pin the room (it would reroute every member's unaddressed
+    follow-ups — a noise-rule bypass) and unmapped chatter can't ride
+    someone else's pin into a refusal. Mapped members pin/switch as
+    before; the pin itself was previously untested — now covered.
+  - auth.import_key(name, key, apps, ha_person, person) added — the
+    missing half of "mint member key on each reachable persona
+    backend". create_key mints a fresh random value per call while the
+    relay resolves ONE string from its ADA_KEYS_FILE and presents it to
+    every LINE_NAME_BACKENDS backend; enrolment must therefore reuse
+    the same value. import_key enrols it live with the target
+    backend's own ha_person/apps (per-backend tier), refusing a taken
+    name or a value already registered under another name.
+  - Docs corrected: msg-lane-multihome-routing.md previously implied
+    minting per backend via create_key (which would NOT work — each
+    backend would hold a different string). It now documents the
+    one-key-value model + the create_key -> import_key runbook.
+
 followups:
   - idc03 ada-line-relay unit env still needs LINE_ALLOWED_GROUP_IDS (the
     group id prints in the join greeting / logs), LINE_NAME_BACKENDS,
     LINE_USER_CALLERS for nhong, and the optional voice envs — ops change
     outside this worktree.
-  - user-nhong key must be minted on each reachable persona backend
-    (auth.create_key / ada_member_keys) before nhong's mention routes —
-    scoped per-backend tier (card answers kk guest of ada-ha / member of
-    tony-ha; tony member of kk-ha).
+  - "user-nhong key: mint once under the relay's env (create_key), then
+    import_key the SAME value into each reachable persona backend with
+    per-backend ha_person/apps (see the runbook in
+    docs/kb/msg-lane-multihome-routing.md). Tiers per card answers — kk
+    guest of ada-ha / member of tony-ha; tony member of kk-ha."
   - chaba backend RESOLVED mid-dispatch (board answer) — ada-chaba, a
     dedicated instance on idc03 :8008 — keep 'chaba:' empty in
     LINE_NAME_BACKENDS until it's provisioned.
