@@ -136,18 +136,54 @@ async def _resolve(runner: Any, url: str, place: str
             except Exception:
                 pass  # coords-only page is still useful
         elif out["name"]:
-            try:
-                rows = await _nominatim(client, "/search", {
-                    "format": "jsonv2", "q": out["name"], "limit": 1,
-                    "addressdetails": 1})
-                if rows:
-                    d = rows[0]
-                    out["coords"] = f"{d['lat']},{d['lon']}"
-                    out["display_name"] = d.get("display_name") or ""
-                    out["address"] = d.get("display_name") or ""
-            except Exception:
-                pass
+            # Google share strings lead with plus-code / house-number
+            # tokens ('3302 PQRJ 452 JJ&J Bistro ...') — strip leading
+            # code tokens before asking Nominatim, then the business
+            # name alone. Small local shops legitimately miss; a
+            # coords-empty page still carries the working maps link.
+            cleaned = _strip_code_tokens(out["name"])
+            found = False
+            for q in dict.fromkeys(x for x in (out["name"], cleaned)
+                                   if x):
+                try:
+                    rows = await _nominatim(client, "/search", {
+                        "format": "jsonv2", "q": q, "limit": 1,
+                        "addressdetails": 1})
+                    if rows:
+                        d = rows[0]
+                        out["coords"] = f"{d['lat']},{d['lon']}"
+                        out["display_name"] = d.get("display_name") or ""
+                        out["address"] = d.get("display_name") or ""
+                        out["name"] = d.get("name") or cleaned or out["name"]
+                        found = True
+                        break
+                except Exception:
+                    break
+            if not found:
+                out["name"] = _short_name(out["name"])
     return out
+
+
+def _strip_code_tokens(name: str) -> str:
+    """Drop leading whole tokens that look like plus-codes or house
+    numbers ('3302 PQRJ 452 JJ&J Bistro' -> 'JJ&J Bistro ...') — whole
+    tokens only so 'JJ&J' itself survives."""
+    toks = name.split()
+    while toks and re.fullmatch(r"[0-9A-Z]{2,8}\+?[0-9A-Z]*", toks[0]):
+        toks.pop(0)
+    return " ".join(toks) or name
+
+
+def _short_name(name: str) -> str:
+    """'JJ&J Bistro Cafe and Bar' from a q= blob — leading code tokens
+    off, address tail after the first comma or bare-number run off."""
+    name = _strip_code_tokens(name).split(",", 1)[0]
+    toks = name.split()
+    for i, tok in enumerate(toks):
+        if i and re.fullmatch(r"\d+(?:/\d+)?", tok):
+            toks = toks[:i]
+            break
+    return " ".join(toks) or name
 
 
 def _staticmap(coords: str) -> str:
@@ -161,15 +197,14 @@ def _staticmap(coords: str) -> str:
 def _slug_for(runner: Any, name: str, coords: str) -> str:
     base = name or coords or "place"
     seed = hashlib.sha1(f"{name}|{coords}".encode()).hexdigest()[:6]
-    slug = f"place-{base}-{seed}"
+    base = re.sub(r"[^a-z0-9]+", "-", base.lower()).strip("-")[:40]
+    slug = f"place-{base}-{seed}"[:64]
     slugify = getattr(runner, "_cms_slug", None)
     if callable(slugify):
         try:
             slug = slugify(slug)
         except Exception:
             pass
-    else:
-        slug = re.sub(r"[^a-z0-9]+", "-", slug.lower()).strip("-")[:60]
     return slug
 
 
@@ -231,7 +266,9 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
     try:
         pub = await runner.cms_publish_page(
             slug=slug, title=title, content=content, format="markdown",
-            lang=lang, summary=summary, domain="places", public="true")
+            lang=lang, summary=summary, domain="places", public="true",
+            fresh_for="30d",
+            confidence="medium" if resolved["coords"] else "low")
     except Exception as exc:
         return {"ok": False,
                 "error": f"page publish failed ({type(exc).__name__}): "
