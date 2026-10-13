@@ -64,3 +64,8 @@ tools:
     policy: read
     secondary_allowed: true
     timeout_s: 120
+  place_report:
+    module: place_report
+    policy: read
+    secondary_allowed: true
+    timeout_s: 60

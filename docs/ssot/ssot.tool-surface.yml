@@ -396,6 +396,7 @@ coverage_debt:
   - press_button
   - tasks_move
   - yt_cast_status
+  - place_report
 
 # Tools that legitimately never get a live scenario (pure meta/report
 # surfaces). Empty at census — prefer coverage_debt over listing here.

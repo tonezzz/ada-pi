@@ -645,3 +645,14 @@ trip_calendar: >-
   but public='yes' only when the user explicitly asked for a shareable
   link, and then confirmed='yes' is required. page_snapshot renders the
   page to a PNG when the room prefers a picture.
+
+place_report: >-
+  Maps link or place name in -> public CMS page out. Pass the maps link
+  verbatim as url= (short maps.app.goo.gl links expand fine); use place=
+  when the user only named a spot. ask= records their question on the
+  page. Always send public_url in the reply — that is the link they
+  asked for; the page lands on chaba.h3 within ~15min of the publisher.
+  Pages are meta.public by design: do NOT run this on someone's home
+  address or a location the user asked to keep private — answer in chat
+  instead. Publish failure is storage, not confirmation — report it
+  plainly.
