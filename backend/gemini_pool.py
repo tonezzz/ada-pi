@@ -35,6 +35,7 @@ document classify — so repeats never reach the API at all.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -314,7 +315,8 @@ def cache_put(namespace: str, key: str, value: Any, ttl_s: float) -> None:
 
 # ---------------------------------------------------------------- generate
 
-def rest_client(api_key: str | None = None) -> Any:
+def rest_client(api_key: str | None = None,
+                extra_headers: dict | None = None) -> Any:
     """genai client for REST side-calls (decision checks, polish, devteam,
     doc checks, vision verify). When ADA_GEMINI_REST_BASE_URL is set the
     call rides the LiteLLM gateway /v1beta route — ordered paid→free→OR
@@ -329,7 +331,8 @@ def rest_client(api_key: str | None = None) -> Any:
         key = os.environ.get("ADA_GEMINI_REST_API_KEY") or api_key
         return genai.Client(
             api_key=key,
-            http_options=types.HttpOptions(base_url=base))
+            http_options=types.HttpOptions(
+                base_url=base, headers=extra_headers or None))
     return genai.Client(api_key=api_key or os.environ.get("GEMINI_API_KEY"))
 
 
@@ -354,12 +357,26 @@ async def generate(model: str, contents: Any, config: Any = None,
     if not keys:
         raise RuntimeError("GEMINI_API_KEY is not set")
     last_exc: BaseException | None = None
+    lane = ""
+    try:
+        from backend.instance import ada_instance_id
+        lane = ada_instance_id()
+    except Exception:
+        pass
+    litellm_headers = {
+        "x-litellm-tags": f"lane={lane or 'unknown'},"
+                          f"tool={tool or 'aux'}",
+        "x-litellm-metadata": json.dumps(
+            {"lane": lane, "tool": tool or "aux",
+             "session": str(session_id or "")})}
     for _ in range(len(keys)):
         key = next_key(model)
         if key is None:
             break
         try:
-            call = rest_client(key).aio.models.generate_content(
+            call = rest_client(
+                key, extra_headers=litellm_headers
+            ).aio.models.generate_content(
                 model=model, contents=contents, config=config)
             if timeout:
                 return await asyncio.wait_for(call, timeout=timeout)
