@@ -32,6 +32,10 @@ Env:
                                  persona; mentions of other personas get a
                                  "isn't on this lane" reply instead of a
                                  foreign backend turn
+    LINE_IMAGE_CAPTION_WAIT_S  — default 8: hold an image turn this long
+                                 for a following text from the same sender
+                                 routed to the same persona, then merge it
+                                 in as the photo caption (one reply)
     LINE_VOICE_CORPUS_DIR      — default ~/.local/share/ada-voice-corpus/line;
                                  audio clips from enrolled senders land here
                                  (local only — like tg_relay's voice rule)
@@ -94,12 +98,20 @@ LINE_API = os.environ.get("LINE_API_BASE", "https://api.line.me")
 CHANNEL_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
 ADA_WS_URL = os.environ.get("ADA_WS_URL", "ws://127.0.0.1:8002/ws")
+
+# LINE has no native photo caption: users send the photo, then type the
+# caption as the next message. Holding an image turn briefly lets a
+# following text from the same sender merge in as its caption — one turn,
+# one reply (card ada-line-caption-coalesce).
 ADA_API_KEY = os.environ.get("ADA_API_KEY", "")
 IDLE_SESSION_S = float(os.environ.get("LINE_IDLE_SESSION_S", "600"))
 
 LINE_LISTEN = os.environ.get("LINE_WEBHOOK_LISTEN", "127.0.0.1:8912")
 LINE_PATH = os.environ.get("LINE_WEBHOOK_PATH", "/webhook/line")
 REPLY_CHUNK = 4900  # LINE text message limit is 5000 chars
+
+LINE_IMAGE_CAPTION_WAIT_S = float(
+    os.environ.get("LINE_IMAGE_CAPTION_WAIT_S", "8"))
 # LINE image messages can only reference public HTTPS URLs — snapshots get
 # hosted transiently on this relay and proxied out via Caddy /relay-img/*.
 LINE_PUBLIC_IMG_BASE = os.environ.get(
@@ -614,6 +626,9 @@ class LineRelay:
         self._room_pin: dict[str, str] = {}
         self._names: dict[str, str] = {}  # userId -> display label cache
         self._refused: dict[tuple[str, str], float] = {}
+        # In-flight image turns waiting out the caption window:
+        # (chat_id, user_id) -> {ev, caption, reply_token, persona}
+        self._img_pending: dict[tuple[str, str], dict] = {}
         # Pending enroll-on-clips: corpus slug -> {name, person, got,
         # armed_at}. Armed when an unknown speaker's clip arrives on a
         # caller-mapped lane; each later clip adds one print until
@@ -1301,12 +1316,33 @@ class LineRelay:
                                         "kind": "image",
                                         "message_id": msg.get("id"),
                                         "url": media_url})
+                pend = {"ev": asyncio.Event(), "caption": None,
+                        "reply_token": None, "persona": persona}
+                pkey = (chat_id, user_id)
+                old_pend = self._img_pending.get(pkey)
+                if old_pend is not None:
+                    old_pend["ev"].set()  # superseded — release its window
+                self._img_pending[pkey] = pend
+                try:
+                    await asyncio.wait_for(
+                        pend["ev"].wait(), LINE_IMAGE_CAPTION_WAIT_S)
+                except asyncio.TimeoutError:
+                    pass
+                if self._img_pending.get(pkey) is pend:
+                    self._img_pending.pop(pkey, None)
+                if pend["reply_token"]:
+                    reply_token = pend["reply_token"]
                 where = (f"[via LINE group from {label}]"
                          if is_group else f"[via LINE from user {user_id}]")
+                cap = pend["caption"]
+                if cap:
+                    turn_cap = (f"{where} Photo caption: {cap} — the photo "
+                                "is attached; answer what they asked.")
+                else:
+                    turn_cap = (f"{where} The user sent this photo — "
+                                "describe it and respond naturally.")
                 reply, images = await sess.send_image_turn(
-                    img, mime,
-                    f"{where} The user sent this photo — describe it and "
-                    "respond naturally.")
+                    img, mime, turn_cap)
             except Exception as exc:
                 logger.warning("user %s image turn failed: %s",
                                user_id, exc)
@@ -1384,6 +1420,19 @@ class LineRelay:
                 logger.warning("user %s %s-reply failed: %s",
                                user_id, mtype, exc)
             return
+        if mtype == "text":
+            pend = self._img_pending.get((chat_id, user_id))
+            if pend is not None and pend.get("persona") == persona:
+                # Caption for an image turn still in its window — merge
+                # instead of answering the text on its own.
+                pend["caption"] = turn or text
+                pend["reply_token"] = reply_token
+                pend["ev"].set()
+                self._journal(chat_id, {
+                    "dir": "in", "from": label, "kind": "text",
+                    "message_id": msg.get("id"), "text": text,
+                    "merged_into": "image_turn"})
+                return
         turn_text = (f"[LINE group from {label}] {turn}"
                      if is_group else turn)
         try:
