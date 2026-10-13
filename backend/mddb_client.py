@@ -18,6 +18,11 @@ MDDB_BASE_URL = os.environ.get("MDDB_BASE_URL", "http://127.0.0.1:11023/v1")
 # Unset -> everything routes to the leader (single-store behaviour).
 MDDB_OPS_URL = (os.environ.get("MDDB_OPS_URL") or "").rstrip("/")
 
+# CMS/content store: chaba-owned collections (reports, cms pages, kb
+# mirror, ssot docs) live on a dedicated instance so a content flood
+# cannot stall memory recall. Unset -> everything routes to the leader.
+MDDB_CMS_URL = (os.environ.get("MDDB_CMS_URL") or "").rstrip("/")
+
 # Read replica: MDDB_READ_URL points at a read-only follower (e.g. the
 # idc01 replica on :11123). Reads are lag-GATED — the follower's
 # /v1/replication/status is checked (cached READ_CHECK_TTL_S) and reads
@@ -50,6 +55,19 @@ def is_ops_collection(name: str) -> bool:
     return any(name.startswith(p) for p in OPS_COLLECTION_PREFIXES)
 
 
+# Chaba/content plane — prefix families plus a few exact names.
+CMS_COLLECTION_PREFIXES = ("ada-cms-", "chaba-", "kb-")
+CMS_COLLECTION_EXACT = {
+    "documents", "infrastructure-ssot", "devin-kb",
+    "ada-tools", "ada-scenario", "ada-session-audit", "ada-tool-profile",
+}
+
+
+def is_cms_collection(name: str) -> bool:
+    return name in CMS_COLLECTION_EXACT or any(
+        name.startswith(p) for p in CMS_COLLECTION_PREFIXES)
+
+
 class MddbClient:
     """Thin async client for the MDDB v1 HTTP API."""
 
@@ -71,6 +89,7 @@ class MddbClient:
         self.base_url = (base_url or MDDB_BASE_URL).rstrip("/")
         # ops routing only on the default leader client
         self._ops_url = (MDDB_OPS_URL if base_url is None else "")
+        self._cms_url = (MDDB_CMS_URL if base_url is None else "")
         # follower reads only on the default leader client — an explicit
         # base_url pins the client (lab tests, direct follower access)
         self._read_url = (MDDB_READ_URL if base_url is None else "")
@@ -115,6 +134,8 @@ class MddbClient:
     def _url(self, collection: str) -> str:
         if self._ops_url and is_ops_collection(collection):
             return self._ops_url
+        if self._cms_url and is_cms_collection(collection):
+            return self._cms_url
         return self.base_url
 
     async def _read_bases(self, collection: str) -> list[str]:
@@ -123,6 +144,8 @@ class MddbClient:
         leader in MDDB_READ_MODE order."""
         if self._ops_url and is_ops_collection(collection):
             return [self._ops_url]
+        if self._cms_url and is_cms_collection(collection):
+            return [self._cms_url]
         follower = self._read_url if await self._follower_usable() else ""
         if MDDB_READ_MODE == "fallback":
             return [b for b in (self.base_url, follower) if b]
