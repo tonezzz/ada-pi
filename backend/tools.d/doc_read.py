@@ -274,7 +274,26 @@ def _mime_of(path: Path) -> str:
                 return m
     except OSError:
         pass
-    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    mime = mimetypes.guess_type(path.name)[0]
+    if mime:
+        return mime
+    # Pre-extension-fix archives saved media as .bin — sniff magic
+    # bytes so doc_read still sees the real type.
+    try:
+        head = path.open("rb").read(12)
+    except OSError:
+        head = b""
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"\x89PNG"):
+        return "image/png"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if head.startswith(b"%PDF"):
+        return "application/pdf"
+    return "application/octet-stream"
 
 
 async def run(runner: Any, **args: Any) -> dict[str, Any]:

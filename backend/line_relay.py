@@ -103,6 +103,13 @@ _MIME_EXT = {
     "audio/wav": ".wav",
     "audio/x-m4a": ".m4a",
     "video/mp4": ".mp4",
+    # Images archived via _archive_media get a real extension so
+    # doc_read resolves the actual mime, not octet-stream.
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/heic": ".heic",
     # Inbound file messages (tickets, contracts, exports) — the archive
     # extension follows the declared mime so doc_read and humans see the
     # real format, not .bin.
