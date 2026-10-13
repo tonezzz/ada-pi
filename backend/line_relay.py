@@ -27,6 +27,11 @@ Env:
                                  to ADA_WS_URL when unlisted.
     LINE_DEFAULT_PERSONA       — persona for unaddressed group messages
                                  (unset = ignore them)
+    LINE_GROUP_PERSONA         — "<groupId>:<persona>,..." hard lane pin:
+                                 every message in that room routes to its
+                                 persona; mentions of other personas get a
+                                 "isn't on this lane" reply instead of a
+                                 foreign backend turn
     LINE_VOICE_CORPUS_DIR      — default ~/.local/share/ada-voice-corpus/line;
                                  audio clips from enrolled senders land here
                                  (local only — like tg_relay's voice rule)
@@ -193,6 +198,24 @@ def _default_persona() -> str | None:
     return os.environ.get("LINE_DEFAULT_PERSONA", "").strip().lower() or None
 
 
+_FOREIGN = "__foreign__"
+
+
+def _group_persona() -> dict[str, str]:
+    """LINE_GROUP_PERSONA="C4fb..:chaba,..." -> {room/group id: persona}.
+    A mapped room is hard-pinned to one lane: every message routes to
+    that persona; mentions of other personas are answered with a
+    not-on-this-lane reply, never a foreign backend turn."""
+    out: dict[str, str] = {}
+    for part in os.environ.get("LINE_GROUP_PERSONA", "").split(","):
+        if ":" in part:
+            room, name = part.split(":", 1)
+            room, name = room.strip(), name.strip().lower()
+            if room and name:
+                out[room] = name
+    return out
+
+
 def _mention_persona(text: str) -> str | None:
     """First configured persona name addressed in the text — word-bounded,
     case-insensitive, optional leading '@'. Returns the canonical
@@ -250,6 +273,12 @@ def _route(text: str, is_group: bool, room: str = "",
     pinned persona until another name is mentioned (switch). A default
     naming no configured persona resolves to ignore — an env typo must
     not crash the turn on _name_backends()[name]."""
+    room_persona = _group_persona().get(room) if is_group else None
+    if room_persona:
+        mentioned = _mention_persona(text)
+        if mentioned and mentioned != room_persona:
+            return _FOREIGN, mentioned
+        return room_persona, _strip_lead_mention(text, mentioned)
     persona = _mention_persona(text)
     if persona is None:
         persona = ((pinned or {}).get(room)
@@ -854,6 +883,14 @@ class LineRelay:
                                    self._room_pin)
         if persona is None:
             return
+        if persona == _FOREIGN:
+            fdisp = _display_name(turn, transcript)
+            hdisp = _display_name(
+                _group_persona().get(chat_id) or "", transcript)
+            await self.send_text(
+                chat_id, f"[{fdisp}->{label}] {fdisp} isn't on this "
+                         f"lane — {hdisp} is home here.")
+            return
         disp = _display_name(persona, transcript)
         persona_url = _name_backends().get(persona)
         if not persona_url:
@@ -936,6 +973,18 @@ class LineRelay:
             logger.info("ignored unaddressed %s msg from %s (no persona mention)",
                         src_type, user_id)
             return  # unaddressed room chatter — ignore per spec
+        if persona == _FOREIGN:
+            fdisp = _display_name(turn, text)
+            hdisp = _display_name(
+                _group_persona().get(chat_id) or "", text)
+            logger.info("foreign persona %s addressed in pinned room %s",
+                        turn, chat_id)
+            await self.send_text(
+                chat_id,
+                f"[{fdisp}->{caller or user_id}] {fdisp} isn't on this "
+                f"lane — {hdisp} is home here.",
+                reply_token=reply_token)
+            return
         disp = _display_name(persona, text)
         if is_group and caller is None:
             await self._refuse_group_member(chat_id, user_id, reply_token)

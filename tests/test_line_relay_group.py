@@ -131,6 +131,27 @@ class MentionParseTests(unittest.TestCase):
             self.assertEqual(r("random chatter", True),
                              ("kaewta", "random chatter"))
 
+    def test_route_group_persona_pin(self):
+        """LINE_GROUP_PERSONA hard-pins a room: unaddressed goes to the
+        room persona, own mention routes stripped, foreign mentions get
+        the _FOREIGN refusal sentinel."""
+        with patch.dict(os.environ,
+                        {"LINE_GROUP_PERSONA": "G1:chaba"}):
+            r = line_relay._route
+            self.assertEqual(r("random chatter", True, room="G1"),
+                             ("chaba", "random chatter"))
+            self.assertEqual(r("chaba, hi", True, room="G1"),
+                             ("chaba", "hi"))
+            self.assertEqual(r("ada, hi", True, room="G1"),
+                             ("__foreign__", "ada"))
+            # other rooms unaffected
+            self.assertEqual(r("random chatter", True, room="G2"),
+                             (None, "random chatter"))
+            self.assertEqual(r("ada, hi", True, room="G2"),
+                             ("ada", "hi"))
+            # DMs unaffected
+            self.assertEqual(r("hi", False), ("ada", "hi"))
+
     def test_route_unknown_default_ignored(self):
         """LINE_DEFAULT_PERSONA naming no configured persona must not
         crash on _name_backends()[name] — it resolves to ignore."""
@@ -218,6 +239,20 @@ class GroupEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(refusals), 1)
         self.assertIn("Unhong9", refusals[0][1])
         self.assertEqual(_FakeSession.made, [])
+
+    async def test_foreign_persona_not_on_this_lane(self):
+        """A room pinned via LINE_GROUP_PERSONA refuses foreign-persona
+        mentions instead of opening a foreign backend turn."""
+        relay = _relay()
+        with patch.dict(os.environ,
+                        {"LINE_GROUP_PERSONA": "G1:chaba"}):
+            await relay.handle_event(_ev("ada, turn off the lights"))
+        self.assertEqual(_FakeSession.made, [])
+        [call] = self._sent(relay)
+        self.assertEqual(call[0], "G1")
+        self.assertIn("[ada->", call[1])
+        self.assertIn("isn't on this lane", call[1])
+        self.assertIn("chaba is home", call[1])
 
     async def test_offline_persona_not_home(self):
         relay = _relay()
