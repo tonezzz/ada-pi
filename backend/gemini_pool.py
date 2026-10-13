@@ -365,7 +365,8 @@ async def generate(model: str, contents: Any, config: Any = None,
         pass
     litellm_headers = {
         "x-litellm-tags": f"lane={lane or 'unknown'},"
-                          f"tool={tool or 'aux'}",
+                          f"tool={tool or 'aux'},"
+                          f"session={session_id or 'anon'}",
         "x-litellm-metadata": json.dumps(
             {"lane": lane, "tool": tool or "aux",
              "session": str(session_id or "")})}
