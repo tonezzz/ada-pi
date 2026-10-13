@@ -15,6 +15,15 @@ short mp4 clips work too.
 Reads are confined to the two relay media roots — never the wider
 filesystem — so the tool can run on member lanes.
 
+Dedup per docs/kb/media-inbox-standard.md:
+  T2 content   before extracting, the file's mid is looked up in the
+               relay manifest; same sha256 under an earlier mid means
+               this is a resend — extraction redirects to the first
+               mid's media-<mid>-extract leaf.
+  T3 extract   media-<mid>-extract leaf IS the cache: exists -> return
+               stored fields (no Gemini spend); missing -> extract, write
+               the leaf into the lane's CMS collection, then return.
+
 Env:
     LINE_MEDIA_ARCHIVE_DIR — must match the relay (default
         ~/.local/share/ada/line-media)
@@ -26,12 +35,15 @@ Env:
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from backend import gemini_pool
+from backend.tool_runner.common import CMS_COLLECTION
 
 ARCHIVE_DIR = Path(os.environ.get(
     "LINE_MEDIA_ARCHIVE_DIR",
@@ -144,6 +156,113 @@ def _resolve(spec: str) -> tuple[Path | None, str | None]:
     return cand, None
 
 
+def _mid_of(path: Path) -> str | None:
+    """message-id for an archived media file — the stem of
+    <archive>/<chat>/<mid>.<ext>. Files outside ARCHIVE_DIR (img-cache
+    nonces) have no mid and skip the dedup/cache lane."""
+    try:
+        path.resolve().relative_to(ARCHIVE_DIR.resolve())
+    except (OSError, ValueError):
+        return None
+    return path.stem or None
+
+
+def _manifest_lines() -> list[dict]:
+    mf = ARCHIVE_DIR / "manifest.jsonl"
+    if not mf.is_file():
+        return []
+    out = []
+    try:
+        for ln in mf.read_text(errors="replace").splitlines():
+            ln = ln.strip()
+            if ln:
+                try:
+                    out.append(json.loads(ln))
+                except json.JSONDecodeError:
+                    pass
+    except OSError:
+        pass
+    return out
+
+
+def _canonical_mid(mid: str) -> tuple[str, dict | None]:
+    """T2 redirect target: earliest mid sharing this item's sha256.
+
+    -> (canonical_mid, manifest_line_of_canonical). No sha256 on record
+    means the mid is its own canonical copy."""
+    own = None
+    lines = _manifest_lines()
+    for e in lines:
+        if str(e.get("message_id") or "") == mid:
+            own = e
+            break
+    if not own or not own.get("sha256"):
+        return mid, own
+    sha = own["sha256"]
+    canon = min((e for e in lines if e.get("sha256") == sha),
+                key=lambda e: str(e.get("ts") or ""), default=own)
+    return str(canon.get("message_id") or mid), canon
+
+
+async def _extract_leaf(mddb: Any, mid: str) -> dict | None:
+    """Stored extraction for a mid — the media-<mid>-extract leaf is the
+    T3 cache. Returns the mddb doc or None."""
+    if mddb is None or not mid:
+        return None
+    key = f"media-{mid}-extract"
+    try:
+        docs = await mddb.search_documents(
+            collection=CMS_COLLECTION,
+            filter_meta={"slug": [key]}, limit=3)
+    except Exception:
+        return None
+    for d in docs or []:
+        if d.get("key") == key:
+            return d
+    return None
+
+
+def _first(meta: dict | None, field: str) -> str:
+    v = (meta or {}).get(field)
+    return str(v[0]) if isinstance(v, list) and v else ""
+
+
+async def _write_extract_leaf(mddb: Any, mid: str, canon_mid: str,
+                              mline: dict | None, path: Path,
+                              mime: str, text: str) -> None:
+    """Persist the extraction as media-<mid>-extract — doc_read owns
+    these leaves; media-inbox-update never re-renders them."""
+    if mddb is None:
+        return
+    try:
+        rel = str(path.resolve().relative_to(ARCHIVE_DIR.resolve()))
+    except (OSError, ValueError):
+        rel = str(path)
+    now = datetime.now(timezone.utc)
+    name = (mline or {}).get("file_name") or path.name
+    body = (f"# Extract — {name}\n\n{text}\n\n---\n"
+            f"_meta: parent=media-inbox · report_role=leaf · "
+            f"sources=doc_read + {rel}_\n")
+    await mddb.add_document(
+        collection=CMS_COLLECTION, key=f"media-{canon_mid}-extract",
+        lang="en", content_md=body,
+        meta={
+            "slug": [f"media-{canon_mid}-extract"],
+            "title": [f"Extract — {name}"],
+            "kind": ["report"], "report_role": ["leaf"],
+            "domain": ["media"], "status": ["active"],
+            "parent": ["media-inbox"], "format": ["markdown"],
+            "generated_by": ["doc_read"],
+            "sources": [f"doc_read + {rel} ({mime})"],
+            "media_id": [canon_mid],
+            "duplicate_of": [canon_mid] if canon_mid != mid else [],
+            "updated": [now.isoformat(timespec="seconds")],
+            "last_verified": [now.date().isoformat()],
+            "fresh_for": ["30d"],
+        },
+        tool="doc_read")
+
+
 def _mime_of(path: Path) -> str:
     """img-cache nonces keep a <nonce>.mime sidecar; archive files key off
     the extension _MIME_EXT picked at ingest."""
@@ -172,6 +291,32 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
     if err:
         return {"ok": False, "error": err}
     assert path is not None
+
+    # T2/T3: resolve the canonical mid, then the extract leaf is the
+    # cache — a hit answers without reading bytes or calling Gemini.
+    ctx = getattr(runner, "context", None)
+    mddb = getattr(ctx, "mddb", None)
+    mid = _mid_of(path)
+    canon_mid, mline = (mid, None)
+    if mid:
+        canon_mid, mline = _canonical_mid(mid)
+    leaf_doc = None
+    if canon_mid:
+        leaf_doc = await _extract_leaf(mddb, canon_mid)
+        if leaf_doc is None and mid and mid != canon_mid:
+            leaf_doc = await _extract_leaf(mddb, mid)  # pre-T2 leaf
+    if leaf_doc is not None:
+        key = f"media-{canon_mid}-extract"
+        out = {
+            "ok": True,
+            "text": (leaf_doc.get("contentMd") or "").strip(),
+            "name": path.name, "source": str(path),
+            "cached": True, "leaf": leaf_doc.get("key") or key,
+        }
+        if canon_mid and canon_mid != mid:
+            out["duplicate_of"] = canon_mid
+        return out
+
     try:
         data = path.read_bytes()
     except OSError as exc:
@@ -184,7 +329,6 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
                          f"the {MAX_BYTES // 1024 // 1024} MiB inline "
                          "limit; split it or pull pages with conv_journal"}
     mime = _mime_of(path)
-    ctx = getattr(runner, "context", None)
     try:
         from google.genai import types
         resp = await gemini_pool.generate(
@@ -209,7 +353,17 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
         return {"ok": False,
                 "error": "the reader returned nothing for this file — "
                          "it may be an unsupported format or empty scan"}
-    return {
+    # T3: persist as media-<canon>-extract — the leaf IS the cache; the
+    # next doc_read on this mid (or a same-sha256 resend) reads it back.
+    if canon_mid:
+        try:
+            await _write_extract_leaf(mddb, mid, canon_mid, mline,
+                                      path, mime, text)
+        except Exception as exc:
+            import logging
+            logging.getLogger("tools").info(
+                "doc_read extract-leaf write failed: %s", exc)
+    out = {
         "ok": True,
         "text": text,
         "name": path.name,
@@ -217,4 +371,10 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
         "bytes": len(data),
         "source": str(path),
         "model": MODEL,
+        "cached": False,
     }
+    if canon_mid:
+        out["leaf"] = f"media-{canon_mid}-extract"
+    if canon_mid and canon_mid != mid:
+        out["duplicate_of"] = canon_mid
+    return out

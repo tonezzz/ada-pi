@@ -474,12 +474,18 @@ class LineRelay:
             logger.info("journal write failed: %s", exc)
 
     def _archive_media(self, msg: dict, data: bytes, mime: str,
-                       kind: str, chat_id: str, label: str) -> str:
+                       kind: str, chat_id: str, label: str,
+                       persona: str | None = None,
+                       caller: str | None = None,
+                       file_name: str = "",
+                       size: int | None = None) -> str:
         """Persist inbound media bytes under
         <archive>/<chat>/<messageId>.<ext> + manifest line, and return a
         durable public /relay-img/arch/ URL -- received media outlives
         LINE's content retention and stays resendable. Mirrors the
-        voice-corpus scheme."""
+        voice-corpus scheme. The manifest line carries sha256 + persona
+        for the media-inbox generator's dedup/lane attribution
+        (docs/kb/media-inbox-standard.md)."""
         import secrets
         d = self._chat_dir(chat_id)
         mid = str(msg.get("id") or secrets.token_hex(6))
@@ -494,6 +500,11 @@ class LineRelay:
                     "ts": datetime.now().isoformat(timespec="seconds"),
                     "sender": label, "chat_id": chat_id, "kind": kind,
                     "message_id": mid, "mime": mime,
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "size": size if size is not None else len(data),
+                    "file_name": file_name or None,
+                    "persona": persona or None,
+                    "caller": caller or None,
                     "path": str(dest), "url": url},
                     ensure_ascii=False) + "\n")
         except Exception as exc:
@@ -942,9 +953,11 @@ class LineRelay:
                 img, mime = await self._fetch_content(
                     str(msg.get("id") or ""))
                 media_url = self._archive_media(
-                    msg, img, mime, "image", chat_id, label)
+                    msg, img, mime, "image", chat_id, label,
+                    persona=persona, caller=caller, size=len(img))
                 self._journal(chat_id, {"dir": "in", "from": label,
                                         "kind": "image",
+                                        "message_id": msg.get("id"),
                                         "url": media_url})
                 where = (f"[via LINE group from {label}]"
                          if is_group else f"[via LINE from user {user_id}]")
@@ -989,9 +1002,13 @@ class LineRelay:
                     import mimetypes
                     mime = mimetypes.guess_type(fname)[0] or mime
                 media_url = self._archive_media(
-                    msg, data, mime, mtype, chat_id, label)
+                    msg, data, mime, mtype, chat_id, label,
+                    persona=persona, caller=caller, file_name=fname,
+                    size=msg.get("fileSize"))
                 self._journal(chat_id, {"dir": "in", "from": label,
-                                        "kind": mtype, "url": media_url,
+                                        "kind": mtype,
+                                        "message_id": msg.get("id"),
+                                        "url": media_url,
                                         "name": fname, "mime": mime,
                                         "size": msg.get("fileSize")})
                 where = (f"[via LINE group from {label}]"
@@ -1032,6 +1049,7 @@ class LineRelay:
             self.sessions.pop(skey, None)
         self._journal(chat_id, {"dir": "in", "from": label,
                                 "persona": disp, "kind": "text",
+                                "message_id": msg.get("id"),
                                 "text": turn})
         self._journal(chat_id, {"dir": "out", "from": disp,
                                 "kind": "text", "text": reply or ""})

@@ -1,0 +1,57 @@
+name: media-inbox
+tier: smoke
+needs_tools: [doc_read]
+preflight:
+  # Fixture is seeded by chaba scripts/ada/media-inbox-fixture.py install
+  # on idc03 (files + manifest lines + one generator run). A 404 here
+  # means the fixture isn't installed — environment gap, not a bug.
+  - {check: http_ok, url: "https://157.85.102.125.sslip.io/relay-img/arch/mi-test/mifix-a.txt", label: media-fixture}
+cleanup:
+  mddb_delete:
+    # receipt leaves + extract leaves; the rollup self-heals on the next
+    # 15m media-inbox-update tick (fixture manifest lines persist until
+    # media-inbox-fixture.py clean is run).
+    - {collection: ada-cms-pages, contains: "mifix"}
+turns:
+  # T1 transport dedup: the fixture wrote mifix-a TWICE under the same
+  # message_id — the generator folds them into ONE receipt leaf carrying
+  # a redeliveries note. docs/kb/media-inbox-standard.md §3.
+  - user: "Use cms_read to open the page 'media-mifix-a' and tell me honestly whether it mentions redelivery or duplicate manifest lines."
+    expect:
+      calls_any: ["cms_read"]
+      response_contains_any: ["redeliver", "extra manifest line", "transport retry"]
+      timeout_s: 60
+      settle_s: 2
+  # T2 content dedup: mifix-b holds the same bytes under a new mid —
+  # its own leaf exists but points back at the canonical copy.
+  - user: "Use cms_read to open the page 'media-mifix-b' and tell me what its duplicate_of field says."
+    expect:
+      calls_any: ["cms_read"]
+      response_contains_any: ["media-mifix-a", "mifix-a"]
+      timeout_s: 60
+      settle_s: 2
+  # T3 extraction: first doc_read extracts via Gemini AND writes
+  # media-mifix-a-extract (the leaf IS the cache).
+  - user: "Read the document at /relay-img/arch/mi-test/mifix-a.txt with doc_read and tell me the booking ref."
+    expect:
+      calls_any: ["doc_read"]
+      result_contains: ["TEST-9917"]
+      timeout_s: 90
+      settle_s: 2
+  # Second read of the same mid: the tool must answer from the stored
+  # extract leaf — no fresh Gemini spend. The tool result carries
+  # cached:true and the leaf slug.
+  - user: "Read /relay-img/arch/mi-test/mifix-a.txt again — same document."
+    expect:
+      calls_any: ["doc_read"]
+      result_contains: ["media-mifix-a-extract"]
+      timeout_s: 60
+      settle_s: 2
+  # Dup-mid redirect: reading mifix-b (same sha256) returns the
+  # canonical mifix-a extract, flagged duplicate_of.
+  - user: "Read /relay-img/arch/mi-test/mifix-b.txt — different file name but check whether it's the same document."
+    expect:
+      calls_any: ["doc_read"]
+      result_contains: ["media-mifix-a-extract", "mifix-a"]
+      timeout_s: 60
+      settle_s: 2
