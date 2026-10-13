@@ -1,3 +1,4 @@
+import importlib.util
 import io
 import unittest
 
@@ -11,6 +12,9 @@ class PoseEstimatorTests(unittest.TestCase):
         self.assertTrue(MODEL_PATH.exists())
         self.assertGreater(MODEL_PATH.stat().st_size, 1_000_000)
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("ai_edge_litert") is not None,
+        "ai_edge_litert not installed on this host")
     def test_inference_returns_seventeen_normalized_keypoints(self) -> None:
         image = Image.new("RGB", (320, 240), "black")
         buffer = io.BytesIO()

@@ -1,0 +1,88 @@
+# SSOT Job: lazy tool schemas — name+blurb wire surface, server-side arg validation
+# Card: ada-lazy-tool-schemas (kanban). Dispatch 20261013-200555 (attempt 2).
+
+title: Lazy tool schemas — cold decls ship empty params, runner validates
+subtitle: |
+  Tool-attention pattern (arXiv 2604.21816 + vercel/ai lazy-tool PR +
+  Cursor dynamic context discovery): the ~50-decl param JSON was a large
+  share of the ~27.8k first-turn in= floor. Cold tools now declare
+  {name, <=300-char blurb, {"type":"object","properties":{}}}; the real
+  schema stays server-side where ToolRunner validates every call and
+  answers a miss with the tool_guide.yml usage hint (self-repair, no new
+  retry machinery).
+
+planning:
+  goal: |
+    1. Declared-surface split — full JSON schema only for the hot set
+       (set_facial_expression, ada_memory_search, cms_read, control_entity,
+       calendar_read, cast_to_screen, cctv_wall, docs, kanban, chat_send);
+       every other decl ships an empty object schema.
+    2. ToolRunner validates call args against the REAL schema on every
+       call; a miss returns ok:false + tool_guide.yml usage hint.
+    3. Deploy via deploy-ada.sh gates (tool-lint + pytest), restart
+       ada-ha-tony; benchmark first-turn in= before/after.
+  decisions: |
+    - Decl extraction: the inline FUNCTION_DECLARATIONS literal moved into
+      realtime_provider._builtin_declarations() — connect() filters and
+      _fill_bank_placeholders rewrite decl dicts per session, so the list
+      must be built fresh per call (sharing module-level dicts would leak
+      mutations between sessions).
+    - Hot set lives in realtime_provider.FULL_SCHEMA_TOOLS and is mirrored
+      in ssot.tool-surface.yml lazy_schemas.full_schema_tools — tool-lint
+      fails on drift between them, and on a hot name that isn't declared.
+    - Projection (_apply_lazy_schemas) runs LAST in connect() — after
+      exclusions, chaba allowlist, bank placeholders, camera and tools.d
+      appends — so every wire decl obeys one rule regardless of source.
+      Both schema keys are handled (builtin parameters_json_schema,
+      tools.d parameters). ADA_LAZY_SCHEMAS=0 is the kill switch;
+      ADA_FULL_SCHEMA_TOOLS=csv extends the hot set without a redeploy.
+    - Server-side validation (tool_runner/common.py::_validate_call_args)
+      is deliberately shallow: missing required keys, unknown keys
+      (hard-reject when additionalProperties:false OR when EVERY supplied
+      key is unknown — the total shape miss lazy mode produces),
+      structural type misses (container vs scalar), enum membership.
+      Scalar spellings ('5' for a number) pass — methods coerce as before.
+      It runs in _execute_gated AFTER alias remap and the confirmed/
+      confirm_token pops, BEFORE gates (no confirm token minted on a
+      malformed call) and BEFORE _normalize_args (which used to silently
+      strip unknowns — now the model gets a repairable miss instead).
+    - Real-schema map: realtime_provider.declared_tool_schemas() covers
+      builtins + CAMERA_DECLARATION + CHABA_DECLARATIONS (builtin wins
+      name collisions — chaba re-declares memory tools guest-scoped with
+      a property SUBSET; using it would reject habit args like
+      challenge_id). tools.d decls merge in via tools_loader at call time
+      so manifest-mtime reloads re-validate fresh.
+    - set_facial_expression is provider-dispatched (never reaches
+      ToolRunner.execute) so it keeps its full schema — top hot tool by
+      call volume regardless.
+    - Attempt 3 (dispatch 20261013-204402) fixes:
+      _ALIASES back-compat calls skip _validate_call_args — absorbed-name
+      implied defaults and _alias_call_args remap output are
+      server-internal contract, not model input (ada_daily_summary injects
+      period='digest', deliberately outside plan_day's declared enum;
+      ada_set_voice remaps to persona's *_voice actions; doc_upload_card
+      actions inject photo=/doc= seats). Model calls only ever use
+      canonical wire names, which still validate strictly.
+      Declaration gaps the schema gate exposed and now declares:
+      control_entity action='mute' (method's verify map always accepted
+      it alongside volume_mute); cast_to_screen shortcut= arg (absorbed
+      vcast_shortcut spelling — url= was already documented).
+      Test-env stubs committed: tests/dep_stubs.py + conftest.py install
+      duck-typed google.genai/fastapi modules and a pytest_pyfunc_call
+      fallback runner when the real packages are absent (bare gate
+      interpreters have no google-genai/fastapi/pytest-asyncio — attempt
+      2's uncommitted .teststubs is why the merge gate died collecting
+      test_calendar_providers.py). No-ops where real packages exist;
+      ai_edge_litert-bound inference tests skipUnless the module.
+      session-owner-policy.yaml: quoted the "on" arg key — YAML 1.1
+      parses the bare key as boolean True and the schema gate (correctly)
+      rejects non-string arg names before the owner check.
+      Enum/required misses on canonical tools now surface error_type
+      SchemaError (was the method's ValueError, or a PermissionError when
+      the call was also unconfirmed) — ok:false contract unchanged; tests
+      updated.
+meta: |
+  Wire measurement (50 decls, this worktree): decl JSON 63862 -> 27668
+  bytes (-56.7%), ~ -9k input tokens of the ~27.8k floor (chars/4 est).
+  Card hoped for ~10-15k floor; honest estimate is ~18-19k unless
+  instruction/context blocks also shrink.

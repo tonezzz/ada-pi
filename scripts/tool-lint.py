@@ -179,6 +179,27 @@ def _eval_str_list_dict(node: ast.AST) -> dict[str, dict]:
     return out
 
 
+def provider_const_set(provider_path: Path, name: str) -> frozenset:
+    """Eval a module-level set/frozenset constant in a source file
+    (e.g. realtime_provider.FULL_SCHEMA_TOOLS) without importing it."""
+    try:
+        tree = ast.parse(provider_path.read_text(encoding="utf-8"))
+    except OSError:
+        return frozenset()
+    for node in ast.walk(tree):
+        value = None
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == name
+                for t in node.targets):
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(
+                node.target, ast.Name) and node.target.id == name:
+            value = node.value
+        if value is not None:
+            return _eval_set(value, {})
+    return frozenset()
+
+
 def runner_src(repo: Path) -> Path:
     """tool_runner source: the package dir after tool-runner-split
     (backend/tool_runner/), else the legacy single file."""
@@ -399,6 +420,30 @@ def lint(repo: Path) -> dict:
                     f"{' and '.join(over)} ({path.name}:{d['lineno']}) — "
                     "the schema ships a <=2-line routing blurb; move prose "
                     "to backend/tool_guide.yml (the error path)")
+
+    # -- lazy-schema hot set (card ada-lazy-tool-schemas) --
+    # ssot lazy_schemas.full_schema_tools must equal the provider's
+    # FULL_SCHEMA_TOOLS constant and resolve to declared tools — the two
+    # lists are the same contract in two places; drift breaks the
+    # "schema the model sees" vs "schema the runner validates" pairing.
+    lazy = ssot.get("lazy_schemas") or {}
+    hot_decl = provider_const_set(
+        repo / "backend/realtime_provider.py", "FULL_SCHEMA_TOOLS")
+    hot_ssot = {str(n) for n in lazy.get("full_schema_tools") or []}
+    for n in sorted(hot_ssot - hot_decl):
+        errors.append(
+            f"lazyschema: {n} in ssot full_schema_tools but not in "
+            "realtime_provider.FULL_SCHEMA_TOOLS — change both in the "
+            "same commit")
+    for n in sorted(hot_decl - hot_ssot):
+        errors.append(
+            f"lazyschema: {n} in FULL_SCHEMA_TOOLS but missing from ssot "
+            "lazy_schemas.full_schema_tools — change both in the same "
+            "commit")
+    for n in sorted(hot_ssot - declared):
+        errors.append(
+            f"lazyschema: {n} keeps a full wire schema but is not a "
+            "declared tool")
 
     # -- duplicate declarations across builtin and tools.d --
     for name in sorted(set(surf["builtin"]) & set(surf["dynamic"])):

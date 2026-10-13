@@ -1,3 +1,4 @@
+import importlib.util
 import io
 import unittest
 
@@ -65,6 +66,9 @@ class HailoVisionTests(unittest.TestCase):
         self.assertAlmostEqual(box["y"], .4)
         self.assertEqual((box["width"], box["height"]), (.3, .4))
 
+    @unittest.skipUnless(
+        importlib.util.find_spec("ai_edge_litert") is not None,
+        "ai_edge_litert not installed on this host")
     def test_cpu_mode_keeps_contract_and_reports_backend(self):
         image = Image.new("RGB", (320, 240), "black")
         encoded = io.BytesIO(); image.save(encoded, "JPEG")

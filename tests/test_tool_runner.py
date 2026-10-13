@@ -267,7 +267,9 @@ class MemoryMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         out = await self.runner.execute(
             "ada_memory_search", {"query": "x", "scope": "bogus"})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        # Lazy-schema validation rejects enum misses at the schema gate
+        # before the method runs — same loud ok:false contract.
+        self.assertEqual(out["error_type"], "SchemaError")
 
 
 class CmsToolTests(unittest.IsolatedAsyncioTestCase):
@@ -305,16 +307,16 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         self.runner.mddb.add_document.assert_not_awaited()
 
     async def test_publish_rejects_missing_report_meta(self):
-        # meta_contract (ssot.apps.ada-cms-reports.yml): the gate refuses
-        # BEFORE the confirm handshake registers — the error names the
-        # missing fields so the model can fix and resubmit.
-        with self.assertRaises(ValueError) as ctx:
-            await self.runner.execute(
-                "cms_publish_page",
-                {"slug": "pool-notes", "title": "Pool", "content": "# hi"})
-        msg = str(ctx.exception)
+        # meta_contract (ssot.apps.ada-cms-reports.yml): the schema gate
+        # refuses BEFORE the confirm handshake registers — the result names
+        # the missing required fields so the model can fix and resubmit.
+        out = await self.runner.execute(
+            "cms_publish_page",
+            {"slug": "pool-notes", "title": "Pool", "content": "# hi"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "SchemaError")
         for f in ("summary", "domain", "fresh_for", "confidence"):
-            self.assertIn(f, msg)
+            self.assertIn(f, out["error"])
         self.runner.mddb.add_document.assert_not_awaited()
         # …and the rejected call never armed the pending-confirm slot.
         with self.assertRaises(PermissionError):
@@ -368,29 +370,40 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(meta["timeline"][0].endswith("published: Pool notes"))
 
     async def test_publish_rejects_bad_slug_and_format(self):
-        # Missing report-meta fails in the gate before confirmation registers.
+        # Missing report-meta fails at the schema gate before confirmation
+        # registers — same early-exit the old ValueError gate enforced.
         for bad in ({"slug": "../evil", "title": "x", "content": "x"},
                     {"slug": "ok", "title": "x", "content": "x", "format": "exe"}):
-            with self.assertRaises(ValueError):
-                await self.runner.execute("cms_publish_page", bad)
+            out = await self.runner.execute("cms_publish_page", bad)
+            self.assertFalse(out["ok"])
+            self.assertEqual(out["error_type"], "SchemaError")
         # With meta: the unconfirmed call registers pending and the gate
         # denies; confirmed calls pass the gate and fail validation inside
         # the method — a contract {ok: False} result, not an exception.
-        for bad in ({"slug": "../evil", "title": "x", "content": "x",
-                     **_PAGE_META},
-                    {"slug": "ok", "title": "x", "content": "x",
-                     "format": "exe", **_PAGE_META}):
-            with self.assertRaises(PermissionError):
-                await self.runner.execute("cms_publish_page", bad)
-        for bad in (
+        # (format= is an enum miss — the schema gate answers it before the
+        # confirm gate or method ever see the call.)
+        with self.assertRaises(PermissionError):
+            await self.runner.execute(
+                "cms_publish_page",
+                {"slug": "../evil", "title": "x", "content": "x",
+                 **_PAGE_META})
+        out = await self.runner.execute(
+            "cms_publish_page",
+            {"slug": "ok", "title": "x", "content": "x",
+             "format": "exe", **_PAGE_META})
+        self.assertEqual(out["error_type"], "SchemaError")
+        out = await self.runner.execute(
+            "cms_publish_page",
             {"slug": "../evil", "title": "x", "content": "x",
-             "confirmed": True, **_PAGE_META},
+             "confirmed": True, **_PAGE_META})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "ValueError")
+        out = await self.runner.execute(
+            "cms_publish_page",
             {"slug": "ok", "title": "x", "content": "x", "format": "exe",
-             "confirmed": True, **_PAGE_META},
-        ):
-            out = await self.runner.execute("cms_publish_page", bad)
-            self.assertFalse(out["ok"])
-            self.assertEqual(out["error_type"], "ValueError")
+             "confirmed": True, **_PAGE_META})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "SchemaError")
 
     async def test_list_and_get_are_not_gated(self):
         self.runner.mddb.search_documents.return_value = [
@@ -566,7 +579,8 @@ class CmsToolTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(PermissionError):
                 await self.runner.execute(
                     "cms_publish_page",
-                    {"slug": "x", "title": "x", "content": "x", "confirmed": True},
+                    {"slug": "x", "title": "x", "content": "x",
+                     "confirmed": True, **_PAGE_META},
                 )
         finally:
             os.environ.pop("ADA_READ_ONLY", None)
@@ -816,13 +830,13 @@ class CmsMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     async def test_canonical_actions_reject_unknown(self):
         out = await self.runner.execute("cms_read", {"action": "bogus"})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
-        # cms_edit is a write-tool seat — the confirm gate runs before
-        # action validation, same as cms_automation did pre-merge.
+        # Enum misses are answered at the schema gate — before the confirm
+        # gate or the method's own action validation.
+        self.assertEqual(out["error_type"], "SchemaError")
         out = await self.runner.execute(
             "cms_edit", {"action": "bogus", "confirmed": True})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
     async def test_canonical_read_and_edit_dispatch(self):
         pages = await self.runner.execute("cms_read", {"action": "list"})
@@ -1048,7 +1062,7 @@ class CalendarPlanMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("calendars", out)
         out = await self.runner.execute("calendar_read", {"action": "bogus"})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
     async def test_create_alias_keeps_confirm_gate(self):
         args = {"title": "dentist", "start": "2026-10-06T14:00",
@@ -1085,7 +1099,7 @@ class CalendarPlanMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         out = await self.runner.execute(
             "calendar_write", {"action": "bogus", "confirmed": True})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
     async def test_daily_summary_alias_returns_bare_digest(self):
         self.runner.mddb.get_document.return_value = {
@@ -1236,20 +1250,22 @@ class DocsDriveMergeAliasTests(unittest.IsolatedAsyncioTestCase):
             out = await self.runner.execute(
                 "docs", {"action": "search", "query": "deed"})
         self.assertEqual(out["output"], [])
-        # docs/drive hold the confirm-gated seats — the gate runs before
-        # action validation for anything that isn't a known free read.
-        with self.assertRaises(PermissionError):
-            await self.runner.execute("docs", {"action": "bogus"})
-        with self.assertRaises(PermissionError):
-            await self.runner.execute("drive", {"action": "bogus"})
+        # Bogus actions miss the declared enum — the schema gate answers
+        # before the confirm gate for the docs/drive write seats.
+        out = await self.runner.execute("docs", {"action": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "SchemaError")
+        out = await self.runner.execute("drive", {"action": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "SchemaError")
         out = await self.runner.execute(
             "docs", {"action": "bogus", "confirmed": True})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
         out = await self.runner.execute(
             "drive", {"action": "bogus", "confirmed": True})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
     async def test_docs_and_drive_denied_when_bank_not_allowed(self):
         self._allow.stop()
@@ -1401,7 +1417,7 @@ class MetaVoiceMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     async def test_ops_rejects_unknown_action(self):
         out = await self.runner.execute("ada_ops", {"action": "bogus"})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
     # -- guest_register -> ada_enroll_speaker who='guest' --
 
@@ -1644,14 +1660,16 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.provider.move_task.assert_awaited_once()
 
     async def test_tasks_rejects_unknown_action(self):
-        # gate runs before action validation (same as cms_edit) — a bogus
-        # action still needs confirmed to reach the ValueError.
-        with self.assertRaises(PermissionError):
-            await self.runner.execute("tasks", {"action": "bogus"})
+        # The schema gate runs before the confirm gate and the method's
+        # own action validation — a bogus action answers SchemaError
+        # either way.
+        out = await self.runner.execute("tasks", {"action": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "SchemaError")
         out = await self.runner.execute(
             "tasks", {"action": "bogus", "confirmed": True})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
     # -- home_status family ----------------------------------------------
 
@@ -1686,10 +1704,10 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out, {"battery": 2, "ok": True})
         out = await self.runner.execute("home_status", {"what": "bogus"})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
         out = await self.runner.execute("home_status", {})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
     # -- chat_send photo/doc flows ---------------------------------------
 
@@ -1765,10 +1783,10 @@ class TasksStatusMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_send_rejects_unknown_photo_doc(self):
         out = await self.runner.execute("chat_send", {"photo": "bogus"})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
         out = await self.runner.execute("chat_send", {"doc": "bogus"})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
     async def test_chat_send_photo_unconfigured_degrades_honestly(self):
         # The doc-archive service 501s when GPHOTO_REFRESH_TOKEN is
@@ -1854,7 +1872,7 @@ class YtMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     async def test_canonical_rejects_unknown_action(self):
         out = await self.runner.execute("yt", {"action": "bogus"})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
 
 
@@ -2225,15 +2243,16 @@ class DevinMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["output"], [])
         out = await self.runner.execute("devin_read", {"action": "bogus"})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
-        # devin is a confirm-gated seat — the gate runs before action
-        # validation, same as the absorbed writers did pre-merge.
-        with self.assertRaises(PermissionError):
-            await self.runner.execute("devin", {"action": "bogus"})
+        self.assertEqual(out["error_type"], "SchemaError")
+        # devin is a confirm-gated seat, but a bogus action misses the
+        # declared enum first — the schema gate answers before it.
+        out = await self.runner.execute("devin", {"action": "bogus"})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "SchemaError")
         out = await self.runner.execute(
             "devin", {"action": "bogus", "confirmed": True})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
     async def test_canonical_devin_dispatch(self):
         with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
@@ -3011,7 +3030,7 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["output"][0]["entity_id"], "sensor.temp")
         out = await self.runner.execute("home_search", {"kind": "bogus"})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
     # -- get_home_state --
 
@@ -3068,7 +3087,7 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         out = await self.runner.execute(
             "home_history", {"kind": "bogus"})
         self.assertFalse(out["ok"])
-        self.assertEqual(out["error_type"], "ValueError")
+        self.assertEqual(out["error_type"], "SchemaError")
 
     # -- control_entity --
 

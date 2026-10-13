@@ -736,6 +736,89 @@ def _tool_guide() -> dict[str, str]:
     return _TOOL_GUIDE
 
 
+# Real param schemas (card ada-lazy-tool-schemas, 2026-10-13): the wire
+# surface ships {"type":"object","properties":{}} for cold tools, so arg
+# shape is enforced HERE against the declaration of record — a miss
+# returns ok:false and _usage_hint attaches the tool_guide entry (the
+# repair path the gate denials already use), letting the model fix the
+# call and retry instead of paying schema tokens every turn up front.
+_BUILTIN_SCHEMAS: dict[str, dict[str, Any]] | None = None
+
+
+def _declared_schemas() -> dict[str, dict[str, Any]]:
+    """name -> declared params schema. Builtin + chaba decls live in
+    realtime_provider (lazy import — pulling the provider chain at
+    tool_runner load would cycle through backend.tool_runner); tools.d
+    decls ride their registry so manifest edits re-validate fresh."""
+    global _BUILTIN_SCHEMAS
+    if _BUILTIN_SCHEMAS is None:
+        try:
+            from backend import realtime_provider
+            _BUILTIN_SCHEMAS = realtime_provider.declared_tool_schemas()
+        except Exception:
+            logger.debug("declared schema map unavailable", exc_info=True)
+            _BUILTIN_SCHEMAS = {}
+    out = dict(_BUILTIN_SCHEMAS)
+    for n, spec in tools_loader.registry().tools.items():
+        schema = spec.declaration.get("parameters") \
+            or spec.declaration.get("parameters_json_schema")
+        if isinstance(schema, dict):
+            out[n] = schema
+    return out
+
+
+_STRUCT_TYPES = {"array": list, "object": dict}
+_SCALAR_TYPES = {"string", "number", "integer", "boolean"}
+
+
+def _validate_call_args(name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+    """Check call args against the tool's real declaration schema; returns
+    an ok:false result on a miss, None when acceptable or the schema is
+    unknown. Deliberately shallow — required keys, enum membership,
+    structural type misses (container vs scalar — scalar spellings like
+    '5' for a number pass through to the method's own coercion), and
+    unknown keys: hard-rejected when the schema declares properties AND
+    (additionalProperties is false or EVERY supplied key is unknown — a
+    total shape miss, the lazy-mode failure the repair hint exists for)."""
+    schema = _declared_schemas().get(name)
+    if not isinstance(schema, dict):
+        return None
+    props = schema.get("properties")
+    props = props if isinstance(props, dict) else {}
+    problems: list[str] = []
+    missing = [str(k) for k in schema.get("required") or []
+               if k not in args]
+    if missing:
+        problems.append("missing required " +
+                        ", ".join(f"'{k}'" for k in missing))
+    unknown = [k for k in args if k not in props]
+    if unknown and props and (schema.get("additionalProperties") is False
+                              or len(unknown) == len(args)):
+        problems.append("unknown args " +
+                        ", ".join(f"'{k}'" for k in sorted(unknown)))
+    for k, v in args.items():
+        spec = props.get(k)
+        if not isinstance(spec, dict):
+            continue
+        t = spec.get("type")
+        if (t in _STRUCT_TYPES and not isinstance(v, _STRUCT_TYPES[t])) \
+                or (t in _SCALAR_TYPES and isinstance(v, (dict, list))):
+            problems.append(f"arg '{k}' should be {t}")
+        enum = spec.get("enum")
+        if isinstance(enum, (list, tuple)) and enum and v not in enum:
+            problems.append(
+                f"arg '{k}' must be one of {json.dumps(list(enum), default=str)}")
+    if not problems:
+        return None
+    return {
+        "ok": False,
+        "error": f"{name} call args rejected: " + "; ".join(problems),
+        "error_type": "SchemaError",
+        "expected_args": sorted(str(k) for k in props),
+        "required": [str(k) for k in schema.get("required") or []],
+    }
+
+
 def _alias_call_args(alias: str, args: dict[str, Any]) -> dict[str, Any]:
     """Surrogate-arg mapping for absorbed names whose parameters don't
     match the canonical tool 1:1 — the spec keeps this explicit per

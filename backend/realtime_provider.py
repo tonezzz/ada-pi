@@ -946,6 +946,1743 @@ def _fill_bank_placeholders(node: Any, banks: str, writable: str) -> Any:
     return node
 
 
+def _builtin_declarations() -> list[dict[str, Any]]:
+    """The builtin tool surface, built fresh per call — connect() filters
+    (text_only, ADA_EXCLUDED/INCLUDED_TOOLS, chaba allowlist) and
+    _fill_bank_placeholders rewrite the dicts per session, so the
+    declarations must never be shared between sessions."""
+    return [{
+            "name": "set_facial_expression",
+            "description": (
+                "Changes Ada's visible facial expression without interrupting speech. "
+                "Select the expression matching the tone of Ada's current response."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "enum": list(EXPRESSION_NAMES),
+                        "description": "The facial expression Ada should display.",
+                    }
+                },
+                "required": ["expression"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "get_home_state",
+            "description": (
+                "Read-only home state — plugs, occupancy, habit conditions "
+                "(absorbs ada_ha_get_state). entity_id= reads one entity live; "
+                "domain= lists a domain; domain='memory' returns the stored snapshot."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {
+                        "type": "string",
+                        "description": "Optional exact entity_id to read live, e.g. binary_sensor.front_door.",
+                    },
+                    "domain": {
+                        "type": "string",
+                        "description": "Optional HA domain to list (e.g. 'light', 'sensor'), or 'memory' for the stored snapshot.",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "control_entity",
+            "description": (
+                "Actuate one Home Assistant entity (absorbs control_cover, "
+                "press_button, control_media_player) — on=/action= picked by the "
+                "entity's domain. Only media_player.tony_tv/tony_tv_cast are ours."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {
+                        "type": "string",
+                        "description": "The Home Assistant entity_id to control, e.g. light.living_room or cover.gate_motor.",
+                    },
+                    "on": {
+                        "type": "boolean",
+                        "description": "For light/switch/fan/input_boolean entities: true to turn on, false to turn off.",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["on", "off", "open", "close", "stop", "press",
+                                 "turn_on", "turn_off", "media_play", "media_pause",
+                                 "media_stop", "volume_up", "volume_down",
+                                 "volume_mute", "mute", "select_source"],
+                        "description": "Domain action: on|off for simple entities; open|close|stop for cover.*; press for button.*; media_player verbs for media_player.* (source= required for select_source).",
+                    },
+                    "source": {
+                        "type": "string",
+                        "description": "media_player select_source only: the input/source name to select.",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Required for dangerous-safety entities; set true only after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                },
+                "required": ["entity_id"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "home_search",
+            "description": (
+                "Find HA devices, sensors, or recorded events — kind='device'|"
+                "'sensor'|'event' (absorbs the list/search/ada_ha_search_* tools); "
+                "blank query lists the kind. Use it to get the exact entity_id "
+                "before control_entity."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Name or keyword to search, e.g. 'kitchen table', 'front gate', 'pool temperature', 'door'. Blank lists the kind instead.",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["device", "sensor", "event"],
+                        "description": "What to find: a controllable device (default), a sensor entity, or recorded events.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "description": "Maximum results. Default 10.",
+                    },
+                    "hours": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 720,
+                        "description": "kind='event' only: how many hours of recorded events to search. Default 24.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "yt",
+            "description": (
+                "YouTube/media on the living-room TV — action='cast' PLAYS a video "
+                "(.mp4/.m3u8 URL or search phrase) only on an explicit play request — "
+                "'find a clip' is a lookup (web_search), never a cast. 'status'|'stop'|"
+                "'transcript'. Dark screen -> tv_action; vcast screen -> cast_to_screen."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["cast", "status", "stop", "transcript"],
+                        "description": "Operation: cast a video, check cast progress, stop casting, or fetch a transcript.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "cast: YouTube URL, media file URL, or search phrase, e.g. 'the egg kurzgesagt'.",
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "transcript: YouTube URL or video ID.",
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": (
+                            "cast: target subtitle language shown below the original-language "
+                            "line; transcript: caption language to prefer (default 'th' for Thai, "
+                            "falls back to en)."
+                        ),
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "tv_action",
+            "description": (
+                "Send a command to the LG TV's cast-browser via HA "
+                "rest_command.tv_action — cmd=nav|scroll|click|type|press|back|shot|"
+                "viewport|power, payload in text=. vcast display panes use "
+                "cast_to_screen instead; never for answering questions."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "cmd": {
+                        "type": "string",
+                        "description": "Command key: nav|scroll|click|type|press|back|shot|viewport|power.",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Command text/payload: nav target (URL, 'gev' for live God's Eye View, 'screenlive:workspace:N[:pad|crop]', 'tony-omen:workspace:N'), scroll direction, visible text to click, text to type (cmd=type takes ONLY the exact words the user just dictated — empty or placeholder text like 'your-*', '<...>', 'xxx' is refused), or shot/viewport args.",
+                    },
+                    "selector": {"type": "string", "description": "CSS selector for click."},
+                    "role": {"type": "string", "description": "ARIA role for click (e.g. 'button')."},
+                    "key": {"type": "string", "description": "Key name for press (e.g. 'Enter', 'Escape')."},
+                    "dx": {"type": "number", "description": "Horizontal scroll amount (px)."},
+                    "dy": {"type": "number", "description": "Vertical scroll amount (px)."},
+                    "factor": {"type": "number", "description": "Scroll amount as fraction of viewport height."},
+                },
+                "required": ["cmd"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "cast_to_screen",
+            "description": (
+                "Drive the numbered vcast displays (browser/PWA — NOT the TV; "
+                "absorbs vcast_say/list/status/shortcut + claim/assign/background). "
+                "Interrupts and camera captures need confirmed=true. See tool_guide."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "screen": {
+                        "type": "integer",
+                        "description": "Screen number (the # shown on the display and in action='list'). Not needed for action='list'.",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["nav", "play", "image", "audio",
+                                 "cast", "shortcut", "stop",
+                                 "layout", "zoom", "unzoom",
+                                 "uplink", "uplink-stop",
+                                 "say", "list", "status",
+                                 "claim", "assign", "background"],
+                        "description": "nav=web page | play=video mp4/m3u8 or YouTube/Vimeo watch URL (auto-embeds on screen) | image=still jpg/png | audio | cast=auto-route by content | shortcut=named /apps/<name>/ app | stop | layout | zoom | unzoom | uplink | uplink-stop | say=narrate text aloud on the display | list=enumerate displays | status=one screen's live state | claim=pair a pending display by the 4-digit code on its QR (pass the code in text) | assign=retitle/renumber a display (name + to_screen) | background=veil the screen but keep its audio playing, mode='off' restores (default nav). Pick by content type.",
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Target URL for nav/play/image/audio/cast, or the app name for action='shortcut'. Not needed for stop/layout/zoom/unzoom/say/list/status.",
+                    },
+                    "shortcut": {
+                        "type": "string",
+                        "description": "For action='shortcut': the named /apps/<name>/ app (absorbed vcast_shortcut arg spelling; url= works too).",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "For action='say': short spoken line, plain text, under ~200 chars.",
+                    },
+                    "pane": {
+                        "type": "integer",
+                        "description": "Sub-pane index 0..N-1 on a split screen (0=left/top). Also used by zoom and pane-targeted stop.",
+                    },
+                    "panes": {
+                        "type": "integer",
+                        "description": "For action=layout: split the screen into 2-5 panes.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "For action=layout: 'pip' floats panes 1..N top-right over a fullscreen pane 0 (picture-in-picture); omit for the normal grid split. For action=background: 'off' lifts the veil (default toggles it on).",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "For action=claim/assign: the display's human label, e.g. 'living-room' — shown as 'Screen N · living-room' and usable in place of the number.",
+                    },
+                    "to_screen": {
+                        "type": "integer",
+                        "description": "For action=assign: renumber the display to this screen number (must be free).",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Required for action='uplink' (camera capture) and for interrupting a busy screen (capture/camwall/playing — see needs_confirm) — set true only after the user explicitly confirms.",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "vcast_snapshot",
+            "description": (
+                "Capture what a vcast display is actually showing — verify after a "
+                "cast instead of trusting the reported state flag. One still frame "
+                "per call, a few seconds old. Not for the TV."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "screen": {
+                        "type": "integer",
+                        "description": "Screen number (the # shown on the display and in cast_to_screen action='list').",
+                    },
+                },
+                "required": ["screen"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "chat_send",
+            "description": (
+                "Send a LINE/Telegram message in the background — 'queued' returns "
+                "first, the outcome lands later as a system note. camera=/image_url= "
+                "attach an image; photo=/doc= run the picker/upload flows; say= sends "
+                "a voice message (LINE and Telegram)."
+            ),
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "channel": {
+                        "type": "string",
+                        "description": "'line', 'telegram', or 'line,telegram'/'both'. Default 'line'.",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Message text / image caption.",
+                    },
+                    "camera": {
+                        "type": "string",
+                        "description": "VMS camera channel name — a fresh snapshot is taken and attached.",
+                    },
+                    "image_url": {
+                        "type": "string",
+                        "description": ("URL of an existing image to send (camwall thumb or a cast_url "
+                        "you already produced). For CMS page images, cms_read the page "
+                        "first and copy the asset URL verbatim — never construct or "
+                        "guess a URL; a guessed URL fetches 404 and the image is dropped."),
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "Optional explicit LINE userId or Telegram chat_id; default = owner.",
+                    },
+                    "say": {
+                        "type": "string",
+                        "description": "Voice-note text — synthesized to speech (your voice) and pushed as a voice message. LINE and Telegram; keep it short and speakable.",
+                    },
+                    "photo": {
+                        "type": "string",
+                        "enum": ["pick", "picked"],
+                        "description": "Photos picker flow: 'pick' opens a picker session (returns picker_uri), 'picked' polls it and delivers the selection.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Picker session id (required with photo='picked').",
+                    },
+                    "screen": {
+                        "type": "integer",
+                        "description": "Vcast screen to cast the first picked item to (photo='picked', default 1).",
+                    },
+                    "show": {
+                        "type": "boolean",
+                        "description": "Cast the first picked item to the screen (default true).",
+                    },
+                    "doc": {
+                        "type": "string",
+                        "enum": ["show", "process", "card"],
+                        "description": "Document-upload flow: 'show' texts the held upload's summary, 'process' returns its intake assessment, 'card' runs a card button via op.",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Held document intake key (doc= flows; default: newest upload).",
+                    },
+                    "op": {
+                        "type": "string",
+                        "description": "Card button for doc='card' — 'archive' files the held upload (confirmation-gated).",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "vcast_gesture",
+            "description": (
+                "Enable/disable gesture control on a vcast display — mode='room' "
+                "(wake-on-motion), 'hand' (hand tracking), 'off'."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "screen": {
+                        "type": "integer",
+                        "description": "Screen number (the # shown on the display and in cast_to_screen action='list').",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "description": "off | room | hand (default off).",
+                    },
+                },
+                "required": ["screen"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "cctv_wall",
+            "description": (
+                "Show a live camera wall (periodic thumbnail grid) for a zone on a "
+                "vcast display — action='start'|'stop'|'settings'|'status'. For a "
+                "one-off look use ada_camera_snapshot instead; offer the wall when a "
+                "camera zone becomes the focus."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "'start' (default), 'stop', 'settings' (tune zone knobs — no cast, no confirm needed), or 'status' (per-cam live/down, ages, yolo counts — for 'what's on the wall' questions).",
+                    },
+                    "zone": {
+                        "type": "string",
+                        "description": "'zone-a', 'noble-park', 'tony-house', 'vms-noble-club', 'vms-noble-a', 'rama9' (traffic demo — Bangkok road cams), 'traffic' (DOH Bangkok), 'burapha' (Bangna–Burapha expressway), or 'chonburi' (Chonburi corridor).",
+                    },
+                    "screen": {
+                        "type": "integer",
+                        "description": "vcast screen number (cast_to_screen action='list') — default 1.",
+                    },
+                    "pane": {
+                        "type": "integer",
+                        "description": "sub-pane index on a split screen — cast the wall into one pane instead of the whole screen.",
+                    },
+                    "settings": {
+                        "type": "object",
+                        "description": "Zone knobs: interval (s), jpeg_q (1-8), thumb_w (px), cams_skip [keys], cams_extra [{label,kind,url}], effects ['timestamp','grid','yolo:person,car@0.35'].",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "When the user explicitly asked for the wall, set true — their request is the consent. Only needed for guest voices or captures you propose unprompted.",
+                    },
+                },
+                "required": ["zone"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "gev_command",
+            "description": (
+                "Drive God's Eye View (the Cesium map at /apps/gev/) on connected "
+                "screens — name+args per the GEV schema. tour='<id|alias|place>' "
+                "returns an executable tour card (absorbs gev_tour; '' lists tours)."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "GEV tool name — required for a command; omit for a tour lookup."},
+                    "args": {"type": "object", "description": "Tool arguments (per GEV tools.json). Known commands are validated against that schema before relay — a rejected call returns the expected args in the error; fix and retry."},
+                    "screen": {"type": "integer", "description": "Limit to this vcast screen (omit = all GEV pages)."},
+                    "pane": {"type": "integer", "description": "Limit to this split-screen pane (0-based; omit = all panes)."},
+                    "wait": {"type": "number", "description": "Seconds to wait for client responses (0 = fire-and-forget). Default 3."},
+                    "tour": {"type": "string", "description": "Tour id, alias, or place name — 'za', 'bangkok', 'แอฟริกาใต้'. Pass '' to list tours. When set, name/args are ignored."},
+                },
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "home_status",
+            "description": (
+                "Merged home-status reads — what='battery'|'power'|'inverter'|"
+                "'pool'|'dashboard'|'habit' (absorbs the get_*_status getters)."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "what": {
+                        "type": "string",
+                        "enum": ["battery", "power", "inverter", "pool",
+                                 "dashboard", "habit"],
+                        "description": "Which status read to run.",
+                    },
+                    "battery_index": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3,
+                        "description": "what='battery' only: detail one battery (1, 2, or 3); omit for the whole bank.",
+                    },
+                    "hours": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 168,
+                        "description": "what='power' only: hours of history in the summary (default 24).",
+                    },
+                    "tab": {
+                        "type": "string",
+                        "description": "what='dashboard' only: the dashboard tab title, e.g. 'TPL', 'V0', 'V1', 'SK'.",
+                    },
+                },
+                "required": ["what"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "get_rk600_weather",
+            "description": (
+                "Local RK600 weather station readings — wind, temperature, humidity, "
+                "pressure, rainfall. Only for explicit current-weather questions."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "home_history",
+            "description": (
+                "HA history/event reads — kind='logbook'|'events'|'timeline'|'series'|"
+                "'snapshots' (absorbs get_logbook, get_sensor_history, "
+                "get_entity_events, get_recent_events, ada_ha_history)."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["logbook", "events", "timeline", "series", "snapshots"],
+                        "description": "Which history read. Optional — defaults to timeline/series for entity_id, events for query, snapshots for domain='memory', else logbook.",
+                    },
+                    "entity_id": {
+                        "type": "string",
+                        "description": "timeline/series (required there), logbook (optional narrow): the exact entity_id, e.g. binary_sensor.front_door or sensor.inverters_1_pv_power.",
+                    },
+                    "domain": {
+                        "type": "string",
+                        "description": "Optional HA domain to restrict events/logbook to (e.g. 'cover'), or 'memory'/'snapshots' for the persisted snapshots read.",
+                    },
+                    "hours": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 720,
+                        "description": "How many hours back the window covers. Defaults to 24.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "events: optional keyword to limit the feed, e.g. 'door', 'gate', 'kitchen'.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "description": "Maximum events/snapshots to return. Defaults to 25.",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        },  {
+            "name": "ha_confidence",
+            "description": (
+                "Device trust/safety registry (absorbs ada_ha_*_device_confidence) — "
+                "no args lists devices by confidence+safety; entity_id reads one; "
+                "entity_id + status/safety writes."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {
+                        "type": "string",
+                        "description": "Optional exact entity_id — alone it reads one device, with status/safety it writes.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["trusted_working", "trusted_broken", "learning", "needs_integration"],
+                        "description": "Write path: the confidence level to assign.",
+                    },
+                    "safety": {
+                        "type": "string",
+                        "enum": ["safe", "caution", "dangerous"],
+                        "description": "Write path: the safety level to assign.",
+                    }
+                },
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "ada_session_recall",
+            "description": (
+                "Recall past voice conversations (scope='sessions', background ~20s) "
+                "or stored HA memory (scope='history', absorbs ada_ha_recall). "
+                "For facts and stored documents use ada_memory_search instead."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The recall question, e.g. 'what did we discuss in the previous session?'.",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["sessions", "history"],
+                        "description": (
+                            "'sessions' (default) deep-recalls past conversations "
+                            "in the background; 'history' searches the stored "
+                            "Home Assistant device/sensor memory plus recorded "
+                            "events inline (the absorbed ada_ha_recall)."
+                        ),
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "description": "scope='history' only — maximum results (default 10).",
+                    },
+                    "group": {
+                        "type": "string",
+                        "enum": ["memory", "infra", "apps", "kb", "ops"],
+                        "description": (
+                            "Which notebook to search. "
+                            "memory: past voice conversations (default). "
+                            "infra: hosts, services, ports, tailscale, hardware, MCP. "
+                            "apps: Ada/PWA, Home Assistant dashboards, playlive. "
+                            "kb: mddb, yomi, SSOT, documentation, source maps. "
+                            "ops: workflows, tasks, experiments, project state."
+                        ),
+                    },
+                    "bank": {
+                        "type": "string",
+                        "description": (
+                            "Optional curated memory bank to search instead of a notebook "
+                            "group ({banks}), or 'all' to search every bank. "
+                            "Bank recall checks the fast memory tier first and only "
+                            "escalates to NotebookLM when nothing is found."
+                        ),
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": (
+                            "Override the redundant-recall gate — use ONLY when the user "
+                            "explicitly pushes for a deeper search after a recent "
+                            "confident hit ('dig deeper', 'check again', 'you missed it')."
+                        ),
+                    },
+                },
+                "required": ["question"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "ada_memory_search",
+            "description": (
+                "Search memory — curated banks, sessions, guest notes "
+                "(absorbs guest_recall); scope=/bank= pick the store. "
+                "First tool for factual lookups; returns keys for "
+                "ada_remember/ada_forget."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["all", "banks", "sessions", "guest"],
+                        "description": (
+                            "Where to search. 'all' (default) fans out over the "
+                            "curated banks plus session summaries (plus guest "
+                            "notes on guest instances); 'banks' restricts to the "
+                            "curated banks named by bank=; 'sessions' searches "
+                            "session/daily/weekly summaries; 'guest' searches "
+                            "public guest memories (the absorbed guest_recall)."
+                        ),
+                    },
+                    "bank": {
+                        "type": "string",
+                        "description": "Memory bank name ({banks}), or 'all' to search every bank — default when unsure. 'all' demotes bulk archives (devin session dumps); name a bank explicitly to dig them.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "What to look for, e.g. 'gate remote' or 'coffee preferences'.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "Maximum memories to return. Defaults to 5.",
+                    },
+                    "include_inactive": {
+                        "type": "boolean",
+                        "description": "Also return superseded, retracted, and expired memories. Default false.",
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "web_search",
+            "description": (
+                "Search the public internet for current facts — news, prices, "
+                "forecasts. Fallback: check reports-index / ada_memory_search "
+                "bank='cms' first for already-covered topics."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search question, e.g. 'Bangkok flood road closures latest'.",
+                    },
+                    "provider": {
+                        "type": "string",
+                        "description": (
+                            "Search backend: 'auto' (default — grounded answer, free "
+                            "fallback on quota), 'gemini' (grounded, billed), or "
+                            "'duckduckgo' (free, no quota — use when asked for it or "
+                            "when grounded quota is exhausted). When the result carries "
+                            "quota_exhausted/degraded, briefly tell the user live search "
+                            "is degraded — never pass fallback hits off as grounded."
+                        ),
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "ada_remember",
+            "description": (
+                "Store or update a memory (absorbs vocab_note, guest_remember*, "
+                "report_habit_observation) — bank= + kind=; a matching "
+                "key/subject+attribute updates in place. Some banks need "
+                "confirmed=true after a spoken yes."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "bank": {
+                        "type": "string",
+                        "description": "Memory bank name ({writable_banks}). Required for the curated-bank kinds (fact/preference/person/procedure/note).",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "The fact or note to store, phrased as a standalone sentence. For kind='vocab': 'term → correction'.",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Existing document key to correct in place (from ada_memory_search), or the guest-memory slug for kind='guest'. Omit to find-or-create.",
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "What the memory is about, slug-style, e.g. 'gate-remote'. Used to find existing facts about the same thing.",
+                    },
+                    "attribute": {
+                        "type": "string",
+                        "description": "Which aspect of the subject, e.g. 'location'. Combined with subject for update detection.",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["fact", "preference", "person", "procedure",
+                                 "note", "vocab", "guest", "habit"],
+                        "description": (
+                            "Memory kind. Curated-bank kinds default to note. "
+                            "vocab: speaker's own glossary append (no bank, no "
+                            "confirmation). guest: chaba guest store (pair with "
+                            "private for a promoted user's private notes). "
+                            "habit: camera-observation verdict — needs the "
+                            "habit_* / challenge_id fields below."
+                        ),
+                    },
+                    "private": {
+                        "type": "boolean",
+                        "description": "kind='guest' only — save to the promoted user's private namespace instead of the public one.",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "kind='vocab' only — optional one-line meaning or context appended to the entry.",
+                    },
+                    "challenge_id": {
+                        "type": "string",
+                        "description": "kind='habit' only — the challenge id supplied by the habit monitor's prompt.",
+                    },
+                    "habit_key": {
+                        "type": "string",
+                        "enum": ["not_drinking_enough_water", "junk_food"],
+                        "description": "kind='habit' only — the habit under review.",
+                    },
+                    "observed": {
+                        "type": "boolean",
+                        "description": "kind='habit' only — whether the challenged behavior was observed.",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": "kind='habit' only — confidence in the verdict.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "kind='habit' only — short evidence summary.",
+                    },
+                    "item_identified": {
+                        "type": "string",
+                        "description": "kind='habit' junk-food only — the specific visible food or drink; empty when none is identifiable.",
+                    },
+                    "consumption_visible": {
+                        "type": "boolean",
+                        "description": "kind='habit' junk-food only — true only when actual eating or drinking is visibly confirmed.",
+                    },
+                    "classified_unhealthy": {
+                        "type": "boolean",
+                        "description": "kind='habit' junk-food only — true only when the identified item clearly belongs to the configured unhealthy categories.",
+                    },
+                    "valid_until": {
+                        "type": "string",
+                        "description": "Optional ISO date after which this memory expires, e.g. '2026-10-01'.",
+                    },
+                    "supersedes": {
+                        "type": "string",
+                        "description": "Key of an existing memory this one replaces. The old memory is marked superseded, not deleted.",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                    "prime": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true only for facts worth injecting into every new "
+                            "session's context, e.g. durable device-name mappings. "
+                            "Use sparingly — primed facts cost tokens every turn."
+                        ),
+                    },
+                },
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "ada_forget",
+            "description": (
+                "Retract a memory (bank= + key=) — it stops surfacing in recall "
+                "but stays in the archive for audit."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "bank": {
+                        "type": "string",
+                        "description": "Memory bank name ({writable_banks}).",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Document key to retract (from ada_memory_search).",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Optional reason for the retraction.",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                },
+                "required": ["bank", "key"],
+                "additionalProperties": False,
+            },
+        }, {
+            # tools-merge-meta-voice (2026-10-05): one ops/meta seat
+            # absorbing ada_outcome, ada_usage_summary, ada_mddb_health,
+            # ada_decision_check and ada_deep_research. outcome is the
+            # only bank write (confirmed-policy gate stays); check and
+            # research run in the background and speak their results.
+            "name": "ada_ops",
+            "description": (
+                "Ops/meta — outcome|usage|health|check|research|report|acl_explain "
+                "— see tool_guide; 'report' returns report freshness and starts a "
+                "background refresh (answer cached numbers now, fresh lands next)."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["outcome", "usage", "health", "check", "research", "report", "acl_explain"],
+                        "description": "outcome=record a result on a memory/check; usage=token/cost report; health=memory-db vector health; check=purchase verification (background); research=multi-round web research (background); report=system report freshness + live refresh (node=name or default system-report, depth=leaf|subtree|full); acl_explain=why an identity can/can't act — needs entity_id= and/or bank= (+tool= for a bank write), identity= to check someone else.",
+                    },
+                    "node": {
+                        "type": "string",
+                        "description": "action=report: report-graph node to refresh (default system-report — the whole chain).",
+                    },
+                    "bank": {
+                        "type": "string",
+                        "description": "action=outcome: memory bank name ({writable_banks}).",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "action=outcome: document key the outcome applies to (from ada_memory_search or a check result).",
+                    },
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["good", "bad", "partial", "skipped", "worked", "failed", "bought_good", "bought_bad"],
+                        "description": "action=outcome: how it turned out. bought_good/bought_bad for purchase checks, worked/failed for procedures, skipped when it was never exercised.",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "action=outcome: optional detail about the outcome.",
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["all", "live", "posture", "clutter"],
+                        "description": "action=usage: which usage source to report; 'all' aggregates everything.",
+                    },
+                    "reset": {
+                        "type": "boolean",
+                        "description": "action=usage: zero the counters after reporting; only when the user asks.",
+                    },
+                    "collection": {
+                        "type": "string",
+                        "description": "action=health: optional — limit the report to one collection name.",
+                    },
+                    "product": {
+                        "type": "string",
+                        "description": "action=check: product description or pasted listing details — name, price, shop, ratings, specs.",
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "action=check: listing URL if the user shared one.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["quick", "deep"],
+                        "description": "action=check: quick = fast red-flag/price check (default); deep = thorough spec verification plus alternatives.",
+                    },
+                    "topic": {
+                        "type": "string",
+                        "description": "action=research: the research subject as the user stated it.",
+                    },
+                    "depth": {
+                        "type": "string",
+                        "enum": ["standard", "deep", "leaf", "subtree", "full"],
+                        "description": "action=research: standard = 3 search rounds (default); deep = 5 — only when the user asks for a thorough report. action=report: refresh scope leaf|subtree (default)|full.",
+                    },
+                    "identity": {
+                        "type": "string",
+                        "description": "action=acl_explain: whose access to explain, e.g. 'person.kk' (default: this session's identity).",
+                    },
+                    "entity_id": {
+                        "type": "string",
+                        "description": "action=acl_explain: HA entity the identity wants to control, e.g. 'media_player.tv'.",
+                    },
+                    "tool": {
+                        "type": "string",
+                        "description": "action=acl_explain: with bank= — resolve a bank WRITE for this tool, not just bank access.",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "action=outcome on confirmed-policy banks; set true only after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        }, {
+            # tools-merge-meta-voice: absorbed ada_set_voice — the
+            # *_voice actions manage the actual speaking voice;
+            # set_voice persists and applies after a brief reconnect.
+            "name": "ada_persona",
+            "description": (
+                "Read/adjust a speaker's style preferences — action=set|show|reset|"
+                "list, person= targets another member. The *_voice actions manage "
+                "the speaking voice (absorbs ada_set_voice)."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["set", "show", "reset", "list",
+                                 "set_voice", "show_voice",
+                                 "list_voices"],
+                    },
+                    "knob": {
+                        "type": "string",
+                        "enum": ["tone", "verbosity", "formality", "language",
+                                 "address_name", "emoji", "proactiveness"],
+                        "description": "Required for set. tone=warm/direct/professional/playful; verbosity=brief/normal/detailed; formality=casual/polite/formal; language=auto/en/th; sassiness=none/light/playful; proactiveness=minimal/normal/proactive.",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "Required for set — the new value (address_name takes free text; emoji takes true/false).",
+                    },
+                    "person": {
+                        "type": "string",
+                        "description": (
+                            "Optional. Target another person's profile instead of the "
+                            "current speaker — a Home Assistant person entity "
+                            "('person.kk') or a person's name ('KK'). Requires a "
+                            "full-access caller; use action 'list' first to see "
+                            "known people."
+                        ),
+                    },
+                    "voice": {
+                        "type": "string",
+                        "enum": list(voice_config.GEMINI_VOICES),
+                        "description": "Required for set_voice — the Gemini Live voice name.",
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        }, {
+            # tools-merge-meta-voice: absorbed guest_register —
+            # who='guest' registers a visitor name (chaba guests);
+            # who='speaker' (default) is the voice enrollment.
+            "name": "ada_enroll_speaker",
+            "description": (
+                "Enroll the current speaker's voice from buffered audio "
+                "(who='speaker') or register a visitor name (who='guest'). "
+                "Pass the real name and ha_person when it matches an HA person."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "who": {
+                        "type": "string",
+                        "enum": ["speaker", "guest"],
+                        "description": "speaker (default): voice-enroll the current speaker from buffered audio. guest: register a visitor's name for later admin promotion (guest/Chaba sessions).",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Speaker name (e.g. 'Tony', 'KK').",
+                    },
+                    "ha_person": {
+                        "type": "string",
+                        "description": "Home Assistant person entity for this speaker (e.g. 'person.tony').",
+                    },
+                    "display_name": {
+                        "type": "string",
+                        "description": "Display name for personalization (defaults to name).",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Owner-confirmed force-replace for a stale/poisoned voice profile — set true only after the speaker explicitly confirms.",
+                    },
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "calendar_read",
+            "description": (
+                "Calendar reads — action='events'|'calendars'|'freebusy' "
+                "(absorbs calendar_list_*/calendar_freebusy); first call for "
+                "schedule and free-time questions."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["events", "calendars", "freebusy"],
+                        "description": "Read operation.",
+                    },
+                    "day": {
+                        "type": "string",
+                        "description": "events/freebusy: day to read — 'today', 'tomorrow', or ISO date 'YYYY-MM-DD'. Default 'today'.",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 31,
+                        "description": "events/freebusy: number of days to span starting at day. Default 1; use 7 for 'this week'.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "events: optional text filter on event titles, e.g. 'dentist'.",
+                    },
+                    "calendar": {
+                        "type": "string",
+                        "description": "events: optional 'provider:calendar_id' to read one calendar only (from action='calendars').",
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "plan_day",
+            "description": (
+                "Merged day view or weekly digest — period='today'|'tomorrow'|"
+                "'week', day= overrides the target (absorbs ada_daily_summary/"
+                "ada_weekly_comparison). Read-only; never create events here."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "period": {
+                        "type": "string",
+                        "enum": ["today", "tomorrow", "week"],
+                        "description": "Which window: a day's merged plan ('today' default, 'tomorrow') or the weekly digest ('week').",
+                    },
+                    "day": {
+                        "type": "string",
+                        "description": "Optional day override — 'yesterday' or 'YYYY-MM-DD'. For a day period it's the day viewed; for 'week' the window's last day.",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "minimum": 2,
+                        "maximum": 14,
+                        "description": "week: days in the comparison window (default 7).",
+                    },
+                    "refresh": {
+                        "type": "boolean",
+                        "description": "Regenerate the day's digest / weekly comparison instead of returning the stored one.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "calendar_write",
+            "description": (
+                "Calendar writes — action='create'|'delete'|'shift' (move overdue "
+                "items to a new day; absorbs calendar_create/delete/shift_*). "
+                "Confirmed-gated: restate details, get a yes, then confirmed=true."
+            ),
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "delete", "shift"],
+                        "description": "Write operation.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "create: event title as the user phrased it.",
+                    },
+                    "start": {
+                        "type": "string",
+                        "description": "create: start as ISO 8601 datetime ('2026-09-22T14:00:00') or date ('2026-09-22') for all-day.",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "create: end as ISO 8601 datetime or date (exclusive for all-day).",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "create: optional event description/notes.",
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "create: optional location string.",
+                    },
+                    "calendar": {
+                        "type": "string",
+                        "description": "create: optional 'provider:calendar_id' to write a non-default calendar.",
+                    },
+                    "event_id": {
+                        "type": "string",
+                        "description": "delete: provider-qualified event id exactly as returned by calendar_read action='events'.",
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "shift: target day — 'tomorrow' (default) or 'YYYY-MM-DD'.",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Required; set true only after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "tasks",
+            "description": (
+                "Task list ops — action='add'|'list'|'done'|'move' (absorbs "
+                "tasks_*). 'list' is a free read; writes are confirmed-gated."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["add", "list", "done", "move"],
+                        "description": "Which task operation to run (default 'list').",
+                    },
+                    "task_list": {
+                        "type": "string",
+                        "description": "Optional 'provider:list_id' — narrows 'list' or targets a non-default list for 'add'.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "action='add': task title as the user phrased it.",
+                    },
+                    "due": {
+                        "type": "string",
+                        "description": "action='add'/'move': due date — 'today', 'tomorrow', or 'YYYY-MM-DD'.",
+                    },
+                    "notes": {
+                        "type": "string",
+                        "description": "action='add': optional task notes.",
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "action='done'/'move': provider-qualified task id exactly as returned by action='list' (e.g. 'google:@default/abc123').",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Required for add/done/move; set true only after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "cms_read",
+            "description": (
+                "Read miniapp pages and reports — action='list'|'search'|'get'|'verify'. "
+                "'search' query= finds a page without its slug; "
+                "'get' reaches any slug directly."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["get", "list", "search", "verify"],
+                        "description": "Read operation.",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Page or report slug, e.g. 'pool-notes'/'cached-videos-report' (required for get/verify; get the real slug from action='search'/'list' or reports-index).",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "search: free text matched over slug/title/summary — the way to find a page without knowing its slug.",
+                    },
+                    "lang": {
+                        "type": "string",
+                        "enum": ["en", "th"],
+                        "description": "get: page language variant (default en; falls back to en when missing).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "list: max slugs to return, most recently updated first (default 50; raise for the long tail).",
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "cms_publish_page",
+            "description": (
+                "Create or fully replace a miniapp page (slug is its id; an "
+                "existing slug overwrites). Call FIRST to register the pending "
+                "request, then ask the user and re-call with confirmed=true."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "slug": {
+                        "type": "string",
+                        "description": "Lowercase page id, 1-64 chars of a-z, 0-9, '-' or '_', e.g. 'pool-notes'.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Human-readable page title shown in the miniapp navigation.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full page content in the given format (markdown by default).",
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["markdown", "html", "yaml", "slides"],
+                        "description": "Content format. 'slides' is markdown with '---' between slides.",
+                    },
+                    "lang": {
+                        "type": "string",
+                        "enum": ["en", "th"],
+                        "description": "Language variant to publish (default en). 'en' and 'th' variants of the same slug coexist — the viewer has a language toggle.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "REQUIRED (report meta contract): one-line brief for reports-index — the gist Ada can answer from without re-reading the page (max ~240 chars).",
+                    },
+                    "domain": {
+                        "type": "string",
+                        "description": "REQUIRED (report meta contract): grouping tag for reports-index, e.g. 'flood', 'health', 'bench', 'news'.",
+                    },
+                    "fresh_for": {
+                        "type": "string",
+                        "description": "REQUIRED (report meta contract): staleness hint, e.g. '30m', '1h', '6h', '1d' — reports-index flags the page as STALE past this window.",
+                    },
+                    "links": {
+                        "type": "string",
+                        "description": "Comma-separated slugs this report links to or derives from (parents, children, sources). Stored as meta so Ada can follow the chain.",
+                    },
+                    "supersedes": {
+                        "type": "string",
+                        "description": "Slug of the report this one replaces — the older one reads as superseded.",
+                    },
+                    "public": {
+                        "type": "string",
+                        "description": "yes flags the page for the public static lane (surf-thailand.com/<tenant>/<slug>.html, ~15min); no unpublishes. Only when the owner asks for a shareable public link.",
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "description": "REQUIRED (report meta contract): trust level — 'high', 'medium', 'low', or 'unverified'; shown in the report so Ada knows how much weight to give it.",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Required; set true only after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                },
+                "required": ["slug", "title", "content", "summary",
+                             "domain", "fresh_for", "confidence"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "cms_edit",
+            "description": (
+                "Miniapp edits — action='note' (append a timeline note, free) | "
+                "'delete' (confirmed) | 'automate' (registry ops: op=list/get "
+                "free, set/enable/disable/run confirmed). Absorbs cms_note_update/"
+                "delete_page/automation."
+            ),
+            "behavior": types.Behavior.NON_BLOCKING,
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["note", "delete", "automate"],
+                        "description": "Edit operation.",
+                    },
+                    "slug": {
+                        "type": "string",
+                        "description": "Page slug the op targets — get the real slug from cms_read action='list' or reports-index first; do not guess it.",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "note: one-line note appended to the page Timeline and index entry (max ~200 chars).",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "note: optional replacement for the page's one-line reports-index brief.",
+                    },
+                    "lang": {
+                        "type": "string",
+                        "enum": ["en", "th"],
+                        "description": "note: language variant to annotate (default en).",
+                    },
+                    "op": {
+                        "type": "string",
+                        "enum": ["list", "get", "set", "enable", "disable", "run"],
+                        "description": "automate: registry operation (list/get free reads; set/enable/disable/run confirmed writes).",
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "automate set: turn the page's automation on/off.",
+                    },
+                    "interval_min": {
+                        "type": "integer",
+                        "description": "automate set: minutes between automatic runs (0 = every run, max 10080).",
+                    },
+                    "run_now": {
+                        "type": "boolean",
+                        "description": "automate set: queue (true) or cancel (false) a one-shot regeneration.",
+                    },
+                    "max_items": {
+                        "type": "integer",
+                        "description": "automate set: max news items per update (1-50).",
+                    },
+                    "since_hours": {
+                        "type": "integer",
+                        "description": "automate set: only include items published within N hours (1-720).",
+                    },
+                    "require": {
+                        "type": "string",
+                        "description": "automate set: relevance regex matched against item title+summary; empty string clears it.",
+                    },
+                    "feeds": {
+                        "type": "array",
+                        "items": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 2,
+                            "maxItems": 2,
+                        },
+                        "description": "automate set: RSS feeds as [[name, url], ...] pairs.",
+                    },
+                    "langs": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["en", "th"]},
+                        "description": "automate set: which language variants to update.",
+                    },
+                    "parent": {
+                        "type": "string",
+                        "description": "automate set: parent report slug this page rolls up into (empty clears).",
+                    },
+                    "children": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "automate set: child report slugs this page aggregates.",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Required for delete and automate writes; set true only after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "ada_resolve_action",
+            "description": (
+                "Mark a pending action proposal applied or dismissed — key= from "
+                "the pending-suggestions list after the user decides."
+            ),
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Proposal key, e.g. 'action-2026-09-22-abc123-0'.",
+                    },
+                    "resolution": {
+                        "type": "string",
+                        "enum": ["applied", "dismissed"],
+                    },
+                },
+                "required": ["key", "resolution"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "devin",
+            "description": (
+                "Devin session control — action='dispatch' (new unattended session) | "
+                "'followup' (message a session) | 'answer' (reply to a blocked job). "
+                "Absorbs devin_dispatch/followup/answer; all actions confirmed-gated."
+            ),
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["dispatch", "followup", "answer"],
+                        "description": "Session operation.",
+                    },
+                    "repo": {
+                        "type": "string",
+                        "enum": ["chaba", "ada-pi", "sunsynk-card"],
+                        "description": (
+                            "dispatch: repository the session works in. 'chaba' = web apps under "
+                            "/apps/* (incl. the vcast virtual-display receiver page), the "
+                            "input-bridge relay, Caddy stack, HA dashboard cards, SSOT docs. "
+                            "'ada-pi' = Ada's own backend tools, pwa_server, auth, scenarios. "
+                            "'sunsynk-card' = the sunsynk power-flow card project. Pick the "
+                            "repo where the code to change lives, not the service it affects."
+                        ),
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "dispatch: the task prompt for the Devin session.",
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "followup/answer: task id from devin_read action='status' or 'pending'.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "followup/answer: the instruction or refined self-contained answer to send.",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Required; set true only after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        }, {
+            "name": "devin_read",
+            "description": (
+                "Devin job ledger — action='status'|'jobs'|'pending'|'report'|"
+                "'review' (absorbs devin_status/jobs/pending/job_report and "
+                "ada_devteam_review; review is owner-only)."
+            ),
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "jobs", "pending", "report", "review"],
+                        "description": "Read/report operation.",
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "status: optional task id, e.g. '20260922-194454-...'. Omit to list all.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["running", "done", "failed", "awaiting-user"],
+                        "description": "jobs: optional ledger-status filter; omit for all.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "jobs/report: max job-ledger docs to include (default 30/60).",
+                    },
+                    "publish": {
+                        "type": "boolean",
+                        "description": "report: write the composed report to the 'devin-job-report' CMS page.",
+                    },
+                    "request": {
+                        "type": "string",
+                        "description": "review: plain-language description of the tool Ada wants.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "review: optional short slug for the spec doc key.",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "report publish=true only; set after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        }, {
+            # tools-merge-docs-drive (2026-10-05): the four ada_doc_*
+            # tools consolidated into one action= surface. The old
+            # names stay callable via tool_runner._ALIASES.
+            "name": "docs",
+            "description": (
+                "Personal document archive (deeds, IDs, passports, receipts — "
+                "absorbs ada_doc_*) — action='search'|'get'|'print'|'archive'; "
+                "archive and print are confirmed-gated."
+            ),
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["search", "get", "print", "archive"],
+                        "description": "search|get|print|archive — which archive operation.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "search: what to find, e.g. 'A-68 deed', 'passport', 'ทะเบียนบ้าน'.",
+                    },
+                    "slug": {
+                        "type": "string",
+                        "description": "get/print/archive: archive slug, e.g. 'A-68' or 'visa-2026'.",
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "search: max results (default 5).",
+                    },
+                    "doc_type": {
+                        "type": "string",
+                        "description": "archive: document type — deed, id_card, passport, contract, receipt, form, document.",
+                    },
+                    "intake_key": {
+                        "type": "string",
+                        "description": "archive: held intake key from /api/documents/intake (doc/...).",
+                    },
+                    "intake_keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "archive: multiple held intake keys — one set spanning several uploads/pages.",
+                    },
+                    "source_dir": {
+                        "type": "string",
+                        "description": "archive: directory of page images on the Ada host.",
+                    },
+                    "pages": {
+                        "type": "string",
+                        "description": "print: 'all' (default), '1-3', or '2,4' — 1-based.",
+                    },
+                    "true_size_mm": {
+                        "type": "string",
+                        "description": "print: real physical size, e.g. '85.6x54' for an ID-1 card. Omit for fit-to-A4.",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "archive/print: required; set true only after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        }, {
+            # tools-merge-docs-drive (2026-10-05): the four drive_*
+            # tools consolidated into one action= surface. The old
+            # names stay callable via tool_runner._ALIASES.
+            "name": "drive",
+            "description": (
+                "The operator's Google Drive — action='search'|'show'|'get'|"
+                "'update' (absorbs drive_*; for archived deed/ID sets use docs "
+                "action='search'). update is confirmed-gated."
+            ),
+            "parameters_json_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["search", "show", "get", "update"],
+                        "description": "search|show|get|update — which Drive operation.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "search: name or content to find, e.g. 'condo photos', 'รูปบ้าน', 'budget 2026'.",
+                    },
+                    "mime": {
+                        "type": "string",
+                        "description": "search: optional mimeType filter: 'image/', 'video/', 'application/pdf', 'text/'.",
+                    },
+                    "limit": {
+                        "type": "number",
+                        "description": "search: max results (default 10).",
+                    },
+                    "file_id": {
+                        "type": "string",
+                        "description": "get/show/update: Drive file id from a search.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "update: the complete new file content (replaces, not appends).",
+                    },
+                    "screen": {
+                        "type": "number",
+                        "description": "show: vcast screen number (default 1).",
+                    },
+                    "target": {
+                        "type": "string",
+                        "enum": ["screen", "tv"],
+                        "description": "show: 'screen' (vcast display, default) or 'tv' (living-room TV).",
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "update: required; set true only after explicit user confirmation.",
+                    },
+                    "confirm_token": {
+                        "type": "string",
+                        "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
+                    },
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        }]
+
+
+# Lazy tool schemas (card ada-lazy-tool-schemas, 2026-10-13 — pattern from
+# tool-attention arxiv 2604.21816 + the vercel/ai lazy-tool PR + Cursor's
+# dynamic context discovery): the ~49-decl surface's param JSON was the
+# large share of the ~27.8k first-turn floor. Cold tools now ship
+# {name, <=300-char blurb, {"type":"object","properties":{}}}; the REAL
+# schema stays server-side where ToolRunner validates every call's args
+# and answers a miss with the tool_guide.yml usage hint — the model
+# self-repairs instead of paying schema tokens up front. The hot set keeps
+# full schemas because a wrong-shape guess on the hot tools costs more
+# than the schema saves. Kill switch ADA_LAZY_SCHEMAS=0;
+# ADA_FULL_SCHEMA_TOOLS=csv adds names without a redeploy. The set is
+# mirrored in docs/ssot/ssot.tool-surface.yml lazy_schemas (lint-enforced).
+FULL_SCHEMA_TOOLS = frozenset({
+    "set_facial_expression", "ada_memory_search", "cms_read",
+    "control_entity", "calendar_read", "cast_to_screen", "cctv_wall",
+    "docs", "kanban", "chat_send",
+})
+
+_LAZY_EMPTY_SCHEMA = {"type": "object", "properties": {}}
+
+
+def _lazy_schemas_enabled() -> bool:
+    return os.environ.get("ADA_LAZY_SCHEMAS", "1").strip().lower() not in {
+        "0", "false", "off", "no"}
+
+
+def _full_schema_tools() -> frozenset[str]:
+    extra = {s.strip() for s in os.environ.get(
+        "ADA_FULL_SCHEMA_TOOLS", "").split(",") if s.strip()}
+    return FULL_SCHEMA_TOOLS | extra
+
+
+def _apply_lazy_schemas(decls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Replace a cold tool's param schema with the empty object — the model
+    calls from name+blurb and repairs on the runner's validation miss."""
+    if not _lazy_schemas_enabled():
+        return decls
+    keep = _full_schema_tools()
+    out = []
+    for fd in decls:
+        fd = dict(fd)
+        if str(fd.get("name")) not in keep:
+            for key in ("parameters_json_schema", "parameters"):
+                if isinstance(fd.get(key), dict):
+                    fd[key] = dict(_LAZY_EMPTY_SCHEMA)
+        out.append(fd)
+    return out
+
+
+def declared_tool_schemas() -> dict[str, dict[str, Any]]:
+    """name -> REAL parameters schema for every builtin + chaba decl.
+
+    The contract of record ToolRunner validates call args against — the
+    wire surface may ship lazy empty schemas; this one stays full. tools.d
+    decls are folded in by the runner via tools_loader (its registry owns
+    manifest-mtime reload)."""
+    out: dict[str, dict[str, Any]] = {}
+    # Chaba first so the builtin decl wins name collisions — CHABA_DECLARATIONS
+    # re-declares the memory tools guest-scoped (a property subset), and the
+    # superset accepts every call the guest surface could emit.
+    for fd in ([dict(CAMERA_DECLARATION)] + list(CHABA_DECLARATIONS)
+               + _builtin_declarations()):
+        name = fd.get("name")
+        schema = fd.get("parameters_json_schema") or fd.get("parameters")
+        if name and isinstance(schema, dict):
+            out[str(name)] = schema
+    return out
+
+
 def _safe_args(args: Any) -> dict[str, Any]:
     """JSON-safe shallow copy of tool args/results for trace events."""
     out: dict[str, Any] = {}
@@ -2975,1665 +4712,7 @@ class GeminiLiveProvider(RealtimeProvider):
             "session_resumption": types.SessionResumptionConfig(
                 handle=resumption_handle,
             ),
-            "tools": [{
-                "function_declarations": [{
-                    "name": "set_facial_expression",
-                    "description": (
-                        "Changes Ada's visible facial expression without interrupting speech. "
-                        "Select the expression matching the tone of Ada's current response."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "expression": {
-                                "type": "string",
-                                "enum": list(EXPRESSION_NAMES),
-                                "description": "The facial expression Ada should display.",
-                            }
-                        },
-                        "required": ["expression"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "get_home_state",
-                    "description": (
-                        "Read-only home state — plugs, occupancy, habit conditions "
-                        "(absorbs ada_ha_get_state). entity_id= reads one entity live; "
-                        "domain= lists a domain; domain='memory' returns the stored snapshot."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "Optional exact entity_id to read live, e.g. binary_sensor.front_door.",
-                            },
-                            "domain": {
-                                "type": "string",
-                                "description": "Optional HA domain to list (e.g. 'light', 'sensor'), or 'memory' for the stored snapshot.",
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "control_entity",
-                    "description": (
-                        "Actuate one Home Assistant entity (absorbs control_cover, "
-                        "press_button, control_media_player) — on=/action= picked by the "
-                        "entity's domain. Only media_player.tony_tv/tony_tv_cast are ours."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "The Home Assistant entity_id to control, e.g. light.living_room or cover.gate_motor.",
-                            },
-                            "on": {
-                                "type": "boolean",
-                                "description": "For light/switch/fan/input_boolean entities: true to turn on, false to turn off.",
-                            },
-                            "action": {
-                                "type": "string",
-                                "enum": ["on", "off", "open", "close", "stop", "press",
-                                         "turn_on", "turn_off", "media_play", "media_pause",
-                                         "media_stop", "volume_up", "volume_down",
-                                         "volume_mute", "select_source"],
-                                "description": "Domain action: on|off for simple entities; open|close|stop for cover.*; press for button.*; media_player verbs for media_player.* (source= required for select_source).",
-                            },
-                            "source": {
-                                "type": "string",
-                                "description": "media_player select_source only: the input/source name to select.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required for dangerous-safety entities; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["entity_id"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "home_search",
-                    "description": (
-                        "Find HA devices, sensors, or recorded events — kind='device'|"
-                        "'sensor'|'event' (absorbs the list/search/ada_ha_search_* tools); "
-                        "blank query lists the kind. Use it to get the exact entity_id "
-                        "before control_entity."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "Name or keyword to search, e.g. 'kitchen table', 'front gate', 'pool temperature', 'door'. Blank lists the kind instead.",
-                            },
-                            "kind": {
-                                "type": "string",
-                                "enum": ["device", "sensor", "event"],
-                                "description": "What to find: a controllable device (default), a sensor entity, or recorded events.",
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 100,
-                                "description": "Maximum results. Default 10.",
-                            },
-                            "hours": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 720,
-                                "description": "kind='event' only: how many hours of recorded events to search. Default 24.",
-                            },
-                        },
-                        "required": [],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "yt",
-                    "description": (
-                        "YouTube/media on the living-room TV — action='cast' PLAYS a video "
-                        "(.mp4/.m3u8 URL or search phrase) only on an explicit play request — "
-                        "'find a clip' is a lookup (web_search), never a cast. 'status'|'stop'|"
-                        "'transcript'. Dark screen -> tv_action; vcast screen -> cast_to_screen."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["cast", "status", "stop", "transcript"],
-                                "description": "Operation: cast a video, check cast progress, stop casting, or fetch a transcript.",
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "cast: YouTube URL, media file URL, or search phrase, e.g. 'the egg kurzgesagt'.",
-                            },
-                            "url": {
-                                "type": "string",
-                                "description": "transcript: YouTube URL or video ID.",
-                            },
-                            "language": {
-                                "type": "string",
-                                "description": (
-                                    "cast: target subtitle language shown below the original-language "
-                                    "line; transcript: caption language to prefer (default 'th' for Thai, "
-                                    "falls back to en)."
-                                ),
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "tv_action",
-                    "description": (
-                        "Send a command to the LG TV's cast-browser via HA "
-                        "rest_command.tv_action — cmd=nav|scroll|click|type|press|back|shot|"
-                        "viewport|power, payload in text=. vcast display panes use "
-                        "cast_to_screen instead; never for answering questions."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "cmd": {
-                                "type": "string",
-                                "description": "Command key: nav|scroll|click|type|press|back|shot|viewport|power.",
-                            },
-                            "text": {
-                                "type": "string",
-                                "description": "Command text/payload: nav target (URL, 'gev' for live God's Eye View, 'screenlive:workspace:N[:pad|crop]', 'tony-omen:workspace:N'), scroll direction, visible text to click, text to type (cmd=type takes ONLY the exact words the user just dictated — empty or placeholder text like 'your-*', '<...>', 'xxx' is refused), or shot/viewport args.",
-                            },
-                            "selector": {"type": "string", "description": "CSS selector for click."},
-                            "role": {"type": "string", "description": "ARIA role for click (e.g. 'button')."},
-                            "key": {"type": "string", "description": "Key name for press (e.g. 'Enter', 'Escape')."},
-                            "dx": {"type": "number", "description": "Horizontal scroll amount (px)."},
-                            "dy": {"type": "number", "description": "Vertical scroll amount (px)."},
-                            "factor": {"type": "number", "description": "Scroll amount as fraction of viewport height."},
-                        },
-                        "required": ["cmd"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "cast_to_screen",
-                    "description": (
-                        "Drive the numbered vcast displays (browser/PWA — NOT the TV; "
-                        "absorbs vcast_say/list/status/shortcut + claim/assign/background). "
-                        "Interrupts and camera captures need confirmed=true. See tool_guide."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "screen": {
-                                "type": "integer",
-                                "description": "Screen number (the # shown on the display and in action='list'). Not needed for action='list'.",
-                            },
-                            "action": {
-                                "type": "string",
-                                "enum": ["nav", "play", "image", "audio",
-                                         "cast", "shortcut", "stop",
-                                         "layout", "zoom", "unzoom",
-                                         "uplink", "uplink-stop",
-                                         "say", "list", "status",
-                                         "claim", "assign", "background"],
-                                "description": "nav=web page | play=video mp4/m3u8 or YouTube/Vimeo watch URL (auto-embeds on screen) | image=still jpg/png | audio | cast=auto-route by content | shortcut=named /apps/<name>/ app | stop | layout | zoom | unzoom | uplink | uplink-stop | say=narrate text aloud on the display | list=enumerate displays | status=one screen's live state | claim=pair a pending display by the 4-digit code on its QR (pass the code in text) | assign=retitle/renumber a display (name + to_screen) | background=veil the screen but keep its audio playing, mode='off' restores (default nav). Pick by content type.",
-                            },
-                            "url": {
-                                "type": "string",
-                                "description": "Target URL for nav/play/image/audio/cast, or the app name for action='shortcut'. Not needed for stop/layout/zoom/unzoom/say/list/status.",
-                            },
-                            "text": {
-                                "type": "string",
-                                "description": "For action='say': short spoken line, plain text, under ~200 chars.",
-                            },
-                            "pane": {
-                                "type": "integer",
-                                "description": "Sub-pane index 0..N-1 on a split screen (0=left/top). Also used by zoom and pane-targeted stop.",
-                            },
-                            "panes": {
-                                "type": "integer",
-                                "description": "For action=layout: split the screen into 2-5 panes.",
-                            },
-                            "mode": {
-                                "type": "string",
-                                "description": "For action=layout: 'pip' floats panes 1..N top-right over a fullscreen pane 0 (picture-in-picture); omit for the normal grid split. For action=background: 'off' lifts the veil (default toggles it on).",
-                            },
-                            "name": {
-                                "type": "string",
-                                "description": "For action=claim/assign: the display's human label, e.g. 'living-room' — shown as 'Screen N · living-room' and usable in place of the number.",
-                            },
-                            "to_screen": {
-                                "type": "integer",
-                                "description": "For action=assign: renumber the display to this screen number (must be free).",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required for action='uplink' (camera capture) and for interrupting a busy screen (capture/camwall/playing — see needs_confirm) — set true only after the user explicitly confirms.",
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "vcast_snapshot",
-                    "description": (
-                        "Capture what a vcast display is actually showing — verify after a "
-                        "cast instead of trusting the reported state flag. One still frame "
-                        "per call, a few seconds old. Not for the TV."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "screen": {
-                                "type": "integer",
-                                "description": "Screen number (the # shown on the display and in cast_to_screen action='list').",
-                            },
-                        },
-                        "required": ["screen"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "chat_send",
-                    "description": (
-                        "Send a LINE/Telegram message in the background — 'queued' returns "
-                        "first, the outcome lands later as a system note. camera=/image_url= "
-                        "attach an image; photo=/doc= run the picker/upload flows; say= sends "
-                        "a voice message (LINE and Telegram)."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "channel": {
-                                "type": "string",
-                                "description": "'line', 'telegram', or 'line,telegram'/'both'. Default 'line'.",
-                            },
-                            "text": {
-                                "type": "string",
-                                "description": "Message text / image caption.",
-                            },
-                            "camera": {
-                                "type": "string",
-                                "description": "VMS camera channel name — a fresh snapshot is taken and attached.",
-                            },
-                            "image_url": {
-                                "type": "string",
-                                "description": ("URL of an existing image to send (camwall thumb or a cast_url "
-                                "you already produced). For CMS page images, cms_read the page "
-                                "first and copy the asset URL verbatim — never construct or "
-                                "guess a URL; a guessed URL fetches 404 and the image is dropped."),
-                            },
-                            "to": {
-                                "type": "string",
-                                "description": "Optional explicit LINE userId or Telegram chat_id; default = owner.",
-                            },
-                            "say": {
-                                "type": "string",
-                                "description": "Voice-note text — synthesized to speech (your voice) and pushed as a voice message. LINE and Telegram; keep it short and speakable.",
-                            },
-                            "photo": {
-                                "type": "string",
-                                "enum": ["pick", "picked"],
-                                "description": "Photos picker flow: 'pick' opens a picker session (returns picker_uri), 'picked' polls it and delivers the selection.",
-                            },
-                            "session_id": {
-                                "type": "string",
-                                "description": "Picker session id (required with photo='picked').",
-                            },
-                            "screen": {
-                                "type": "integer",
-                                "description": "Vcast screen to cast the first picked item to (photo='picked', default 1).",
-                            },
-                            "show": {
-                                "type": "boolean",
-                                "description": "Cast the first picked item to the screen (default true).",
-                            },
-                            "doc": {
-                                "type": "string",
-                                "enum": ["show", "process", "card"],
-                                "description": "Document-upload flow: 'show' texts the held upload's summary, 'process' returns its intake assessment, 'card' runs a card button via op.",
-                            },
-                            "key": {
-                                "type": "string",
-                                "description": "Held document intake key (doc= flows; default: newest upload).",
-                            },
-                            "op": {
-                                "type": "string",
-                                "description": "Card button for doc='card' — 'archive' files the held upload (confirmation-gated).",
-                            },
-                        },
-                        "required": [],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "vcast_gesture",
-                    "description": (
-                        "Enable/disable gesture control on a vcast display — mode='room' "
-                        "(wake-on-motion), 'hand' (hand tracking), 'off'."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "screen": {
-                                "type": "integer",
-                                "description": "Screen number (the # shown on the display and in cast_to_screen action='list').",
-                            },
-                            "mode": {
-                                "type": "string",
-                                "description": "off | room | hand (default off).",
-                            },
-                        },
-                        "required": ["screen"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "cctv_wall",
-                    "description": (
-                        "Show a live camera wall (periodic thumbnail grid) for a zone on a "
-                        "vcast display — action='start'|'stop'|'settings'|'status'. For a "
-                        "one-off look use ada_camera_snapshot instead; offer the wall when a "
-                        "camera zone becomes the focus."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "description": "'start' (default), 'stop', 'settings' (tune zone knobs — no cast, no confirm needed), or 'status' (per-cam live/down, ages, yolo counts — for 'what's on the wall' questions).",
-                            },
-                            "zone": {
-                                "type": "string",
-                                "description": "'zone-a', 'noble-park', 'tony-house', 'vms-noble-club', 'vms-noble-a', 'rama9' (traffic demo — Bangkok road cams), 'traffic' (DOH Bangkok), 'burapha' (Bangna–Burapha expressway), or 'chonburi' (Chonburi corridor).",
-                            },
-                            "screen": {
-                                "type": "integer",
-                                "description": "vcast screen number (cast_to_screen action='list') — default 1.",
-                            },
-                            "pane": {
-                                "type": "integer",
-                                "description": "sub-pane index on a split screen — cast the wall into one pane instead of the whole screen.",
-                            },
-                            "settings": {
-                                "type": "object",
-                                "description": "Zone knobs: interval (s), jpeg_q (1-8), thumb_w (px), cams_skip [keys], cams_extra [{label,kind,url}], effects ['timestamp','grid','yolo:person,car@0.35'].",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "When the user explicitly asked for the wall, set true — their request is the consent. Only needed for guest voices or captures you propose unprompted.",
-                            },
-                        },
-                        "required": ["zone"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "gev_command",
-                    "description": (
-                        "Drive God's Eye View (the Cesium map at /apps/gev/) on connected "
-                        "screens — name+args per the GEV schema. tour='<id|alias|place>' "
-                        "returns an executable tour card (absorbs gev_tour; '' lists tours)."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string", "description": "GEV tool name — required for a command; omit for a tour lookup."},
-                            "args": {"type": "object", "description": "Tool arguments (per GEV tools.json). Known commands are validated against that schema before relay — a rejected call returns the expected args in the error; fix and retry."},
-                            "screen": {"type": "integer", "description": "Limit to this vcast screen (omit = all GEV pages)."},
-                            "pane": {"type": "integer", "description": "Limit to this split-screen pane (0-based; omit = all panes)."},
-                            "wait": {"type": "number", "description": "Seconds to wait for client responses (0 = fire-and-forget). Default 3."},
-                            "tour": {"type": "string", "description": "Tour id, alias, or place name — 'za', 'bangkok', 'แอฟริกาใต้'. Pass '' to list tours. When set, name/args are ignored."},
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "home_status",
-                    "description": (
-                        "Merged home-status reads — what='battery'|'power'|'inverter'|"
-                        "'pool'|'dashboard'|'habit' (absorbs the get_*_status getters)."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "what": {
-                                "type": "string",
-                                "enum": ["battery", "power", "inverter", "pool",
-                                         "dashboard", "habit"],
-                                "description": "Which status read to run.",
-                            },
-                            "battery_index": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 3,
-                                "description": "what='battery' only: detail one battery (1, 2, or 3); omit for the whole bank.",
-                            },
-                            "hours": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 168,
-                                "description": "what='power' only: hours of history in the summary (default 24).",
-                            },
-                            "tab": {
-                                "type": "string",
-                                "description": "what='dashboard' only: the dashboard tab title, e.g. 'TPL', 'V0', 'V1', 'SK'.",
-                            },
-                        },
-                        "required": ["what"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "get_rk600_weather",
-                    "description": (
-                        "Local RK600 weather station readings — wind, temperature, humidity, "
-                        "pressure, rainfall. Only for explicit current-weather questions."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {},
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "home_history",
-                    "description": (
-                        "HA history/event reads — kind='logbook'|'events'|'timeline'|'series'|"
-                        "'snapshots' (absorbs get_logbook, get_sensor_history, "
-                        "get_entity_events, get_recent_events, ada_ha_history)."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "kind": {
-                                "type": "string",
-                                "enum": ["logbook", "events", "timeline", "series", "snapshots"],
-                                "description": "Which history read. Optional — defaults to timeline/series for entity_id, events for query, snapshots for domain='memory', else logbook.",
-                            },
-                            "entity_id": {
-                                "type": "string",
-                                "description": "timeline/series (required there), logbook (optional narrow): the exact entity_id, e.g. binary_sensor.front_door or sensor.inverters_1_pv_power.",
-                            },
-                            "domain": {
-                                "type": "string",
-                                "description": "Optional HA domain to restrict events/logbook to (e.g. 'cover'), or 'memory'/'snapshots' for the persisted snapshots read.",
-                            },
-                            "hours": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 720,
-                                "description": "How many hours back the window covers. Defaults to 24.",
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "events: optional keyword to limit the feed, e.g. 'door', 'gate', 'kitchen'.",
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 200,
-                                "description": "Maximum events/snapshots to return. Defaults to 25.",
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
-                },  {
-                    "name": "ha_confidence",
-                    "description": (
-                        "Device trust/safety registry (absorbs ada_ha_*_device_confidence) — "
-                        "no args lists devices by confidence+safety; entity_id reads one; "
-                        "entity_id + status/safety writes."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "entity_id": {
-                                "type": "string",
-                                "description": "Optional exact entity_id — alone it reads one device, with status/safety it writes.",
-                            },
-                            "status": {
-                                "type": "string",
-                                "enum": ["trusted_working", "trusted_broken", "learning", "needs_integration"],
-                                "description": "Write path: the confidence level to assign.",
-                            },
-                            "safety": {
-                                "type": "string",
-                                "enum": ["safe", "caution", "dangerous"],
-                                "description": "Write path: the safety level to assign.",
-                            }
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_session_recall",
-                    "description": (
-                        "Recall past voice conversations (scope='sessions', background ~20s) "
-                        "or stored HA memory (scope='history', absorbs ada_ha_recall). "
-                        "For facts and stored documents use ada_memory_search instead."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "question": {
-                                "type": "string",
-                                "description": "The recall question, e.g. 'what did we discuss in the previous session?'.",
-                            },
-                            "scope": {
-                                "type": "string",
-                                "enum": ["sessions", "history"],
-                                "description": (
-                                    "'sessions' (default) deep-recalls past conversations "
-                                    "in the background; 'history' searches the stored "
-                                    "Home Assistant device/sensor memory plus recorded "
-                                    "events inline (the absorbed ada_ha_recall)."
-                                ),
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 50,
-                                "description": "scope='history' only — maximum results (default 10).",
-                            },
-                            "group": {
-                                "type": "string",
-                                "enum": ["memory", "infra", "apps", "kb", "ops"],
-                                "description": (
-                                    "Which notebook to search. "
-                                    "memory: past voice conversations (default). "
-                                    "infra: hosts, services, ports, tailscale, hardware, MCP. "
-                                    "apps: Ada/PWA, Home Assistant dashboards, playlive. "
-                                    "kb: mddb, yomi, SSOT, documentation, source maps. "
-                                    "ops: workflows, tasks, experiments, project state."
-                                ),
-                            },
-                            "bank": {
-                                "type": "string",
-                                "description": (
-                                    "Optional curated memory bank to search instead of a notebook "
-                                    "group ({banks}), or 'all' to search every bank. "
-                                    "Bank recall checks the fast memory tier first and only "
-                                    "escalates to NotebookLM when nothing is found."
-                                ),
-                            },
-                            "force": {
-                                "type": "boolean",
-                                "description": (
-                                    "Override the redundant-recall gate — use ONLY when the user "
-                                    "explicitly pushes for a deeper search after a recent "
-                                    "confident hit ('dig deeper', 'check again', 'you missed it')."
-                                ),
-                            },
-                        },
-                        "required": ["question"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_memory_search",
-                    "description": (
-                        "Search memory — curated banks, sessions, guest notes "
-                        "(absorbs guest_recall); scope=/bank= pick the store. "
-                        "First tool for factual lookups; returns keys for "
-                        "ada_remember/ada_forget."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "scope": {
-                                "type": "string",
-                                "enum": ["all", "banks", "sessions", "guest"],
-                                "description": (
-                                    "Where to search. 'all' (default) fans out over the "
-                                    "curated banks plus session summaries (plus guest "
-                                    "notes on guest instances); 'banks' restricts to the "
-                                    "curated banks named by bank=; 'sessions' searches "
-                                    "session/daily/weekly summaries; 'guest' searches "
-                                    "public guest memories (the absorbed guest_recall)."
-                                ),
-                            },
-                            "bank": {
-                                "type": "string",
-                                "description": "Memory bank name ({banks}), or 'all' to search every bank — default when unsure. 'all' demotes bulk archives (devin session dumps); name a bank explicitly to dig them.",
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "What to look for, e.g. 'gate remote' or 'coffee preferences'.",
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 20,
-                                "description": "Maximum memories to return. Defaults to 5.",
-                            },
-                            "include_inactive": {
-                                "type": "boolean",
-                                "description": "Also return superseded, retracted, and expired memories. Default false.",
-                            },
-                        },
-                        "required": ["query"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "web_search",
-                    "description": (
-                        "Search the public internet for current facts — news, prices, "
-                        "forecasts. Fallback: check reports-index / ada_memory_search "
-                        "bank='cms' first for already-covered topics."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "The search question, e.g. 'Bangkok flood road closures latest'.",
-                            },
-                            "provider": {
-                                "type": "string",
-                                "description": (
-                                    "Search backend: 'auto' (default — grounded answer, free "
-                                    "fallback on quota), 'gemini' (grounded, billed), or "
-                                    "'duckduckgo' (free, no quota — use when asked for it or "
-                                    "when grounded quota is exhausted). When the result carries "
-                                    "quota_exhausted/degraded, briefly tell the user live search "
-                                    "is degraded — never pass fallback hits off as grounded."
-                                ),
-                            },
-                        },
-                        "required": ["query"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_remember",
-                    "description": (
-                        "Store or update a memory (absorbs vocab_note, guest_remember*, "
-                        "report_habit_observation) — bank= + kind=; a matching "
-                        "key/subject+attribute updates in place. Some banks need "
-                        "confirmed=true after a spoken yes."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "bank": {
-                                "type": "string",
-                                "description": "Memory bank name ({writable_banks}). Required for the curated-bank kinds (fact/preference/person/procedure/note).",
-                            },
-                            "text": {
-                                "type": "string",
-                                "description": "The fact or note to store, phrased as a standalone sentence. For kind='vocab': 'term → correction'.",
-                            },
-                            "key": {
-                                "type": "string",
-                                "description": "Existing document key to correct in place (from ada_memory_search), or the guest-memory slug for kind='guest'. Omit to find-or-create.",
-                            },
-                            "subject": {
-                                "type": "string",
-                                "description": "What the memory is about, slug-style, e.g. 'gate-remote'. Used to find existing facts about the same thing.",
-                            },
-                            "attribute": {
-                                "type": "string",
-                                "description": "Which aspect of the subject, e.g. 'location'. Combined with subject for update detection.",
-                            },
-                            "kind": {
-                                "type": "string",
-                                "enum": ["fact", "preference", "person", "procedure",
-                                         "note", "vocab", "guest", "habit"],
-                                "description": (
-                                    "Memory kind. Curated-bank kinds default to note. "
-                                    "vocab: speaker's own glossary append (no bank, no "
-                                    "confirmation). guest: chaba guest store (pair with "
-                                    "private for a promoted user's private notes). "
-                                    "habit: camera-observation verdict — needs the "
-                                    "habit_* / challenge_id fields below."
-                                ),
-                            },
-                            "private": {
-                                "type": "boolean",
-                                "description": "kind='guest' only — save to the promoted user's private namespace instead of the public one.",
-                            },
-                            "note": {
-                                "type": "string",
-                                "description": "kind='vocab' only — optional one-line meaning or context appended to the entry.",
-                            },
-                            "challenge_id": {
-                                "type": "string",
-                                "description": "kind='habit' only — the challenge id supplied by the habit monitor's prompt.",
-                            },
-                            "habit_key": {
-                                "type": "string",
-                                "enum": ["not_drinking_enough_water", "junk_food"],
-                                "description": "kind='habit' only — the habit under review.",
-                            },
-                            "observed": {
-                                "type": "boolean",
-                                "description": "kind='habit' only — whether the challenged behavior was observed.",
-                            },
-                            "confidence": {
-                                "type": "number",
-                                "minimum": 0,
-                                "maximum": 1,
-                                "description": "kind='habit' only — confidence in the verdict.",
-                            },
-                            "reason": {
-                                "type": "string",
-                                "description": "kind='habit' only — short evidence summary.",
-                            },
-                            "item_identified": {
-                                "type": "string",
-                                "description": "kind='habit' junk-food only — the specific visible food or drink; empty when none is identifiable.",
-                            },
-                            "consumption_visible": {
-                                "type": "boolean",
-                                "description": "kind='habit' junk-food only — true only when actual eating or drinking is visibly confirmed.",
-                            },
-                            "classified_unhealthy": {
-                                "type": "boolean",
-                                "description": "kind='habit' junk-food only — true only when the identified item clearly belongs to the configured unhealthy categories.",
-                            },
-                            "valid_until": {
-                                "type": "string",
-                                "description": "Optional ISO date after which this memory expires, e.g. '2026-10-01'.",
-                            },
-                            "supersedes": {
-                                "type": "string",
-                                "description": "Key of an existing memory this one replaces. The old memory is marked superseded, not deleted.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                            "prime": {
-                                "type": "boolean",
-                                "description": (
-                                    "Set true only for facts worth injecting into every new "
-                                    "session's context, e.g. durable device-name mappings. "
-                                    "Use sparingly — primed facts cost tokens every turn."
-                                ),
-                            },
-                        },
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_forget",
-                    "description": (
-                        "Retract a memory (bank= + key=) — it stops surfacing in recall "
-                        "but stays in the archive for audit."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "bank": {
-                                "type": "string",
-                                "description": "Memory bank name ({writable_banks}).",
-                            },
-                            "key": {
-                                "type": "string",
-                                "description": "Document key to retract (from ada_memory_search).",
-                            },
-                            "reason": {
-                                "type": "string",
-                                "description": "Optional reason for the retraction.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required for confirmed-policy banks; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["bank", "key"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    # tools-merge-meta-voice (2026-10-05): one ops/meta seat
-                    # absorbing ada_outcome, ada_usage_summary, ada_mddb_health,
-                    # ada_decision_check and ada_deep_research. outcome is the
-                    # only bank write (confirmed-policy gate stays); check and
-                    # research run in the background and speak their results.
-                    "name": "ada_ops",
-                    "description": (
-                        "Ops/meta — outcome|usage|health|check|research|report|acl_explain "
-                        "— see tool_guide; 'report' returns report freshness and starts a "
-                        "background refresh (answer cached numbers now, fresh lands next)."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["outcome", "usage", "health", "check", "research", "report", "acl_explain"],
-                                "description": "outcome=record a result on a memory/check; usage=token/cost report; health=memory-db vector health; check=purchase verification (background); research=multi-round web research (background); report=system report freshness + live refresh (node=name or default system-report, depth=leaf|subtree|full); acl_explain=why an identity can/can't act — needs entity_id= and/or bank= (+tool= for a bank write), identity= to check someone else.",
-                            },
-                            "node": {
-                                "type": "string",
-                                "description": "action=report: report-graph node to refresh (default system-report — the whole chain).",
-                            },
-                            "bank": {
-                                "type": "string",
-                                "description": "action=outcome: memory bank name ({writable_banks}).",
-                            },
-                            "key": {
-                                "type": "string",
-                                "description": "action=outcome: document key the outcome applies to (from ada_memory_search or a check result).",
-                            },
-                            "outcome": {
-                                "type": "string",
-                                "enum": ["good", "bad", "partial", "skipped", "worked", "failed", "bought_good", "bought_bad"],
-                                "description": "action=outcome: how it turned out. bought_good/bought_bad for purchase checks, worked/failed for procedures, skipped when it was never exercised.",
-                            },
-                            "note": {
-                                "type": "string",
-                                "description": "action=outcome: optional detail about the outcome.",
-                            },
-                            "source": {
-                                "type": "string",
-                                "enum": ["all", "live", "posture", "clutter"],
-                                "description": "action=usage: which usage source to report; 'all' aggregates everything.",
-                            },
-                            "reset": {
-                                "type": "boolean",
-                                "description": "action=usage: zero the counters after reporting; only when the user asks.",
-                            },
-                            "collection": {
-                                "type": "string",
-                                "description": "action=health: optional — limit the report to one collection name.",
-                            },
-                            "product": {
-                                "type": "string",
-                                "description": "action=check: product description or pasted listing details — name, price, shop, ratings, specs.",
-                            },
-                            "url": {
-                                "type": "string",
-                                "description": "action=check: listing URL if the user shared one.",
-                            },
-                            "mode": {
-                                "type": "string",
-                                "enum": ["quick", "deep"],
-                                "description": "action=check: quick = fast red-flag/price check (default); deep = thorough spec verification plus alternatives.",
-                            },
-                            "topic": {
-                                "type": "string",
-                                "description": "action=research: the research subject as the user stated it.",
-                            },
-                            "depth": {
-                                "type": "string",
-                                "enum": ["standard", "deep", "leaf", "subtree", "full"],
-                                "description": "action=research: standard = 3 search rounds (default); deep = 5 — only when the user asks for a thorough report. action=report: refresh scope leaf|subtree (default)|full.",
-                            },
-                            "identity": {
-                                "type": "string",
-                                "description": "action=acl_explain: whose access to explain, e.g. 'person.kk' (default: this session's identity).",
-                            },
-                            "entity_id": {
-                                "type": "string",
-                                "description": "action=acl_explain: HA entity the identity wants to control, e.g. 'media_player.tv'.",
-                            },
-                            "tool": {
-                                "type": "string",
-                                "description": "action=acl_explain: with bank= — resolve a bank WRITE for this tool, not just bank access.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "action=outcome on confirmed-policy banks; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    # tools-merge-meta-voice: absorbed ada_set_voice — the
-                    # *_voice actions manage the actual speaking voice;
-                    # set_voice persists and applies after a brief reconnect.
-                    "name": "ada_persona",
-                    "description": (
-                        "Read/adjust a speaker's style preferences — action=set|show|reset|"
-                        "list, person= targets another member. The *_voice actions manage "
-                        "the speaking voice (absorbs ada_set_voice)."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["set", "show", "reset", "list",
-                                         "set_voice", "show_voice",
-                                         "list_voices"],
-                            },
-                            "knob": {
-                                "type": "string",
-                                "enum": ["tone", "verbosity", "formality", "language",
-                                         "address_name", "emoji", "proactiveness"],
-                                "description": "Required for set. tone=warm/direct/professional/playful; verbosity=brief/normal/detailed; formality=casual/polite/formal; language=auto/en/th; sassiness=none/light/playful; proactiveness=minimal/normal/proactive.",
-                            },
-                            "value": {
-                                "type": "string",
-                                "description": "Required for set — the new value (address_name takes free text; emoji takes true/false).",
-                            },
-                            "person": {
-                                "type": "string",
-                                "description": (
-                                    "Optional. Target another person's profile instead of the "
-                                    "current speaker — a Home Assistant person entity "
-                                    "('person.kk') or a person's name ('KK'). Requires a "
-                                    "full-access caller; use action 'list' first to see "
-                                    "known people."
-                                ),
-                            },
-                            "voice": {
-                                "type": "string",
-                                "enum": list(voice_config.GEMINI_VOICES),
-                                "description": "Required for set_voice — the Gemini Live voice name.",
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    # tools-merge-meta-voice: absorbed guest_register —
-                    # who='guest' registers a visitor name (chaba guests);
-                    # who='speaker' (default) is the voice enrollment.
-                    "name": "ada_enroll_speaker",
-                    "description": (
-                        "Enroll the current speaker's voice from buffered audio "
-                        "(who='speaker') or register a visitor name (who='guest'). "
-                        "Pass the real name and ha_person when it matches an HA person."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "who": {
-                                "type": "string",
-                                "enum": ["speaker", "guest"],
-                                "description": "speaker (default): voice-enroll the current speaker from buffered audio. guest: register a visitor's name for later admin promotion (guest/Chaba sessions).",
-                            },
-                            "name": {
-                                "type": "string",
-                                "description": "Speaker name (e.g. 'Tony', 'KK').",
-                            },
-                            "ha_person": {
-                                "type": "string",
-                                "description": "Home Assistant person entity for this speaker (e.g. 'person.tony').",
-                            },
-                            "display_name": {
-                                "type": "string",
-                                "description": "Display name for personalization (defaults to name).",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Owner-confirmed force-replace for a stale/poisoned voice profile — set true only after the speaker explicitly confirms.",
-                            },
-                        },
-                        "required": ["name"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "calendar_read",
-                    "description": (
-                        "Calendar reads — action='events'|'calendars'|'freebusy' "
-                        "(absorbs calendar_list_*/calendar_freebusy); first call for "
-                        "schedule and free-time questions."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["events", "calendars", "freebusy"],
-                                "description": "Read operation.",
-                            },
-                            "day": {
-                                "type": "string",
-                                "description": "events/freebusy: day to read — 'today', 'tomorrow', or ISO date 'YYYY-MM-DD'. Default 'today'.",
-                            },
-                            "days": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 31,
-                                "description": "events/freebusy: number of days to span starting at day. Default 1; use 7 for 'this week'.",
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "events: optional text filter on event titles, e.g. 'dentist'.",
-                            },
-                            "calendar": {
-                                "type": "string",
-                                "description": "events: optional 'provider:calendar_id' to read one calendar only (from action='calendars').",
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "plan_day",
-                    "description": (
-                        "Merged day view or weekly digest — period='today'|'tomorrow'|"
-                        "'week', day= overrides the target (absorbs ada_daily_summary/"
-                        "ada_weekly_comparison). Read-only; never create events here."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "period": {
-                                "type": "string",
-                                "enum": ["today", "tomorrow", "week"],
-                                "description": "Which window: a day's merged plan ('today' default, 'tomorrow') or the weekly digest ('week').",
-                            },
-                            "day": {
-                                "type": "string",
-                                "description": "Optional day override — 'yesterday' or 'YYYY-MM-DD'. For a day period it's the day viewed; for 'week' the window's last day.",
-                            },
-                            "days": {
-                                "type": "integer",
-                                "minimum": 2,
-                                "maximum": 14,
-                                "description": "week: days in the comparison window (default 7).",
-                            },
-                            "refresh": {
-                                "type": "boolean",
-                                "description": "Regenerate the day's digest / weekly comparison instead of returning the stored one.",
-                            },
-                        },
-                        "required": [],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "calendar_write",
-                    "description": (
-                        "Calendar writes — action='create'|'delete'|'shift' (move overdue "
-                        "items to a new day; absorbs calendar_create/delete/shift_*). "
-                        "Confirmed-gated: restate details, get a yes, then confirmed=true."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["create", "delete", "shift"],
-                                "description": "Write operation.",
-                            },
-                            "title": {
-                                "type": "string",
-                                "description": "create: event title as the user phrased it.",
-                            },
-                            "start": {
-                                "type": "string",
-                                "description": "create: start as ISO 8601 datetime ('2026-09-22T14:00:00') or date ('2026-09-22') for all-day.",
-                            },
-                            "end": {
-                                "type": "string",
-                                "description": "create: end as ISO 8601 datetime or date (exclusive for all-day).",
-                            },
-                            "notes": {
-                                "type": "string",
-                                "description": "create: optional event description/notes.",
-                            },
-                            "location": {
-                                "type": "string",
-                                "description": "create: optional location string.",
-                            },
-                            "calendar": {
-                                "type": "string",
-                                "description": "create: optional 'provider:calendar_id' to write a non-default calendar.",
-                            },
-                            "event_id": {
-                                "type": "string",
-                                "description": "delete: provider-qualified event id exactly as returned by calendar_read action='events'.",
-                            },
-                            "to": {
-                                "type": "string",
-                                "description": "shift: target day — 'tomorrow' (default) or 'YYYY-MM-DD'.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "tasks",
-                    "description": (
-                        "Task list ops — action='add'|'list'|'done'|'move' (absorbs "
-                        "tasks_*). 'list' is a free read; writes are confirmed-gated."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["add", "list", "done", "move"],
-                                "description": "Which task operation to run (default 'list').",
-                            },
-                            "task_list": {
-                                "type": "string",
-                                "description": "Optional 'provider:list_id' — narrows 'list' or targets a non-default list for 'add'.",
-                            },
-                            "title": {
-                                "type": "string",
-                                "description": "action='add': task title as the user phrased it.",
-                            },
-                            "due": {
-                                "type": "string",
-                                "description": "action='add'/'move': due date — 'today', 'tomorrow', or 'YYYY-MM-DD'.",
-                            },
-                            "notes": {
-                                "type": "string",
-                                "description": "action='add': optional task notes.",
-                            },
-                            "task_id": {
-                                "type": "string",
-                                "description": "action='done'/'move': provider-qualified task id exactly as returned by action='list' (e.g. 'google:@default/abc123').",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required for add/done/move; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": [],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "cms_read",
-                    "description": (
-                        "Read miniapp pages and reports — action='list'|'search'|'get'|'verify'. "
-                        "'search' query= finds a page without its slug; "
-                        "'get' reaches any slug directly."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["get", "list", "search", "verify"],
-                                "description": "Read operation.",
-                            },
-                            "key": {
-                                "type": "string",
-                                "description": "Page or report slug, e.g. 'pool-notes'/'cached-videos-report' (required for get/verify; get the real slug from action='search'/'list' or reports-index).",
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "search: free text matched over slug/title/summary — the way to find a page without knowing its slug.",
-                            },
-                            "lang": {
-                                "type": "string",
-                                "enum": ["en", "th"],
-                                "description": "get: page language variant (default en; falls back to en when missing).",
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "list: max slugs to return, most recently updated first (default 50; raise for the long tail).",
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "cms_publish_page",
-                    "description": (
-                        "Create or fully replace a miniapp page (slug is its id; an "
-                        "existing slug overwrites). Call FIRST to register the pending "
-                        "request, then ask the user and re-call with confirmed=true."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "slug": {
-                                "type": "string",
-                                "description": "Lowercase page id, 1-64 chars of a-z, 0-9, '-' or '_', e.g. 'pool-notes'.",
-                            },
-                            "title": {
-                                "type": "string",
-                                "description": "Human-readable page title shown in the miniapp navigation.",
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "Full page content in the given format (markdown by default).",
-                            },
-                            "format": {
-                                "type": "string",
-                                "enum": ["markdown", "html", "yaml", "slides"],
-                                "description": "Content format. 'slides' is markdown with '---' between slides.",
-                            },
-                            "lang": {
-                                "type": "string",
-                                "enum": ["en", "th"],
-                                "description": "Language variant to publish (default en). 'en' and 'th' variants of the same slug coexist — the viewer has a language toggle.",
-                            },
-                            "summary": {
-                                "type": "string",
-                                "description": "REQUIRED (report meta contract): one-line brief for reports-index — the gist Ada can answer from without re-reading the page (max ~240 chars).",
-                            },
-                            "domain": {
-                                "type": "string",
-                                "description": "REQUIRED (report meta contract): grouping tag for reports-index, e.g. 'flood', 'health', 'bench', 'news'.",
-                            },
-                            "fresh_for": {
-                                "type": "string",
-                                "description": "REQUIRED (report meta contract): staleness hint, e.g. '30m', '1h', '6h', '1d' — reports-index flags the page as STALE past this window.",
-                            },
-                            "links": {
-                                "type": "string",
-                                "description": "Comma-separated slugs this report links to or derives from (parents, children, sources). Stored as meta so Ada can follow the chain.",
-                            },
-                            "supersedes": {
-                                "type": "string",
-                                "description": "Slug of the report this one replaces — the older one reads as superseded.",
-                            },
-                            "public": {
-                                "type": "string",
-                                "description": "yes flags the page for the public static lane (surf-thailand.com/<tenant>/<slug>.html, ~15min); no unpublishes. Only when the owner asks for a shareable public link.",
-                            },
-                            "confidence": {
-                                "type": "string",
-                                "description": "REQUIRED (report meta contract): trust level — 'high', 'medium', 'low', or 'unverified'; shown in the report so Ada knows how much weight to give it.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["slug", "title", "content", "summary",
-                                     "domain", "fresh_for", "confidence"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "cms_edit",
-                    "description": (
-                        "Miniapp edits — action='note' (append a timeline note, free) | "
-                        "'delete' (confirmed) | 'automate' (registry ops: op=list/get "
-                        "free, set/enable/disable/run confirmed). Absorbs cms_note_update/"
-                        "delete_page/automation."
-                    ),
-                    "behavior": types.Behavior.NON_BLOCKING,
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["note", "delete", "automate"],
-                                "description": "Edit operation.",
-                            },
-                            "slug": {
-                                "type": "string",
-                                "description": "Page slug the op targets — get the real slug from cms_read action='list' or reports-index first; do not guess it.",
-                            },
-                            "note": {
-                                "type": "string",
-                                "description": "note: one-line note appended to the page Timeline and index entry (max ~200 chars).",
-                            },
-                            "summary": {
-                                "type": "string",
-                                "description": "note: optional replacement for the page's one-line reports-index brief.",
-                            },
-                            "lang": {
-                                "type": "string",
-                                "enum": ["en", "th"],
-                                "description": "note: language variant to annotate (default en).",
-                            },
-                            "op": {
-                                "type": "string",
-                                "enum": ["list", "get", "set", "enable", "disable", "run"],
-                                "description": "automate: registry operation (list/get free reads; set/enable/disable/run confirmed writes).",
-                            },
-                            "enabled": {
-                                "type": "boolean",
-                                "description": "automate set: turn the page's automation on/off.",
-                            },
-                            "interval_min": {
-                                "type": "integer",
-                                "description": "automate set: minutes between automatic runs (0 = every run, max 10080).",
-                            },
-                            "run_now": {
-                                "type": "boolean",
-                                "description": "automate set: queue (true) or cancel (false) a one-shot regeneration.",
-                            },
-                            "max_items": {
-                                "type": "integer",
-                                "description": "automate set: max news items per update (1-50).",
-                            },
-                            "since_hours": {
-                                "type": "integer",
-                                "description": "automate set: only include items published within N hours (1-720).",
-                            },
-                            "require": {
-                                "type": "string",
-                                "description": "automate set: relevance regex matched against item title+summary; empty string clears it.",
-                            },
-                            "feeds": {
-                                "type": "array",
-                                "items": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "minItems": 2,
-                                    "maxItems": 2,
-                                },
-                                "description": "automate set: RSS feeds as [[name, url], ...] pairs.",
-                            },
-                            "langs": {
-                                "type": "array",
-                                "items": {"type": "string", "enum": ["en", "th"]},
-                                "description": "automate set: which language variants to update.",
-                            },
-                            "parent": {
-                                "type": "string",
-                                "description": "automate set: parent report slug this page rolls up into (empty clears).",
-                            },
-                            "children": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "automate set: child report slugs this page aggregates.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required for delete and automate writes; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "ada_resolve_action",
-                    "description": (
-                        "Mark a pending action proposal applied or dismissed — key= from "
-                        "the pending-suggestions list after the user decides."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "key": {
-                                "type": "string",
-                                "description": "Proposal key, e.g. 'action-2026-09-22-abc123-0'.",
-                            },
-                            "resolution": {
-                                "type": "string",
-                                "enum": ["applied", "dismissed"],
-                            },
-                        },
-                        "required": ["key", "resolution"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "devin",
-                    "description": (
-                        "Devin session control — action='dispatch' (new unattended session) | "
-                        "'followup' (message a session) | 'answer' (reply to a blocked job). "
-                        "Absorbs devin_dispatch/followup/answer; all actions confirmed-gated."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["dispatch", "followup", "answer"],
-                                "description": "Session operation.",
-                            },
-                            "repo": {
-                                "type": "string",
-                                "enum": ["chaba", "ada-pi", "sunsynk-card"],
-                                "description": (
-                                    "dispatch: repository the session works in. 'chaba' = web apps under "
-                                    "/apps/* (incl. the vcast virtual-display receiver page), the "
-                                    "input-bridge relay, Caddy stack, HA dashboard cards, SSOT docs. "
-                                    "'ada-pi' = Ada's own backend tools, pwa_server, auth, scenarios. "
-                                    "'sunsynk-card' = the sunsynk power-flow card project. Pick the "
-                                    "repo where the code to change lives, not the service it affects."
-                                ),
-                            },
-                            "task": {
-                                "type": "string",
-                                "description": "dispatch: the task prompt for the Devin session.",
-                            },
-                            "task_id": {
-                                "type": "string",
-                                "description": "followup/answer: task id from devin_read action='status' or 'pending'.",
-                            },
-                            "message": {
-                                "type": "string",
-                                "description": "followup/answer: the instruction or refined self-contained answer to send.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    "name": "devin_read",
-                    "description": (
-                        "Devin job ledger — action='status'|'jobs'|'pending'|'report'|"
-                        "'review' (absorbs devin_status/jobs/pending/job_report and "
-                        "ada_devteam_review; review is owner-only)."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["status", "jobs", "pending", "report", "review"],
-                                "description": "Read/report operation.",
-                            },
-                            "task_id": {
-                                "type": "string",
-                                "description": "status: optional task id, e.g. '20260922-194454-...'. Omit to list all.",
-                            },
-                            "status": {
-                                "type": "string",
-                                "enum": ["running", "done", "failed", "awaiting-user"],
-                                "description": "jobs: optional ledger-status filter; omit for all.",
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "jobs/report: max job-ledger docs to include (default 30/60).",
-                            },
-                            "publish": {
-                                "type": "boolean",
-                                "description": "report: write the composed report to the 'devin-job-report' CMS page.",
-                            },
-                            "request": {
-                                "type": "string",
-                                "description": "review: plain-language description of the tool Ada wants.",
-                            },
-                            "title": {
-                                "type": "string",
-                                "description": "review: optional short slug for the spec doc key.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "report publish=true only; set after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    # tools-merge-docs-drive (2026-10-05): the four ada_doc_*
-                    # tools consolidated into one action= surface. The old
-                    # names stay callable via tool_runner._ALIASES.
-                    "name": "docs",
-                    "description": (
-                        "Personal document archive (deeds, IDs, passports, receipts — "
-                        "absorbs ada_doc_*) — action='search'|'get'|'print'|'archive'; "
-                        "archive and print are confirmed-gated."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["search", "get", "print", "archive"],
-                                "description": "search|get|print|archive — which archive operation.",
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "search: what to find, e.g. 'A-68 deed', 'passport', 'ทะเบียนบ้าน'.",
-                            },
-                            "slug": {
-                                "type": "string",
-                                "description": "get/print/archive: archive slug, e.g. 'A-68' or 'visa-2026'.",
-                            },
-                            "limit": {
-                                "type": "number",
-                                "description": "search: max results (default 5).",
-                            },
-                            "doc_type": {
-                                "type": "string",
-                                "description": "archive: document type — deed, id_card, passport, contract, receipt, form, document.",
-                            },
-                            "intake_key": {
-                                "type": "string",
-                                "description": "archive: held intake key from /api/documents/intake (doc/...).",
-                            },
-                            "intake_keys": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "archive: multiple held intake keys — one set spanning several uploads/pages.",
-                            },
-                            "source_dir": {
-                                "type": "string",
-                                "description": "archive: directory of page images on the Ada host.",
-                            },
-                            "pages": {
-                                "type": "string",
-                                "description": "print: 'all' (default), '1-3', or '2,4' — 1-based.",
-                            },
-                            "true_size_mm": {
-                                "type": "string",
-                                "description": "print: real physical size, e.g. '85.6x54' for an ID-1 card. Omit for fit-to-A4.",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "archive/print: required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }, {
-                    # tools-merge-docs-drive (2026-10-05): the four drive_*
-                    # tools consolidated into one action= surface. The old
-                    # names stay callable via tool_runner._ALIASES.
-                    "name": "drive",
-                    "description": (
-                        "The operator's Google Drive — action='search'|'show'|'get'|"
-                        "'update' (absorbs drive_*; for archived deed/ID sets use docs "
-                        "action='search'). update is confirmed-gated."
-                    ),
-                    "parameters_json_schema": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["search", "show", "get", "update"],
-                                "description": "search|show|get|update — which Drive operation.",
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "search: name or content to find, e.g. 'condo photos', 'รูปบ้าน', 'budget 2026'.",
-                            },
-                            "mime": {
-                                "type": "string",
-                                "description": "search: optional mimeType filter: 'image/', 'video/', 'application/pdf', 'text/'.",
-                            },
-                            "limit": {
-                                "type": "number",
-                                "description": "search: max results (default 10).",
-                            },
-                            "file_id": {
-                                "type": "string",
-                                "description": "get/show/update: Drive file id from a search.",
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "update: the complete new file content (replaces, not appends).",
-                            },
-                            "screen": {
-                                "type": "number",
-                                "description": "show: vcast screen number (default 1).",
-                            },
-                            "target": {
-                                "type": "string",
-                                "enum": ["screen", "tv"],
-                                "description": "show: 'screen' (vcast display, default) or 'tv' (living-room TV).",
-                            },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "update: required; set true only after explicit user confirmation.",
-                            },
-                            "confirm_token": {
-                                "type": "string",
-                                "description": "Bound confirmation token returned by a denied call; after the user confirms, replay the same call with it. Single use, expires in 120s.",
-                            },
-                        },
-                        "required": ["action"],
-                        "additionalProperties": False,
-                    },
-                }]
-            }],
+            "tools": [{"function_declarations": _builtin_declarations()}],
         }
         if self.text_only:
             # No audio in or out on relay channels — speech/voice config is
@@ -4749,6 +4828,11 @@ class GeminiLiveProvider(RealtimeProvider):
             config["tools"][0]["function_declarations"] = _fill_bank_placeholders(
                 config["tools"][0]["function_declarations"], all_banks, writable_banks
             )
+        # Lazy schemas last — after exclusions, chaba allowlist, and bank
+        # placeholders — so every wire decl (builtin, camera, tools.d,
+        # chaba) is covered by the same rule.
+        config["tools"][0]["function_declarations"] = _apply_lazy_schemas(
+            config["tools"][0]["function_declarations"])
         # NOTE: live-session google_search grounding is NOT enabled — the
         # API key's plan rejects it with a 1011 quota error at connect,
         # taking down every session. Web search goes through the explicit

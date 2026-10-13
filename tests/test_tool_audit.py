@@ -38,7 +38,8 @@ def _mini_repo(root: Path, *, tools: list[str], aliases=None,
                absorbed=None, covered=None, debt=None, cap=None,
                desc=None, canonical="ada_camera", scenario=None,
                runner_tools=None, runner_sync=(),
-               provider_dispatched=None, runner_internal=None):
+               provider_dispatched=None, runner_internal=None,
+               lazy_hot=None, lazy_ssot=None):
     """Build a minimal fake repo for lint().
 
     runner_tools defaults to `tools` — every declaration gets a
@@ -51,8 +52,15 @@ def _mini_repo(root: Path, *, tools: list[str], aliases=None,
         % (t, desc if desc is not None else "d")
         for t in tools)
     (root / "backend").mkdir(parents=True, exist_ok=True)
-    (root / "backend/realtime_provider.py").write_text(
-        "FUNCTION_DECLARATIONS = [" + prov + "]\n")
+    provider_src = "FUNCTION_DECLARATIONS = [" + prov + "]\n"
+    if lazy_hot is not None:
+        # lazy_hot writes the provider's FULL_SCHEMA_TOOLS const;
+        # lazy_ssot writes ssot lazy_schemas.full_schema_tools — pass
+        # different lists to test the drift checks in each direction.
+        provider_src += (
+            "FULL_SCHEMA_TOOLS = frozenset({"
+            + ", ".join(repr(n) for n in lazy_hot) + "})\n")
+    (root / "backend/realtime_provider.py").write_text(provider_src)
     alias_rows = ", ".join(f'{k!r}: {v!r}' for k, v in (aliases or {}).items())
     rtools = list(tools) if runner_tools is None else list(runner_tools)
     impls = "".join(
@@ -80,6 +88,12 @@ def _mini_repo(root: Path, *, tools: list[str], aliases=None,
         "runner_internal": list(runner_internal or []),
         "families": {},
     }
+    if lazy_ssot is not None:
+        ssot_doc["lazy_schemas"] = {
+            "full_schema_tools": list(lazy_ssot)}
+    elif lazy_hot is not None:
+        ssot_doc["lazy_schemas"] = {
+            "full_schema_tools": list(lazy_hot)}
     if absorbed is not None:
         ssot_doc["families"]["camera"] = {
             "merge_card": "tools-merge-camera",
@@ -219,6 +233,34 @@ class LintFixtureTests(unittest.TestCase):
                         runner_tools=["ada_camera", "execute"],
                         runner_internal=["execute"], debt=["ada_camera"])
         self.assertTrue(rep["ok"], rep["errors"])
+
+    def test_lazyschema_matching_sets_pass(self):
+        rep = self._run(tools=["ada_camera", "cold_tool"],
+                        lazy_hot=["ada_camera"],
+                        debt=["ada_camera", "cold_tool"])
+        self.assertTrue(rep["ok"], rep["errors"])
+
+    def test_lazyschema_ssot_only_fails(self):
+        rep = self._run(tools=["ada_camera", "cold_tool"],
+                        lazy_hot=["ada_camera"],
+                        lazy_ssot=["ada_camera", "ghost"],
+                        debt=["ada_camera", "cold_tool"])
+        self.assertFalse(rep["ok"])
+        self.assertTrue(any("lazyschema" in e and "ghost" in e
+                            for e in rep["errors"]))
+
+    def test_lazyschema_provider_only_fails(self):
+        rep = lint_mod.lint(_mini_repo(
+            self.tmp, tools=["ada_camera"], debt=["ada_camera"]))
+        # no lazy block at all in the mini ssot — the provider const
+        # absent too, so both empty -> clean
+        self.assertTrue(rep["ok"], rep["errors"])
+        (self.tmp / "backend/realtime_provider.py").write_text(
+            (self.tmp / "backend/realtime_provider.py").read_text()
+            + "FULL_SCHEMA_TOOLS = frozenset({'ada_camera'})\n")
+        rep = lint_mod.lint(self.tmp)
+        self.assertFalse(rep["ok"])
+        self.assertTrue(any("lazyschema" in e for e in rep["errors"]))
 
     def test_alias_key_impl_is_absorbed_not_orphaned(self):
         rep = self._run(tools=["ada_camera"],

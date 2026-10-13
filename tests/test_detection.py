@@ -1,9 +1,12 @@
+import importlib.util
 import io
 import unittest
 
 from PIL import Image
 
 from backend.detection import COCO_LABELS, MODEL_PATH, ObjectDetector
+
+_LITERT = importlib.util.find_spec("ai_edge_litert") is not None
 
 
 class ObjectDetectorTests(unittest.TestCase):
@@ -17,6 +20,7 @@ class ObjectDetectorTests(unittest.TestCase):
         self.assertEqual(COCO_LABELS[2], "car")
         self.assertEqual(COCO_LABELS[89], "toothbrush")
 
+    @unittest.skipUnless(_LITERT, "ai_edge_litert not installed on this host")
     def test_inference_returns_normalized_detections(self) -> None:
         image = Image.new("RGB", (320, 240), "black")
         buffer = io.BytesIO()
