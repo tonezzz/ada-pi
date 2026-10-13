@@ -1016,7 +1016,7 @@ def _builtin_declarations() -> list[dict[str, Any]]:
                         "enum": ["on", "off", "open", "close", "stop", "press",
                                  "turn_on", "turn_off", "media_play", "media_pause",
                                  "media_stop", "volume_up", "volume_down",
-                                 "volume_mute", "select_source"],
+                                 "volume_mute", "mute", "select_source"],
                         "description": "Domain action: on|off for simple entities; open|close|stop for cover.*; press for button.*; media_player verbs for media_player.* (source= required for select_source).",
                     },
                     "source": {
@@ -1167,6 +1167,10 @@ def _builtin_declarations() -> list[dict[str, Any]]:
                     "url": {
                         "type": "string",
                         "description": "Target URL for nav/play/image/audio/cast, or the app name for action='shortcut'. Not needed for stop/layout/zoom/unzoom/say/list/status.",
+                    },
+                    "shortcut": {
+                        "type": "string",
+                        "description": "For action='shortcut': the named /apps/<name>/ app (absorbed vcast_shortcut arg spelling; url= works too).",
                     },
                     "text": {
                         "type": "string",

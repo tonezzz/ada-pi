@@ -56,7 +56,10 @@ steps:
     args: {bank: note, text: "guest write", confirmed: true}
     expect: {error_contains: "session owner"}
   - tool: control_entity
-    args: {entity_id: light.den, on: true}
+    # "on" must be quoted — YAML 1.1 parses the bare key as boolean True,
+    # and the schema gate now rejects non-string/unknown args before the
+    # owner check this step exercises.
+    args: {entity_id: light.den, "on": true}
     expect: {error_contains: "session owner"}
   - tool: ada_doc_search
     args: {query: "id card"}

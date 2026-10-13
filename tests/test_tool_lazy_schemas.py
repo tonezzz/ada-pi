@@ -24,10 +24,11 @@ EMPTY = {"type": "object", "properties": {}}
 
 
 def _types_ctx():
-    """genai-stub tolerance: the .teststubs google.genai.types namespace is
-    bare (no Behavior etc.) — decl building only needs the attribute to
+    """dep_stubs tolerance: a fabricated google.genai.types namespace may
+    lack real enum classes — decl building only needs the attribute to
     EXIST (the enum value never reaches these assertions), so swap in a
-    duck-typed stand-in. With real google-genai this is a no-op."""
+    duck-typed stand-in. With real google-genai (or the full dep_stubs
+    surface) this is a no-op."""
     if hasattr(rp.types, "Behavior"):
         return contextlib.nullcontext()
     return patch.object(rp, "types", MagicMock())
@@ -207,6 +208,16 @@ class SchemaValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_empty_args_on_empty_schema_ok(self):
         out = await self._call("probe_tool", {"q": "x"})
         self.assertTrue(out.get("ok"))
+
+    async def test_alias_implied_args_skip_validation(self):
+        """Absorbed-name implied defaults are server-internal contract:
+        ada_daily_summary injects period='digest' — deliberately not in
+        plan_day's declared enum — and must still reach the method, not
+        die on the schema gate. (Model calls only use canonical wire
+        names, which ARE validated.)"""
+        out = await self.runner.execute(
+            "ada_daily_summary", {"day": "yesterday"})
+        self.assertNotEqual(out.get("error_type"), "SchemaError")
 
     async def test_real_schema_trip_calendar(self):
         """End-to-end against the real schema map — the card's trip

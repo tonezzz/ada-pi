@@ -280,8 +280,9 @@ class ToolRunner(
             if session is not _IDENTITY_UNSET else None
         )
         try:
-            return await self._execute_gated(name, call_args, ident,
-                                             method=method, dyn_spec=dyn_spec)
+            return await self._execute_gated(
+                name, call_args, ident, method=method, dyn_spec=dyn_spec,
+                from_alias=_alias_src in _ALIASES)
         except Exception as exc:
             # Gate denials and arg errors raise instead of returning a
             # dict — append the error-path guide to the exception text so
@@ -317,7 +318,8 @@ class ToolRunner(
 
     async def _execute_gated(self, name: str, call_args: dict[str, Any],
                              ident: str | None, method: Any = None,
-                             dyn_spec: Any = None) -> Any:
+                             dyn_spec: Any = None,
+                             from_alias: bool = False) -> Any:
         if method is None:
             method = getattr(self, name, None)
         confirm: tuple[Any, Any] = (
@@ -342,10 +344,16 @@ class ToolRunner(
         # confirm token or register a pending request on a malformed call.
         # A miss returns ok:false and _usage_hint attaches the tool_guide
         # entry — the model repairs the shape and retries.
-        bad = _validate_call_args(name, call_args)
-        if bad is not None:
-            return await self._capture_reminder(
-                name, self._usage_hint(name, bad))
+        # Absorbed-name calls (the _ALIASES back-compat surface) skip the
+        # check: their args were spelled for the retired decls, and the
+        # implied defaults / _alias_call_args remap are server-internal
+        # contract (e.g. ada_daily_summary's period='digest' is deliberately
+        # not in plan_day's declared enum) — not model-supplied input.
+        if not from_alias:
+            bad = _validate_call_args(name, call_args)
+            if bad is not None:
+                return await self._capture_reminder(
+                    name, self._usage_hint(name, bad))
         policy_ident = self.policy_identity()
         # tools-merge-display (2026-10-05): cast_to_screen's absorbed
         # seats — action='list'/'status' were ungated reads (vcast_list /

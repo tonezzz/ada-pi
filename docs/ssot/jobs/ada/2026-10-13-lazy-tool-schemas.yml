@@ -55,6 +55,32 @@ planning:
     - set_facial_expression is provider-dispatched (never reaches
       ToolRunner.execute) so it keeps its full schema — top hot tool by
       call volume regardless.
+    - Attempt 3 (dispatch 20261013-204402) fixes:
+      _ALIASES back-compat calls skip _validate_call_args — absorbed-name
+      implied defaults and _alias_call_args remap output are
+      server-internal contract, not model input (ada_daily_summary injects
+      period='digest', deliberately outside plan_day's declared enum;
+      ada_set_voice remaps to persona's *_voice actions; doc_upload_card
+      actions inject photo=/doc= seats). Model calls only ever use
+      canonical wire names, which still validate strictly.
+      Declaration gaps the schema gate exposed and now declares:
+      control_entity action='mute' (method's verify map always accepted
+      it alongside volume_mute); cast_to_screen shortcut= arg (absorbed
+      vcast_shortcut spelling — url= was already documented).
+      Test-env stubs committed: tests/dep_stubs.py + conftest.py install
+      duck-typed google.genai/fastapi modules and a pytest_pyfunc_call
+      fallback runner when the real packages are absent (bare gate
+      interpreters have no google-genai/fastapi/pytest-asyncio — attempt
+      2's uncommitted .teststubs is why the merge gate died collecting
+      test_calendar_providers.py). No-ops where real packages exist;
+      ai_edge_litert-bound inference tests skipUnless the module.
+      session-owner-policy.yaml: quoted the "on" arg key — YAML 1.1
+      parses the bare key as boolean True and the schema gate (correctly)
+      rejects non-string arg names before the owner check.
+      Enum/required misses on canonical tools now surface error_type
+      SchemaError (was the method's ValueError, or a PermissionError when
+      the call was also unconfirmed) — ok:false contract unchanged; tests
+      updated.
 meta: |
   Wire measurement (50 decls, this worktree): decl JSON 63862 -> 27668
   bytes (-56.7%), ~ -9k input tokens of the ~27.8k floor (chars/4 est).
