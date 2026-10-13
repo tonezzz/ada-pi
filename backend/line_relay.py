@@ -929,9 +929,13 @@ class LineRelay:
             return
         # Route: groups need a mention (or LINE_DEFAULT_PERSONA), DMs
         # default to ada. Group images/files have no caption — default
-        # persona.
-        persona, turn = _route(text if mtype == "text" else "",
-                                   is_group, chat_id, self._room_pin)
+        # persona. An unmapped member gets no pin map: their mention
+        # must not set the room pin (it would reroute every member's
+        # unaddressed follow-ups), and a stranger's chatter must not
+        # ride someone else's pin into a refusal.
+        persona, turn = _route(
+            text if mtype == "text" else "", is_group, chat_id,
+            self._room_pin if caller is not None else None)
         if persona is None:
             logger.info("ignored unaddressed %s msg from %s (no persona mention)",
                         src_type, user_id)

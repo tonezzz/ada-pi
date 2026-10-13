@@ -230,6 +230,37 @@ class InviteKeyTests(unittest.TestCase):
             self.assertIsNone(auth.create_key("admin"))  # env name is taken
             self.assertIsNone(auth.create_key("bad name!"))
 
+    def test_import_key_enrols_existing_value(self):
+        """Cross-backend enrolment: the SAME key value lands on each
+        persona backend with that backend's own ha_person/apps — the
+        relay presents one string everywhere
+        (docs/kb/msg-lane-multihome-routing.md)."""
+        path = self._keys_file()
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            self.assertTrue(auth.import_key(
+                "user-nhong", "ada-shared-123",
+                ha_person="person.nhong", apps=["chat"]))
+            self.assertEqual(auth._parse_keys()["ada-shared-123"],
+                             "user-nhong")
+            self.assertEqual(auth.ha_person_for_key("user-nhong"),
+                             "person.nhong")
+            self.assertEqual(auth.issued_key_apps()["user-nhong"],
+                             ["chat"])
+            self.assertEqual(
+                auth.websocket_caller(
+                    _ws(query={"api_key": "ada-shared-123"})),
+                "user-nhong")
+
+    def test_import_key_refuses_collisions_and_bad_shapes(self):
+        path = self._keys_file({"user-kk": {"key": "ada-x",
+                                            "device": None}})
+        with patch.dict(os.environ, {"ADA_KEYS_FILE": path}, clear=True):
+            self.assertFalse(auth.import_key("user-kk", "ada-y"))
+            self.assertFalse(auth.import_key("user-other", "ada-x"))
+            self.assertFalse(auth.import_key("bad name!", "ada-z"))
+            self.assertFalse(auth.import_key("user-z", "  "))
+            self.assertFalse(auth.import_key("user-z", "ada a b"))
+
 
 class MemberInviteTests(unittest.TestCase):
     """Pending/approved/revoked key states + invite tokens —

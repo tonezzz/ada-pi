@@ -190,6 +190,57 @@ def create_key(name: str, apps: Any = None,
     return key
 
 
+def import_key(name: str, key: str, apps: Any = None,
+               ha_person: str | None = None,
+               person: str | None = None) -> bool:
+    """Enrol an EXISTING key value under a name — the cross-backend
+    enrolment for multi-home mention routing
+    (docs/kb/msg-lane-multihome-routing.md). The message relay resolves
+    one caller key string from its own keys file and presents it to
+    every persona backend, so each reachable backend must authenticate
+    the SAME value — minting per backend with create_key would produce
+    different strings the relay cannot all satisfy.
+
+    Nothing is minted here: the provided string is enrolled live with
+    THIS backend's own metadata (ha_person, apps) so the caller's
+    identity/tier stays per-backend. False on a bad name/key shape, a
+    taken name, or a value already registered under another name (a
+    shared value makes caller identity ambiguous — _parse_keys maps
+    key -> name)."""
+    if not _KEY_NAME_RE.match(name):
+        return False
+    key = str(key or "").strip()
+    if not key or any(c.isspace() for c in key):
+        return False
+    with _KEYS_LOCK:
+        try:
+            data = json.loads(open(_keys_file()).read())
+        except (OSError, ValueError):
+            data = {}
+        env_names = {n for n in _parse_keys().values()}
+        if name in data or name in env_names:
+            return False
+        if key in _parse_keys():
+            return False
+        data[name] = {"key": key, "device": None,
+                      "issued": time.strftime("%Y-%m-%d")}
+        clean = _clean_apps(apps)
+        if clean:
+            data[name]["apps"] = clean
+        if ha_person:
+            data[name]["ha_person"] = str(ha_person)
+        if person:
+            data[name]["person"] = str(person)
+        _save_file_keys(data)
+    try:
+        from backend.event_log import log_event
+        log_event("key-issued", name, "key",
+                  "member key imported (cross-backend enrolment)")
+    except Exception:
+        pass
+    return True
+
+
 def approve_key(name: str) -> bool:
     """Clear a pending key's approval gate. True only when it flipped
     pending -> approved (False on no such key, revoked, or already live)."""

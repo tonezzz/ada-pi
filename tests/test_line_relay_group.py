@@ -290,6 +290,42 @@ class GroupEventTests(unittest.IsolatedAsyncioTestCase):
         relay.line.assert_any_await(
             "markAsRead", {"markAsReadToken": "T1"})
 
+    async def test_mention_pins_room_for_followups(self):
+        """Interview-room rule: a mapped member's mention pins the room —
+        unaddressed follow-ups keep routing to the pinned persona (same
+        session, tagged [kaewta->...])."""
+        relay = _relay()
+        await relay.handle_event(_ev("kaewta, what's for dinner?"))
+        [sess] = _FakeSession.made
+        self.assertEqual(sess.ws_url, "ws://127.0.0.1:8007/ws")
+        sess.send_turn.reset_mock()
+        await relay.handle_event(_ev("and tomorrow?"))
+        sess.send_turn.assert_awaited_once()
+        self.assertIn("and tomorrow?",
+                      sess.send_turn.await_args.args[0])
+        _, msgs = relay._deliver.await_args.args[:2]
+        self.assertTrue(msgs[0]["text"].startswith("[kaewta->"))
+
+    async def test_new_mention_switches_pin(self):
+        relay = _relay()
+        await relay.handle_event(_ev("ada hi"))
+        await relay.handle_event(_ev("kaewta hi"))
+        s1, s2 = _FakeSession.made
+        s2.send_turn.reset_mock()
+        await relay.handle_event(_ev("still there?"))
+        s2.send_turn.assert_awaited_once()   # pin moved ada -> kaewta
+        s1.send_turn.assert_awaited_once()   # ada session not reused
+
+    async def test_unmapped_member_cannot_pin_room(self):
+        """A stranger's mention must not pin the room — that would
+        reroute every member's unaddressed follow-ups to their pick."""
+        relay = _relay()
+        await relay.handle_event(_ev("kaewta, hi", user_id="Unhong9"))
+        _FakeSession.made = []
+        await relay.handle_event(_ev("unaddressed follow-up"))
+        self.assertEqual(_FakeSession.made, [])
+        relay._deliver.assert_not_awaited()
+
     async def test_group_audio_saved_acked_mirrored(self):
         relay = _relay()
         relay._fetch_content = AsyncMock(
