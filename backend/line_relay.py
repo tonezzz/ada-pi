@@ -73,7 +73,25 @@ CHANNEL_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
 ADA_WS_URL = os.environ.get("ADA_WS_URL", "ws://127.0.0.1:8002/ws")
 ADA_API_KEY = os.environ.get("ADA_API_KEY", "")
-IDLE_SESSION_S = float(os.environ.get("LINE_IDLE_SESSION_S", "600"))
+def _idle_session_s() -> float:
+    """Idle-close threshold, time-of-day aware.
+
+    LINE_IDLE_SESSION_S        day threshold, seconds (default 300)
+    LINE_IDLE_SESSION_S_NIGHT  night threshold (default: same as day)
+    LINE_NIGHT_HOURS           local window "HH-HH" (default 23-07) — last
+                               message of the night should not hold a Live
+                               session open; reconnect+prime next morning is
+                               cheaper than a long tail.
+    """
+    day = float(os.environ.get("LINE_IDLE_SESSION_S", "300"))
+    night = float(os.environ.get("LINE_IDLE_SESSION_S_NIGHT", str(day)))
+    if night == day:
+        return day
+    lo_s, hi_s = os.environ.get("LINE_NIGHT_HOURS", "23-07").split("-", 1)
+    h = datetime.now().hour
+    lo, hi = int(lo_s), int(hi_s)
+    in_night = (h >= lo or h < hi) if lo > hi else (lo <= h < hi)
+    return night if in_night else day
 
 LINE_LISTEN = os.environ.get("LINE_WEBHOOK_LISTEN", "127.0.0.1:8912")
 LINE_PATH = os.environ.get("LINE_WEBHOOK_PATH", "/webhook/line")
@@ -1120,15 +1138,16 @@ class LineRelay:
             logger.warning("user %s reply send failed: %s", user_id, exc)
 
     async def sweeper(self) -> None:
-        """Close WS sessions idle longer than IDLE_SESSION_S so Ada's
+        """Close WS sessions idle longer than _idle_session_s() so Ada's
         session-end (summary, extraction) runs."""
         while True:
             await asyncio.sleep(30)
             now = time.monotonic()
+            idle_s = _idle_session_s()
             for uid, sess in list(self.sessions.items()):
                 if sess.ws is not None and \
-                        now - sess.last_active > IDLE_SESSION_S:
-                    logger.info("user %s idle close", uid)
+                        now - sess.last_active > idle_s:
+                    logger.info("user %s idle close (idle_s=%s)", uid, idle_s)
                     await sess.close()
             for nonce, hit in list(self._imgs.items()):
                 ts = hit[1]
