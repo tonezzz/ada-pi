@@ -2895,11 +2895,18 @@ class GeminiLiveProvider(RealtimeProvider):
             "output_by_modality": dict(self.usage_output_by_modality),
         }
 
-    async def connect(self, resumption_handle: str | None = None) -> None:
-        if not self.api_key:
-            raise RuntimeError("GEMINI_API_KEY is not set")
+    async def _session_config(self, resumption_handle: str | None = None) -> dict:
+        """Session-config builder, extracted from connect() (card
+        ada-text-mode-sessions): the text provider harvests the identical
+        lane-filtered function_declarations + system_instruction from a
+        throwaway instance WITHOUT opening a Live session. Side effects
+        on self (_excluded_tools, _tool_leak_re) are intentional — the
+        text provider reuses them for its dispatch guards.
 
-        self._client = genai.Client(api_key=self.api_key)
+        Also dumps the final lane-filtered declarations to
+        ~/.local/share/ada/tool-decls-<instance>-<channel>.json so ops
+        can diff what a lane actually exposes.
+        """
         config = {
             # Text-channel sessions (telegram/line relays) also run AUDIO —
             # native-audio live models (3.x) dropped response_modalities TEXT
@@ -4768,6 +4775,26 @@ class GeminiLiveProvider(RealtimeProvider):
                 self._tool_leak_re = None
         except Exception:
             self._tool_leak_re = None
+        # Lane declaration cache — diagnostics + parity record for the
+        # text provider (ada-text-mode-sessions).
+        try:
+            _decl_dir = Path(os.environ.get(
+                "ADA_TOOL_DECL_DIR", str(Path.home() / ".local/share/ada")))
+            _decl_dir.mkdir(parents=True, exist_ok=True)
+            (_decl_dir / f"tool-decls-{ada_instance_id()}-{self.channel or 'voice'}.json").write_text(
+                json.dumps(config["tools"][0]["function_declarations"],
+                           indent=1, default=str))
+        except Exception as exc:
+            logger.warning("tool-decl cache write failed: %s", exc)
+        return config
+
+    async def connect(self, resumption_handle: str | None = None) -> None:
+        if not self.api_key:
+            raise RuntimeError("GEMINI_API_KEY is not set")
+
+        self._client = genai.Client(api_key=self.api_key)
+        self._client = genai.Client(api_key=self.api_key)
+        config = await self._session_config(resumption_handle)
         self._session_context = self._client.aio.live.connect(
             model=self.model,
             config=config,

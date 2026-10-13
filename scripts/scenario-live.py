@@ -1602,6 +1602,10 @@ async def main() -> int:
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("-t", "--timing", action="store_true",
                     help="print per-turn event timeline (send->event offsets)")
+    ap.add_argument("--text", action="store_true",
+                    help="append mode=text — run against the REST text "
+                         "provider instead of a Gemini Live session "
+                         "(ada-text-mode-sessions)")
     ap.add_argument("--events-json", default=None,
                     help="write per-turn records [{n,ts,kind,prompt,tools,"
                          "transcript,ok,failures}] to this path — the "
@@ -1615,6 +1619,9 @@ async def main() -> int:
     if api_key:
         sep = "&" if "?" in url else "?"
         url = f"{url}{sep}api_key={api_key}"
+    if args.text:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}mode=text"
 
     # One live scenario per host at a time — concurrent runs share the Ada
     # session AND the vcast screens, silently corrupting each other

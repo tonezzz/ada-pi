@@ -61,6 +61,11 @@ _DRIFT_COOLDOWN_S = 86400
 _drift_scores: dict[str, collections.deque] = {}
 _drift_warned: dict[str, float] = {}
 
+# Callers that always get the text provider regardless of ?mode=
+# (comma-separated caller names; card ada-text-mode-sessions).
+_TEXT_ONLY_CALLERS = {s.strip() for s in os.environ.get(
+    "ADA_TEXT_ONLY_CALLERS", "").split(",") if s.strip()}
+
 
 def _drift_track(name: str, confidence: float, provider) -> None:
     """Feed one identification score; emit voiceprint_drift when the
@@ -1097,12 +1102,28 @@ async def voice_socket(ws: WebSocket) -> None:
         "client": ws.client.host if ws.client else None,
         "ws": ws,
     }
-    provider_ref = [create_provider(
-        tool_runner=tool_runner, session_id=session_id, conversation=conversation,
-        caller_name=tool_runner.session_caller_name,
-        caller_person=tool_runner.session_caller_ha_person,
-        channel=channel,
-    )]
+    # Text mode (ada-text-mode-sessions): ?mode=text or a caller named in
+    # ADA_TEXT_ONLY_CALLERS gets the REST text provider — no Gemini Live
+    # session at all (relay text no longer rents realtime audio minutes).
+    _text_only = (
+        (ws.query_params.get("mode") or "").strip().lower() == "text"
+        or tool_runner.session_caller_name in _TEXT_ONLY_CALLERS)
+    if _text_only:
+        from backend.openrouter_provider import OpenRouterTextProvider
+        provider_ref = [OpenRouterTextProvider(
+            tool_runner=tool_runner, session_id=session_id,
+            conversation=conversation, channel=channel, tools=True,
+            caller_name=tool_runner.session_caller_name,
+            caller_person=tool_runner.session_caller_ha_person)]
+        logger.info("session=%s text-mode provider (caller=%s)",
+                    session_id, tool_runner.session_caller_name)
+    else:
+        provider_ref = [create_provider(
+            tool_runner=tool_runner, session_id=session_id, conversation=conversation,
+            caller_name=tool_runner.session_caller_name,
+            caller_person=tool_runner.session_caller_ha_person,
+            channel=channel,
+        )]
     # Keep the ref (not the instance) so provider swaps on Gemini reconnect
     # stay visible to /api/notify.
     _live_sessions[session_id]["provider"] = provider_ref
