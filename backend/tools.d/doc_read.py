@@ -274,11 +274,12 @@ def _mime_of(path: Path) -> str:
                 return m
     except OSError:
         pass
+    # .bin is the pre-extension-fix archive suffix — /etc/mime.types maps
+    # it to octet-stream, so sniff magic bytes before trusting the guess.
+    head = b""
     mime = mimetypes.guess_type(path.name)[0]
-    if mime:
+    if mime and path.suffix != ".bin":
         return mime
-    # Pre-extension-fix archives saved media as .bin — sniff magic
-    # bytes so doc_read still sees the real type.
     try:
         head = path.open("rb").read(12)
     except OSError:
