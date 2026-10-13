@@ -38,10 +38,32 @@ Env:
     LINE_VOICE_TRANSCRIBE      — "1" transcribes clips (faster-whisper) and
                                  routes the transcript like a text turn
     LINE_WHISPER_MODEL         — default base
+    LINE_VOICE_ENROLL          — default 1: an unknown speaker on a
+                                 caller-mapped lane arms a pending
+                                 enrollment — the next
+                                 LINE_VOICE_ENROLL_CLIPS clips become
+                                 voiceprints under the caller's person
+    LINE_VOICE_ENROLL_CLIPS    — default 3 prints to complete enrollment
+    LINE_VOICE_ENROLL_TTL_S    — default 900s before a pending enrollment
+                                 expires
+    LINE_VOICE_MATCH           — default 1: score every saved clip with
+                                 speaker_id.match_file; the persona's
+                                 turn gets a [voice: speaker=..] context
+                                 line
     LINE_VOICE_DM_MIRROR       — default 1: group voice ack/transcript is
                                  also pushed to the speaker's DM lane
     LINE_WEBHOOK_LISTEN        — host:port, default 127.0.0.1:8912
     LINE_WEBHOOK_PATH          — default /webhook/line
+    LINE_TEXT_IMG_MINE         — default 1: image-bearing links inside a
+                                 reply or /send text (Drive share links,
+                                 photo URLs, /v1/drive/media/ and
+                                 /relay-img/ paths) are upgraded to real
+                                 image messages — the link also stays in
+                                 the text; failures stay silent
+    DOC_ARCHIVE_URL / DOC_ARCHIVE_API_KEY — the doc-archive service mints
+                                 /v1/drive/media/<id>?t= fetch URLs, so a
+                                 pasted drive.google.com share link can be
+                                 delivered as an actual image
     ADA_WS_URL / ADA_API_KEY / ADA_KEYS_FILE — same as tg_relay
 
 Replies go out via /message/reply using the event's replyToken (free, but
@@ -73,25 +95,7 @@ CHANNEL_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
 CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
 ADA_WS_URL = os.environ.get("ADA_WS_URL", "ws://127.0.0.1:8002/ws")
 ADA_API_KEY = os.environ.get("ADA_API_KEY", "")
-def _idle_session_s() -> float:
-    """Idle-close threshold, time-of-day aware.
-
-    LINE_IDLE_SESSION_S        day threshold, seconds (default 300)
-    LINE_IDLE_SESSION_S_NIGHT  night threshold (default: same as day)
-    LINE_NIGHT_HOURS           local window "HH-HH" (default 23-07) — last
-                               message of the night should not hold a Live
-                               session open; reconnect+prime next morning is
-                               cheaper than a long tail.
-    """
-    day = float(os.environ.get("LINE_IDLE_SESSION_S", "300"))
-    night = float(os.environ.get("LINE_IDLE_SESSION_S_NIGHT", str(day)))
-    if night == day:
-        return day
-    lo_s, hi_s = os.environ.get("LINE_NIGHT_HOURS", "23-07").split("-", 1)
-    h = datetime.now().hour
-    lo, hi = int(lo_s), int(hi_s)
-    in_night = (h >= lo or h < hi) if lo > hi else (lo <= h < hi)
-    return night if in_night else day
+IDLE_SESSION_S = float(os.environ.get("LINE_IDLE_SESSION_S", "600"))
 
 LINE_LISTEN = os.environ.get("LINE_WEBHOOK_LISTEN", "127.0.0.1:8912")
 LINE_PATH = os.environ.get("LINE_WEBHOOK_PATH", "/webhook/line")
@@ -106,6 +110,27 @@ IMG_TTL_S = float(os.environ.get("LINE_IMG_TTL_S", "3600"))
 IMG_CACHE_DIR = Path(os.environ.get(
     "LINE_IMG_CACHE_DIR",
     str(Path.home() / ".local/state/ada-line-relay/img-cache")))
+
+# doc-archive mints short-lived /v1/drive/media/<id>?t=<tok> fetch URLs —
+# that is how a pasted Drive share link (webViewLink is an HTML viewer,
+# not bytes) becomes an image LINE can actually deliver. Same env pair
+# doc_archive_client uses; absent key = share links stay plain text.
+DOC_ARCHIVE_URL = os.environ.get(
+    "DOC_ARCHIVE_URL", "http://idc03.taila0626a.ts.net:11025").rstrip("/")
+DOC_ARCHIVE_KEY = os.environ.get("DOC_ARCHIVE_API_KEY", "")
+
+# A Drive share link in any of the common spellings -> file id. Covers
+# file/d/, <app>/d/ (docs/slides) and the ?id= query forms (open, uc).
+_DRIVE_LINK_RE = re.compile(
+    r"(?:drive|docs)\.google\.com/(?:file/d/|[a-z-]+/d/)"
+    r"([A-Za-z0-9_-]{15,})"
+    r"|(?:drive|docs)\.google\.com/\w*\?[^\s\"']*?\bid="
+    r"([A-Za-z0-9_-]{15,})")
+
+# URLs inside reply/send text worth upgrading to real image bubbles.
+_TEXT_URL_RE = re.compile(
+    r"(?:https?://|/v1/drive/media/)[^\s<>\)\]\}\"'“”]+")
+_IMG_URL_TAIL = re.compile(r"\.(?:jpe?g|png|webp|gif|heic)$", re.I)
 
 # Voice corpus: audio clips from enrolled senders (allowed DM users /
 # mapped room members — the same gate a reply sits behind) are saved for
@@ -331,6 +356,82 @@ def _key_by_name(name: str | None) -> str:
 
 _whisper_model = None
 
+# Enroll-on-clips (card line-voice-enroll-recognize): after an unknown
+# speaker's clip, the next VOICE_ENROLL_CLIPS clips from the same caller
+# become voiceprints — the "send me 2-3 short clips" flow.
+VOICE_ENROLL_CLIPS = int(os.environ.get("LINE_VOICE_ENROLL_CLIPS", "3"))
+VOICE_ENROLL_TTL_S = float(os.environ.get("LINE_VOICE_ENROLL_TTL_S", "900"))
+
+
+def _speaker_id() -> Any:
+    """Shared ECAPA voiceprint store — lazy like _transcribe so the
+    relay still starts when speechbrain/model files are missing."""
+    from backend.speaker_id import SpeakerIdentifier
+    return SpeakerIdentifier.get()
+
+
+def _match_voice_file(path) -> dict:
+    """speaker_id.match_file over a saved clip; {} on any failure —
+    voice recognition must never break the archive/turn path."""
+    try:
+        return _speaker_id().match_file(str(path)) or {}
+    except Exception as exc:
+        logger.info("voice match %s failed: %s", path, exc)
+        return {}
+
+
+def _enroll_voice_file(path, name, person=None) -> dict:
+    """speaker_id.enroll_from_file; {'error': ...} on failure."""
+    try:
+        return _speaker_id().enroll_from_file(
+            str(path), name, person=person) or {}
+    except Exception as exc:
+        logger.info("voice enroll %s as %s failed: %s", path, name, exc)
+        return {"error": str(exc),
+                "matched_profile": getattr(exc, "matched", None)}
+
+
+def _corpus_slug(caller: str | None, label: str, user_id: str) -> str:
+    """The voice-corpus subdirectory for a sender — same rule
+    _save_voice_clip uses, shared with the enroll-pending map."""
+    return re.sub(r"[^A-Za-z0-9_-]+", "-",
+                  caller or label or user_id).strip("-").lower() \
+        or "unknown"
+
+
+def _caller_person(caller: str | None) -> str | None:
+    """LINE_USER_CALLERS key -> person.* entity guess ('user-kk' ->
+    'person.kk'). The profile enroll path normalizes the same way."""
+    if not caller:
+        return None
+    slug = re.sub(r"^user-", "", caller).strip()
+    return f"person.{slug}" if slug else None
+
+
+def _voice_context(match: dict, pending: dict | None = None,
+                   enrolled: str | None = None) -> str:
+    """'[voice: speaker=KK score=0.62 person=person.kk]' — the turn
+    context line so the persona names the speaker and can route
+    person_entity -> scoped bank. 'speaker=unknown' plus an armed
+    pending enrollment invites the 2-3-clip enroll offer."""
+    if enrolled:
+        return (f"[voice: speaker={enrolled} just-enrolled "
+                f"prints>={VOICE_ENROLL_CLIPS}]")
+    name = match.get("match")
+    if name:
+        ctx = (f"[voice: speaker={name} "
+               f"score={match.get('score', 0):.2f}")
+        if match.get("ha_person"):
+            ctx += f" person={match['ha_person']}"
+        return ctx + "]"
+    best = match.get("best")
+    ctx = f"[voice: speaker=unknown score={match.get('score', 0):.2f}"
+    if best:
+        ctx += f" best={best}@{match.get('best_score', 0):.2f}"
+    if pending:
+        ctx += f" enroll-armed:{pending['got']}/{VOICE_ENROLL_CLIPS}"
+    return ctx + "]"
+
 
 def _transcribe(path) -> str:
     """Free-first voice transcription — faster-whisper locally, model via
@@ -356,11 +457,36 @@ def _images_from(results: list[dict]) -> list[tuple[str, str]]:
         if not isinstance(res, dict):
             continue
         url = res.get("cast_url") or res.get("image_url") or res.get("url")
-        if not (isinstance(url, str) and url.startswith("http")):
+        # drive_get mints media_url for binary files — an image candidate
+        # only when the file's own mime says so (a PDF's media_url is no
+        # photo). It comes back host-relative (/v1/drive/media/...).
+        if not url and str(res.get("mimeType") or "").startswith("image/"):
+            url = res.get("media_url")
+        if not (isinstance(url, str) and (url.startswith("http")
+                                        or url.startswith("/v1/"))):
             continue
         cap = str(res.get("channel") or res.get("camera")
                   or res.get("title") or "")
         out.append((url, cap))
+    return out
+
+
+def _mine_image_urls(text: str, limit: int = 3) -> list[str]:
+    """Image-bearing links inside a reply or /send text — the model often
+    narrates a photo link instead of attaching it (Drive share link, a
+    .jpg URL, an archived /relay-img/ or minted /v1/drive/media/ path).
+    Anything that doesn't look like image bytes stays plain text."""
+    out: list[str] = []
+    for m in _TEXT_URL_RE.finditer(text or ""):
+        u = m.group(0).rstrip(".,;:!?)}")
+        if u in out:
+            continue
+        path = u.split("?", 1)[0].split("#", 1)[0]
+        if (_IMG_URL_TAIL.search(path) or _DRIVE_LINK_RE.search(u)
+                or "/v1/drive/media/" in u or "/relay-img/" in u):
+            out.append(u)
+            if len(out) >= limit:
+                break
     return out
 
 
@@ -488,6 +614,11 @@ class LineRelay:
         self._room_pin: dict[str, str] = {}
         self._names: dict[str, str] = {}  # userId -> display label cache
         self._refused: dict[tuple[str, str], float] = {}
+        # Pending enroll-on-clips: corpus slug -> {name, person, got,
+        # armed_at}. Armed when an unknown speaker's clip arrives on a
+        # caller-mapped lane; each later clip adds one print until
+        # VOICE_ENROLL_CLIPS land or the TTL lapses.
+        self._enroll_pending: dict[str, dict] = {}
 
     def _verify(self, body: bytes, signature: str) -> bool:
         mac = hmac.new(CHANNEL_SECRET.encode(), body, hashlib.sha256)
@@ -626,25 +757,69 @@ class LineRelay:
         except Exception:
             return png
 
-    async def _image_msgs(self, url: str, caption: str) -> list[dict]:
+    async def _resolve_doc_media(self, url: str) -> str:
+        """Turn non-byte references into fetchable image URLs: Drive
+        share links (drive.google.com/file/d/.., open?id=, uc?id=, docs
+        /d/) go through doc-archive's media-token mint (the relay env
+        carries DOC_ARCHIVE_API_KEY); host-relative /v1/drive/media/
+        paths belong to DOC_ARCHIVE_URL, not LINE_URL_BASE."""
+        if url.startswith("/v1/drive/media/"):
+            return DOC_ARCHIVE_URL + url
+        m = _DRIVE_LINK_RE.search(url)
+        if not m:
+            return url
+        if not DOC_ARCHIVE_KEY:
+            raise RuntimeError("drive share link but DOC_ARCHIVE_API_KEY "
+                               "is unset — cannot mint a media URL")
+        fid = next(g for g in m.groups() if g)
+        r = await self.http.post(
+            f"{DOC_ARCHIVE_URL}/v1/drive/media-token",
+            json={"file_id": fid},
+            headers={"X-API-Key": DOC_ARCHIVE_KEY}, timeout=15)
+        r.raise_for_status()
+        minted = str(r.json().get("url") or "")
+        if not minted:
+            raise RuntimeError("media-token mint returned no url")
+        return DOC_ARCHIVE_URL + minted
+
+    async def _mined_msgs(self, text: str, seen: set[str]) -> list[dict]:
+        """Image links left inside the reply/send text still go out as
+        image bubbles — mined candidates fail silent (the text link stays
+        either way). LINE_TEXT_IMG_MINE=0 disables."""
+        if os.environ.get("LINE_TEXT_IMG_MINE", "1") == "0":
+            return []
+        out: list[dict] = []
+        for url in _mine_image_urls(text):
+            if url in seen:
+                continue
+            seen.add(url)
+            out.extend(await self._image_msgs(url, "", silent=True))
+        return out
+
+    async def _image_msgs(self, url: str, caption: str,
+                          silent: bool = False) -> list[dict]:
         """Fetch the frame, host it publicly, return LINE image messages.
         The served content-type must match the real bytes — LINE renders
-        a blank image when a JPEG thumb is labelled image/png."""
+        a blank image when a JPEG thumb is labelled image/png.
+        silent=True is for text-mined candidates: on failure return []
+        (the link is still sitting in the text message)."""
         assert self.http is not None
-        # CMS docs embed site-relative paths (/api/documents/x.jpg) —
-        # resolve them against LINE_URL_BASE so lanes can send them
-        # verbatim. Absolute http(s) URLs pass through untouched.
-        if url.startswith("/"):
-            # Malformed path-embedded URLs first — lanes sometimes emit
-            # '/image_url=https://cdn/x.jpg'; recover the inner URL.
-            m = re.search(r"https?://\S+", url)
-            if m:
-                url = m.group(0)
-            else:
-                base = os.environ.get(
-                    "LINE_URL_BASE", "http://100.102.134.91:11023")
-                url = base.rstrip("/") + url
         try:
+            url = await self._resolve_doc_media(url)
+            # CMS docs embed site-relative paths (/api/documents/x.jpg) —
+            # resolve them against LINE_URL_BASE so lanes can send them
+            # verbatim. Absolute http(s) URLs pass through untouched.
+            if url.startswith("/"):
+                # Malformed path-embedded URLs first — lanes sometimes
+                # emit '/image_url=https://cdn/x.jpg'; recover the inner
+                # URL.
+                m = re.search(r"https?://\S+", url)
+                if m:
+                    url = m.group(0)
+                else:
+                    base = os.environ.get(
+                        "LINE_URL_BASE", "http://100.102.134.91:11023")
+                    url = base.rstrip("/") + url
             r = await self.http.get(url, timeout=120, follow_redirects=True)
             if r.status_code != 200 or len(r.content) < 500:
                 raise RuntimeError(f"fetch {r.status_code} {len(r.content)}B")
@@ -680,6 +855,8 @@ class LineRelay:
             return msgs
         except Exception as exc:
             logger.warning("image %s failed: %s", url, exc)
+            if silent:
+                return []
             return [{"type": "text",
                      "text": f"(image failed: {caption or url})"}]
 
@@ -810,6 +987,8 @@ class LineRelay:
                              [:REPLY_CHUNK]}]
         for url, cap in images[:3]:
             msgs.extend(await self._image_msgs(url, cap))
+        msgs.extend(await self._mined_msgs(
+            reply or "", {u for u, _ in images}))
         try:
             await self._deliver(chat_id, msgs[:5], reply_token=reply_token)
         except Exception as exc:
@@ -821,9 +1000,7 @@ class LineRelay:
             label: str) -> tuple[Path, int]:
         """Save an audio clip into the local voice corpus + one manifest
         line — the same rule tg_relay applies. Returns (path, secs)."""
-        slug = re.sub(r"[^A-Za-z0-9_-]+", "-",
-                      caller or label or user_id).strip("-").lower() \
-            or "unknown"
+        slug = _corpus_slug(caller, label, user_id)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         ext = _MIME_EXT.get(mime, ".m4a")
         dest_dir = VOICE_CORPUS_DIR / slug
@@ -882,11 +1059,92 @@ class LineRelay:
                 chat_id, "Couldn't save that clip — try again.",
                 reply_token=reply_token)
             return
-        transcript = await asyncio.get_running_loop().run_in_executor(
-            None, _transcribe, clip)
+        loop = asyncio.get_running_loop()
+        # Speaker ID over the saved file — the boss-recognition leg
+        # (card line-voice-enroll-recognize). Best-effort: {} leaves the
+        # clip behaving like it always did.
+        match = (await loop.run_in_executor(None, _match_voice_file, clip)
+                 if os.environ.get("LINE_VOICE_MATCH", "1") != "0"
+                 else {})
+        slug = _corpus_slug(caller, label, user_id)
+        pend = self._enroll_pending.get(slug)
+        if pend and time.monotonic() - pend["armed_at"] \
+                > VOICE_ENROLL_TTL_S:
+            logger.info("enroll pending for %s expired", slug)
+            self._enroll_pending.pop(slug, None)
+            pend = None
+        enrolled: str | None = None
+        enroll_note = ""
+        if match.get("match"):
+            # A recognized voice closes any open enrollment — the flow
+            # learned enough (match == pending name) or a different
+            # enrolled speaker was the one talking.
+            self._enroll_pending.pop(slug, None)
+            pend = None
+        elif os.environ.get("LINE_VOICE_ENROLL", "1") == "0":
+            pend = None
+        elif pend is not None:
+            res = await loop.run_in_executor(
+                None, _enroll_voice_file, clip, pend["name"],
+                pend.get("person"))
+            if res.get("error"):
+                if res.get("matched_profile"):
+                    # Foreign enrolled voice on this caller's clip —
+                    # refuse + disarm; never poison another profile.
+                    self._enroll_pending.pop(slug, None)
+                    pend = None
+                    enroll_note = (
+                        f" — that clip matched {res['matched_profile']}, "
+                        "enrollment stopped")
+                # other errors: keep the pending window open
+            else:
+                pend["got"] = int(res.get("samples") or pend["got"] + 1)
+                if pend["got"] >= VOICE_ENROLL_CLIPS:
+                    enrolled = str(res.get("name") or pend["name"])
+                    self._enroll_pending.pop(slug, None)
+                    logger.info("enroll complete: %s (%d prints)",
+                                enrolled, pend["got"])
+                    pend = None
+        elif caller:
+            # Unknown voice on a caller-mapped lane — arm the "send me
+            # 2-3 short clips" flow; the caller key binds the person.
+            pend = {"name": re.sub(r"^user-", "", caller),
+                    "person": _caller_person(caller),
+                    "got": 0, "armed_at": time.monotonic()}
+            self._enroll_pending[slug] = pend
+            logger.info("enroll armed for %s (%s)", slug, pend["person"])
+        voice_ctx = _voice_context(match, pend, enrolled)
+        transcript = await loop.run_in_executor(None, _transcribe, clip)
         if transcript:
             await self.send_text(chat_id, f'\U0001f399 "{transcript}"',
                                  reply_token=reply_token)
+            if enrolled:
+                await self.send_text(
+                    chat_id,
+                    f"enrolled {enrolled}, {VOICE_ENROLL_CLIPS} prints")
+        elif enrolled:
+            await self.send_text(
+                chat_id, f"enrolled {enrolled}, {VOICE_ENROLL_CLIPS} "
+                "prints",
+                reply_token=reply_token)
+        elif match.get("match"):
+            who = match.get("display_name") or match["match"]
+            await self.send_text(
+                chat_id, f"Saved {duration}s voice clip — {who} "
+                f"({match.get('score', 0):.0%}).",
+                reply_token=reply_token)
+        elif pend is not None and pend["got"]:
+            await self.send_text(
+                chat_id, f"Saved {duration}s voice clip — learning "
+                f"this voice ({pend['got']}/{VOICE_ENROLL_CLIPS} "
+                f"prints{enroll_note}).",
+                reply_token=reply_token)
+        elif caller:
+            await self.send_text(
+                chat_id, f"Saved {duration}s voice clip — I don't "
+                "recognize this voice yet; send me 2-3 short clips "
+                f"and I'll learn it.{enroll_note}",
+                reply_token=reply_token)
         else:
             await self.send_text(
                 chat_id, f"Saved {duration}s voice clip to the corpus.",
@@ -925,7 +1183,8 @@ class LineRelay:
             else (user_id, persona)
         await self._deliver_turn(
             skey, chat_id, user_id, persona, persona_url, caller, label,
-            f"[LINE group from {label}] {turn}" if is_group else turn,
+            f"[LINE group from {label}] {turn} {voice_ctx}"
+            if is_group else f"{turn} {voice_ctx}",
             is_group, None)
 
     async def handle_event(self, ev: dict[str, Any]) -> None:
@@ -1063,6 +1322,8 @@ class LineRelay:
                      [:REPLY_CHUNK]}]
             for url, cap in images[:3]:
                 msgs.extend(await self._image_msgs(url, cap))
+            msgs.extend(await self._mined_msgs(
+                reply or "", {u for u, _ in images}))
             try:
                 await self._deliver(chat_id, msgs[:5],
                                     reply_token=reply_token)
@@ -1114,6 +1375,8 @@ class LineRelay:
                      [:REPLY_CHUNK]}]
             for url, cap in images[:3]:
                 msgs.extend(await self._image_msgs(url, cap))
+            msgs.extend(await self._mined_msgs(
+                reply or "", {u for u, _ in images}))
             try:
                 await self._deliver(chat_id, msgs[:5],
                                     reply_token=reply_token)
@@ -1141,22 +1404,23 @@ class LineRelay:
                  "text": (tag + (reply or "(no reply)"))[:REPLY_CHUNK]}]
         for url, cap in images[:3]:
             msgs.extend(await self._image_msgs(url, cap))
+        msgs.extend(await self._mined_msgs(
+            reply or "", {u for u, _ in images}))
         try:
             await self._deliver(chat_id, msgs[:5], reply_token=reply_token)
         except Exception as exc:
             logger.warning("user %s reply send failed: %s", user_id, exc)
 
     async def sweeper(self) -> None:
-        """Close WS sessions idle longer than _idle_session_s() so Ada's
+        """Close WS sessions idle longer than IDLE_SESSION_S so Ada's
         session-end (summary, extraction) runs."""
         while True:
             await asyncio.sleep(30)
             now = time.monotonic()
-            idle_s = _idle_session_s()
             for uid, sess in list(self.sessions.items()):
                 if sess.ws is not None and \
-                        now - sess.last_active > idle_s:
-                    logger.info("user %s idle close (idle_s=%s)", uid, idle_s)
+                        now - sess.last_active > IDLE_SESSION_S:
+                    logger.info("user %s idle close", uid)
                     await sess.close()
             for nonce, hit in list(self._imgs.items()):
                 ts = hit[1]
@@ -1309,6 +1573,9 @@ class LineRelay:
             if body.get("image_url"):
                 msgs += await self._image_msgs(
                     str(body["image_url"]), str(body.get("caption") or ""))
+            msgs += await self._mined_msgs(
+                str(body.get("text") or ""),
+                {str(body.get("image_url") or "")})
             if body.get("audio_b64"):
                 msgs += self._audio_msgs(
                     str(body["audio_b64"]),

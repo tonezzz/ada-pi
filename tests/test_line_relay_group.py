@@ -375,7 +375,11 @@ class GroupEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry["sender"], "user-kk")
         self.assertEqual(entry["duration_s"], 5)
         sent = self._sent(relay)
-        self.assertIn(("G1", "Saved 5s voice clip to the corpus."), sent)
+        # Unknown voice on a caller-mapped lane gets the enroll offer —
+        # the send-2-3-clips flow (card line-voice-enroll-recognize).
+        self.assertIn(
+            ("G1", "Saved 5s voice clip — I don't recognize this voice "
+             "yet; send me 2-3 short clips and I'll learn it."), sent)
         mirrors = [c for c in sent if c[0] == "Ukk1"]
         self.assertEqual(len(mirrors), 1)
 

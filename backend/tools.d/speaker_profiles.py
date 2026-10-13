@@ -18,6 +18,12 @@ gated in-module by _may_mutate):
               so both names resolve to one identity; optional
               display_name= and rename_to= (profile key rename keeps the
               old name resolving via aliases).
+  match_file    — score a saved audio FILE (LINE/TG clip, voice-corpus
+                  m4a) against every profile — the no-live-buffer twin
+                  of 'match' (card line-voice-enroll-recognize).
+  enroll_file   — enroll a saved audio file as a print under name=
+                  (person= binds the HA person). Mutating, same rules
+                  as re-enroll.
 
 Mutation rule: full-access identities (owner) always; a non-owner may
 only touch the profile bound to their own person.* (self-service fix —
@@ -33,9 +39,9 @@ DECLARATION = {
     "name": "speaker_profiles",
     "description": (
         "Enrolled voiceprint admin — action='list'|'match'|'remove'|"
-        "'re-enroll'|'alias'. 'match' names which profile the current "
-        "voice scores as; 'alias' binds a profile to person.* "
-        "(rename_to= merges a wrong-named print)."
+        "'re-enroll'|'alias'|'match_file'|'enroll_file'. 'match' names "
+        "which profile the current voice scores as; 'match_file'/"
+        "'enroll_file' do the same for a saved clip at path=."
     ),
     "parameters": {
         "type": "object",
@@ -43,7 +49,13 @@ DECLARATION = {
             "action": {
                 "type": "string",
                 "description": "'list' (default), 'match', 'remove', "
-                               "'re-enroll', or 'alias'.",
+                               "'re-enroll', 'alias', 'match_file', or "
+                               "'enroll_file'.",
+            },
+            "path": {
+                "type": "string",
+                "description": "Audio file for 'match_file'/'enroll_file' "
+                               "— e.g. a voice-corpus m4a clip.",
             },
             "name": {
                 "type": "string",
@@ -52,12 +64,13 @@ DECLARATION = {
             },
             "person": {
                 "type": "string",
-                "description": "HA person to bind for 'alias'/'re-enroll' "
-                               "— 'KK' or 'person.kk'.",
+                "description": "HA person to bind for 'alias'/'re-enroll'/"
+                               "'enroll_file' — 'KK' or 'person.kk'.",
             },
             "display_name": {
                 "type": "string",
-                "description": "Friendly name for 'alias'/'re-enroll'.",
+                "description": "Friendly name for 'alias'/'re-enroll'/"
+                               "'enroll_file'.",
             },
             "rename_to": {
                 "type": "string",
@@ -75,7 +88,7 @@ DECLARATION = {
     },
 }
 
-_MUTATING = {"remove", "re-enroll", "reenroll", "alias"}
+_MUTATING = {"remove", "re-enroll", "reenroll", "alias", "enroll_file"}
 _PERSON_RE = re.compile(r"^person\.[a-z0-9_]+$")
 
 
@@ -184,6 +197,85 @@ def _resolve_or_err(ident: Any, name: Any) -> tuple[str | None, dict | None]:
             f"no enrolled speaker profile matches {name!r} "
             f"(enrolled: {known})")}
     return target, None
+
+
+def _match_file(ident: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """score a saved audio file — the file-input twin of 'match'
+    (LINE/TG voice clips; no live session buffer needed)."""
+    path = str(args.get("path") or "").strip()
+    if not path:
+        return {"ok": False,
+                "error": "match_file needs path=<audio file>"}
+    try:
+        out = ident.match_file(path)
+    except Exception as exc:
+        return {"ok": False, "error": f"could not score the file: {exc}"}
+    out["ok"] = True
+    if out.get("match"):
+        out["say"] = (
+            f"the clip's voice matches '{out['match']}' "
+            f"({out['score']:.0%}) — the speaker is enrolled under that "
+            "name")
+    elif out.get("best"):
+        out["say"] = (
+            f"best candidate is '{out['best']}' at "
+            f"{out.get('best_score', 0):.0%} (below the "
+            f"{out['threshold']:.2f} threshold — a hint, not a "
+            "confirmed identity)")
+    return out
+
+
+async def _resolve_person_arg(runner: Any, person: str) -> tuple[str | None, dict | None]:
+    """person= arg -> ha_person entity_id, or an error dict. 'person.x'
+    passes through; anything else resolves through HA."""
+    if _PERSON_RE.match(person):
+        return person, None
+    resolved = await _resolve_person(runner, person)
+    if not resolved or not resolved.get("entity_id"):
+        return None, {"ok": False, "error": (
+            f"no Home Assistant person matches {person!r} — "
+            "pass person=<name> or a person.<id> entity")}
+    return resolved["entity_id"], None
+
+
+async def _enroll_file(runner: Any, ident: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """enroll a saved audio file as a print under name= — the LINE/TG
+    clip enrollment leg. Same mutation gate as re-enroll."""
+    path = str(args.get("path") or "").strip()
+    if not path:
+        return {"ok": False,
+                "error": "enroll_file needs path=<audio file>"}
+    name = str(args.get("name") or "").strip()
+    if not name:
+        return {"ok": False,
+                "error": "enroll_file needs name=<profile>"}
+    ha_person = None
+    person = str(args.get("person") or "").strip()
+    if person:
+        ha_person, err = await _resolve_person_arg(runner, person)
+        if err:
+            return err
+    target = ident.resolve_name(name)
+    deny = _may_mutate(
+        runner,
+        ha_person or (ident.get_ha_person(target) if target else None))
+    if deny:
+        return {"ok": False, "error": deny}
+    try:
+        result = ident.enroll_from_file(
+            path, name, person=ha_person,
+            display_name=str(args.get("display_name") or "").strip()
+            or None,
+            force=bool(args.get("force")))
+    except Exception as exc:
+        return {"ok": False, "error": str(exc),
+                "matched_profile": getattr(exc, "matched", None)}
+    _log("speaker-enrolled-file", result.get("name") or name, runner)
+    return {"ok": True, "enrolled": result.get("name"),
+            "samples": result.get("samples"),
+            "ha_person": result.get("ha_person"),
+            "path": result.get("path"),
+            "note": "the file's voice is now a print under this profile"}
 
 
 async def _remove(runner: Any, ident: Any, args: dict[str, Any]) -> dict[str, Any]:
@@ -342,6 +434,10 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
         return _list(ident)
     if action == "match":
         return _match(runner, args)
+    if action == "match_file":
+        return _match_file(ident, args)
+    if action == "enroll_file":
+        return await _enroll_file(runner, ident, args)
     if action == "remove":
         return await _remove(runner, ident, args)
     if action in ("re-enroll", "reenroll"):
@@ -349,5 +445,5 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
     if action == "alias":
         return await _alias(runner, ident, args)
     return {"ok": False, "error": (
-        f"unknown action {action!r} — use list, match, remove, "
-        "re-enroll, or alias")}
+        f"unknown action {action!r} — use list, match, match_file, "
+        "enroll_file, remove, re-enroll, or alias")}

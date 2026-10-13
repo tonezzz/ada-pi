@@ -343,7 +343,10 @@ def _doc_to_hit(
         pass
     elif status != "active":
         if include_inactive:
-            pass
+            # Audit reads surface drafts too — still flag them so the
+            # tool boundary frames the content like any draft hit.
+            if status == "draft":
+                is_draft = True
         elif status == "draft" and _draft_visible(bank, doc, instance):
             is_draft = True
         else:

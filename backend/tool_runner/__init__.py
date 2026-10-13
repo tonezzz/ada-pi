@@ -133,10 +133,45 @@ class ToolRunner(
         (shared runner can't race it), shared field as fallback."""
         return _CALLER_OWNER.get() or self.session_owner_identity
 
+    def _speaker_is_owner_tier(self) -> bool:
+        """Boss rule (card line-voice-enroll-recognize): the identified
+        speaker's identity carries a full-access policy — persons.yml
+        role:admin renders {full: true} into person_policies and
+        control_policies. A positively-identified owner voice keeps
+        owner-tier on ANY lane, including a member lane whose session
+        key belongs to someone else (person.tony on the kk lane).
+
+        Voice-attributed elevation, so the bar is the same as a live
+        identification: a fresh label (staleness check mirrors
+        _is_secondary_turn) plus the identify threshold/margin that set
+        it. Residual spoofing risk (replay, similar voices) is
+        documented in the speaker_profiles tool guide."""
+        speaker = self._current_speaker()
+        if not speaker:
+            return False
+        ss = _CALLER_SPEAKER_SESSION.get(None)
+        if ss is not None:
+            age = getattr(ss, "speaker_age_s", lambda: None)()
+            if age is not None and age > SPEAKER_STALE_S:
+                return False
+        try:
+            banks = self.banks
+            for policies in (banks.person_policies,
+                             banks.control_policies):
+                if (policies.get(speaker) or {}).get("full"):
+                    return True
+        except Exception:
+            pass
+        return False
+
     def policy_identity(self) -> str | None:
         """Authorization identity: the session owner pinned at connect.
         Falls back to the live speaker identity only when no session owner
-        exists (REST calls, anonymous/test sessions)."""
+        exists (REST calls, anonymous/test sessions). An identified
+        owner-tier voice on a member lane resolves to the speaker's own
+        identity — the boss rule."""
+        if self._speaker_is_owner_tier():
+            return self._current_speaker()
         return self._owner() or self._memory_identity()
 
     def _is_secondary_turn(self) -> bool:
@@ -161,6 +196,8 @@ class ToolRunner(
                     "speaker label %r expired (%.0fs unconfirmed) — "
                     "treating turn as unrecognized", speaker, age)
                 return False
+        if self._speaker_is_owner_tier():
+            return False
         caller = self.session_caller_name
         aliases = {owner, caller, f"person.{_slug(caller)}" if caller else None}
         return speaker not in aliases

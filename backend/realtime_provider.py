@@ -1247,8 +1247,9 @@ def _builtin_declarations() -> list[dict[str, Any]]:
                     },
                     "image_url": {
                         "type": "string",
-                        "description": ("URL of an existing image to send (camwall thumb or a cast_url "
-                        "you already produced). For CMS page images, cms_read the page "
+                        "description": ("URL of an existing image to send (camwall thumb, a cast_url "
+                        "you already produced, or a Drive link — drive.google.com share links "
+                        "and drive_get media_url resolve server-side). For CMS page images, cms_read the page "
                         "first and copy the asset URL verbatim — never construct or "
                         "guess a URL; a guessed URL fetches 404 and the image is dropped."),
                     },
@@ -3438,12 +3439,21 @@ class GeminiLiveProvider(RealtimeProvider):
                 continue
             if name == "ada_memory_search":
                 hits = res.get("hits") or []
-                if hits:
-                    top = hits[0]
+                verified = [
+                    h for h in hits
+                    if not (h.get("draft") or h.get("unverified"))
+                ]
+                if verified:
+                    top = verified[0]
                     line = _first_speakable_line(top.get("content"))
                     parts.append(
                         f"ada_memory_search top hit "
                         f"({top.get('key')}): {line}")
+                elif hits:
+                    parts.append(
+                        "ada_memory_search returned only draft/"
+                        "unverified hits — hedge, do not state them "
+                        "as fact")
                 if res.get("degraded"):
                     parts.append(
                         "the memory search ran degraded — mention that "
@@ -3465,8 +3475,15 @@ class GeminiLiveProvider(RealtimeProvider):
             if name != "ada_memory_search" or not isinstance(res, dict):
                 continue
             hits = res.get("hits") or []
+            # Never speak a draft/low-confidence hit as 'found it' — the
+            # fallback has no channel to hedge (same card as the draft
+            # hit frame in tool_runner/memory.py).
+            verified = [
+                h for h in hits
+                if not (h.get("draft") or h.get("unverified"))
+            ]
             snippet = _first_speakable_line(
-                hits[0].get("content")) if hits else ""
+                verified[0].get("content")) if verified else ""
             if snippet:
                 out = f"พบแล้วค่ะ {snippet}"
                 if res.get("degraded"):
@@ -3693,7 +3710,14 @@ class GeminiLiveProvider(RealtimeProvider):
         """Record a confident memory_search hit for the recall gate."""
         if isinstance(output, dict):
             hits = output.get("hits") or []
-            top = float(hits[0].get("score") or 0) if hits else 0.0
+            # Draft/unverified hits are not confident matches — they must
+            # not gate out a deeper recall or ground the answer (card
+            # ada-memory-search-draft-gap-notes).
+            verified = [
+                h for h in hits
+                if not (h.get("draft") or h.get("unverified"))
+            ]
+            top = float(verified[0].get("score") or 0) if verified else 0.0
             if top >= self._recall_gate_score:
                 self._strong_hit_at = time.monotonic()
 

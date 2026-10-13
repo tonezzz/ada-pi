@@ -126,6 +126,13 @@ RECENT_SECONDS = float(os.environ.get("ADA_SPEAKER_RECENT_S", "30"))
 # staying frozen at first-enrollment quality.
 AUTO_LEARN_MIN_CONF = float(os.environ.get("ADA_SPEAKER_AUTO_LEARN_MIN", "0.60"))
 
+# File-input path (card line-voice-enroll-recognize): LINE/TG voice clips
+# land as .m4a/.ogg files — match/enroll straight from disk instead of a
+# live session buffer. PyAV carries the ffmpeg libs (no CLI needed); an
+# ffmpeg binary is the fallback when av is not installed. Decode is
+# capped — a long clip is identified from its head, not its tail.
+FILE_MAX_SECONDS = float(os.environ.get("ADA_SPEAKER_FILE_MAX_S", "120"))
+
 # Per-speaker print cap (ADA_SPEAKER_MAX_PRINTS). When full, the print least
 # similar to the speaker's own centroid is dropped — outlier pruning keeps
 # the centroid clean without letting a bad capture live forever.
@@ -182,6 +189,84 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     if na == 0.0 or nb == 0.0:
         return 0.0
     return dot / (na * nb)
+
+
+def _decode_with_av(path: Path, sample_rate: int,
+                    max_seconds: float) -> bytes:
+    """PyAV decode — bundled ffmpeg libs, no CLI dependency (idc03 has
+    no ffmpeg binary; requirements.txt already pins av for the LINE
+    audio bubble encoder)."""
+    import av
+
+    cap = int(max_seconds * sample_rate * 2)
+    out = bytearray()
+    inp = av.open(str(path))
+    try:
+        resampler = av.audio.resampler.AudioResampler(
+            format="s16", layout="mono", rate=sample_rate)
+        for frame in inp.decode(inp.streams.audio[0]):
+            for rf in resampler.resample(frame):
+                out += rf.to_ndarray().tobytes()
+                if len(out) >= cap:
+                    return bytes(out[:cap])
+        for rf in resampler.resample(None):
+            out += rf.to_ndarray().tobytes()
+            if len(out) >= cap:
+                return bytes(out[:cap])
+    finally:
+        inp.close()
+    return bytes(out[:cap])
+
+
+def _decode_with_ffmpeg(path: Path, sample_rate: int,
+                        max_seconds: float) -> bytes:
+    """ffmpeg CLI fallback for hosts without PyAV."""
+    import subprocess
+
+    cmd = [
+        "ffmpeg", "-v", "error", "-t", str(max_seconds),
+        "-i", str(path), "-f", "s16le", "-ac", "1",
+        "-ar", str(sample_rate), "-",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    if proc.returncode != 0:
+        err = proc.stderr.decode("utf-8", "replace").strip()[:200]
+        raise ValueError(
+            f"ffmpeg could not decode {path.name}: {err or 'no audio'}")
+    return proc.stdout
+
+
+def decode_audio_file(path: str | Path, sample_rate: int = SAMPLE_RATE,
+                      max_seconds: float | None = None) -> bytes:
+    """Decode any audio container (m4a/ogg/mp3/wav) to mono PCM16 at
+    sample_rate — the file twin of the live voice buffer's PCM16."""
+    p = Path(path)
+    if not p.is_file():
+        raise ValueError(f"audio file not found: {p}")
+    if max_seconds is None:
+        max_seconds = FILE_MAX_SECONDS
+    try:
+        pcm = _decode_with_av(p, sample_rate, max_seconds)
+    except ImportError:
+        pcm = _decode_with_ffmpeg(p, sample_rate, max_seconds)
+    if len(pcm) < sample_rate:  # under 0.5 s — nothing to embed
+        raise ValueError(
+            f"decoded audio too short: {len(pcm) / 2 / sample_rate:.1f}s "
+            f"from {p.name}")
+    return pcm
+
+
+def _person_entity(person: str | None) -> str | None:
+    """Normalize a person handle to a person.* entity_id — 'person.kk'
+    stays, 'kk' and the caller key 'user-kk' become 'person.kk'."""
+    p = str(person or "").strip()
+    if not p:
+        return None
+    if p.startswith("person."):
+        return p
+    p = re.sub(r"^user-", "", p)
+    slug = re.sub(r"[^a-z0-9]+", "_", p.lower()).strip("_")
+    return f"person.{slug}" if slug else None
 
 
 class SpeakerIdentifier:
@@ -552,13 +637,11 @@ class SpeakerIdentifier:
             pass
         return new
 
-    def score_audio(self, pcm16: bytes,
-                    sample_rate: int = SAMPLE_RATE) -> list[dict[str, Any]]:
-        """Ranked cosine scores of one audio chunk against every enrolled
+    def _rank_scores(self, emb: np.ndarray) -> list[dict[str, Any]]:
+        """Ranked cosine scores of one embedding against every enrolled
         profile — the raw material behind identify(), surfaced for the
         speaker_profiles 'match' action so a sub-threshold best candidate
         is still visible (name + score) instead of a bare miss."""
-        emb = self._compute_embedding(pcm16, sample_rate)
         mode = os.environ.get("ADA_SPEAKER_SCORE", "centroid")
         rows = [
             {
@@ -570,6 +653,66 @@ class SpeakerIdentifier:
         ]
         rows.sort(key=lambda r: r["score"], reverse=True)
         return rows
+
+    def score_audio(self, pcm16: bytes,
+                    sample_rate: int = SAMPLE_RATE) -> list[dict[str, Any]]:
+        """Ranked cosine scores of one audio chunk against every enrolled
+        profile."""
+        return self._rank_scores(self._compute_embedding(pcm16, sample_rate))
+
+    # -- file input ------------------------------------------------------
+
+    def embed_file(self, path: str | Path) -> np.ndarray:
+        """Voiceprint embedding for an audio file (m4a/ogg/wav/mp3) —
+        decode to PCM16, then the same _compute_embedding live chunks
+        get. Raised ValueError names why (missing file, undecodable,
+        too short)."""
+        return self._compute_embedding(decode_audio_file(path))
+
+    def match_file(self, path: str | Path,
+                   threshold: float = DEFAULT_THRESHOLD
+                   ) -> dict[str, Any]:
+        """Identify the speaker in an audio file — same threshold +
+        margin + media-pool rules as the live-buffer path, one embedding
+        computed once. Returns match=None with best/best_score on a miss
+        so the caller can name the near-match or offer enrollment."""
+        pcm = decode_audio_file(path)
+        emb = self._compute_embedding(pcm)
+        name, conf, best, best_score = self._identify_scored_core(
+            pcm, SAMPLE_RATE, threshold, emb=emb)
+        out: dict[str, Any] = {
+            "path": str(path),
+            "duration_s": round(len(pcm) / 2 / SAMPLE_RATE, 1),
+            "threshold": threshold,
+            "match": name,
+            "score": round(conf, 3),
+            "all_scores": self._rank_scores(emb),
+        }
+        if name is not None:
+            out["ha_person"] = self.get_ha_person(name)
+            out["display_name"] = self.get_display_name(name)
+            out["media"] = self.is_media(name)
+        if best is not None:
+            out["best"] = best
+            out["best_score"] = round(best_score, 3)
+        return out
+
+    def enroll_from_file(self, path: str | Path, name: str,
+                         person: str | None = None,
+                         display_name: str | None = None,
+                         force: bool = False) -> dict[str, Any]:
+        """Enroll a voiceprint from an audio file — the LINE/TG clip
+        flow: the sender drops 2-3 short clips, each lands as one print
+        under their own person ('user-kk'/'kk'/'person.kk' all
+        normalize). Same guards as enroll(): a clip matching ANOTHER
+        enrolled profile raises EnrollConflict, a drifted clip fails the
+        own-voice check."""
+        pcm = decode_audio_file(path)
+        result = self.enroll(
+            name, pcm, ha_person=_person_entity(person),
+            display_name=display_name, force=force)
+        result["path"] = str(path)
+        return result
 
     def is_media(self, name: str) -> bool:
         """True when the profile is flagged as a media/device voice."""
@@ -819,10 +962,12 @@ class SpeakerIdentifier:
     def _identify_scored_core(
         self, pcm16: bytes, sample_rate: int = SAMPLE_RATE,
         threshold: float = DEFAULT_THRESHOLD,
+        emb: np.ndarray | None = None,
     ) -> tuple[str | None, float, str | None, float]:
         if not self._enrolled:
             return None, 0.0, None, 0.0
-        emb = self._compute_embedding(pcm16, sample_rate)
+        if emb is None:
+            emb = self._compute_embedding(pcm16, sample_rate)
         # Score persons and media sinks in separate pools — a media-flagged
         # profile is a noise sink (TV/ambient), not a person in the room.
         # Letting it win winner-take-all made Ada treat a real speaker as
