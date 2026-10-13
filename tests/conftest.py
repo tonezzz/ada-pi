@@ -19,6 +19,9 @@ dep_stubs.install()
 
 os.environ["ADA_INSTANCE_ID"] = "test"
 os.environ.setdefault("GEMINI_API_KEY", "x")
+# unit tests must never append to the real usage ledger (t-ctx rows were
+# polluting data/usage.jsonl on every pytest run)
+os.environ["ADA_USAGE_LOG"] = "off"
 
 # pytest-asyncio is a venv nicety, not present in bare gate interpreters —
 # without it every module-level `async def test_` fails with "async def
