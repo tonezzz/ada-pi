@@ -119,8 +119,8 @@ class OpenRouterTextProvider(RealtimeProvider):
         self.api_key = os.environ.get("OPENROUTER_API_KEY", "")
         # Gateway model CLASS, not a raw model name — the lane virtual
         # keys allow alias classes only (403 key_model_access_denied on
-        # real names). tool-call rides gemini-3.5-flash-lite paid->free->OR.
-        self._text_model = os.environ.get("ADA_TEXT_MODEL", "tool-call")
+        # real names). chat rides gemini-3.5-flash paid->free->OR->lite (full-tier for voice/text parity).
+        self._text_model = os.environ.get("ADA_TEXT_MODEL", "chat")
         self._queue: asyncio.Queue[ProviderEvent] = asyncio.Queue()
         self._closed = False
         self._pending: asyncio.Task | None = None
