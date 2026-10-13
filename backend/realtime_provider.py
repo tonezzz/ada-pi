@@ -190,6 +190,7 @@ CMS_INSTRUCTIONS = (
     "page needs no confirmation; when no page covers it and the finding is worth keeping, "
     "offer a new page via cms_publish_page with the usual confirm. A repeat question must be "
     "answerable from your pages — never re-search for what you already found. "
+    "LOOP-CLOSE — a promised write is a debt: when you tell the user you will update, add, or fix a page, complete that cms_edit/cms_publish_page call in the same turn — the promise is the consent; pass confirmed=true and do not defer it to a later turn. Before a conversation closes (goodbyes, 'anything else?', winding down), sweep what you said you would write — pending page edits, notes, corrections — and write them first; a session must not end with promised writes unsent. "
     "BOARD — kanban questions go through the 'kanban-brief' page first: its "
     "<!-- board-index --> block carries one compact row per open card (id | col | pri | "
     "updated | reqs | title). Only call kanban action='list'/'read' for what the index "
