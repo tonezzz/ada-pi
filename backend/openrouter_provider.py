@@ -416,6 +416,8 @@ class OpenRouterTextProvider(RealtimeProvider):
     # ---- OpenRouter leg ----------------------------------------------------
 
     async def _or_turn(self, last_err: Exception | None = None) -> str | None:
+        if not self.api_key.strip():
+            raise RuntimeError("OPENROUTER_API_KEY unset — OR leg skipped")
         reply = ""
         async with httpx.AsyncClient(timeout=60) as client:
             for model in self.models:
