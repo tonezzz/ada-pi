@@ -336,6 +336,22 @@ def rest_client(api_key: str | None = None,
     return genai.Client(api_key=api_key or os.environ.get("GEMINI_API_KEY"))
 
 
+# Raw upstream model names are not valid gateway models — virtual keys
+# only allow class aliases. Translate when the request will ride the
+# LiteLLM gateway (ADA_GEMINI_REST_BASE_URL set); direct-Gemini callers
+# keep the raw name.
+_RAW_TO_CLASS = {
+    "gemini-3.5-flash-lite": "summary",
+    "gemini-3.5-flash": "chat",
+}
+
+
+def _gateway_model(model: str) -> str:
+    if os.environ.get("ADA_GEMINI_REST_BASE_URL", "").strip():
+        return _RAW_TO_CLASS.get(model, model)
+    return model
+
+
 async def generate(model: str, contents: Any, config: Any = None,
                    client: Any = None, timeout: float | None = None,
                    tool: str = "", mddb: Any = None,
@@ -349,6 +365,7 @@ async def generate(model: str, contents: Any, config: Any = None,
     injection — engine constructors keep passing their fake through).
     Emits one throttled ops event per call when mddb is provided.
     """
+    model = _gateway_model(model)
     if client is not None:
         return await client.aio.models.generate_content(
             model=model, contents=contents, config=config)

@@ -41,7 +41,8 @@ def _log_usage(response: Any, label: str) -> None:
 
 class GeminiPostureVerifier:
     def __init__(self, client: Any = None) -> None:
-        self.model = os.environ.get("GEMINI_POSTURE_MODEL", "gemini-3.5-flash-lite")
+        self.model = gemini_pool._gateway_model(
+            os.environ.get("GEMINI_POSTURE_MODEL", "gemini-3.5-flash-lite"))
         self.api_key = gemini_pool.next_key(self.model) or ""
         self._client = client
         self._injected = client is not None

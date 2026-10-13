@@ -43,7 +43,13 @@ _SUMMARY_MAX_TRANSCRIPT_CHARS = int(
     os.environ.get("ADA_SUMMARY_MAX_TRANSCRIPT_CHARS", "8000")
 )
 _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-_SUMMARY_MODEL = os.environ.get("ADA_SUMMARY_MODEL", "gemini-3.5-flash-lite")
+# Gateway-routed lanes must use a model class alias ("summary") — virtual
+# keys only allow aliases, raw model names 403. Direct-Gemini dev keeps the
+# real model name (the alias only exists on the gateway).
+_SUMMARY_MODEL = os.environ.get(
+    "ADA_SUMMARY_MODEL",
+    "summary" if os.environ.get("ADA_GEMINI_REST_BASE_URL", "").strip()
+    else "gemini-3.5-flash-lite")
 _REPORT_MODEL = os.environ.get("ADA_REPORT_MODEL", _SUMMARY_MODEL)
 _SESSION_REPORT = os.environ.get("ADA_SESSION_REPORT", "1").lower() not in (
     "0", "false", "no")
