@@ -149,6 +149,8 @@ class GroupEventTests(unittest.IsolatedAsyncioTestCase):
             patch.object(line_relay, "ChatSession", _FakeSession),
             patch.object(line_relay, "VOICE_CORPUS_DIR",
                          Path(self._tmp.name)),
+            patch.object(line_relay, "MEDIA_ARCHIVE_DIR",
+                         Path(self._tmp.name) / "line-media"),
             patch.dict(os.environ, {
                 "LINE_ALLOWED_USER_IDS": "Utony1,Ukk1",
                 "LINE_ALLOWED_GROUP_IDS": "G1",
