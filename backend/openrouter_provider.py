@@ -40,6 +40,7 @@ from .realtime_provider import (
     ProviderEvent,
     RealtimeProvider,
     DEFAULT_ADA_INSTRUCTIONS,
+    EXPRESSION_NAMES,
     _now_context,
     _safe_args,
 )
@@ -401,7 +402,18 @@ class OpenRouterTextProvider(RealtimeProvider):
                               "Tool budget for this turn exhausted — stop "
                               "calling tools and answer from what you have."}
                 elif self._probe is not None and self._probe._tool_excluded(name):
-                    result = {"error": "Unsupported or unavailable function"}
+                    if (name == "set_facial_expression"
+                            and str(args.get("expression") or "")
+                            in EXPRESSION_NAMES):
+                        # Live intercepts this before tool_runner — mirror
+                        # it: the model is instructed to call it even though
+                        # the lane surface may not declare it.
+                        await self._queue.put(ProviderEvent("expression", {
+                            "name": args["expression"]}))
+                        result = {"output":
+                                  f"Ada is now {args[expression]}"}
+                    else:
+                        result = {"error": "Unsupported or unavailable function"}
                 else:
                     try:
                         owner = self.session_owner
