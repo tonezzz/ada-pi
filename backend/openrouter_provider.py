@@ -361,13 +361,28 @@ class OpenRouterTextProvider(RealtimeProvider):
             # next hop sees its own calls in context.
             mparts: list[dict] = []
             for p in parts:
+                # Preserve id + thought_signature: gemini-3.x rejects a
+                # replayed function_call part missing them (400), which
+                # drops the request onto the OpenRouter fallback leg where
+                # inline images are lost.
+                sig = getattr(p, "thought_signature", None)
                 if getattr(p, "text", None):
-                    mparts.append({"text": p.text})
+                    d: dict = {"text": p.text}
                 elif getattr(p, "function_call", None):
                     fc = p.function_call
-                    mparts.append({"function_call": {
+                    d = {"function_call": {
                         "name": str(fc.name),
-                        "args": dict(fc.args or {})}})
+                        "args": dict(fc.args or {})}}
+                    fid0 = getattr(fc, "id", None)
+                    if fid0:
+                        d["function_call"]["id"] = str(fid0)
+                else:
+                    continue
+                if sig:
+                    d["thought_signature"] = (
+                        base64.b64encode(sig).decode()
+                        if isinstance(sig, (bytes, bytearray)) else sig)
+                mparts.append(d)
             self._turns.append({"role": "model", "parts": mparts})
             contents.append({"role": "model", "parts": mparts})
             resp_parts: list[dict] = []
@@ -415,8 +430,10 @@ class OpenRouterTextProvider(RealtimeProvider):
                     "id": fid, "name": name,
                     "result": _safe_args(result) if isinstance(result, dict)
                             else {"value": str(result)[:500]}}))
-                resp_parts.append({"function_response": {
-                    "name": name, "response": result}})
+                fr: dict = {"name": name, "response": result}
+                if fid:
+                    fr["id"] = fid
+                resp_parts.append({"function_response": fr})
             self._turns.append({"role": "tool", "parts": resp_parts})
             contents.append({"role": "user", "parts": resp_parts})
         return ("I ran into my tool-call limit for this turn — please "
