@@ -33,6 +33,29 @@ spec: docs/assessments/tool-consolidation-spec-2026-10-04.md
 alias_table: backend/tool_runner/common.py::_ALIASES
 scenario_dir: tests/scenarios-live
 
+# Lazy tool schemas (card ada-lazy-tool-schemas, 2026-10-13): cold tools
+# ship {name, <=300-char blurb, {"type":"object","properties":{}}} on the
+# wire — the real schema stays server-side where ToolRunner validates
+# call args and answers a miss with the tool_guide.yml usage hint
+# (self-repair). full_schema_tools is the hot set that keeps complete
+# schemas because a wrong-shape guess there costs more than the schema
+# saves; it MUST equal backend/realtime_provider.py::FULL_SCHEMA_TOOLS
+# (lint fails on drift — change both in the same commit).
+lazy_schemas:
+  env_disable: ADA_LAZY_SCHEMAS        # =0 ships full schemas again
+  env_extend: ADA_FULL_SCHEMA_TOOLS    # csv of extra hot tools, no redeploy
+  full_schema_tools:
+    - set_facial_expression            # 17k calls/7d — hottest by far
+    - ada_memory_search
+    - cms_read
+    - control_entity
+    - calendar_read
+    - cast_to_screen
+    - cctv_wall
+    - docs
+    - kanban
+    - chat_send
+
 # Merge families — one per tools-merge-* kanban card. `absorbed` lists the
 # tool names the spec retires into `canonical` via an action= param.
 # While an absorbed name is still declared the merge is pending; once it

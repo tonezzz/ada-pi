@@ -336,6 +336,16 @@ class ToolRunner(
         synth = self._storm_check(name)
         if synth is not None:
             return synth
+        # Lazy-schema validation (card ada-lazy-tool-schemas): cold tools
+        # ship name+blurb+empty params on the wire, so args are checked
+        # against the real declaration HERE — before any gate can mint a
+        # confirm token or register a pending request on a malformed call.
+        # A miss returns ok:false and _usage_hint attaches the tool_guide
+        # entry — the model repairs the shape and retries.
+        bad = _validate_call_args(name, call_args)
+        if bad is not None:
+            return await self._capture_reminder(
+                name, self._usage_hint(name, bad))
         policy_ident = self.policy_identity()
         # tools-merge-display (2026-10-05): cast_to_screen's absorbed
         # seats — action='list'/'status' were ungated reads (vcast_list /
