@@ -341,8 +341,11 @@ class CmsMixin:
         lang = (lang or "en").strip().lower()
         doc = await self.mddb.get_document(CMS_COLLECTION, key, lang)
         fallback = False
-        if not doc and lang != "en":
-            doc = await self.mddb.get_document(CMS_COLLECTION, key, "en")
+        if not doc:
+            # symmetric lang fallback — household lanes write th-only pages
+            # (trip reorg 2026-10-13) that en-default reads must still find.
+            other = "en" if lang != "en" else "th"
+            doc = await self.mddb.get_document(CMS_COLLECTION, key, other)
             fallback = bool(doc)
         if not doc:
             # ok:False, not a silent None — Ada opined on a page she never
