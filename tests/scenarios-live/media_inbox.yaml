@@ -27,7 +27,9 @@ turns:
   - user: "Use cms_read to open the page 'media-mifix-b' and tell me what its duplicate_of field says."
     expect:
       calls_any: ["cms_read"]
-      response_contains_any: ["media-mifix-a", "mifix-a"]
+      # Assert the RAW leaf content (result), not the spoken transcript —
+      # speech rendering flattens 'media-mifix-a' to 'media mifix a'.
+      result_contains: ["media-mifix-a"]
       timeout_s: 60
       settle_s: 2
   # T3 extraction: first doc_read extracts via Gemini AND writes
