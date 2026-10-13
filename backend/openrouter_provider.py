@@ -78,6 +78,9 @@ _CONTEXT_PREFIXES = ("(system)", "Session note:", "Recent sessions:")
 # Per-turn ceilings — same spirit as the Live budgets (tool storms cost
 # money here too). Live also caps actuations; REST turns keep it simple:
 # the call budget bounds the whole loop.
+_TEXT_HOP_TIMEOUT_S = float(
+    os.environ.get("ADA_TEXT_TIMEOUT_S", "60"))   # hung REST hop must not
+                                                 # brick the session forever
 _TOOL_BUDGET = 10
 _TOOL_HOPS = 12
 
@@ -336,7 +339,8 @@ class OpenRouterTextProvider(RealtimeProvider):
             resp = await gemini_pool.generate(
                 model=self._text_model, contents=contents,
                 config=gtypes.GenerateContentConfig(**cfg_kw),
-                tool="text-relay", session_id=self.session_id)
+                tool="text-relay", session_id=self.session_id,
+                timeout=_TEXT_HOP_TIMEOUT_S)
             cands = getattr(resp, "candidates", None) or []
             if not cands:
                 raise RuntimeError("gemini text turn: no candidates")
