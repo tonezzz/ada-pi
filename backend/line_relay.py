@@ -153,6 +153,10 @@ _IMG_URL_TAIL = re.compile(r"\.(?:jpe?g|png|webp|gif|heic)$", re.I)
 # Voice corpus: audio clips from enrolled senders (allowed DM users /
 # mapped room members — the same gate a reply sits behind) are saved for
 # speaker-id training. Private by design: local disk only, no forwarding.
+OPS_EVENTS_FILE = Path(os.environ.get(
+    "LINE_OPS_EVENTS", "~/.local/share/ada/line-media/ops-events.jsonl")
+    ).expanduser()
+
 MEDIA_ARCHIVE_DIR = Path(os.environ.get(
     "LINE_MEDIA_ARCHIVE_DIR",
     os.path.expanduser("~/.local/share/ada/line-media")))
@@ -218,6 +222,23 @@ def _user_callers() -> dict[str, str]:
         if uid.strip() and name.strip():
             out[uid.strip()] = name.strip()
     return out
+
+
+
+def _ops_event(code: str, severity: str = "warn", **fields) -> None:
+    """Structured ops event -> ops-events.jsonl for the WP ops
+    timeline/watchdog. Cheap fields only (no subprocess, no I/O probes)
+    — enrichment is the monitor's job; a failure here must never break
+    message flow."""
+    try:
+        OPS_EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        rec = {"ts": datetime.now().isoformat(timespec="seconds"),
+               "kind": "ops", "code": code, "severity": severity,
+               "unit": "ada-line-relay", **fields}
+        with OPS_EVENTS_FILE.open("a") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def _allowed_groups() -> set[str]:
@@ -773,6 +794,8 @@ class LineRelay:
                     return
                 logger.info("replyToken failed (%s) — falling back to push",
                             r.status_code)
+                _ops_event("reply_failed", "warn", chat_id=user_id,
+                           http=r.status_code, detail="fell back to push")
             except Exception as exc:
                 logger.info("reply call failed (%s) — falling back to push",
                             exc)
@@ -780,6 +803,8 @@ class LineRelay:
         if r.status_code != 200:
             logger.warning("push to %s failed: %s %s",
                            user_id, r.status_code, r.text[:200])
+            _ops_event("push_failed", "error", chat_id=user_id,
+                       http=r.status_code, detail=r.text[:200])
 
     def _preview_jpeg(self, png: bytes) -> bytes:
         """LINE previews want a small JPEG — downscale to <=240px."""
@@ -1096,6 +1121,8 @@ class LineRelay:
             reply, images = await sess.send_turn(turn_text)
         except Exception as exc:
             logger.warning("user %s turn failed: %s", user_id, exc)
+            _ops_event("turn_failed", "error", chat_id=user_id,
+                       detail=str(exc)[:200])
             reply, images = (f"{disp} didn't answer that turn — the "
                              "session dropped. Try again."), []
             self.sessions.pop(skey, None)
@@ -1322,6 +1349,7 @@ class LineRelay:
         if etype == "join" and is_group:
             # Bot added to a room — surface the id for allowlisting.
             logger.info("joined %s %s", src_type, group_id)
+            _ops_event("group_joined", "info", chat_id=group_id)
             await self.send_text(
                 chat_id,
                 f"Ada relay here. groupId={group_id} — the owner can "
@@ -1331,6 +1359,9 @@ class LineRelay:
         if is_group and group_id not in _allowed_groups():
             logger.info("ignoring event in unallowed %s %s",
                         src_type, group_id)
+            _ops_event("unallowed_group", "warn", chat_id=group_id,
+                       detail="event ignored — group not in "
+                       "LINE_ALLOWED_GROUP_IDS")
             return
         if not user_id or not chat_id:
             return
@@ -1350,6 +1381,7 @@ class LineRelay:
         # because that would hand the owner key to every member.
         if not is_group and user_id not in _allowed_users():
             logger.info("unauthorized line user %s", user_id)
+            _ops_event("unauthorized_user", "warn", user_id=user_id)
             await self.send_text(
                 chat_id,
                 f"Not authorized. Your LINE userId is {user_id} — ask the "
@@ -1550,6 +1582,8 @@ class LineRelay:
             reply, images = await sess.send_turn(turn_text)
         except Exception as exc:
             logger.warning("user %s turn failed: %s", user_id, exc)
+            _ops_event("turn_failed", "error", chat_id=user_id,
+                       detail=str(exc)[:200])
             reply, images = (f"{persona} didn't answer that turn — the "
                              "session dropped. Try again."), []
             self.sessions.pop(skey, None)
@@ -1803,6 +1837,7 @@ class LineRelay:
             app, host=host or "127.0.0.1", port=int(port or 8912),
             log_level="warning"))
         logger.info("line relay up — webhook %s%s", host, LINE_PATH)
+        _ops_event("relay_started", "info", webhook=f"{host}{LINE_PATH}")
         await server.serve()
 
     async def run(self) -> None:
