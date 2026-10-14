@@ -253,7 +253,8 @@ def _slug_for(runner: Any, name: str, coords: str) -> str:
 
 def _page(place: dict[str, Any], ask: str, lang: str) -> tuple[str, str]:
     name = place["name"] or place["display_name"].split(",")[0] or "Place"
-    title = name if lang == "en" else f"{name} — รายงานสถานที่"
+    # ssot.wp-boards title standard: machine CPT items get kind prefix
+    title = f"Place — {name}" if lang == "en" else f"Place — {name} (รายงานสถานที่)"
     lines = [f"# {name}", ""]
     if place["address"]:
         lines += [place["address"], ""]
