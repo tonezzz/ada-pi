@@ -36,6 +36,11 @@ Env:
                                  for a following text from the same sender
                                  routed to the same persona, then merge it
                                  in as the photo caption (one reply)
+    LINE_PARKED_DIR            — default ~/.local/share/ada/line-parked;
+                                 outbound msgs that hit LINE push quota
+                                 (429) park here and ride the next free
+                                 replyToken on that chats next inbound
+                                 (OPS-0651)
     LINE_VOICE_CORPUS_DIR      — default ~/.local/share/ada-voice-corpus/line;
                                  audio clips from enrolled senders land here
                                  (local only — like tg_relay's voice rule)
@@ -164,6 +169,73 @@ MEDIA_ARCHIVE_DIR = Path(os.environ.get(
 VOICE_CORPUS_DIR = Path(os.environ.get(
     "LINE_VOICE_CORPUS_DIR",
     str(Path.home() / ".local" / "share" / "ada-voice-corpus" / "line")))
+
+PARKED_DIR = Path(os.environ.get(
+    "LINE_PARKED_DIR",
+    str(Path.home() / ".local" / "share" / "ada" / "line-parked")))
+
+
+def _merge_msgs(msgs: list[dict], cap: int = 5
+                ) -> tuple[list[dict], list[dict]]:
+    """LINE allows <=5 bubbles per call — merge adjacent text bubbles
+    (<=4900 chars each) and return (send, overflow)."""
+    out: list[dict] = []
+    buf: list[str] = []
+
+    def flush() -> None:
+        if buf:
+            out.append({"type": "text", "text": "\n\n".join(buf)[:4900]})
+            buf.clear()
+
+    for m in msgs:
+        if m.get("type") == "text":
+            t = str(m.get("text") or "")
+            if buf and sum(len(x) + 2 for x in buf) + len(t) > 4900:
+                flush()
+            buf.append(t)
+        else:
+            flush()
+            out.append(m)
+    flush()
+    return out[:cap], out[cap:]
+
+
+def _parked_path(chat_id: str) -> Path:
+    return PARKED_DIR / (re.sub(r"[^A-Za-z0-9_-]", "_", chat_id) + ".jsonl")
+
+
+def _parked_add(chat_id: str, msgs: list[dict], front: bool = False) -> None:
+    """Park outbound msgs for chat_id (one JSON msg per line). front=True
+    restores previously-taken items ahead of anything still queued."""
+    if not msgs:
+        return
+    try:
+        PARKED_DIR.mkdir(parents=True, exist_ok=True)
+        p = _parked_path(chat_id)
+        lines = [json.dumps(m, ensure_ascii=False) for m in msgs]
+        if front:
+            if p.exists():
+                lines += p.read_text().splitlines()
+            p.write_text("\n".join(lines) + "\n")
+        else:
+            with p.open("a") as fh:
+                fh.write("\n".join(lines) + "\n")
+    except Exception:
+        logger.exception("parked-write failed for %s", chat_id)
+
+
+def _parked_take(chat_id: str) -> list[dict]:
+    p = _parked_path(chat_id)
+    if not p.exists():
+        return []
+    try:
+        msgs = [json.loads(l) for l in p.read_text().splitlines()
+                if l.strip()]
+        p.unlink()
+        return msgs
+    except Exception:
+        logger.exception("parked-read failed for %s", chat_id)
+        return []
 
 _MIME_EXT = {
     "audio/m4a": ".m4a",
@@ -786,11 +858,26 @@ class LineRelay:
                        reply_token: str | None = None) -> None:
         logger.info("deliver to %s: [%s]",
                     user_id, ",".join(m.get("type", "?") for m in msgs[:5]))
+        parked: list[dict] = []
         if reply_token:
+            # OPS-0651: outbound msgs parked on push-quota ride this free
+            # reply call — one token, one call, max 5 bubbles.
+            parked = _parked_take(user_id)
+            send, overflow = _merge_msgs(parked + msgs)
             try:
                 r = await self.line("reply", {
-                    "replyToken": reply_token, "messages": msgs[:5]})
+                    "replyToken": reply_token, "messages": send})
                 if r.status_code == 200:
+                    if overflow:
+                        _parked_add(user_id, overflow)
+                        logger.info("deliver to %s: %d msgs re-parked "
+                                    "(5-bubble reply cap)",
+                                    user_id, len(overflow))
+                    if parked:
+                        logger.info("deliver to %s: flushed %d parked msgs",
+                                    user_id, len(parked))
+                        _ops_event("parked_flushed", "info", chat_id=user_id,
+                                   n=len(parked))
                     return
                 logger.info("replyToken failed (%s) — falling back to push",
                             r.status_code)
@@ -799,8 +886,19 @@ class LineRelay:
             except Exception as exc:
                 logger.info("reply call failed (%s) — falling back to push",
                             exc)
+            # Nothing was sent — the parked batch goes back untouched; only
+            # the current payload proceeds to the push path.
+            _parked_add(user_id, parked, front=True)
         r = await self.line("push", {"to": user_id, "messages": msgs[:5]})
         if r.status_code != 200:
+            if r.status_code == 429:
+                _parked_add(user_id, msgs)
+                logger.warning("push to %s quota-blocked — parked %d msgs "
+                               "for the next inbound (%s)",
+                               user_id, len(msgs), r.text[:120])
+                _ops_event("push_parked", "warn", chat_id=user_id,
+                           http=r.status_code, detail=r.text[:200])
+                return
             logger.warning("push to %s failed: %s %s",
                            user_id, r.status_code, r.text[:200])
             _ops_event("push_failed", "error", chat_id=user_id,
