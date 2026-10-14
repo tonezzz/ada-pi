@@ -33,7 +33,7 @@ tools:
     module: ada_render_image
     policy: read
     secondary_allowed: false
-    timeout_s: 90
+    timeout_s: 120
   ada_render_video:
     module: ada_render_video
     policy: read

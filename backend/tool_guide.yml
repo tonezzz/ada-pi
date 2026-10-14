@@ -566,10 +566,18 @@ ada_render_image: >-
   pass the 'doc/...' intake key from a [document uploaded] note, a
   /api/documents/... path, or any fetchable image URL - including the
   /relay-img/arch/... link from a photo the user just sent ('edit this
-  photo', 'make the car red'). aspect= is square (1:1, default),
+  photo', 'make the car red'). ref_urls= takes a list of those to
+  combine several photos in one render. Iteration is automatic: leave
+  the ref args empty and the session's last render is edited in place
+  ('make it warmer', 'change the text') - pass fresh=true only when the
+  ask is an unrelated new image. aspect= is square (1:1, default),
   landscape (16:9) or portrait (9:16). The result's image_url posts to
   the chat automatically on LINE/TG relays - confirm what was made in
-  one line, do not re-send or re-render unless asked.
+  one line, do not re-send or re-render unless asked. On 2K/4K renders
+  also paste full_res_url so the member can grab the un-reencoded file.
+  self_check.match=false means the render was flagged after a retry -
+  say it may be off and offer another pass; page_hint means the ask was
+  a page layout - this draws a picture of one, not working HTML.
 
 ada_render_video: >-
   prompt= is the full assembled scene description (subject, motion,

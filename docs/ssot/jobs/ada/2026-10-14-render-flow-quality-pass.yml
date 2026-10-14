@@ -1,0 +1,90 @@
+# SSOT Job: render flow quality pass — six items on ada_render_image
+# Card: render-flow-quality-pass (kanban). Dispatch 20261014-215937.
+
+title: Render flow quality pass — iterate-on-last, self-check, multi-ref,
+  aspect intent, full-res link, transient retry
+subtitle: |
+  Tony's six concrete render-flow improvements, all inside the
+  ada_render_image tools.d module (no runner/provider changes):
+  edits remember the session's last artifact, a cheap vision pass
+  reviews each render, multiple reference images compose, page-ish
+  asks get an honest canvas + caveat, 2K/4K renders surface the
+  original-quality URL, and one transient retry absorbs gateway blips.
+
+planning:
+  goal: |
+    Improve render quality/UX end-to-end without touching the tool
+    surface shape: same tool name, additive params only (ref_urls,
+    fresh), additive result fields only.
+  decisions: |
+    - Iterate-on-last stores the render-dir FILE PATH (not bytes) in a
+      per-session OrderedDict keyed off runner.context.session_id —
+      artifacts already live on disk, RAM stays flat. TTL
+      ADA_RENDER_LAST_TTL_S default 4h; cap 16 sessions.
+    - Auto-attach on empty ref args is the default per the card
+      ('auto-feeds it as ref_url'); fresh=true is the model's escape
+      hatch, documented in the ref_url param description + guide entry.
+    - Self-check rides gemini_pool.generate on ADA_RENDER_CHECK_MODEL
+      (default gemini-3.5-flash-lite) with a JSON {match, problem}
+      schema; the frame is shrunk to <=800px JPEG. Advisory only — any
+      check failure skips it; a miss re-renders ONCE with the problem
+      folded into the prompt; the second render keeps the image even
+      if still flagged (self_check.reported to the model).
+    - Transient retry wraps the image call only: _is_transient excludes
+      quota-shaped errors (gemini_pool already rotated keys — a drained
+      pool is spent, not transient) and hard 4xx; 408/5xx, timeouts,
+      connection resets retry once after 1.5s.
+    - Aspect intent: explicit aspect always wins; else explicit WxH dims
+      map to the nearest canvas; else page-ish wording (landing page,
+      website, homepage...) defaults portrait 9:16. page_hint in the
+      result tells the model image gen draws a PICTURE of a page —
+      working HTML is a code/CMS task.
+    - Delivery fidelity: image_url already serves the original bytes
+      (LINE re-encodes the bubble, not the source). 2K/4K renders add
+      full_res_url + a note telling the model to paste the link so the
+      member can grab the un-reencoded file.
+  not_done: |
+    - Per-section page composition (multi-render stacked page) left as
+      the page_hint guidance — composing is a bigger feature.
+    - ada_render_video did not get iterate-on-last / self-check (card
+      scoped to the image flow).
+
+implementation:
+  files:
+    - backend/tools.d/ada_render_image.py — all six items; DECLARATION
+      gains ref_urls[] + fresh; docstring env block updated.
+    - backend/tools.d/manifest.yml — timeout_s 90 -> 120 (self-check +
+      possible re-render adds latency headroom).
+    - backend/tool_guide.yml — ada_render_image entry documents the new
+      contract (auto-iterate, fresh=, ref_urls, full_res_url,
+      self_check, page_hint).
+    - tests/test_render_image.py — 15 new tests (25 total); setUp clears
+      the _LAST_RENDER store and pins ADA_RENDER_CHECK=0 for isolation.
+  result_contract_additions:
+    - iterated / iterated_from — auto-attached the session's last render
+    - ref_count — number of reference images composed
+    - self_check {match, problem, retried, note?}
+    - page_hint — page-layout ask caveat
+    - full_res_url — 2K/4K only
+  env:
+    - ADA_RENDER_CHECK=0 disables the self-check
+    - ADA_RENDER_CHECK_MODEL overrides the reviewer model
+    - ADA_RENDER_LAST_TTL_S overrides the 4h iterate memory
+
+verification:
+  - .venv/bin/python -m pytest tests/test_render_image.py -q -> 25 pass
+  - .venv/bin/python -m pytest tests/ -x -q --ignore=tests/bench
+    (speaker_id + bench_speaker_id deselected: torch/speechbrain absent
+    on the dispatch host — same caveat as prior dispatches)
+    -> 1397 passed, 7 skipped, 31 subtests
+  - python3 scripts/tool-lint.py -> clean
+  - note: worktree-local .venv (gitignored) created for the run —
+    httpx/pytest/pyyaml/pillow/websockets/uvicorn/fastapi/numpy/qrcode
+    installed; google-genai covered by tests/dep_stubs.
+
+followups:
+  - Live check on idc02 staging before deploy: 'draw a cat' then 'make
+    it warmer' in one LINE session should show iterated=true in the
+    tool trace and a visibly same-composition edit.
+  - OPS-0651 note stands: full_res_url matters once the parked-queue
+    delivery path (aee7713) is verified sane on prod.
