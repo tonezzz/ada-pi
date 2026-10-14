@@ -32,6 +32,37 @@ RATES_PER_MILLION = {
 CACHED_RATE_FRACTION = 0.25
 
 
+def _default_lane() -> str:
+    """This process's lane (ADA_INSTANCE_ID) — the unit per-lane budget
+    enforcement (backend/lane_budget.py) bills against. Empty when the
+    identity is unset."""
+    try:
+        from backend.instance import ada_instance_id
+        return ada_instance_id()
+    except Exception:
+        return ""
+
+
+def entry_cost_usd(rec: dict[str, Any]) -> float:
+    """Estimated USD for one usage-log record line — the same modality
+    rates _est_cost applies to a whole bucket. lane_budget's monthly
+    spend scan sums these."""
+    cost = 0.0
+    in_mod = {str(k): int(v) for k, v in (rec.get("in_mod") or {}).items()}
+    out_mod = {str(k): int(v) for k, v in (rec.get("out_mod") or {}).items()}
+    for mod, n in in_mod.items():
+        cost += n * _rate(mod, "in")
+    for mod, n in out_mod.items():
+        cost += n * _rate(mod, "out")
+    cost += max(0, int(rec.get("in", 0) or 0)
+                - sum(in_mod.values())) * _rate("unknown", "in")
+    cost += max(0, int(rec.get("out", 0) or 0)
+                - sum(out_mod.values())) * _rate("unknown", "out")
+    cost += (int(rec.get("cached", 0) or 0)
+             * _rate("unknown", "in") * CACHED_RATE_FRACTION)
+    return cost / 1_000_000
+
+
 def _bucket() -> dict[str, Any]:
     return {
         "input_tokens": 0,
@@ -164,11 +195,15 @@ class UsageLedger:
                input_tokens: int = 0, output_tokens: int = 0,
                input_by_modality: dict[str, int] | None = None,
                output_by_modality: dict[str, int] | None = None,
-               cached_tokens: int = 0, tool_use_tokens: int = 0) -> None:
+               cached_tokens: int = 0, tool_use_tokens: int = 0,
+               lane: str | None = None) -> None:
         rec = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "source": str(source),
             "session_id": session_id,
+            # Lane tag for per-lane budget enforcement (lane_budget.py);
+            # older rows simply lack the field.
+            "lane": str(lane if lane is not None else _default_lane()),
             "in": int(input_tokens),
             "out": int(output_tokens),
             "in_mod": {str(k): int(v) for k, v in (input_by_modality or {}).items()},

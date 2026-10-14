@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from typing import Any
 
+from . import lane_budget
 from .realtime_provider import ProviderEvent, create_provider
 
 logger = logging.getLogger("voice.live_manager")
@@ -68,8 +69,22 @@ class LiveSessionManager:
                 if self._stopping:
                     break
                 self.last_error = str(exc)
-                logger.warning("Gemini Live connection lost; reconnecting: %s", exc)
-                await self._broadcast(ProviderEvent("live_reconnecting", {"message": str(exc)}))
+                # Lane-budget/provider-cap enforcement (card
+                # ada-gemini-live-spend-cap): park the loop for the hold
+                # interval instead of redialling a dead project every
+                # few seconds; status reads "budget_hold" until a
+                # rollover/rekey/file-clear lets a probe through.
+                hold = lane_budget.hold_seconds(exc)
+                if hold is not None:
+                    self.status = "budget_hold"
+                    logger.warning("Gemini Live held by lane budget: %s", exc)
+                    await self._broadcast(ProviderEvent(
+                        "live_budget_hold",
+                        {"message": str(exc), "retry_in_s": hold}))
+                    delay = hold
+                else:
+                    logger.warning("Gemini Live connection lost; reconnecting: %s", exc)
+                    await self._broadcast(ProviderEvent("live_reconnecting", {"message": str(exc)}))
             finally:
                 if provider.resumption_handle:
                     handle = provider.resumption_handle
@@ -85,9 +100,15 @@ class LiveSessionManager:
                 # old setup/system instruction.
                 generation = self._generation
                 handle = None
-            self.status = "reconnecting"
+            if self.status != "budget_hold":
+                self.status = "reconnecting"
             await asyncio.sleep(delay)
-            delay = min(15.0, delay * 2)
+            # A hold resets the probe cadence — the next connect re-derives
+            # its own hold; normal failures keep the capped backoff.
+            if delay >= lane_budget.recheck_s():
+                delay = 1.0
+            else:
+                delay = min(15.0, delay * 2)
         self.status = "stopped"
 
     async def _broadcast(self, event: ProviderEvent) -> None:
@@ -107,6 +128,13 @@ class LiveSessionManager:
             self._subscribers.discard(queue)
 
     async def _ready_provider(self) -> Any:
+        # During a budget hold, fail the wait immediately with the hold
+        # reason — the client should hear "voice suspended: budget", not
+        # a generic 10s connect timeout.
+        if self.status == "budget_hold":
+            raise RuntimeError(
+                self.last_error
+                or "voice lane suspended — monthly budget hold")
         await asyncio.wait_for(self._connected.wait(), timeout=10)
         if self.provider is None:
             raise RuntimeError("Gemini Live is reconnecting")

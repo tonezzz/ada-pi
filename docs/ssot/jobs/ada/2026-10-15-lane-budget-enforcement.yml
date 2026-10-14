@@ -1,0 +1,111 @@
+# SSOT Job: per-lane Gemini spend enforcement (Live lane)
+# Card: ada-gemini-live-spend-cap (kanban, ADA-0632). Dispatch 20261015-063912.
+
+title: Per-lane budget enforcement — lane USD cap + provider-cap latch
+subtitle: Fail fast and free before the paid Gemini Live connect instead of
+  discovering the project monthly cap mid-handshake
+
+planning:
+  goal: |
+    2026-10-14 06:28: every voice /ws connect on ada-ha-tony died at
+    provider connect — google.genai 1011 "Your project has exceeded its
+    monthly spending cap" (paid Live-API monthly cap, distinct from the
+    free-tier 20/day 429s of ada-gemini-free-tier-quota). Voice stayed
+    dead until Tony rekeyed the lane onto a funded project; the same
+    class of failure repeated 2026-10-14 ~23:50 when all three paid keys
+    hit 402 prepaid-depleted. Tony's queued answer (06:26 Oct15):
+    "build per-lane budget enforcement" — Ada-side spend ceilings plus a
+    learned-cap latch, so a lane parks cleanly instead of paying Google
+    for doomed connects every retry.
+  design: |
+    backend/lane_budget.py is the authority. Two layers, both enforced
+    inside GeminiLiveProvider.connect() — the single choke point for all
+    paid Live spend (kiosk via live_manager, PWA sessions, mid-session
+    reconnects; relay text rides ?mode=text on OpenRouter and never
+    opens a Live session):
+    1. ADA_LANE_MONTHLY_BUDGET_USD — estimated-monthly-spend ceiling per
+       lane. Spend is summed from the durable usage ledger
+       (ADA_USAGE_LOG; usage_tracker rows now carry a 'lane' tag from
+       ADA_INSTANCE_ID, entry_cost_usd() rates each record). Over cap →
+       LaneBudgetExceeded before genai.Client is even built.
+       ADA_LANE_BUDGET_WARN_PCT (80) emits one lane_budget_warn ops
+       event per lane-month. Unset/0 = gate off (opt-in per lane).
+    2. Provider-cap latch — a billing-class connect error (monthly
+       spending cap text, 'ai.studio/spend', 'prepayment credits
+       depleted', or code 402) writes the key sha256 fingerprint into
+       ADA_LANE_BUDGET_STATE (data/lane-budget.json) for the current
+       billing month. Later connects raise ProviderCapLatched locally —
+       no Google round-trip. Clears on month rollover (Pacific
+       boundary), on rekey (different fingerprint), or by deleting the
+       state file; ADA_LANE_CAP_LATCH=off disables learning.
+    Both exceptions carry .hold_s = ADA_LANE_BUDGET_RECHECK_S (900s):
+    live_manager sleeps that instead of the 1-15s backoff, reports
+    status='budget_hold' (surfaces via /api health live_status), and
+    broadcasts a live_budget_hold event; a waiting /ws client fails
+    immediately with the hold reason instead of a 10s timeout. The pwa
+    reconnect loop does the same and notifies the client; the
+    provider_connect error payload gains a 'code' field
+    (lane_budget/provider_cap). Frontends render "Voice suspended —
+    monthly budget" instead of an endless "Reconnecting…".
+    conversation_health() gains a lane_budget block (spent/remaining/
+    latches) for the hourly digest path.
+  scope_notes: |
+    - Ledger rows pre-date the lane tag or come from a shared file: rows
+      with no 'lane' count toward every lane (conservative overcount).
+    - The ledger only counts sources that call usage_ledger.record (live
+      turns, posture verify) — gateway REST spend is tracked by LiteLLM
+      virtual-key budgets, not here. Enforcement is per-lane process,
+      not per-GCP-project; the console-side split+$10-cap is tracked on
+      card gemini-paid-spend-cap.
+    - Budget is checked at connect only; a running session is not kicked
+      when it crosses the line mid-stream.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-15"
+  steps:
+    - id: 1
+      label: "lane_budget module"
+      status: done
+      notes: "backend/lane_budget.py — check()/note_connect_failure()/
+        month_spend_usd()/status()/hold_seconds(); LaneBudgetExceeded +
+        ProviderCapLatched carry code + hold_s; Pacific billing month."
+    - id: 2
+      label: "ledger lane tag"
+      status: done
+      notes: "usage_tracker: record() gains lane kwarg (defaults to
+        ada_instance_id()), entry_cost_usd() single-record estimator."
+    - id: 3
+      label: "connect + loop wiring"
+      status: done
+      notes: "realtime_provider.connect() checks before genai.Client and
+        latches billing-class failures on __aenter__ error.
+        live_manager: budget_hold status, live_budget_hold broadcast,
+        hold-interval sleep, instant-fail _ready_provider. pwa_server:
+        error payload 'code', reconnect-loop hold + client notify.
+        frontends (frontend/app.js, pwa/app.js): live_budget_hold case."
+    - id: 4
+      label: "health + docs"
+      status: done
+      notes: "conversation_health()['lane_budget']; .env.example
+        documents ADA_LANE_MONTHLY_BUDGET_USD, WARN_PCT, RECHECK_S,
+        BUDGET_STATE, CAP_LATCH."
+
+verify:
+  automated: |
+    pytest tests/test_lane_budget.py — 29 passed (cap detection, latch
+    lifecycle incl. rekey/rollover/disable, lane-isolated spend
+    accounting, budget gate + warn-once, hold semantics, connect()
+    wiring: latch blocks before genai.Client, billing failure latches).
+    Full suite: 1489 passed, 7 skipped. tool-lint clean.
+  ops_pending: |
+    Enforcement is OFF until each lane's env sets
+    ADA_LANE_MONTHLY_BUDGET_USD (recommended: below the AI Studio hard
+    cap, e.g. $8 of a $10 project cap) — env files live in
+    ~/.config/secrets on idc03, outside the repo. The provider-cap latch
+    works regardless of budget config. To verify post-deploy: set the
+    budget on ada-dev to ~$0.001 under current month spend, restart,
+    /ws connect -> clean 1011 'lane budget' error + live_budget_hold in
+    status; unset to restore. After a real 1011/402, data/lane-budget.json
+    should carry the key fingerprint for the month.

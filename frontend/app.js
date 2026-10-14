@@ -1103,6 +1103,10 @@ function handleControl(event) {
     case "expression":
       window.idleFace?.setExpression(event.name);
       break;
+    case "live_budget_hold":
+      connectionStatus.textContent = "Voice suspended — monthly budget";
+      logLine("System", event.message || "monthly budget hold", "system");
+      break;
     case "error":
       logLine("Error", event.message, "system");
       break;
