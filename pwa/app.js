@@ -303,7 +303,9 @@ function handleControl(event) {
       setStatus("Reconnecting…");
       break;
     case "error":
-      logLine(`Error: ${event.message}`, "system");
+      logLine(event.stage === "provider_connect"
+        ? `Upstream provider refused: ${event.message}`
+        : `Error: ${event.message}`, "system");
       break;
   }
 }
@@ -395,6 +397,9 @@ async function connect() {
     socket.onerror = () => logLine("WebSocket error", "system");
     socket.onclose = (event) => {
       systemHush();
+      if (event.code !== 1000) {
+        logLine(`Disconnected — code ${event.code}${event.reason ? ` (${event.reason})` : ""}`, "system");
+      }
       const lostAuth = event.code === 4401;
       if (lostAuth) {
         authRequired = true;

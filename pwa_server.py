@@ -1015,6 +1015,19 @@ async def _prime_session(
         logger.warning("session prime failed: %s", exc)
 
 
+_PROVIDER_CODE_PREFIX = re.compile(r"^\s*\d{3,4}\s+(?:None[.:]?\s+)?")
+
+
+def _provider_error_message(exc: Exception) -> str:
+    """Human-readable provider failure for the client.
+
+    google.genai APIError stringifies as '1011 None. <vendor text>' — strip
+    the duplicated code/noise so cards show the vendor's reason directly.
+    """
+    msg = _PROVIDER_CODE_PREFIX.sub("", str(exc)).strip()
+    return msg or type(exc).__name__
+
+
 @app.websocket("/ws")
 async def voice_socket(ws: WebSocket) -> None:
     if not auth.websocket_authorized(ws):
@@ -1302,6 +1315,12 @@ async def voice_socket(ws: WebSocket) -> None:
         await provider_ref[0].connect()
     except Exception as exc:
         logger.exception("session=%s provider connect failed", session_id)
+        err_payload = {
+            "type": "error",
+            "stage": "provider_connect",
+            "provider": type(provider_ref[0]).__name__,
+            "message": _provider_error_message(exc),
+        }
         # Text channels degrade to OpenRouter instead of dying (card
         # ada-chat-or-fallback). Voice has no equivalent path — fail loudly.
         if channel:
@@ -1323,15 +1342,15 @@ async def voice_socket(ws: WebSocket) -> None:
             except Exception as exc2:
                 logger.exception(
                     "session=%s fallback connect failed", session_id)
+                err_payload["message"] += (
+                    f"; text fallback failed: {_provider_error_message(exc2)}")
                 with suppress(Exception):
-                    await ws.send_text(json.dumps({
-                        "type": "error",
-                        "message": f"primary: {exc}; fallback: {exc2}"}))
+                    await ws.send_text(json.dumps(err_payload))
                     await ws.close(code=1011)
                 return
         else:
             with suppress(Exception):
-                await ws.send_text(json.dumps({"type": "error", "message": str(exc)}))
+                await ws.send_text(json.dumps(err_payload))
                 await ws.close(code=1011)
             return
     # Test hook: ?simulate_unknown_speaker=1 injects the unrecognized-speaker
