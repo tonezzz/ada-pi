@@ -2,7 +2,8 @@
 # to the active chat (tg/line relays already turn image urls into photo
 # messages). Asserts the tool is called and the returned URL is served.
 name: img-render-gen
-tier: manual  # flip to smoke when ada_render_image lands
+tier: smoke
+needs_tools: [ada_render_image]
 turns:
   - user: "draw me a small watercolor of a Thai longtail boat at sunset"
     expect:

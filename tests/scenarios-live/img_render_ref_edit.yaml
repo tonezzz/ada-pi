@@ -3,7 +3,8 @@
 # most one follow-up), call ada_render_image with the ref, and return the
 # URL — no manual parameter talk to the user.
 name: img-render-ref-edit
-tier: manual  # flip to smoke when ada_render_image lands
+tier: smoke
+needs_tools: [ada_render_image]
 turns:
   - upload: fixtures/doc-receipt.png
     user: "make a fun cartoon version of that photo, landscape"
