@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import os
 import importlib.util
 import tempfile
 import unittest
@@ -134,6 +135,49 @@ class TestAdaRenderImage(unittest.TestCase):
             out = self._run(prompt="nothing")
         self.assertFalse(out["ok"])
         self.assertIn("no image", out["error"])
+
+    def test_size_param_reaches_image_config(self):
+        with patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:ghi"):
+            import backend.gemini_pool as gp
+            with patch.object(gp, "generate", new_callable=AsyncMock,
+                              return_value=_resp_with_image()) as gen,                  patch.object(gp, "configured_keys",
+                              return_value=["k1"]):
+                out = self._run(prompt="big", size="4K")
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["size"], "4K")
+        cfg = gen.call_args[1].get("config") or gen.call_args[0][2]
+        icfg = getattr(cfg, "image_config", None) or cfg["image_config"]
+        val = getattr(icfg, "image_size", None) or icfg["image_size"]
+        self.assertEqual(str(val).upper(), "4K")
+
+    def test_gate_file_refuses(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "ada_render_image.closed").touch()
+            with patch.dict(os.environ, {"ADA_GATES_DIR": d}):
+                out = self._run(prompt="anything")
+        self.assertFalse(out["ok"])
+        self.assertIn("switched off", out["error"])
+
+    def test_lane_gate_only_blocks_that_lane(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "ada_render_image.kk.closed").touch()
+            env = {"ADA_GATES_DIR": d, "ADA_INSTANCE_ID": "kk"}
+            with patch.dict(os.environ, env):
+                out = self._run(prompt="anything")
+            self.assertFalse(out["ok"])
+            env2 = {"ADA_GATES_DIR": d, "ADA_INSTANCE_ID": "chaba"}
+            with patch.dict(os.environ, env2), \
+                 patch("backend.traffic_camera.publish_relay",
+                       return_value="https://x/frame?token=render:jkl"):
+                import backend.gemini_pool as gp
+                with patch.object(gp, "generate", new_callable=AsyncMock,
+                                  return_value=_resp_with_image()),                      patch.object(gp, "configured_keys",
+                                  return_value=["k1"]):
+                    out2 = self._run(prompt="anything")
+            self.assertTrue(out2["ok"], out2)
 
     def test_manifest_entry(self):
         import yaml

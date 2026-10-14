@@ -26,6 +26,9 @@ Env:
         actual request key is ADA_GEMINI_REST_API_KEY when the gateway
         env is set)
     ADA_RENDER_IMAGE_MODEL — default gemini-3.1-flash-image
+    ADA_GATES_DIR          — owner kill-switch dir (default
+        ~/.local/share/ada/gates); touch ada_render_image.closed or
+        ada_render_image.<lane>.closed to refuse renders instantly
     ADA_RENDER_DIR         — artifact dir, default ~/.local/share/ada/renders
     ADA_SELF_URL           — self API base for relative ref paths
                              (default http://127.0.0.1:$ADA_PORT or :8000)
@@ -77,6 +80,12 @@ DECLARATION = {
                                "(16:9) | portrait (9:16) | an explicit "
                                "ratio.",
             },
+            "size": {
+                "type": "string",
+                "description": "1K (default, ~1024px, cheapest) | 2K "
+                               "| 4K (~4096px, sharpest, costs most). "
+                               "Only go above 1K when detail matters.",
+            },
         },
         "required": ["prompt"],
     },
@@ -93,6 +102,10 @@ _ASPECT_ALIASES = {
     "square": "1:1", "landscape": "16:9", "wide": "16:9",
     "portrait": "9:16", "tall": "9:16", "vertical": "9:16",
 }
+
+_SIZES = {"1K", "2K", "4K"}
+_SIZE_ALIASES = {"small": "1K", "default": "1K", "medium": "2K",
+                 "hd": "2K", "large": "4K", "big": "4K", "ultra": "4K"}
 
 _DOC_KEY_RE = re.compile(r"^doc/[a-z0-9][a-z0-9._-]*$")
 _DOC_PATH_RE = re.compile(
@@ -124,6 +137,36 @@ def _aspect(raw: Any) -> tuple[str | None, str | None]:
     return None, (
         f"unknown aspect {raw!r} — image renders square (1:1), "
         "landscape (16:9), portrait (9:16), 4:3 or 3:4")
+
+
+def _size(raw: Any) -> tuple[str | None, str | None]:
+    """-> (size, error). Blank defaults to 1K."""
+    val = str(raw or "").strip()
+    if not val:
+        return "1K", None
+    if val.upper() in _SIZES:
+        return val.upper(), None
+    if val.lower() in _SIZE_ALIASES:
+        return _SIZE_ALIASES[val.lower()], None
+    return None, (
+        f"unknown size {raw!r} — image renders at 1K (default), "
+        "2K or 4K")
+
+
+def _gate_closed() -> str | None:
+    """Owner kill-switch — a file in ADA_GATES_DIR closes the tool
+    instantly, no restart: <tool>.closed gates every lane,
+    <tool>.<ADA_INSTANCE_ID>.closed gates one lane."""
+    d = Path(os.path.expanduser(
+        os.environ.get("ADA_GATES_DIR") or "~/.local/share/ada/gates"))
+    lane = os.environ.get("ADA_INSTANCE_ID") or ""
+    names = ["ada_render_image.closed"]
+    if lane:
+        names.append(f"ada_render_image.{lane}.closed")
+    if any((d / n).exists() for n in names):
+        return ("image rendering is switched off by the owner right "
+                "now — tell the user it's temporarily closed")
+    return None
 
 
 def _ref_from_engine(key: str) -> tuple[bytes, str] | None:
@@ -193,20 +236,23 @@ async def _resolve_ref(client: httpx.AsyncClient, ref: str
     return (resp.content, mime), None
 
 
-def _gen_config(ratio: str) -> Any:
-    """responseModalities + aspect — types first, dict fallback for old
-    SDK builds."""
+def _gen_config(ratio: str, size: str) -> Any:
+    """responseModalities + aspect/size — types first, dict fallback for
+    old SDK builds."""
     try:
         from google.genai import types
         return types.GenerateContentConfig(
             response_modalities=["TEXT", "IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio=ratio))
+            image_config=types.ImageConfig(
+                aspect_ratio=ratio, image_size=size))
     except Exception:
         return {"response_modalities": ["TEXT", "IMAGE"],
-                "image_config": {"aspect_ratio": ratio}}
+                "image_config": {"aspect_ratio": ratio,
+                                 "image_size": size}}
 
 
-async def _render(prompt: str, ref: tuple[bytes, str] | None, ratio: str
+async def _render(prompt: str, ref: tuple[bytes, str] | None,
+                  ratio: str, size: str
                   ) -> tuple[bytes | None, str | None, str | None]:
     """-> (image bytes, model text, None) or (None, None, error)."""
     parts: list[dict[str, Any]] = [{"text": prompt}]
@@ -217,7 +263,8 @@ async def _render(prompt: str, ref: tuple[bytes, str] | None, ratio: str
     contents = [{"role": "user", "parts": parts}]
     from backend import gemini_pool
     resp = await gemini_pool.generate(
-        _model(), contents, config=_gen_config(ratio), tool="render_image")
+        _model(), contents, config=_gen_config(ratio, size),
+        tool="render_image")
     text_bits: list[str] = []
     for cand in getattr(resp, "candidates", None) or []:
         for part in (getattr(cand, "content", None) and
@@ -250,6 +297,9 @@ def _save(data: bytes, mime: str) -> Path:
 
 
 async def run(runner: Any, **args: Any) -> dict[str, Any]:
+    closed = _gate_closed()
+    if closed:
+        return {"ok": False, "error": closed}
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
         return {"ok": False,
@@ -259,6 +309,10 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
     if err:
         return {"ok": False, "error": err}
     assert ratio is not None
+    size, err = _size(args.get("size"))
+    if err:
+        return {"ok": False, "error": err}
+    assert size is not None
     ref_url = str(args.get("ref_url") or "").strip()
     if ref_url and not (
             _DOC_KEY_RE.match(ref_url) or _DOC_PATH_RE.search(ref_url)
@@ -283,7 +337,7 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
             if err:
                 return {"ok": False, "error": err}
     try:
-        data, model_text, err = await _render(prompt, ref, ratio)
+        data, model_text, err = await _render(prompt, ref, ratio, size)
     except Exception as exc:
         return {"ok": False,
                 "error": f"the image model call failed: {exc}"}
@@ -318,6 +372,7 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
         "title": prompt[:60],
         "file": str(path),
         "aspect": ratio,
+        "size": size,
         "model": _model(),
         "bytes": len(data),
         "note": "image_url is the shareable render — relays post it as a "

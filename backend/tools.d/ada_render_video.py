@@ -24,6 +24,11 @@ ada_render_image:
 Env:
     GEMINI_API_KEY / GOOGLE_API_KEY — required
     ADA_RENDER_VIDEO_MODEL  — default veo-3.1-fast-generate-preview
+    ADA_RENDER_VIDEO_OPEN   — hard gate: must be "1" or every call
+        refuses (owner-only tool); set only on approved lanes
+    ADA_GATES_DIR           — instant kill-switch dir (default
+        ~/.local/share/ada/gates); ada_render_video.closed or
+        ada_render_video.<lane>.closed refuses renders
     ADA_GEMINI_API_BASE     — default https://generativelanguage.googleapis.com
     ADA_RENDER_DIR          — artifact dir, default ~/.local/share/ada/renders
     ADA_RENDER_VIDEO_WAIT_S — poll budget, default 120
@@ -178,6 +183,22 @@ def _secs(raw: Any) -> tuple[int | None, str | None]:
         return n, None
     return None, (
         f"unknown secs {raw!r} — Veo renders 4, 6, or 8 second clips")
+
+
+def _gate_closed() -> str | None:
+    """Owner kill-switch — a file in ADA_GATES_DIR closes the tool
+    instantly, no restart: <tool>.closed gates every lane,
+    <tool>.<ADA_INSTANCE_ID>.closed gates one lane."""
+    d = Path(os.path.expanduser(
+        os.environ.get("ADA_GATES_DIR") or "~/.local/share/ada/gates"))
+    lane = os.environ.get("ADA_INSTANCE_ID") or ""
+    names = ["ada_render_video.closed"]
+    if lane:
+        names.append(f"ada_render_video.{lane}.closed")
+    if any((d / n).exists() for n in names):
+        return ("video rendering is switched off by the owner right "
+                "now — tell the user it's temporarily closed")
+    return None
 
 
 def _ref_from_engine(key: str) -> tuple[bytes, str] | None:
@@ -430,6 +451,13 @@ async def _finish(runner: Any, client: httpx.AsyncClient, api_key: str,
 
 
 async def run(runner: Any, **args: Any) -> dict[str, Any]:
+    closed = _gate_closed()
+    if closed:
+        return {"ok": False, "error": closed}
+    if os.environ.get("ADA_RENDER_VIDEO_OPEN") != "1":
+        return {"ok": False, "error": (
+            "video rendering isn't open on this lane — it's an "
+            "owner-only tool right now; tell the user plainly")}
     operation = str(args.get("operation") or "").strip()
     prompt = str(args.get("prompt") or "").strip()
     if operation:
