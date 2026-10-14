@@ -317,11 +317,10 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
                                      follow_redirects=True) as client:
             tag_ids = [t for t in (
                 await _wp.ensure_tag(client, env, person),
-                await _wp.ensure_tag(client, env, "place-report"),
             ) if t]
             post = await _wp.create_post(
                 client, env, title, _md_html(content),
-                tag_ids=tag_ids, status="publish")
+                tag_ids=tag_ids, status="publish", post_type="place")
     except Exception as exc:
         return {"ok": False,
                 "error": f"wp post failed ({type(exc).__name__}): "

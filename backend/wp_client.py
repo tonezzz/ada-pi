@@ -147,13 +147,14 @@ async def create_post(client: httpx.AsyncClient, env: dict[str, str],
                       title: str, content_html: str,
                       tag_ids: list[int] | None = None,
                       status: str = "publish",
-                      featured_media: int | None = None) -> dict[str, Any]:
+                      featured_media: int | None = None,
+                      post_type: str = "posts") -> dict[str, Any]:
     payload: dict[str, Any] = {
         "title": title, "content": content_html, "status": status,
         "tags": tag_ids or []}
     if featured_media:
         payload["featured_media"] = featured_media
-    r = await api(client, env, "POST", "posts", json=payload)
+    r = await api(client, env, "POST", post_type, json=payload)
     if r.status_code not in (200, 201):
         return {"ok": False,
                 "error": f"post create failed {r.status_code}: "
