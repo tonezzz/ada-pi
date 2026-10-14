@@ -113,6 +113,43 @@ class HomeAssistantClientTests(unittest.IsolatedAsyncioTestCase):
             ["light.gate_spot", "light.gate_flap"],
         )
 
+    async def test_snapshot_discovers_plug_family_beyond_configured_list(self):
+        # 2026-10-13 ada-kk repro: get_home_state's all_plugs dropped
+        # switch.plakkaaaef_local because snapshot() only summarized the
+        # configured HOME_ASSISTANT_HOME_PLUGS (which held just
+        # switch.plug_tv). Plug-family switches (plug|plak|usb_test_hub)
+        # found in the live states must join the summary — plak* is how
+        # Thai setups name ปลั๊ก entities.
+        os.environ["HOME_ASSISTANT_HOME_PLUGS"] = "switch.plug_tv"
+        try:
+            client = AsyncMock()
+            client.get.return_value = FakeResponse([
+                {"entity_id": "switch.plug_tv", "state": "off",
+                 "attributes": {"friendly_name": "ปลั๊กทีวี (TV plug)"}},
+                {"entity_id": "switch.plakkaaaef_local", "state": "off",
+                 "attributes": {"friendly_name": "Plak AAEF"}},
+                {"entity_id": "switch.plug_fan", "state": "on",
+                 "attributes": {"friendly_name": "Fan plug"}},
+                {"entity_id": "switch.kitchen_counter", "state": "off",
+                 "attributes": {"friendly_name": "Counter"}},
+                {"entity_id": "person.kk", "state": "not_home",
+                 "attributes": {"friendly_name": "KK"}},
+            ])
+            home = HomeAssistantClient(client=client)
+            snapshot = await home.snapshot(person_entity="person.kk")
+        finally:
+            os.environ.pop("HOME_ASSISTANT_HOME_PLUGS", None)
+        self.assertIn("switch.plug_tv", snapshot.plug_states)
+        self.assertIn("switch.plakkaaaef_local", snapshot.plug_states)
+        self.assertEqual(
+            snapshot.plug_names["switch.plakkaaaef_local"], "Plak AAEF")
+        # Non-plug switches stay out of the summary.
+        self.assertNotIn("switch.kitchen_counter", snapshot.plug_states)
+        # A discovered plug that is on reports in plugs_on too — the
+        # summary must not contradict itself.
+        self.assertIn("switch.plug_fan", snapshot.plugs_on)
+        self.assertEqual(snapshot.person_state, "not_home")
+
     async def test_power_calls_allow_listed_home_assistant_service(self):
         client = AsyncMock()
         client.post.return_value = FakeResponse([])

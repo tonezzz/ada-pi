@@ -111,7 +111,13 @@ class OfficeLightMonitor:
         candidate_since = self._parse_stamp(state.get("candidate_since"))
         reset_at = self._parse_stamp(state.get("reset_at"))
         latched = bool(state.get("latched", False))
-        lights_on = list(snapshot.plugs_on)
+        # snapshot.plugs_on also covers plug-family switches discovered
+        # beyond HOME_ASSISTANT_HOME_PLUGS (home_assistant
+        # .HOME_PLUG_ENTITY_RE); this habit watches the configured office
+        # list only — a TV plug left on is not "office lights left on".
+        watched = set(getattr(self.home_assistant, "home_plug_entities", ()))
+        lights_on = [
+            e for e in snapshot.plugs_on if not watched or e in watched]
 
         if not lights_on:
             state = {"latched": False, "candidate_since": None, "reset_at": None}
