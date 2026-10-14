@@ -111,7 +111,7 @@ class ChatSendContextTests(unittest.IsolatedAsyncioTestCase):
         with patch("urllib.request.urlopen", side_effect=_capture):
             await runner._chat_send_run(
                 "job-1", channel="line", text="hi", image_url="",
-                camera="", to=to)
+                video_url="", camera="", to=to)
         return posts[0]
 
     async def test_bare_send_answers_in_originating_chat(self):

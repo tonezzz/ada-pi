@@ -467,12 +467,19 @@ def _transcribe(path) -> str:
     return " ".join(seg.text.strip() for seg in segments).strip()
 
 
-def _images_from(results: list[dict]) -> list[tuple[str, str]]:
-    """(url, caption) pairs found in tool_result payloads — a camera
-    snapshot's cast_url turns into an image message in the chat."""
-    out: list[tuple[str, str]] = []
+def _images_from(results: list[dict]) -> list[tuple[str, str, str]]:
+    """(url, caption, kind) triples found in tool_result payloads — a
+    camera snapshot's cast_url turns into an image message in the chat;
+    a render's video_url becomes a LINE videoMessage."""
+    out: list[tuple[str, str, str]] = []
     for res in results:
         if not isinstance(res, dict):
+            continue
+        vid = res.get("video_url")
+        if isinstance(vid, str) and vid.startswith(("http", "/v1/")):
+            cap = str(res.get("channel") or res.get("camera")
+                      or res.get("title") or "")
+            out.append((vid, cap, "video"))
             continue
         url = res.get("cast_url") or res.get("image_url") or res.get("url")
         # drive_get mints media_url for binary files — an image candidate
@@ -485,7 +492,7 @@ def _images_from(results: list[dict]) -> list[tuple[str, str]]:
             continue
         cap = str(res.get("channel") or res.get("camera")
                   or res.get("title") or "")
-        out.append((url, cap))
+        out.append((url, cap, "image"))
     return out
 
 
@@ -562,13 +569,13 @@ class ChatSession:
         finally:
             await self._current.put({"type": "_ws_closed"})
 
-    async def send_turn(self, text: str) -> tuple[str, list[tuple[str, str]]]:
+    async def send_turn(self, text: str) -> tuple[str, list[tuple[str, str, str]]]:
         """Send one user turn; returns (transcript, image urls+captions)."""
         return await self._send_and_collect({"type": "text", "text": text})
 
     async def send_image_turn(
             self, img: bytes, mime: str, caption: str
-    ) -> tuple[str, list[tuple[str, str]]]:
+    ) -> tuple[str, list[tuple[str, str, str]]]:
         """Forward a user photo into the session as a real image turn —
         Ada sees the picture (her describe path), replies with text."""
         return await self._send_and_collect({
@@ -579,7 +586,8 @@ class ChatSession:
         })
 
     async def _send_and_collect(
-            self, payload: dict) -> tuple[str, list[tuple[str, str]]]:
+            self, payload: dict
+            ) -> tuple[str, list[tuple[str, str, str]]]:
         async with self._lock:
             self.last_active = time.monotonic()
             await self.ensure()
@@ -825,6 +833,89 @@ class LineRelay:
             out.extend(await self._image_msgs(url, "", silent=True))
         return out
 
+    @staticmethod
+    def _video_poster(mp4: bytes) -> bytes | None:
+        """First video frame -> small JPEG for LINE's required
+        previewImageUrl. PyAV is already a dep (audio transcode)."""
+        try:
+            import io
+            import av
+            from PIL import Image
+            container = av.open(io.BytesIO(mp4))
+            frame = next(container.decode(video=0), None)
+            container.close()
+            if frame is None:
+                return None
+            im = frame.to_image()
+            im.thumbnail((240, 240))
+            buf = io.BytesIO()
+            im.convert("RGB").save(buf, "JPEG", quality=70)
+            return buf.getvalue()
+        except Exception as exc:
+            logger.info("video poster extract failed: %s", exc)
+            return None
+
+    async def _video_msgs(self, url: str, caption: str,
+                          silent: bool = False) -> list[dict]:
+        """Fetch the clip, host mp4 + poster publicly, return a LINE
+        videoMessage. Falls back to a text link on any failure — the
+        clip URL is still usable."""
+        assert self.http is not None
+        try:
+            url = await self._resolve_doc_media(url)
+            if url.startswith("/"):
+                m = re.search(r"https?://\S+", url)
+                if m:
+                    url = m.group(0)
+                else:
+                    base = os.environ.get(
+                        "LINE_URL_BASE", "http://100.102.134.91:11023")
+                    url = base.rstrip("/") + url
+            r = await self.http.get(url, timeout=240,
+                                    follow_redirects=True)
+            if r.status_code != 200 or len(r.content) < 1000:
+                raise RuntimeError(f"fetch {r.status_code} {len(r.content)}B")
+            if len(r.content) > 190 * 1024 * 1024:
+                raise RuntimeError("clip exceeds LINE's video limit")
+            mime = (r.headers.get("content-type")
+                    or "video/mp4").split(";")[0]
+            if not mime.startswith("video/") and                     b"ftyp" not in r.content[:32]:
+                raise RuntimeError(
+                    f"fetched {mime}, not a video ({len(r.content)}B)")
+            if not mime.startswith("video/"):
+                mime = "video/mp4"
+            poster = await asyncio.to_thread(
+                self._video_poster, r.content)
+            if not poster:
+                raise RuntimeError("no poster frame extracted")
+            import secrets
+            nonce = secrets.token_urlsafe(12)
+            self._imgs[nonce] = (r.content, time.time(), mime)
+            pnonce = nonce + "-p"
+            self._imgs[pnonce] = (poster, time.time(), "image/jpeg")
+            self._img_persist(nonce, r.content, mime)
+            self._img_persist(pnonce, poster, "image/jpeg")
+            msgs: list[dict] = [{"type": "video",
+                                 "originalContentUrl":
+                                     f"{LINE_PUBLIC_IMG_BASE}/{nonce}",
+                                 "previewImageUrl":
+                                     f"{LINE_PUBLIC_IMG_BASE}/{pnonce}"}]
+            if caption:
+                msgs.append({"type": "text", "text": caption[:4900]})
+            return msgs
+        except Exception as exc:
+            logger.warning("video %s failed: %s", url, exc)
+            if silent:
+                return []
+            return [{"type": "text",
+                     "text": f"(video: {caption or url})"}]
+
+    async def _media_msgs(self, url: str, caption: str, kind: str
+                          ) -> list[dict]:
+        if kind == "video":
+            return await self._video_msgs(url, caption)
+        return await self._image_msgs(url, caption)
+
     async def _image_msgs(self, url: str, caption: str,
                           silent: bool = False) -> list[dict]:
         """Fetch the frame, host it publicly, return LINE image messages.
@@ -1017,10 +1108,10 @@ class LineRelay:
         msgs: list[dict] = [{"type": "text",
                              "text": (tag + (reply or "(no reply)"))
                              [:REPLY_CHUNK]}]
-        for url, cap in images[:3]:
-            msgs.extend(await self._image_msgs(url, cap))
+        for url, cap, kind in images[:3]:
+            msgs.extend(await self._media_msgs(url, cap, kind))
         msgs.extend(await self._mined_msgs(
-            reply or "", {u for u, _ in images}))
+            reply or "", {u for u, _, _ in images}))
         try:
             await self._deliver(chat_id, msgs[:5], reply_token=reply_token)
         except Exception as exc:
@@ -1376,10 +1467,10 @@ class LineRelay:
             msgs = [{"type": "text",
                      "text": (tag + (reply or "(no reply)"))
                      [:REPLY_CHUNK]}]
-            for url, cap in images[:3]:
-                msgs.extend(await self._image_msgs(url, cap))
+            for url, cap, kind in images[:3]:
+                msgs.extend(await self._media_msgs(url, cap, kind))
             msgs.extend(await self._mined_msgs(
-                reply or "", {u for u, _ in images}))
+                reply or "", {u for u, _, _ in images}))
             try:
                 await self._deliver(chat_id, msgs[:5],
                                     reply_token=reply_token)
@@ -1429,10 +1520,10 @@ class LineRelay:
             msgs = [{"type": "text",
                      "text": (tag + (reply or "(no reply)"))
                      [:REPLY_CHUNK]}]
-            for url, cap in images[:3]:
-                msgs.extend(await self._image_msgs(url, cap))
+            for url, cap, kind in images[:3]:
+                msgs.extend(await self._media_msgs(url, cap, kind))
             msgs.extend(await self._mined_msgs(
-                reply or "", {u for u, _ in images}))
+                reply or "", {u for u, _, _ in images}))
             try:
                 await self._deliver(chat_id, msgs[:5],
                                     reply_token=reply_token)
@@ -1471,10 +1562,10 @@ class LineRelay:
         tag = f"[{disp}->{label}] " if is_group else ""
         msgs = [{"type": "text",
                  "text": (tag + (reply or "(no reply)"))[:REPLY_CHUNK]}]
-        for url, cap in images[:3]:
-            msgs.extend(await self._image_msgs(url, cap))
+        for url, cap, kind in images[:3]:
+            msgs.extend(await self._media_msgs(url, cap, kind))
         msgs.extend(await self._mined_msgs(
-            reply or "", {u for u, _ in images}))
+            reply or "", {u for u, _, _ in images}))
         try:
             await self._deliver(chat_id, msgs[:5], reply_token=reply_token)
         except Exception as exc:
@@ -1642,9 +1733,13 @@ class LineRelay:
             if body.get("image_url"):
                 msgs += await self._image_msgs(
                     str(body["image_url"]), str(body.get("caption") or ""))
+            if body.get("video_url"):
+                msgs += await self._video_msgs(
+                    str(body["video_url"]), str(body.get("caption") or ""))
             msgs += await self._mined_msgs(
                 str(body.get("text") or ""),
-                {str(body.get("image_url") or "")})
+                {str(body.get("image_url") or ""),
+                 str(body.get("video_url") or "")})
             if body.get("audio_b64"):
                 msgs += self._audio_msgs(
                     str(body["audio_b64"]),

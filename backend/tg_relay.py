@@ -182,19 +182,26 @@ def _sender_slug(msg: dict, caller: str | None,
     return slug or str(sender_id or "unknown")
 
 
-def _images_from(results: list[dict]) -> list[tuple[str, str]]:
-    """(url, caption) pairs found in tool_result payloads — a camera
-    snapshot's cast_url turns into a photo in the chat."""
-    out: list[tuple[str, str]] = []
+def _images_from(results: list[dict]) -> list[tuple[str, str, str]]:
+    """(url, caption, kind) triples found in tool_result payloads — a
+    camera snapshot's cast_url turns into a photo; a render's
+    video_url becomes a sendVideo."""
+    out: list[tuple[str, str, str]] = []
     for res in results:
         if not isinstance(res, dict):
+            continue
+        vid = res.get("video_url")
+        if isinstance(vid, str) and vid.startswith("http"):
+            cap = str(res.get("channel") or res.get("camera")
+                      or res.get("title") or "")
+            out.append((vid, cap, "video"))
             continue
         url = res.get("cast_url") or res.get("image_url") or res.get("url")
         if not (isinstance(url, str) and url.startswith("http")):
             continue
         cap = str(res.get("channel") or res.get("camera")
                   or res.get("title") or "")
-        out.append((url, cap))
+        out.append((url, cap, "image"))
     return out
 
 
@@ -254,13 +261,13 @@ class ChatSession:
         finally:
             await self._current.put({"type": "_ws_closed"})
 
-    async def send_turn(self, text: str) -> tuple[str, list[tuple[str, str]]]:
+    async def send_turn(self, text: str) -> tuple[str, list[tuple[str, str, str]]]:
         """Send one user turn; returns (transcript, image urls+captions)."""
         return await self._send_and_collect({"type": "text", "text": text})
 
     async def send_image_turn(
             self, img: bytes, mime: str, caption: str
-    ) -> tuple[str, list[tuple[str, str]]]:
+    ) -> tuple[str, list[tuple[str, str, str]]]:
         """Forward a user photo into the session as a real image turn —
         Ada sees the picture (her describe path), replies with text."""
         return await self._send_and_collect({
@@ -271,7 +278,7 @@ class ChatSession:
         })
 
     async def _send_and_collect(
-            self, payload: dict) -> tuple[str, list[tuple[str, str]]]:
+            self, payload: dict) -> tuple[str, list[tuple[str, str, str]]]:
         async with self._lock:
             self.last_active = time.monotonic()
             await self.ensure()
@@ -380,6 +387,38 @@ class TgRelay:
         except Exception as exc:
             logger.warning("chat %s photo %s failed: %s", chat_id, url, exc)
             await self.send_text(chat_id, f"(image failed: {caption or url})")
+
+    async def send_video(self, chat_id: int, url: str, caption: str
+                         ) -> None:
+        """Fetch clip bytes and sendVideo them (multipart — TG's URL
+        fetch caps at 20MB, uploads take 50MB). Falls back to a link."""
+        assert self.http is not None
+        try:
+            r = await self.http.get(url, timeout=240,
+                                    follow_redirects=True)
+            if r.status_code != 200 or len(r.content) < 1000:
+                raise RuntimeError(f"fetch {r.status_code} {len(r.content)}B")
+            if len(r.content) > 49 * 1024 * 1024:
+                raise RuntimeError("clip exceeds TG's 50MB upload limit")
+            resp = await self.http.post(
+                f"{TG_API}/bot{BOT_TOKEN}/sendVideo",
+                data={"chat_id": str(chat_id),
+                      "caption": caption[:1000]},
+                files={"video": ("clip.mp4", r.content, "video/mp4")})
+            if not resp.json().get("ok"):
+                raise RuntimeError(str(resp.json()))
+        except Exception as exc:
+            logger.warning("chat %s video %s failed: %s",
+                           chat_id, url, exc)
+            await self.send_text(chat_id,
+                                 f"(video: {caption or url})")
+
+    async def send_media(self, chat_id: int, url: str, caption: str,
+                         kind: str) -> None:
+        if kind == "video":
+            await self.send_video(chat_id, url, caption)
+        else:
+            await self.send_photo(chat_id, url, caption)
 
     async def send_voice(self, chat_id: int, ogg: bytes,
                          caption: str = "", duration_ms: int = 0) -> None:
@@ -566,8 +605,8 @@ class TgRelay:
                 self.sessions[skey] = sess
             await self.send_text(chat_id, reply or "(no reply)",
                                  reply_to=reply_to)
-            for url, cap in images[:3]:
-                await self.send_photo(chat_id, url, cap)
+            for url, cap, kind in images[:3]:
+                await self.send_media(chat_id, url, cap, kind)
             return
         if photos:
             sess = self.sessions.setdefault(
@@ -596,8 +635,8 @@ class TgRelay:
             except Exception as exc:
                 logger.warning("chat %s reply send failed: %s",
                                chat_id, exc)
-            for url, cap2 in images[:3]:
-                await self.send_photo(chat_id, url, cap2)
+            for url, cap2, kind in images[:3]:
+                await self.send_media(chat_id, url, cap2, kind)
             return
         if not text:
             return
@@ -624,8 +663,8 @@ class TgRelay:
             await self.send_text(chat_id, reply, reply_to=reply_to)
         except Exception as exc:
             logger.warning("chat %s reply send failed: %s", chat_id, exc)
-        for url, cap in images[:3]:
-            await self.send_photo(chat_id, url, cap)
+        for url, cap, kind in images[:3]:
+            await self.send_media(chat_id, url, cap, kind)
 
     async def sweeper(self) -> None:
         """Close WS sessions idle longer than IDLE_SESSION_S so Ada's
@@ -698,8 +737,9 @@ class TgRelay:
                                      "error": "no target"}, status_code=400)
             # chat_send posts image_url; keep photo_url as the legacy alias.
             photo = body.get("photo_url") or body.get("image_url")
+            video = str(body.get("video_url") or "")
             audio_b64 = str(body.get("audio_b64") or "")
-            if not (body.get("text") or photo or audio_b64):
+            if not (body.get("text") or photo or video or audio_b64):
                 return JSONResponse({"ok": False,
                                      "error": "nothing to send"},
                                     status_code=400)
@@ -708,6 +748,9 @@ class TgRelay:
                     await self.send_text(cid, str(body["text"])[:4000])
                 if photo:
                     await self.send_photo(cid, str(photo),
+                                          str(body.get("caption") or ""))
+                if video:
+                    await self.send_video(cid, video,
                                           str(body.get("caption") or ""))
                 if audio_b64:
                     import base64
@@ -773,6 +816,9 @@ class TgRelay:
                     await self.send_text(cid, str(body["text"])[:4000])
                 if photo:
                     await self.send_photo(cid, str(photo),
+                                          str(body.get("caption") or ""))
+                if video:
+                    await self.send_video(cid, video,
                                           str(body.get("caption") or ""))
                 return JSONResponse({"ok": True, "chat_id": cid})
             except Exception as exc:

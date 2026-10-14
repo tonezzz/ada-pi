@@ -16,7 +16,8 @@ class ChatMixin:
     # -- async chat push (LINE / Telegram) --
 
     async def chat_send(self, channel: str = "line", text: str = "",
-                        image_url: str = "", camera: str = "",
+                        image_url: str = "", video_url: str = "",
+                        camera: str = "",
                         to: str = "", photo: str = "", doc: str = "",
                         key: str = "", op: str = "",
                         session_id: str = "", screen: int = 0,
@@ -54,17 +55,18 @@ class ChatMixin:
                 key=str(key or ""), op=str(op or ""))
         return await self._chat_send_queue(
             channel=channel, text=text, image_url=image_url,
-            camera=camera, to=to, say=say)
+            video_url=video_url, camera=camera, to=to, say=say)
 
     async def _chat_send_queue(self, channel: str, text: str,
-                               image_url: str, camera: str,
+                               image_url: str, video_url: str,
+                               camera: str,
                                to: str, say: str = "") -> dict[str, Any]:
         import asyncio
         import secrets
         job_id = "chat-" + secrets.token_hex(4)
         asyncio.create_task(self._chat_send_run(
             job_id, channel=channel, text=text, image_url=image_url,
-            camera=camera, to=to, say=say))
+            video_url=video_url, camera=camera, to=to, say=say))
         return {"status": "queued", "job_id": job_id, "channel": channel,
                 "note": "Running in the background. Tell the user the "
                         "message is being sent — a system note will report "
@@ -84,7 +86,7 @@ class ChatMixin:
                     text or "").strip() else "") + uri
                 out["send"] = await self._chat_send_queue(
                     channel=channel, text=send_text,
-                    image_url="", camera="", to=to)
+                    image_url="", video_url="", camera="", to=to)
             return out
         if action == "picked":
             if not session_id:
@@ -100,7 +102,7 @@ class ChatMixin:
                               else "=w2048")
                 out["send"] = await self._chat_send_queue(
                     channel=channel, text=text, image_url=url,
-                    camera="", to=to)
+                    video_url="", camera="", to=to)
             return out
         raise ValueError(
             f"invalid photo action {action!r}: expected pick|picked")
@@ -158,11 +160,11 @@ class ChatMixin:
         if str(channel or "").strip():
             out["send"] = await self._chat_send_queue(
                 channel=channel, text=text or summary,
-                image_url="", camera="", to=to)
+                image_url="", video_url="", camera="", to=to)
         return out
 
     async def _chat_send_run(self, job_id: str, channel: str, text: str,
-                             image_url: str, camera: str,
+                             image_url: str, video_url: str, camera: str,
                              to: str, say: str = "") -> None:
         """Background worker: resolve the image (VMS snap or direct URL),
         POST to the relay /send endpoints, then surface the result to the
@@ -242,6 +244,7 @@ class ChatMixin:
                 to_eff = session_chat_id(
                     self, "telegram" if svc in ("telegram", "tg") else svc)
             payload = {"text": text, "image_url": url,
+                       "video_url": (video_url or "").strip(),
                        "caption": text or cam, "to": to_eff,
                        "chat_id": to_eff,
                        "instance": os.environ.get(

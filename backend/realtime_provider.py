@@ -1253,6 +1253,12 @@ def _builtin_declarations() -> list[dict[str, Any]]:
                         "first and copy the asset URL verbatim — never construct or "
                         "guess a URL; a guessed URL fetches 404 and the image is dropped."),
                     },
+                    "video_url": {
+                        "type": "string",
+                        "description": ("URL of a video clip to send as a native video bubble "
+                        "(LINE videoMessage / Telegram sendVideo) — e.g. a render result's "
+                        "video_url. Never construct or guess a URL."),
+                    },
                     "to": {
                         "type": "string",
                         "description": "Optional explicit LINE userId or Telegram chat_id; default = owner.",
