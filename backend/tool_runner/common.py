@@ -32,7 +32,7 @@ from backend import summary_rollups
 from backend.calendar_providers import CalendarService
 from backend.decision_check import DecisionCheckEngine
 from backend.event_recorder import HaEventRecorder
-from backend.home_assistant import HomeAssistantClient
+from backend.home_assistant import HOME_PLUG_ENTITY_RE, HomeAssistantClient
 from backend.instance import ada_instance_id
 from backend.mddb_client import MddbClient
 from backend.memory_banks import (
@@ -1190,7 +1190,7 @@ class AdaMemoryStore:
                 raw_safety = None
             if raw_safety is None:
                 if isinstance(eid, str) and (eid.startswith("cover.")
-                        or re.match(r"switch\.(plug|plak|usb_test_hub)", eid)):
+                        or HOME_PLUG_ENTITY_RE.match(eid)):
                     raw_safety = "dangerous"
                 else:
                     raw_safety = "caution"

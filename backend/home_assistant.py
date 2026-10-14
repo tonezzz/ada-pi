@@ -23,6 +23,13 @@ DEFAULT_HOME_PLUGS = (
     "light.office_desk_overhead_light",
     "light.office_desk_rbg_light",
 )
+# Plug-family entity ids discovered into the home-state summary even when
+# HOME_ASSISTANT_HOME_PLUGS doesn't list them — the same family the safety
+# classifier flags as dangerous mains loads (tool_runner/common.py). Thai
+# setups name plugs "plak*" (ปลั๊ก): 2026-10-13 ada-kk dropped
+# switch.plakkaaaef_local from get_home_state because the configured list
+# held only switch.plug_tv.
+HOME_PLUG_ENTITY_RE = re.compile(r"switch\.(plug|plak|usb_test_hub)")
 CONTROLLABLE_DOMAINS = {"light", "switch", "fan", "input_boolean"}
 DISCOVERABLE_DOMAINS = CONTROLLABLE_DOMAINS | {"cover", "button", "media_player"}
 DOMAIN_PRIORITY = {"light": 0, "fan": 1, "switch": 2, "input_boolean": 3, "media_player": 4, "cover": 5, "button": 6}
@@ -161,8 +168,15 @@ class HomeAssistantClient:
                 states[entity_id] = str(item.get("state", "unknown"))
                 attributes = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
                 names[entity_id] = str(attributes.get("friendly_name") or entity_id)
-        plug_states = {entity: states.get(entity, "unavailable") for entity in self.home_plug_entities}
-        plug_names = {entity: names.get(entity, entity) for entity in self.home_plug_entities}
+        # Configured plugs first, then any plug-family entity found in the
+        # live states — the summary must not silently omit a real plug just
+        # because HOME_ASSISTANT_HOME_PLUGS predates it.
+        plug_entity_ids = list(self.home_plug_entities)
+        plug_entity_ids.extend(
+            eid for eid in states
+            if eid not in plug_entity_ids and HOME_PLUG_ENTITY_RE.match(eid))
+        plug_states = {entity: states.get(entity, "unavailable") for entity in plug_entity_ids}
+        plug_names = {entity: names.get(entity, entity) for entity in plug_entity_ids}
         return HomeAssistantSnapshot(
             person_state=states.get(person_entity or self.person_entity, "unavailable"),
             plugs_on=tuple(entity for entity, state in plug_states.items() if state == "on"),
