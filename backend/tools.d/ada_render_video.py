@@ -407,6 +407,28 @@ async def _download(client: httpx.AsyncClient, api_key: str, uri: str
     return resp.content, None
 
 
+def _arch_publish(data: bytes, name: str) -> str | None:
+    """Durable public URL via the LINE relay's media archive — the
+    arch_img route serves files under LINE_MEDIA_ARCHIVE_DIR at
+    {public}/arch/<dir>/<name> with the right mime, no size cap. The
+    input-bridge /frame hop dies on multi-MB clips (base64 POST inside
+    a 10s urllib call), so video publishes here first."""
+    arch = Path(os.path.expanduser(
+        os.environ.get("LINE_MEDIA_ARCHIVE_DIR")
+        or "~/.local/share/ada/line-media"))
+    try:
+        d = arch / "renders"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_bytes(data)
+    except OSError as exc:
+        logger.warning("arch publish failed: %s", exc)
+        return None
+    base = (os.environ.get("ADA_RELAY_PUBLIC_BASE")
+            or os.environ.get("LINE_PUBLIC_IMG_BASE")
+            or "https://157.85.102.125.sslip.io/relay-img").rstrip("/")
+    return f"{base}/arch/renders/{name}"
+
+
 def _save(data: bytes) -> Path:
     d = Path(os.path.expanduser(
         os.environ.get("ADA_RENDER_DIR") or _DEFAULT_DIR))
@@ -445,9 +467,12 @@ async def _finish(runner: Any, client: httpx.AsyncClient, api_key: str,
                 "error": f"the clip rendered but saving it failed: {exc}"}
     slug = re.sub(r"[^a-z0-9]+", "-", (prompt or "clip").lower())[:40] \
         .strip("-") or "clip"
-    from backend import traffic_camera
-    url_out = await asyncio.to_thread(
-        traffic_camera.publish_relay, data, slug, "video/mp4", "render")
+    url_out = _arch_publish(data, path.name)
+    if not url_out:
+        from backend import traffic_camera
+        url_out = await asyncio.to_thread(
+            traffic_camera.publish_relay, data, slug, "video/mp4",
+            "render")
     if not url_out:
         return {"ok": False,
                 "file": str(path),

@@ -143,6 +143,8 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
         self.env = {"GEMINI_API_KEY": "test-key",
                     "ADA_RENDER_DIR": self.tmp.name,
                     "ADA_RENDER_VIDEO_OPEN": "1",
+                    "LINE_MEDIA_ARCHIVE_DIR": self.tmp.name + "/arch",
+                    "ADA_RELAY_PUBLIC_BASE": "https://x/relay-img",
                     "ADA_RENDER_VIDEO_POLL_S": "0"}
 
     async def test_res_reaches_submit_params(self):
@@ -189,17 +191,17 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
                                    "frame?screen=0&token=render:boat-1") as pub:
             out = await render.run(_runner(), prompt="a paper boat")
         self.assertTrue(out["ok"])
-        self.assertIn("input-bridge/frame?", out["video_url"])
+        # arch publish is primary (no size cap); /frame is fallback
+        self.assertIn("/relay-img/arch/renders/", out["video_url"])
+        self.assertTrue(out["video_url"].endswith(".mp4"))
         self.assertTrue(Path(out["file"]).is_file())
         self.assertEqual(Path(out["file"]).read_bytes(), MP4_BYTES)
         self.assertEqual(Path(out["file"]).suffix, ".mp4")
         self.assertEqual(out["secs"], 8)
         self.assertEqual(out["aspect"], "16:9")
         self.assertEqual(out["model"], "veo-3.1-fast-generate-preview")
-        # publish hop got the mp4 bytes + render prefix
-        call = pub.call_args
-        self.assertEqual(call.args[1:], ("a-paper-boat",
-                                         "video/mp4", "render"))
+        # arch publish succeeded — the /frame fallback never ran
+        pub.assert_not_called()
         # submit shape: predictLongRunning, api key header, instances
         url, kw = client.posts[0]
         self.assertTrue(url.endswith(
@@ -377,8 +379,10 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
         factory, _ = _client(
             post_resp=_submit_resp(),
             get_queue=[_op_done(), FakeResp(200, content=MP4_BYTES)])
+        env = dict(self.env)
+        env["LINE_MEDIA_ARCHIVE_DIR"] = "/proc/no-such-dir-x"
         with patch.object(render.httpx, "AsyncClient", factory), \
-                patch.dict("os.environ", self.env), \
+                patch.dict("os.environ", env), \
                 patch("backend.traffic_camera.publish_relay",
                       return_value=None):
             out = await render.run(_runner(), prompt="a boat")
