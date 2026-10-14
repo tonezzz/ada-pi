@@ -1337,10 +1337,12 @@ class LineRelay:
                 cap = pend["caption"]
                 if cap:
                     turn_cap = (f"{where} Photo caption: {cap} — the photo "
-                                "is attached; answer what they asked.")
+                                f"is attached (media_url: {media_url}); "
+                                "answer what they asked.")
                 else:
-                    turn_cap = (f"{where} The user sent this photo — "
-                                "describe it and respond naturally.")
+                    turn_cap = (f"{where} The user sent this photo "
+                                f"(media_url: {media_url}) — describe it "
+                                "and respond naturally.")
                 reply, images = await sess.send_image_turn(
                     img, mime, turn_cap)
             except Exception as exc:

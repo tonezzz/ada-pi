@@ -69,3 +69,8 @@ tools:
     policy: read
     secondary_allowed: true
     timeout_s: 60
+  wp_post:
+    module: wp_post
+    policy: read
+    secondary_allowed: true
+    timeout_s: 60

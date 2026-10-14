@@ -1,0 +1,26 @@
+# wp_post — LINE chat -> member WordPress page (card line-wp-site-manager,
+# OPS-0640). Text post publishes and returns a public URL; draft-first is
+# the safety path (publish=false -> confirm -> publish). Media is
+# exercised by passing a /relay-img/arch/ URL the relay just journaled.
+name: wp_post
+tier: full
+turns:
+  - user: >-
+      Post to kk's page on the boards site, as a draft first: title
+      "Draft check" with the body "wp_post scenario draft".
+    expect:
+      calls_any: [wp_post]
+      timeout_s: 60
+      settle_s: 10
+  - user: Looks good — publish it.
+    expect:
+      calls_any: [wp_post]
+      timeout_s: 60
+      settle_s: 10
+  - user: >-
+      Now post to nhong's page: title "Nhong test" with body "nhong can
+      post from LINE now".
+    expect:
+      calls_any: [wp_post]
+      timeout_s: 60
+      settle_s: 10
