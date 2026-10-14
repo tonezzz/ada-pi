@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ada-pi scenario CI gate — run a live-scenario tier and fail only on
+# ada-voice scenario CI gate — run a live-scenario tier and fail only on
 # genuine model regressions.
 #
 # scenario-live exit codes -> scenario-report statuses -> this gate:

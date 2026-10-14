@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy-ada.sh — deploy gate for the ada-pi production/staging checkouts.
+# deploy-ada.sh — deploy gate for the ada-voice production/staging checkouts.
 #
 # Canonical copy lives in the repo (this file). Install on the host:
 #     install -m 0755 scripts/deploy-ada.sh ~/.local/bin/deploy-ada.sh
@@ -20,7 +20,7 @@
 #   5. restart the ada services and verify each is active
 #
 # Env:
-#   ADA_REPO       checkout to deploy (default ~/CascadeProjects/ada-pi)
+#   ADA_REPO       checkout to deploy (default ~/CascadeProjects/ada-voice)
 #   ADA_SERVICES   systemd --user units to restart (default: idc03 set)
 #   ADA_DRAIN_S    seconds to wait for live ws sessions to end before
 #                  restarting anyway (default 45; 0 skips the drain)
@@ -29,7 +29,7 @@
 
 set -euo pipefail
 
-REPO="${ADA_REPO:-$HOME/CascadeProjects/ada-pi}"
+REPO="${ADA_REPO:-$HOME/CascadeProjects/ada-voice}"
 SERVICES="${ADA_SERVICES:-ada-ha-tony ada-ha-michael ada-pi-pwa ada-dev ada-kk-dev ada-kk ada-line-relay ada-tg-relay}"
 
 log() { printf '[deploy] %s\n' "$*"; }

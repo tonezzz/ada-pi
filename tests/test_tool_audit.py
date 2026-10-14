@@ -2,7 +2,7 @@
 (scripts/tool-lint.py, scripts/tools-merge-gate.py, tool_runner._ALIASES).
 
 tool-lint runs against the real repo as a subprocess — the test suite IS
-the audit stage for ada-pi (chaba's ssot-validate-all.mjs invokes the
+the audit stage for ada-voice (chaba's ssot-validate-all.mjs invokes the
 same command). No backend imports here: tool_runner pulls google.genai,
 so alias resolution is verified via a stubbed module namespace instead.
 """

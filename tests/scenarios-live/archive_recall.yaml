@@ -66,4 +66,4 @@ turns:
     expect:
       timeout_s: 60
       settle_s: 6
-      response_contains_any: ["ada-pi", "chaba", "superseded", "replaced", "tailscale", "home assistant", "แทนที่", "พัฒนา"]
+      response_contains_any: ["ada-voice", "chaba", "superseded", "replaced", "tailscale", "home assistant", "แทนที่", "พัฒนา"]

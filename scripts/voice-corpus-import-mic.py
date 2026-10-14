@@ -18,7 +18,7 @@ Idempotent — re-running after new enrollment sessions appends only new
 clips (numbered after the highest existing -NN).
 
 Usage:
-  # on the host holding ~/.local/share/ada-pi/speaker_samples, or after
+  # on the host holding ~/.local/share/ada-voice/speaker_samples, or after
   # rsync'ing that dir somewhere local:
   python3 scripts/voice-corpus-import-mic.py \
       --samples-dir /path/to/speaker_samples \
@@ -38,7 +38,7 @@ SAMPLE_RATE = 16000
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--samples-dir",
-                    default="~/.local/share/ada-pi/speaker_samples")
+                    default="~/.local/share/ada-voice/speaker_samples")
 parser.add_argument("--corpus", default=str(REPO / "tests" / "voice-corpus"))
 parser.add_argument("--lang", default="th")
 parser.add_argument("--dry-run", action="store_true")

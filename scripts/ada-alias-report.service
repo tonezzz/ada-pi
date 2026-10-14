@@ -7,11 +7,11 @@
 #          systemctl --user enable --now ada-alias-report.timer
 [Unit]
 Description=Ada alias-hit rollup -> CMS report/alias-hits
-Documentation=https://github.com/tonezzz/ada-pi docs/assessments/tool-consolidation-spec-2026-10-04.md
+Documentation=https://github.com/tonezzz/ada-voice docs/assessments/tool-consolidation-spec-2026-10-04.md
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/CascadeProjects/ada-pi
+WorkingDirectory=%h/CascadeProjects/ada-voice
 ExecStart=/usr/bin/env bash -lc 'PY=.venv/bin/python; [ -x "$PY" ] || PY=python3; exec "$PY" scripts/ada/alias_hit_report.py'
 # journalctl scan + publish can lag on a busy host.
 TimeoutStartSec=120

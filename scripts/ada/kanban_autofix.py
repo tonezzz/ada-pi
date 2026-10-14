@@ -41,7 +41,7 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
 
 BOARD_API_URL = os.environ.get("ADA_BOARD_API_URL", "http://127.0.0.1:8787")
-DEFAULT_REPO = os.environ.get("KANBAN_AUTOFIX_REPO", "ada-pi")
+DEFAULT_REPO = os.environ.get("KANBAN_AUTOFIX_REPO", "ada-voice")
 
 # auto_fix rules: card-id prefix -> playbook name. Glob-style 'cms-auto-*'
 # entries are accepted and normalized to the prefix.
@@ -260,7 +260,7 @@ def main() -> int:
                     help="'prefix:playbook[,...]' — default "
                          "cms-auto-*:cms-regen")
     ap.add_argument("--repo", default=DEFAULT_REPO,
-                    help="dispatch repo (default ada-pi)")
+                    help="dispatch repo (default ada-voice)")
     ap.add_argument("--board", default=BOARD_API_URL)
     ap.add_argument("--dedup-min", type=float, default=DEDUP_MIN)
     ap.add_argument("--from", dest="actor", default="devin",

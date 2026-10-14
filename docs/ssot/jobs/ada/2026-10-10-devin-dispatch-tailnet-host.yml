@@ -60,4 +60,4 @@ verification:
 
 notes: |
   Outbound-only change on the client; nothing to deploy from this
-  worktree. Effective on the next ada-pi deploy on idc03.
+  worktree. Effective on the next ada-voice deploy on idc03.

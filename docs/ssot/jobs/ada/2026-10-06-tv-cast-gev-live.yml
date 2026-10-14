@@ -109,8 +109,8 @@ processing:
 
 invoke:
   commands:
-    - "~/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/test_tool_runner.py -k TvGevLane -q"
-    - "~/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/test_scenarios.py -k tv_cast_gev_live -q"
+    - "~/CascadeProjects/ada-voice/.venv/bin/python -m pytest tests/test_tool_runner.py -k TvGevLane -q"
+    - "~/CascadeProjects/ada-voice/.venv/bin/python -m pytest tests/test_scenarios.py -k tv_cast_gev_live -q"
     - "python3 scripts/scenario-live.py tests/scenarios-live/gev_to_tv_live.yaml   # live, actuates TV"
 
 verification:

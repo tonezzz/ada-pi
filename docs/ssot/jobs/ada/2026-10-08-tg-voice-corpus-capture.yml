@@ -74,7 +74,7 @@ processing:
 
 invoke:
   commands:
-    - "~/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/test_tg_relay_voice.py -q"
+    - "~/CascadeProjects/ada-voice/.venv/bin/python -m pytest tests/test_tg_relay_voice.py -q"
     - "TG_VOICE_CORPUS_DIR=/tmp/corpus ./.venv/bin/python backend/tg_relay.py  # env override"
 
 verification:

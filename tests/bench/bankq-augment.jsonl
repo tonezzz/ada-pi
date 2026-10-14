@@ -99,7 +99,7 @@
 {"text": "which cards did Devin finish last night", "labels": ["devin"], "src": "hand-augment"}
 {"text": "what did the last dispatch session do", "labels": ["devin"], "src": "hand-augment"}
 {"text": "show me Devin's session notes", "labels": ["devin"], "src": "hand-augment"}
-{"text": "what did devin change in ada-pi yesterday", "labels": ["devin"], "src": "hand-augment"}
+{"text": "what did devin change in ada-voice yesterday", "labels": ["devin"], "src": "hand-augment"}
 {"text": "which dispatch tasks are still running", "labels": ["devin"], "src": "hand-augment"}
 {"text": "devin ทำอะไรไปบ้างเมื่อคืน", "labels": ["devin"], "src": "hand-augment"}
 {"text": "what's on the devin kanban board", "labels": ["devin"], "src": "hand-augment"}

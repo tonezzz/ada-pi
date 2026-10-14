@@ -481,8 +481,8 @@ ada_resolve_action: >-
 
 devin: >-
   'dispatch' starts an unattended session on tony-dell in a dedicated
-  worktree — repo= chaba|ada-pi|sunsynk-card (pick where the CODE lives:
-  chaba = /apps/* web apps + relay + dashboards + SSOT; ada-pi = Ada
+  worktree — repo= chaba|ada-voice|sunsynk-card (pick where the CODE lives:
+  chaba = /apps/* web apps + relay + dashboards + SSOT; ada-voice = Ada
   backend/pwa/auth/scenarios; sunsynk-card = the power-flow card). The
   user is phone-notified on finish — report the task id, move on.
   'followup' steers/resumes a session by task_id+message; 'answer'

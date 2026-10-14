@@ -519,7 +519,7 @@ class DecisionCheckEngine:
         payload = base64.b64encode(json.dumps({
             "title": f"purchase check: {result.verdict or 'error'} — {name}",
             "category": "decision-check",
-            "source": "ada-pi",
+            "source": "ada-voice",
             "severity": severity,
             "requires_response": result.verdict == "avoid",
             "confidence": result.confidence,

@@ -77,8 +77,8 @@ processing:
 invoke:
   commands:
     - "python3 scripts/tool-lint.py  # 85 declared, 27 aliases, clean"
-    - "~/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/test_tool_runner.py -k YtMerge"
-    - "~/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/ -q"
+    - "~/CascadeProjects/ada-voice/.venv/bin/python -m pytest tests/test_tool_runner.py -k YtMerge"
+    - "~/CascadeProjects/ada-voice/.venv/bin/python -m pytest tests/ -q"
 
 verification:
   - "python3 scripts/tool-lint.py  # exit 0 — 85 declared (88->85),

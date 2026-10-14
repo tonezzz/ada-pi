@@ -16,7 +16,7 @@ planning:
     person-docs with speaker profiles.
   context: |
     Voiceprint store: backend/speaker_id.py, JSON at
-    ~/.local/share/ada-pi/speaker_profiles.json (ADA_SPEAKER_PROFILES
+    ~/.local/share/ada-voice/speaker_profiles.json (ADA_SPEAKER_PROFILES
     override). SpeakerSession buffers PCM (_recent ring + _pending_voice
     accrual); enroll() already refused foreign-voice contamination but
     with a flat ValueError string and no next step. tools.d contract:

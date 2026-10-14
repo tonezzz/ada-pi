@@ -48,7 +48,7 @@ If no camera is listed, shut down the Pi and check the camera ribbon cable befor
 ```bash
 cd "$HOME"
 git clone https://github.com/nazirlouis/ada-pi.git
-cd ada-pi
+cd ada-voice
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -256,7 +256,7 @@ hailortcli fw-control identify
 ADA Pi is matched to HailoRT 4.23, TAPPAS 5.1, and Model Zoo v2.17 HEFs. Install the checksum-verified models:
 
 ```bash
-cd "$HOME/ada-pi"
+cd "$HOME/ada-voice"
 ./scripts/install_hailo_models.sh
 ls -lh data/models/hailo8
 ```
@@ -288,7 +288,7 @@ For a Pro Max touchscreen, set **Preferences → Control Centre → Screen → D
 Only run this on a Pironman 5 Pro Max with the active-low `FAN_PWM` pin:
 
 ```bash
-cd "$HOME/ada-pi"
+cd "$HOME/ada-voice"
 sudo ./scripts/install_max_fan_service.sh
 ```
 
@@ -326,7 +326,7 @@ Create a long-lived access token from your Home Assistant profile. The token sta
 - Gemini receives live audio, activity-gated or continuous video depending on your mode, and individual confirmation frames used by enabled monitors.
 - Home Assistant and Gemini credentials remain in the backend `.env` file.
 - Raw audio is excluded from application logs.
-- Logs are written to `logs/ada-pi.log` and rotate at 10 MB by default.
+- Logs are written to `logs/ada-voice.log` and rotate at 10 MB by default.
 
 ## How it works
 
@@ -348,7 +348,7 @@ The camera hub processes only the newest 640×480 frame, so stale frames cannot 
 ## Verify the installation
 
 ```bash
-cd "$HOME/ada-pi"
+cd "$HOME/ada-voice"
 .venv/bin/python -m unittest discover -s tests -v
 .venv/bin/python -m pip check
 curl http://127.0.0.1:8000/api/vision/status
@@ -357,7 +357,7 @@ curl http://127.0.0.1:8000/api/vision/status
 Then test a normal voice turn, interrupt Ada while she is speaking, open **Pose** and **Detect**, and calibrate posture and a clean desk. Watch the backend log with:
 
 ```bash
-tail -F logs/ada-pi.log
+tail -F logs/ada-voice.log
 ```
 
 ## Troubleshooting
@@ -412,7 +412,7 @@ Set the RGB effect to **Solid** for the fastest expression-color changes.
 
 ### Gemini connection errors
 
-Confirm that `.env` contains a valid `GEMINI_API_KEY`, that the configured models are available to your account, and that the Pi has internet access. Restart `./start.sh`, then inspect the settings panel and `logs/ada-pi.log`.
+Confirm that `.env` contains a valid `GEMINI_API_KEY`, that the configured models are available to your account, and that the Pi has internet access. Restart `./start.sh`, then inspect the settings panel and `logs/ada-voice.log`.
 
 ### Chromium does not open
 
@@ -434,7 +434,7 @@ logs/          Rotating runtime logs (gitignored)
 start.sh       Backend and Chromium kiosk launcher
 ```
 
-When reporting a problem, include your Raspberry Pi OS version, Python version, relevant hardware, the output of `/api/vision/status`, and the smallest relevant section of `logs/ada-pi.log`. Remove API keys, Home Assistant tokens, and personal entity names before sharing logs or configuration.
+When reporting a problem, include your Raspberry Pi OS version, Python version, relevant hardware, the output of `/api/vision/status`, and the smallest relevant section of `logs/ada-voice.log`. Remove API keys, Home Assistant tokens, and personal entity names before sharing logs or configuration.
 
 ## License
 

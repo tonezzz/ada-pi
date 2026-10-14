@@ -116,7 +116,7 @@ notes:
     exclude the group (env files live outside this repo)."
   - "Chaba-side half of the card (MCP-server audit: mcp-health vs
     mcp-debug overlap, ha/michael-ha/michael-dev dups) is NOT done here —
-    it reads chaba/Devin config an ada-pi worktree cannot reach. Raised
+    it reads chaba/Devin config an ada-voice worktree cannot reach. Raised
     as a board request on the card."
   - "tools-merge-gate.py needs a passing tool_merge_devin run in
     ada-ha-scenario-reports before the card can close — scenario file

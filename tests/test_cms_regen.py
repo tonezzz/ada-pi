@@ -387,7 +387,7 @@ class KanbanAutofixTests(unittest.TestCase):
             dispatch_fn=fake_dispatch, post_json=wire.post,
             get_json=wire.get)
         self.assertTrue(out["ok"])
-        self.assertEqual(calls, [("ada-pi", "cms-regen",
+        self.assertEqual(calls, [("ada-voice", "cms-regen",
                                   {"slug": "flood-report",
                                    "card": "cms-auto-flood-report"})])
         self.assertIn("dispatched", wire.comments[0]["text"])

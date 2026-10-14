@@ -4,7 +4,7 @@ After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/lib/ada-pi/ada-fan-max.sh
+ExecStart=/usr/local/lib/ada-voice/ada-fan-max.sh
 Restart=always
 RestartSec=2
 

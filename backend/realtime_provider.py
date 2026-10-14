@@ -574,7 +574,7 @@ _CONFIRM_VERB_RE = re.compile(
 DEVIN_INSTRUCTIONS = (
     " You can dispatch unattended Devin coding sessions on tony-dell: "
     "devin action='dispatch' starts one in a dedicated git worktree (repos: "
-    "chaba, ada-pi, sunsynk-card), devin_read action='status' lists running "
+    "chaba, ada-voice, sunsynk-card), devin_read action='status' lists running "
     "and finished tasks, and devin action='followup' sends a message into a "
     "running session. "
     "Before dispatching, restate the repo and task and get an explicit yes, then "
@@ -2406,12 +2406,12 @@ def _builtin_declarations() -> list[dict[str, Any]]:
                     },
                     "repo": {
                         "type": "string",
-                        "enum": ["chaba", "ada-pi", "sunsynk-card"],
+                        "enum": ["chaba", "ada-voice", "sunsynk-card"],
                         "description": (
                             "dispatch: repository the session works in. 'chaba' = web apps under "
                             "/apps/* (incl. the vcast virtual-display receiver page), the "
                             "input-bridge relay, Caddy stack, HA dashboard cards, SSOT docs. "
-                            "'ada-pi' = Ada's own backend tools, pwa_server, auth, scenarios. "
+                            "'ada-voice' = Ada's own backend tools, pwa_server, auth, scenarios. "
                             "'sunsynk-card' = the sunsynk power-flow card project. Pick the "
                             "repo where the code to change lives, not the service it affects."
                         ),

@@ -7,7 +7,7 @@ background and runs identification in a thread executor so the Gemini
 Live audio path stays untouched.
 
 Enrolled voiceprints are stored as base64 float32 vectors in a JSON
-file (default ~/.local/share/ada-pi/speaker_profiles.json).  The file
+file (default ~/.local/share/ada-voice/speaker_profiles.json).  The file
 is local-only — never committed or sent to a third party.
 """
 
@@ -310,7 +310,7 @@ class SpeakerIdentifier:
         self._profiles_path = Path(
             os.environ.get(
                 "ADA_SPEAKER_PROFILES",
-                Path.home() / ".local/share/ada-pi/speaker_profiles.json",
+                Path.home() / ".local/share/ada-voice/speaker_profiles.json",
             )
         )
         self._samples_dir = Path(

@@ -9,7 +9,7 @@ Each discovered speaker cluster becomes one registry entry
 (qualified: pending) — Tony reviews and flips to ok/reject.
 Media/music segments fail the speech gate or cluster apart from voices.
 
-Deps (ada-pi venv): yt-dlp binary, ffmpeg, torch, speechbrain (ECAPA),
+Deps (ada-voice venv): yt-dlp binary, ffmpeg, torch, speechbrain (ECAPA),
 silero-vad via torch.hub (first run downloads ~2MB).
 
 Usage:

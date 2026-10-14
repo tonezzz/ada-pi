@@ -32,7 +32,7 @@ planning:
       gates the absorbed photos_* names had; a plain text/image send
       was never bank-scoped or secondary-blocked, so the gate keys off
       args, not just the resolved name.
-    - Doc-upload forward aliases: ada-pi has no process_document_upload
+    - Doc-upload forward aliases: ada-voice has no process_document_upload
       pipeline — uploads enter via POST /api/documents/intake and are
       held in RAM by document_check.engine(). chat_send doc='show'/
       'process' resolve a held intake key (default: newest, via the new

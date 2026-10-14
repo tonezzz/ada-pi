@@ -110,7 +110,7 @@ class DispatchDedupTests(unittest.IsolatedAsyncioTestCase):
     async def test_remote_dupe_ignores_other_repo(self):
         recent = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         tid = f"{recent}-investigate-why-the-nobito-pm2"
-        status_out = self._status_line(tid).replace("repo=chaba", "repo=ada-pi")
+        status_out = self._status_line(tid).replace("repo=chaba", "repo=ada-voice")
         calls = []
 
         async def fake_run(*args):
@@ -193,7 +193,7 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
         mddb = _FakeMddb()
         with _patch_exec([], stdout=b"should-not-run\n") as _:
             res = await dd.dispatch(
-                "ada-pi", "build the daily-status tool",
+                "ada-voice", "build the daily-status tool",
                 playbook="build-tool",
                 params={"spec_key": _SPEC_KEY},
                 mddb=mddb, caller="person.tony", is_owner=True)
@@ -206,7 +206,7 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_build_tool_refuses_blocked_spec(self):
         mddb = _FakeMddb({_SPEC_KEY: _spec_doc("block")})
         res = await dd.dispatch(
-            "ada-pi", "build it", playbook="build-tool",
+            "ada-voice", "build it", playbook="build-tool",
             params={"spec_key": _SPEC_KEY},
             mddb=mddb, caller="person.tony", is_owner=True)
         self.assertFalse(res["ok"])
@@ -217,7 +217,7 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_build_tool_refuses_wrong_kind(self):
         mddb = _FakeMddb({_SPEC_KEY: _spec_doc("pass", kind="note")})
         res = await dd.dispatch(
-            "ada-pi", "build it", playbook="build-tool",
+            "ada-voice", "build it", playbook="build-tool",
             params={"spec_key": _SPEC_KEY},
             mddb=mddb, caller="person.tony", is_owner=True)
         self.assertFalse(res["ok"])
@@ -226,7 +226,7 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_build_tool_refuses_without_mddb(self):
         # Fail closed: the gate cannot be verified without the bank.
         res = await dd.dispatch(
-            "ada-pi", "build it", playbook="build-tool",
+            "ada-voice", "build it", playbook="build-tool",
             params={"spec_key": _SPEC_KEY},
             mddb=None, caller="person.tony", is_owner=True)
         self.assertFalse(res["ok"])
@@ -235,7 +235,7 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_build_tool_owner_gate(self):
         mddb = _FakeMddb({_SPEC_KEY: _spec_doc("pass")})
         res = await dd.dispatch(
-            "ada-pi", "build it", playbook="build-tool",
+            "ada-voice", "build it", playbook="build-tool",
             params={"spec_key": _SPEC_KEY},
             mddb=mddb, caller="person.kk", is_owner=False)
         self.assertFalse(res["ok"])
@@ -247,7 +247,7 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
         captured: list = []
         with _patch_exec(captured, stdout=b"20261005-180000-build-a-tool\n"):
             res = await dd.dispatch(
-                "ada-pi", "the daily status thing Tony asked for",
+                "ada-voice", "the daily status thing Tony asked for",
                 playbook="build-tool",
                 params={"spec_key": _SPEC_KEY, "tool_name": "ada_x"},
                 mddb=mddb, caller="person.tony", is_owner=True)
@@ -280,7 +280,7 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
         mddb = _FakeMddb({_SPEC_KEY: _spec_doc("pass")})
         with _patch_exec([], stdout=b"t-1\n"):
             res = await dd.dispatch(
-                "ada-pi", "build it", playbook="build-tool",
+                "ada-voice", "build it", playbook="build-tool",
                 params={"spec_key": "20260930-125800-a-tool"},
                 mddb=mddb, caller="person.tony", is_owner=True)
         self.assertEqual(res["task_id"], "t-1")
@@ -291,7 +291,7 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_required_param_refused(self):
         res = await dd.dispatch(
-            "ada-pi", "build it", playbook="build-tool",
+            "ada-voice", "build it", playbook="build-tool",
             params={}, mddb=_FakeMddb(), caller="person.tony",
             is_owner=True)
         self.assertFalse(res["ok"])
@@ -299,7 +299,7 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unknown_param_refused(self):
         res = await dd.dispatch(
-            "ada-pi", "build it", playbook="build-tool",
+            "ada-voice", "build it", playbook="build-tool",
             params={"spec_key": _SPEC_KEY, "bogus": "x"},
             mddb=_FakeMddb(), caller="person.tony", is_owner=True)
         self.assertFalse(res["ok"])
@@ -309,7 +309,7 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
         mddb = _FakeMddb({_SPEC_KEY: _spec_doc("pass")}, add_ok=False)
         with _patch_exec([], stdout=b"t-2\n"):
             res = await dd.dispatch(
-                "ada-pi", "build it", playbook="build-tool",
+                "ada-voice", "build it", playbook="build-tool",
                 params={"spec_key": _SPEC_KEY},
                 mddb=mddb, caller="person.tony", is_owner=True)
         self.assertEqual(res["task_id"], "t-2")
@@ -320,12 +320,12 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
         mddb = _FakeMddb({_SPEC_KEY: _spec_doc("pass")})
         with _patch_exec([], stdout=b"t-3\n"):
             first = await dd.dispatch(
-                "ada-pi", "build the tool", playbook="build-tool",
+                "ada-voice", "build the tool", playbook="build-tool",
                 params={"spec_key": _SPEC_KEY},
                 mddb=mddb, caller="person.tony", is_owner=True)
         with patch.object(dd, "_run", new=AsyncMock()) as run_mock:
             second = await dd.dispatch(
-                "ada-pi", "build the tool", playbook="build-tool",
+                "ada-voice", "build the tool", playbook="build-tool",
                 params={"spec_key": _SPEC_KEY},
                 mddb=mddb, caller="person.tony", is_owner=True)
         self.assertEqual(second["task_id"], first["task_id"])
@@ -351,7 +351,7 @@ class PlaybookDispatchTests(unittest.IsolatedAsyncioTestCase):
         captured: list = []
         with _patch_exec(captured, stdout=b"t-5\n"):
             res = await dd.dispatch(
-                "ada-pi", playbook="fix-scenario",
+                "ada-voice", playbook="fix-scenario",
                 params={"scenario": "devin_answer_gate",
                         "symptom": "times out on turn 2"},
                 mddb=_FakeMddb(), caller="person.tony", is_owner=True)

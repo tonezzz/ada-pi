@@ -103,7 +103,7 @@ invoke:
     - "ls backend/tool_runner/"
 
 follow_ups:
-  - repo: ada-pi
+  - repo: ada-voice
     task: "post-merge on a host with the live backend: run
       scripts/ci-scenarios.sh smoke — not runnable in this worktree
       (no ada service/MDDB on the dispatch host)"

@@ -1,5 +1,5 @@
 # SSOT Job: report-loop-spawn-ui — CMS "▶ Devin session" button +
-# /api/cms/spawn route (report-session-loop design §1b, ada-pi side).
+# /api/cms/spawn route (report-session-loop design §1b, ada-voice side).
 # Card: report-loop-spawn-ui (chaba kanban). Dispatch
 # 20261007-203220-design-docs-design-report-sess, runner tony-omen.
 
@@ -11,7 +11,7 @@ subtitle: >
 
 planning:
   goal: |
-    Implement docs/design/report-session-loop.md §1b in ada-pi: a
+    Implement docs/design/report-session-loop.md §1b in ada-voice: a
     "▶ Devin session" button on every CMS page that POSTs
     /api/cms/spawn {slug}; the route reads the page (title -> card
     title) and files an armed dispatch card through board-api POST
@@ -38,7 +38,7 @@ planning:
         the board, clear 403 for view-only keys
       - tests/test_cms_spawn.py (13 tests) + key_can case in test_auth
     Not delivered (out of scope):
-      - deploy/restart (ada-pi AGENTS.md — deploy needs Tony approval)
+      - deploy/restart (ada-voice AGENTS.md — deploy needs Tony approval)
       - re-issuing Tony's keys with [view, dispatch] — operator step via
         the existing pair flow on each ada-ha instance
       - board-api /card field support — report-loop-spawn-api (chaba,
@@ -52,7 +52,7 @@ planning:
     - 'already-active (409 or message) surfaces to the UI, not an error'
     - 'unreachable board -> honest 502'
   risks:
-    - 'Deploy ORDER matters: if ada-pi deploys before board-api §1a
+    - 'Deploy ORDER matters: if ada-voice deploys before board-api §1a
       lands, POST /card ignores the unknown fields and files a bare
       backlog card (no action/queue) — button "works" but nothing
       dispatches. Deploy report-loop-spawn-api first.'
@@ -112,6 +112,6 @@ verification:
   - ".venv/bin/python -m unittest tests.test_cms_spawn tests.test_auth
      tests.test_board_write -v  # 44 tests OK"
   - "manual smoke DEFERRED to deploy: ada deploys need Tony's approval
-     (ada-pi AGENTS.md); deploy order = report-loop-spawn-api first, then
-     ada-pi, then re-issue Tony's CMS keys with [view, dispatch] via the
+     (ada-voice AGENTS.md); deploy order = report-loop-spawn-api first, then
+     ada-voice, then re-issue Tony's CMS keys with [view, dispatch] via the
      pair flow"

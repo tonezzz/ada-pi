@@ -72,7 +72,7 @@ processing:
       label: "ops: restore idc03 credential"
       status: done
       notes: "scripts/ada/google-calendar-auth.py lives in the chaba
-        repo, not ada-pi, and needs interactive browser consent — but
+        repo, not ada-voice, and needs interactive browser consent — but
         the token file is shareable (the script's own --host flag scps
         it). tony-dell held a live token minted 2026-10-02 for the same
         client/scopes; copied to idc03 and tony-omen (both had the
@@ -84,8 +84,8 @@ processing:
 
 invoke:
   commands:
-    - "/home/tony/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/test_calendar_providers.py tests/test_context_awareness.py -x -q"
-    - "/home/tony/CascadeProjects/ada-pi/.venv/bin/python -m pytest tests/ -q"
+    - "/home/tony/CascadeProjects/ada-voice/.venv/bin/python -m pytest tests/test_calendar_providers.py tests/test_context_awareness.py -x -q"
+    - "/home/tony/CascadeProjects/ada-voice/.venv/bin/python -m pytest tests/ -q"
 
 verification:
   - "pytest tests/test_calendar_providers.py + test_context_awareness.py: 55 passed"

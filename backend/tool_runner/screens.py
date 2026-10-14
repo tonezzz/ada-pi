@@ -857,7 +857,7 @@ class ScreensMixin:
         try:
             with open(os.path.expanduser(
                     os.environ.get("ADA_CAST_SCREENS",
-                                   "~/.local/share/ada-pi/cast-screens.json"))) as f:
+                                   "~/.local/share/ada-voice/cast-screens.json"))) as f:
                 return _json.load(f)
         except (OSError, ValueError):
             return {}

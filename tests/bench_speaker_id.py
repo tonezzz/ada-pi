@@ -24,7 +24,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("ADA_SPEAKER_PROFILES",
-                      str(Path.home() / ".local/share/ada-pi/speaker_profiles.json"))
+                      str(Path.home() / ".local/share/ada-voice/speaker_profiles.json"))
 from backend import speaker_id  # noqa: E402
 
 

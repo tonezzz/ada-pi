@@ -87,7 +87,7 @@ verification:
     cover.gate_motor cases — unknown and unavailable entities appear
     in search_entities('gate') results flagged available:false"
   - "full suite: tests.test_tool_runner + tests.test_home_assistant —
-    287 tests OK under ADA_INSTANCE_ID=test with the ada-pi venv
+    287 tests OK under ADA_INSTANCE_ID=test with the ada-voice venv
     python (the five plan_day failures without the env var are
     pre-existing env requirements, not this change)"
   - "live check pending deploy: on ada-ha-michael, home_search

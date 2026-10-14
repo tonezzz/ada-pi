@@ -14,7 +14,7 @@ tier: full
 
 turns:
   - user: >-
-      Dispatch a Devin session on ada-pi using the build-tool playbook for
+      Dispatch a Devin session on ada-voice using the build-tool playbook for
       spec doc spec/20260930-125800-a-tool-that-reports-how — build that
       tool now.
     expect:

@@ -43,7 +43,7 @@ planning:
       kanban-dispatch is the owner's automation); mode=run executes
       cms_regen in-process.
     - The kanban-dispatch wiring (calling the hook on column transitions)
-      is a chaba-repo change — ada-pi can't reach it from a worktree;
+      is a chaba-repo change — ada-voice can't reach it from a worktree;
       tracked under followups + flagged on the card.
   success_criteria:
     - 'POST regenerate -> poll last_run -> health re-check, all bounded'
@@ -114,7 +114,7 @@ invoke:
     ADA_API_KEY: "x-api-key for the CMS API (optional if auth off)"
     MDDB_BASE_URL: "registry + job-ledger store (default http://127.0.0.1:11023/v1)"
     ADA_BOARD_API_URL: "card comms (default http://127.0.0.1:8787)"
-    KANBAN_AUTOFIX_REPO: "dispatch repo for mode=dispatch (default ada-pi)"
+    KANBAN_AUTOFIX_REPO: "dispatch repo for mode=dispatch (default ada-voice)"
 
 verification:
   - "python3 -m unittest tests.test_cms_regen tests.test_devin_dispatch  # 51 tests OK"
@@ -127,7 +127,7 @@ followups:
   - "chaba: wire kanban-dispatch (or cms-auto-health) to call
     scripts/ada/kanban_autofix.py --card-id <id> --column review on
     column-enter-review — that is the `auto_fix: [cms-auto-*]` rule's
-    trigger point. The rule/engine/executor ship in ada-pi; the call
+    trigger point. The rule/engine/executor ship in ada-voice; the call
     site is a chaba-repo change this worktree can't reach."
   - "chaba ssot.kanban.yml: document auto_fix + the cms-auto-* convention
     next to the card lifecycle semantics."
