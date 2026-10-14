@@ -309,8 +309,9 @@ async def _submit(client: httpx.AsyncClient, api_key: str, prompt: str,
     instance: dict[str, Any] = {"prompt": prompt}
     if ref:
         data, mime = ref
-        instance["image"] = {"inlineData": {
-            "mimeType": mime, "data": base64.b64encode(data).decode()}}
+        instance["image"] = {
+            "bytesBase64Encoded": base64.b64encode(data).decode(),
+            "mimeType": mime}
     body = {
         "instances": [instance],
         "parameters": {"aspectRatio": ratio, "durationSeconds": secs,

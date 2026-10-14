@@ -407,10 +407,9 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
         engine.held.assert_called_once_with(
             "doc/20261008-120000-photo-ab12cd")
         inst = client.posts[0][1]["json"]["instances"][0]
-        self.assertEqual(inst["image"]["inlineData"]["mimeType"],
-                         "image/jpeg")
+        self.assertEqual(inst["image"]["mimeType"], "image/jpeg")
         self.assertEqual(base64.b64decode(
-            inst["image"]["inlineData"]["data"]), JPEG_BYTES)
+            inst["image"]["bytesBase64Encoded"]), JPEG_BYTES)
 
     async def test_ref_url_http_fetch(self):
         factory, client = _client(
@@ -430,7 +429,8 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.gets[0][0], "https://example.com/ref.png")
         inst = client.posts[0][1]["json"]["instances"][0]
         self.assertEqual(base64.b64decode(
-            inst["image"]["inlineData"]["data"]), b"\x89PNG-ref")
+            inst["image"]["bytesBase64Encoded"]), b"\x89PNG-ref")
+        self.assertEqual(inst["image"]["mimeType"], "image/png")
 
     async def test_ref_url_non_image_rejected(self):
         factory, _ = _client(
