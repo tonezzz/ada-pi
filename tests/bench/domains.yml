@@ -130,7 +130,7 @@ domains:
           Devin agent activity — session notes, dispatched tasks, board
           state, what Devin did or is doing
         devin-handoff: Devin hand-off notes and session summaries
-        developer: development notes and tool decisions for ada-pi itself
+        developer: development notes and tool decisions for ada-voice itself
         github: repository and project facts, old repos, codebases
         tony-projects: Tony's project notes and plans
         cms: CMS report pages and published documents

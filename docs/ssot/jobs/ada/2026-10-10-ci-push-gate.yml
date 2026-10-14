@@ -1,7 +1,7 @@
-# SSOT Job: ada-pi CI — lint + unit tests + scenario-schema on push
+# SSOT Job: ada-voice CI — lint + unit tests + scenario-schema on push
 # Card: ada-pi-ci (chaba kanban). Dispatch 20261010-094410 (attempt 2).
 
-title: ada-pi push-gate CI — scenario-schema step + monotonic-sentinel fixes
+title: ada-voice push-gate CI — scenario-schema step + monotonic-sentinel fixes
 subtitle: CI existed but was red on every push; root cause was a sentinel class of bug, not test debt
 
 planning:
@@ -39,7 +39,7 @@ planning:
       (import-time constant went stale >15s into any full suite)
     - .github/PULL_REQUEST_TEMPLATE.md — schema check in test plan
     Out of scope: gh-runs-watch watched-repo config lives in chaba —
-    board request raised for the operator to add tonezzz/ada-pi if it
+    board request raised for the operator to add tonezzz/ada-voice if it
     is not auto-discovered.
   success_criteria:
     - scenario-schema-check exits 0 on the 183-file corpus
@@ -68,4 +68,4 @@ decisions:
 verify:
   - python3 scripts/scenario-schema-check.py    # 183 files, 0 violations
   - pytest tests/ -q (+ documented deselects)   # 1105 passed locally
-  - gh run list --repo tonezzz/ada-pi           # green after merge
+  - gh run list --repo tonezzz/ada-voice           # green after merge

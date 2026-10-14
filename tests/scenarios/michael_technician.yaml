@@ -18,7 +18,7 @@ seed:
     meta: {kind: [fact], subject: [michael], attribute: [role], scope: [michael]}
   - bank: general
     key: general/mn01-topology
-    text: "mn01 hosts the ada-pi voice backends: ada-ha-tony on :8002, ada-ha-michael on :8003."
+    text: "mn01 hosts the ada-voice voice backends: ada-ha-tony on :8002, ada-ha-michael on :8003."
     meta: {kind: [fact], subject: [mn01], scope: [shared]}
   # A recent same-instance draft must surface as an unverified draft hit;
   # an old draft and a foreign-instance draft must not.

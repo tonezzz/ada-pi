@@ -115,13 +115,13 @@ invoke:
     - "python3 scripts/report-dig.py report:<date>-<sid>  # audit dig path"
 
 follow_ups:
-  - repo: ada-pi (idc01)
+  - repo: ada-voice (idc01)
     task: "deploy on approval; confirm ~/.local/share/ada/outbox/ +
       call-logs/ are created on first queue/session"
   - repo: chaba
     task: "update ada-transcript-audit runner to read reports/*.json
-      session_events before journalctl (script lives outside ada-pi)"
-  - repo: ada-pi
+      session_events before journalctl (script lives outside ada-voice)"
+  - repo: ada-voice
     task: "ha event recorder _flush drops the batch on mddb failure —
       route through the outbox or re-queue _pending"
 

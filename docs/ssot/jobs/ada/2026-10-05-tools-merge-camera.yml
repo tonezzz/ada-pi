@@ -112,7 +112,7 @@ invoke:
     GEV_CMD_URL: "GEV remote command endpoint (internal capture_frame)"
 
 follow_ups:
-  - repo: ada-pi (idc02)
+  - repo: ada-voice (idc02)
     task: "run tool_merge_camera scenario on staging; publish pass|flaky
            report to ada-ha-scenario-reports so the merge gate passes
            when the card moves to done"

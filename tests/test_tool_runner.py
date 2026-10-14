@@ -2092,7 +2092,7 @@ class DevinJobReportTests(unittest.IsolatedAsyncioTestCase):
         # unit is inactive/gone, transcript was never written.
         return [
             {"task_id": "20260927-215500-active-task", "state": "active",
-             "result": "-", "repo": "ada-pi", "transcript": "never"},
+             "result": "-", "repo": "ada-voice", "transcript": "never"},
             {"task_id": "resume-20260926-dead-task", "state": "inactive",
              "result": "success", "repo": "resume", "transcript": "never"},
         ]
@@ -2185,7 +2185,7 @@ class DevinMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.runner.mddb.get_document.return_value = None
 
     async def test_dispatch_alias_keeps_confirm_gate(self):
-        args = {"repo": "ada-pi", "task": "do the thing"}
+        args = {"repo": "ada-voice", "task": "do the thing"}
         with self.assertRaises(PermissionError):
             await self.runner.execute("devin_dispatch", dict(args))
         with patch("backend.tool_runner.devin_dispatch_mod.dispatch",
@@ -2194,7 +2194,7 @@ class DevinMergeAliasTests(unittest.IsolatedAsyncioTestCase):
                 "devin_dispatch", {**args, "confirmed": True})
         self.assertEqual(out["task_id"], "t-1")
         args, kwargs = disp.await_args
-        self.assertEqual(args, ("ada-pi", "do the thing"))
+        self.assertEqual(args, ("ada-voice", "do the thing"))
         self.assertIsNone(kwargs.get("playbook"))
 
     async def test_followup_alias_keeps_confirm_gate(self):

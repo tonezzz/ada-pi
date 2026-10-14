@@ -1,6 +1,6 @@
 name: CI
 
-# ada-pi's only GitHub gate — scenario-schema + pytest suite +
+# ada-voice's only GitHub gate — scenario-schema + pytest suite +
 # tool-lint on every push/PR.
 # The live scenario suites (ada-scenario-*.timer on idc03) remain the
 # integration layer; this is the fast static/unit check.

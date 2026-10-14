@@ -15,7 +15,7 @@ is never kept.
 
 Usage:
   python3 scripts/enroll_speakers.py samples/*.pcm \
-      --profiles ~/.local/share/ada-pi/speaker_profiles.json \
+      --profiles ~/.local/share/ada-voice/speaker_profiles.json \
       --ha-person KK=person.kk --ha-person Tony=person.tony
   python3 scripts/enroll_speakers.py tests/fixtures/voice-*.pcm \
       --profiles /tmp/scenario-speakers.json
@@ -66,7 +66,7 @@ def main() -> int:
                     help=".pcm/.wav files; stem becomes the speaker name")
     ap.add_argument("--profiles", default=None,
                     help="speaker_profiles.json path (default: ADA_SPEAKER_PROFILES "
-                         "or ~/.local/share/ada-pi/speaker_profiles.json)")
+                         "or ~/.local/share/ada-voice/speaker_profiles.json)")
     ap.add_argument("--ha-person", action="append", default=[],
                     metavar="NAME=person.id", help="bind speaker to an HA person")
     ap.add_argument("--display", action="append", default=[],

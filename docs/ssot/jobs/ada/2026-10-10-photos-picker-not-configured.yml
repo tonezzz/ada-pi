@@ -40,7 +40,7 @@ planning:
     - Configuring auth for real remains an operator step: run
       gphoto-auth.py where the doc-archive service runs (idc03 stack),
       set GPHOTO_REFRESH_TOKEN in its env, restart the service. No
-      ada-pi change needed once the token exists — 501 simply stops.
+      ada-voice change needed once the token exists — 501 simply stops.
   owner: tony
 
 processing:

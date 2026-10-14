@@ -84,7 +84,7 @@ processing:
       label: "Tests + verify"
       status: done
       notes: "19 tests pass: real-repo lint, 8 fixture violations, 7
-        gate paths, alias contract. tool-lint runs in the suite = ada-pi
+        gate paths, alias contract. tool-lint runs in the suite = ada-voice
         audit stage."
 
 invoke:
@@ -104,8 +104,8 @@ follow_ups:
            for tools-merge-* cards; refuse on non-zero"
   - repo: chaba
     task: "ssot-validate-all.mjs audit stage: invoke python3
-           scripts/tool-lint.py --json on the ada-pi checkout"
-  - repo: ada-pi (idc01)
+           scripts/tool-lint.py --json on the ada-voice checkout"
+  - repo: ada-voice (idc01)
     task: "install scripts/ada-tool-usage.{service,timer} as user units;
            systemctl --user enable --now ada-tool-usage.timer"
 

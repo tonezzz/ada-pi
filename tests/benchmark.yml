@@ -320,7 +320,7 @@ suites:
     - scenario_report_recall
 
   # Release gate — the deploy-gate probes. Arg shapes, honesty under
-  # failure, and storm budgets. Run before promoting ada-pi; every
+  # failure, and storm budgets. Run before promoting ada-voice; every
   # tool-consolidation merge card closes through this suite.
   gate:
     - tool_selection_accuracy

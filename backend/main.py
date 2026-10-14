@@ -47,7 +47,7 @@ if not root_logger.handlers:
     root_logger.addHandler(console_handler)
 if not any(getattr(handler, "baseFilename", None) for handler in root_logger.handlers):
     file_handler = RotatingFileHandler(
-        LOG_DIR / "ada-pi.log",
+        LOG_DIR / "ada-voice.log",
         maxBytes=int(os.environ.get("ADA_LOG_MAX_BYTES", 10 * 1024 * 1024)),
         backupCount=int(os.environ.get("ADA_LOG_BACKUPS", 5)),
     )

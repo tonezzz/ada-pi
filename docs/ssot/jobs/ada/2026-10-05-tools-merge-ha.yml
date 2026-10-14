@@ -119,7 +119,7 @@ verification:
     aliases (denial logs show resolved 'control_entity'), confidence
     read/set contract, invalid kinds rejected"
   - "full suite: tests.test_tool_runner + tests.test_tool_audit — 109
-    tests OK under ADA_INSTANCE_ID=test with the ada-pi venv python"
+    tests OK under ADA_INSTANCE_ID=test with the ada-voice venv python"
   - "gates: DEVIN_CONFIRMED_TOOLS unchanged; confirm_strip unchanged;
     CONTROL_TOOLS = {control_entity, tv_action, cast_to_screen,
     gev_command}; SECONDARY_BLOCKED covers ha_confidence writes only"

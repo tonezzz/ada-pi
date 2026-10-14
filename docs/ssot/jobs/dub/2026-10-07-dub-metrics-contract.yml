@@ -22,7 +22,7 @@ planning:
     - Missing sidecar = FAIL, not INFRA/UNIMPLEMENTED: the dub program
       owns emitting it; a render without metrics is the gate working.
       Only the yt-live-api preflight is INFRA (pipeline host down).
-    - The bar lives in ada-pi scenario regexes, not in renderer-emitted
+    - The bar lives in ada-voice scenario regexes, not in renderer-emitted
       pass flags — the gate must not let the thing under test grade
       itself. Numbers are captured raw and trended on the benchmark doc.
     - New http_check `capture:` field lifts regex groups into the

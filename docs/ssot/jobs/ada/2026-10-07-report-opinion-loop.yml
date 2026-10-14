@@ -39,7 +39,7 @@ planning:
         '[opinion]' prefix keeps one comms surface; no new tool.
       - board-api changes (chaba repo) — /cards already emits `report`
         (verified live: scenario-report-opinion → dev-kanban).
-      - Deploy to idc03 — needs Tony's approval per ada-pi AGENTS.md.
+      - Deploy to idc03 — needs Tony's approval per ada-voice AGENTS.md.
   success_criteria:
     - '"what do you think of the dev-kanban report" → cms_read get →
       ada_board_write read report= → comment [opinion] on the linked

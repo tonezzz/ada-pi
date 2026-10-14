@@ -146,7 +146,7 @@ tool CALL; staging gates untrusted CONTENT.
 ## 8. `ssot.apps.ada-cms-reports.yml` — meta_contract is now enforced
 
 Card ada-report-quality (dispatch 20261005-222628) turned the SHOULD into
-enforcement in ada-pi. Suggested doc edits:
+enforcement in ada-voice. Suggested doc edits:
 
 - In `meta_contract`, mark `summary`, `domain`, `fresh_for`,
   `confidence`, `timeline`, `updated` as REQUIRED for `cms_publish_page`
@@ -156,7 +156,7 @@ enforcement in ada-pi. Suggested doc edits:
   derived aggregates (report-distill digests, tool-usage census) are
   neither measured-direct nor unverified.
 
-Implementation (ada-pi repo):
+Implementation (ada-voice repo):
 `backend/report_meta.py` is the shared validator
 (`validate_report_meta` / `missing_publish_fields` / `fresh_for_seconds`).
 Reject layer: `ToolRunner._check_cms_write_allowed`. Warn layer:

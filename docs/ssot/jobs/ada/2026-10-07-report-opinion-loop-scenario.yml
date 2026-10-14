@@ -15,7 +15,7 @@ planning:
   scope: |
     In scope:
       - tests/scenarios-live/report_opinion_loop.yaml (new) — installed
-        from chaba scenarios-staging/, adapted to ada-pi conventions:
+        from chaba scenarios-staging/, adapted to ada-voice conventions:
         flat asserts -> expect: blocks; url/key_name dropped (default
         ADA_API_KEY + ws://127.0.0.1:8002 is ada-ha-tony; user-tony is
         NOT in ada-ha-tony-keys.json — it would SKIP every batch run).

@@ -3033,7 +3033,7 @@ pwa_dir = ROOT / "pwa"
 # in the stack; the dir is rsynced to the host, not committed.
 pwa_models_dir = Path(os.environ.get(
     "ADA_PWA_MODELS",
-    os.path.expanduser("~/.local/share/ada-pi/pwa-models")))
+    os.path.expanduser("~/.local/share/ada-voice/pwa-models")))
 if pwa_models_dir.is_dir():
     app.mount("/models", StaticFiles(directory=pwa_models_dir),
               name="pwa-models")

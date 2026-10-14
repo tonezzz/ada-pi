@@ -1,7 +1,7 @@
 """speaker_profiles — voiceprint store admin (card speaker-profile-tool).
 
 Backed by backend/speaker_id.py (the ECAPA voiceprint store, file-backed
-at ~/.local/share/ada-pi/speaker_profiles.json — never a memory bank, so
+at ~/.local/share/ada-voice/speaker_profiles.json — never a memory bank, so
 ada_forget redirects here).
 
 Actions (manifest policy 'read' can't vary per action — mutations are

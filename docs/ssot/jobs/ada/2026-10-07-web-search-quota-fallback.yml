@@ -89,12 +89,12 @@ invoke:
     - "python3 scripts/tool-lint.py"
 
 follow_ups:
-  - repo: ada-pi
+  - repo: ada-voice
     task: "verify on idc03 after deploy: burn the daily grounded quota
       (or ADA_QUOTA_EVENT_MIN_S=1 in a test shell) and confirm a
       web_search_quota doc lands in ada-ha-events-tony and surfaces in
       the next hourly digest"
-  - repo: ada-pi
+  - repo: ada-voice
     task: "baseline debt: tools.d ada_track_device descsize + coverage,
       ada_device_acl coverage — 3 pre-existing tool-lint violations"
 
