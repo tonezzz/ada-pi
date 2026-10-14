@@ -294,6 +294,34 @@ class SchemaValidationTests(unittest.IsolatedAsyncioTestCase):
             "ada_daily_summary", {"day": "yesterday"})
         self.assertNotEqual(out.get("error_type"), "SchemaError")
 
+    async def test_schema_retry_bound_second_miss(self):
+        """One corrected retry per window (card
+        ada-error-truthfulness-narration): the first SchemaError returns
+        the plain repair payload; the second same-tool miss inside the
+        window is flagged no_retry so the model narrates the real error
+        instead of guessing a third shape."""
+        first = await self._call("probe_tool", {})
+        self.assertFalse(first["ok"])
+        self.assertNotIn("no_retry", first)
+        second = await self._call("probe_tool", {"quarry": "y"})
+        self.assertEqual(second["error_type"], "SchemaError")
+        self.assertTrue(second["no_retry"])
+        self.assertIn("DO NOT RETRY", second["error"])
+        # A different tool's first miss still gets a clean retry budget.
+        other = await self._call("loose_tool", {"when": "y"})
+        self.assertEqual(other["error_type"], "SchemaError")
+        self.assertNotIn("no_retry", other)
+
+    async def test_schema_retry_bound_cleared_on_success(self):
+        """A clean call resets the repair budget — a later miss in the
+        same window gets a fresh corrected retry, not a stale flag."""
+        await self._call("probe_tool", {})
+        ok = await self._call("probe_tool", {"q": "x"})
+        self.assertTrue(ok.get("ok"))
+        again = await self._call("probe_tool", {})
+        self.assertEqual(again["error_type"], "SchemaError")
+        self.assertNotIn("no_retry", again)
+
     async def test_real_schema_trip_calendar(self):
         """End-to-end against the real schema map — the card's trip
         scenario call shape. A total shape miss repairs with

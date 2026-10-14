@@ -1,0 +1,76 @@
+# SSOT Job: error-truthfulness narration — failures said aloud, bounded repair
+# Card: ada-error-truthfulness-narration. Dispatch 20261014-215458.
+title: Error truthfulness — tool failures narrated, SchemaError retry bounded
+subtitle: |
+  Session evidence (idc03 journal, session=183e9c8d7e, ada-kk 23:17-23:20
+  ICT 2026-10-13): web_search {} and ada_enroll_speaker {person,who} died
+  on SchemaError and were narrated as "can't find gold price data" /
+  "just wanted to say never mind" — calls that never ran were hidden.
+  Provider stream then ended (close 1000), reconnect resumed=False wiped
+  context silently and she contradicted herself on the coffee plug.
+  ada_memory_search also returned degraded:true unmentioned.
+
+planning:
+  cause_check: |
+    CONFIRMED (high confidence) — the arg-shape regression was lazy
+    schema v1. Lazy decls (empty properties on cold tools) merged
+    ~21:13 ICT 2026-10-13 (0352396, card ada-lazy-tool-schemas attempt
+    3) — ~2h before the 23:17 incident. web_search and
+    ada_enroll_speaker are both COLD (not in FULL_SCHEMA_TOOLS), so
+    both shipped {"properties":{}} on the wire: the model emitted {}
+    verbatim for web_search and invented person=/who= spellings for
+    ada_enroll_speaker — exactly the v1 signature documented in the
+    arg-names follow-up ("cold tools called with {} verbatim").
+    Known fix is the arg-name skeleton (_lazy_param_schema: keep
+    property keys + required, drop types/enums) — already in this
+    tree (merged 2026-10-14 ~07:59, dispatch 20261014-075520). The
+    narration half of the incident is what this card fixes.
+  decisions: |
+    - Persona rule lives in DEFAULT_ADA_INSTRUCTIONS — the one
+      constant both providers share (GeminiLiveProvider base +
+      OpenRouterTextProvider fallback/lane-harvested system
+      instruction), so voice, relay and text lanes get the rule
+      identically; no separate mirror needed. Lanes overriding via
+      GEMINI_LIVE_INSTRUCTIONS env would not inherit — none known.
+    - Three rules added: (1) ERROR TRUTHFULNESS — every ok:false /
+      error / degraded:true result is spoken in one clause (what was
+      tried + why it failed), never "never mind", degraded caveats
+      spoken not passed off as clean. (2) BAD CALLS — a SchemaError /
+      "call args rejected" is the model's own miss: say "I made a bad
+      call, retrying" and retry ONCE with corrected args (the result
+      carries expected_args/required/usage); a second failure narrates
+      the real error and stops. (3) CONNECTION RESET — a (system) note
+      saying the model connection reset without resume gets a one-clause
+      spoken acknowledgement, then continue from the transcript tail.
+    - Reconnect path: the resume path is already preferred
+      (resumption_handle passed when held). On resumed=False the
+      re-prime now marks context_reset so the injected directive orders
+      the aloud acknowledgement and frames the tail as "all that
+      survived" instead of the resume tier's "same conversation
+      resuming" (which told her nothing was lost — she then contradicted
+      the coffee-plug answer). Plumbed: pwa_server.provider_to_browser
+      (not-handle branch) -> _prime_session(context_reset=True) ->
+      memory_ops.session_prime_text -> reconnect_directive.
+    - SchemaError retry bound is prompt + server: instruction says once
+      per turn; ToolRunner._schema_retry_bound flags the 2nd same-tool
+      SchemaError inside TOOL_BREAKER_WINDOW_S with no_retry + a
+      "DO NOT RETRY" suffix (malformed calls skip storm accounting by
+      design — the tool never ran — so they needed their own bound).
+      Clean success clears the count via _storm_record.
+  verify: |
+    - tests/test_tool_lazy_schemas.py: test_schema_retry_bound_*
+      (2nd miss flagged no_retry; success clears the budget).
+    - tests/test_memory_recall_extras.py:
+      test_context_reset_directive_* (aloud order + tail carried).
+    - Live: tests/scenarios-live/tool_error_narration.yaml — lures the
+      incident's bad enroll call shape on a dev lane; asserts the reply
+      narrates the failure (fail|error|couldn't|ล้มเหลว|ไม่สำเร็จ) and
+      bans "never mind". Run: python3 scripts/scenario-live.py
+      tests/scenarios-live/tool_error_narration.yaml --url
+      ws://127.0.0.1:8003/ws --api-key "$ADA_API_KEY" -v --text
+meta: |
+  Bare-worktree verification: 274/274 test_tool_runner + 18/18
+  test_scenarios + 58/58 (lazy_schemas + memory_recall_extras) pass under
+  unittest with dep_stubs + in-process module stubs (no .venv here).
+  scripts/tool-lint.py clean. Live scenario not run — no Gemini/dev-lane
+  reachability from the dispatch worktree; harness check described above.

@@ -389,6 +389,7 @@ class ToolRunner(
         if not from_alias:
             bad = _validate_call_args(name, call_args)
             if bad is not None:
+                bad = self._schema_retry_bound(name, bad)
                 return await self._capture_reminder(
                     name, self._usage_hint(name, bad))
         policy_ident = self.policy_identity()
@@ -675,6 +676,33 @@ class ToolRunner(
                 "the next turn.")}
         return result
 
+    def _schema_retry_bound(self, name: str, result: dict[str, Any]
+                            ) -> dict[str, Any]:
+        """Bound the malformed-call self-repair loop to ONE corrected
+        retry per window (card ada-error-truthfulness-narration).
+        SchemaError misses skip storm accounting (the tool never ran —
+        nothing to break), so without this a model could burn the whole
+        per-turn call budget guessing arg spellings. The first miss
+        returns the repair payload as-is (expected_args + usage hint);
+        the second inside the window is flagged no_retry so the model
+        narrates the real error instead of trying a third shape. A clean
+        success on the tool clears the count (see _storm_record)."""
+        scope = self._storm_scope()
+        fails = self.__dict__.setdefault("_schema_fails", {})
+        key = (scope, name)
+        now = time.monotonic()
+        hits = [t for t in fails.get(key, [])
+                if now - t < TOOL_BREAKER_WINDOW_S]
+        hits.append(now)
+        fails[key] = hits
+        if len(hits) >= 2:
+            result = dict(result)
+            result["no_retry"] = True
+            result["error"] = str(result.get("error") or "") + (
+                " — DO NOT RETRY this turn: one corrected call already "
+                "failed; narrate the real error to the user instead.")
+        return result
+
     # -- per-session storm breaker ---------------------------------------
 
     def _storm_scope(self) -> str:
@@ -747,6 +775,10 @@ class ToolRunner(
                 for k in [k for k in fails
                           if k[0] == scope and k[1] == name]:
                     fails.pop(k, None)
+                # A clean call also clears the malformed-call repair
+                # budget — the next miss gets a fresh corrected retry.
+                sfails = self.__dict__.get("_schema_fails") or {}
+                sfails.pop((scope, name), None)
             return
         key = (scope, name, cls)
         now = time.monotonic()
