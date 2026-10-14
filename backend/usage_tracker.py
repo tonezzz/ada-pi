@@ -41,6 +41,7 @@ def _bucket() -> dict[str, Any]:
         "turns": 0,
         "input_by_modality": {},
         "output_by_modality": {},
+        "cost_usd": 0.0,
         "sessions": set(),
         "first_event_at": None,
         "last_event_at": None,
@@ -78,7 +79,11 @@ def _report(bucket: dict[str, Any]) -> dict[str, Any]:
         "session_count": len(bucket["sessions"]),
         "first_event_at": bucket["first_event_at"],
         "last_event_at": bucket["last_event_at"],
-        "est_cost_usd": _est_cost(bucket),
+        "flat_cost_usd": round(bucket["cost_usd"], 4),
+        # est_cost_usd is the spend answer: token-derived estimate plus
+        # flat per-call costs (e.g. per-second Veo renders, which have
+        # no usage_metadata to count).
+        "est_cost_usd": round(_est_cost(bucket) + bucket["cost_usd"], 4),
     }
 
 
@@ -88,6 +93,7 @@ def _merge(dst: dict[str, Any], src: dict[str, Any]) -> None:
     dst["cached_tokens"] += src["cached_tokens"]
     dst["tool_use_tokens"] += src["tool_use_tokens"]
     dst["turns"] += src["turns"]
+    dst["cost_usd"] += src["cost_usd"]
     dst["sessions"] |= src["sessions"]
     for mod, n in src["input_by_modality"].items():
         dst["input_by_modality"][mod] = dst["input_by_modality"].get(mod, 0) + n
@@ -122,6 +128,7 @@ class UsageLedger:
         bucket["output_tokens"] += int(rec.get("out", 0) or 0)
         bucket["cached_tokens"] += int(rec.get("cached", 0) or 0)
         bucket["tool_use_tokens"] += int(rec.get("tool_use", 0) or 0)
+        bucket["cost_usd"] += float(rec.get("cost") or 0)
         bucket["turns"] += 1
         if rec.get("session_id"):
             bucket["sessions"].add(str(rec["session_id"]))
@@ -164,7 +171,14 @@ class UsageLedger:
                input_tokens: int = 0, output_tokens: int = 0,
                input_by_modality: dict[str, int] | None = None,
                output_by_modality: dict[str, int] | None = None,
-               cached_tokens: int = 0, tool_use_tokens: int = 0) -> None:
+               cached_tokens: int = 0, tool_use_tokens: int = 0,
+               est_cost_usd: float | None = None,
+               detail: dict[str, Any] | None = None) -> None:
+        """Append one usage row. `est_cost_usd` is for calls billed
+        flat (per-render/per-second APIs like Veo that never return
+        usage_metadata) — it lands in est_cost_usd beside the
+        token-derived estimate; `detail` rides the jsonl row only
+        (audit trail — snapshot() never aggregates it)."""
         rec = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "source": str(source),
@@ -175,7 +189,10 @@ class UsageLedger:
             "out_mod": {str(k): int(v) for k, v in (output_by_modality or {}).items()},
             "cached": int(cached_tokens),
             "tool_use": int(tool_use_tokens),
+            "cost": round(float(est_cost_usd or 0), 4),
         }
+        if detail:
+            rec["detail"] = dict(detail)
         with self._lock:
             self._ensure_loaded()
             self._apply(self._sources.setdefault(rec["source"], _bucket()), rec)

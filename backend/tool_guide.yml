@@ -586,7 +586,8 @@ ada_render_video: >-
   url=video_url) shows it on a display; 'file' is the local artifact.
   Video is owner-only (env-gated per lane) - a refusal meaning 'not
   open on this lane' is a policy answer, not an error; do not retry or
-  work around it.
+  work around it. Renders are billed per second (est_cost_usd in the
+  result); quote the estimate if asked what a clip cost.
 
 ada_market_quote: >-
   kind='fx' needs currency= (3-letter, USD base — 'THB' for dollar-baht,

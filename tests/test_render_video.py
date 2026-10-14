@@ -37,6 +37,7 @@ except ImportError:
 
 from backend import tools_loader  # noqa: E402
 from backend import document_check  # noqa: E402
+from backend import usage_tracker  # noqa: E402
 
 TOOL_PATH = (Path(__file__).resolve().parent.parent
              / "backend" / "tools.d" / "ada_render_video.py")
@@ -453,6 +454,101 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
             out = await render.run(_runner(), prompt="x",
                                    ref_url="file:///etc/passwd")
         self.assertFalse(out["ok"])
+
+    async def test_submit_meters_estimated_spend(self):
+        factory, _ = _client(
+            post_resp=_submit_resp(),
+            get_queue=[_op_done(), FakeResp(200, content=MP4_BYTES)])
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", self.env), \
+                patch.object(usage_tracker.usage_ledger,
+                             "record") as rec:
+            out = await render.run(_runner(), prompt="p", secs="8",
+                                   res="1080p")
+        self.assertTrue(out["ok"], out)
+        rec.assert_called_once()
+        kw = rec.call_args.kwargs
+        self.assertEqual(kw["source"], "render_video")
+        # 8s @1080p on veo-3.1-fast -> 8 * $0.12
+        self.assertAlmostEqual(kw["est_cost_usd"], 0.96)
+        self.assertEqual(kw["detail"]["operation"], OP_NAME)
+        self.assertEqual(kw["detail"]["model"],
+                         "veo-3.1-fast-generate-preview")
+        self.assertEqual(kw["detail"]["res"], "1080p")
+        self.assertEqual(out["est_cost_usd"], 0.96)
+
+    async def test_operation_resume_does_not_meter(self):
+        factory, _ = _client(
+            get_queue=[_op_done(), FakeResp(200, content=MP4_BYTES)])
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", self.env), \
+                patch.object(usage_tracker.usage_ledger,
+                             "record") as rec:
+            out = await render.run(_runner(), operation=OP_NAME)
+        self.assertTrue(out["ok"], out)
+        rec.assert_not_called()  # resume polls; the render already billed
+        self.assertNotIn("est_cost_usd", out)
+
+    async def test_submit_error_does_not_meter(self):
+        factory, _ = _client(post_resp=_submit_resp(
+            status=429, payload={"error": {"message": "quota"}}))
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", self.env), \
+                patch.object(usage_tracker.usage_ledger,
+                             "record") as rec:
+            out = await render.run(_runner(), prompt="p")
+        self.assertFalse(out["ok"])
+        rec.assert_not_called()
+
+    async def test_meter_failure_still_renders(self):
+        factory, _ = _client(
+            post_resp=_submit_resp(),
+            get_queue=[_op_done(), FakeResp(200, content=MP4_BYTES)])
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", self.env), \
+                patch.object(usage_tracker.usage_ledger, "record",
+                             side_effect=RuntimeError("ledger down")):
+            out = await render.run(_runner(), prompt="p")
+        self.assertTrue(out["ok"], out)
+        self.assertIn("video_url", out)
+
+    async def test_gateway_base_routes_submit_poll_download(self):
+        env = dict(self.env)
+        env["ADA_GEMINI_API_BASE"] = "http://litellm.local:4000/gemini"
+        factory, client = _client(
+            post_resp=_submit_resp(),
+            get_queue=[_op_done(), FakeResp(200, content=MP4_BYTES)])
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", env):
+            out = await render.run(_runner(), prompt="p")
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(client.posts[0][0],
+                         "http://litellm.local:4000/gemini/v1beta/models/"
+                         "veo-3.1-fast-generate-preview:predictLongRunning")
+        self.assertEqual(client.gets[0][0],
+                         "http://litellm.local:4000/gemini/v1beta/" + OP_NAME)
+        # the google-hosted clip URI is rewritten onto the proxy so the
+        # virtual key works — LiteLLM docs prescribe this substitution
+        self.assertEqual(
+            client.gets[-1][0],
+            "http://litellm.local:4000/gemini/v1beta/files/"
+            "vid1:download?alt=media")
+
+    async def test_rate_env_override_for_unknown_model(self):
+        env = dict(self.env)
+        env["ADA_RENDER_VIDEO_MODEL"] = "veo-9-unpriced"
+        env["ADA_RENDER_VIDEO_RATE_USD"] = "0.5"
+        factory, _ = _client(
+            post_resp=_submit_resp(),
+            get_queue=[_op_done(), FakeResp(200, content=MP4_BYTES)])
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", env), \
+                patch.object(usage_tracker.usage_ledger,
+                             "record") as rec:
+            out = await render.run(_runner(), prompt="p", secs="4")
+        self.assertTrue(out["ok"], out)
+        self.assertAlmostEqual(
+            rec.call_args.kwargs["est_cost_usd"], 2.0)
 
 
 class DeclarationTest(unittest.TestCase):

@@ -14,6 +14,16 @@ A render that outlives the wait budget returns ok:false + pending +
 the operation name: re-calling with operation= resumes the poll
 without billing a second render (Veo keeps generating server-side).
 
+Spend metering (card ada-render-video-bypasses-litellm): a submitted
+render appends a flat-cost row (secs * per-second rate) to the local
+usage ledger (usage_ledger -> ADA_USAGE_LOG, source='render_video'),
+so ada_usage_summary's est_cost_usd covers Veo even though the call
+never crosses the LiteLLM spend ledger. Pointing ADA_GEMINI_API_BASE
+at a LiteLLM proxy's /gemini passthrough (upstream supports
+predictLongRunning + operation polling + file download) routes the
+whole flow through the gateway — the clip download URI is rewritten
+onto the api base so the virtual key works end-to-end.
+
 ref_url (image-to-video first frame) accepts the same three shapes as
 ada_render_image:
   - an intake key 'doc/...' from a [document uploaded] session note —
@@ -22,14 +32,19 @@ ada_render_image:
   - any other fetchable http(s) image URL.
 
 Env:
-    GEMINI_API_KEY / GOOGLE_API_KEY — required
+    GEMINI_API_KEY / GOOGLE_API_KEY — required (unless _API_KEY below)
+    ADA_RENDER_VIDEO_API_KEY — explicit key override (e.g. the LiteLLM
+        virtual key when riding the /gemini passthrough)
     ADA_RENDER_VIDEO_MODEL  — default veo-3.1-fast-generate-preview
     ADA_RENDER_VIDEO_OPEN   — hard gate: must be "1" or every call
         refuses (owner-only tool); set only on approved lanes
     ADA_GATES_DIR           — instant kill-switch dir (default
         ~/.local/share/ada/gates); ada_render_video.closed or
         ada_render_video.<lane>.closed refuses renders
-    ADA_GEMINI_API_BASE     — default https://generativelanguage.googleapis.com
+    ADA_GEMINI_API_BASE     — default https://generativelanguage.googleapis.com;
+        set to <litellm-proxy>/gemini to ride the gateway passthrough
+    ADA_RENDER_VIDEO_RATE_USD — per-second USD rate for models missing
+        from the rate table (default 0.10)
     ADA_RENDER_DIR          — artifact dir, default ~/.local/share/ada/renders
     ADA_RENDER_VIDEO_WAIT_S — poll budget, default 120
     ADA_RENDER_VIDEO_POLL_S — poll interval, default 6
@@ -125,9 +140,35 @@ _DOC_PATH_RE = re.compile(
 _OP_RE = re.compile(r"^models/[\w.-]+/operations/[\w.-]+$")
 
 
+# Gemini API bills Veo per generated second (audio included), tiered
+# by resolution where the rate card splits it — ai.google.dev pricing,
+# Oct 2026; re-verify on change. Keys are model-id prefixes
+# (-generate-preview / -001 share a rate); order matters: 'fast' and
+# 'lite' must precede the bare 'veo-3.1' prefix.
+_RATE_PER_SEC: dict[str, dict[str, float]] = {
+    "veo-3.1-fast": {"720p": 0.10, "1080p": 0.12, "default": 0.10},
+    "veo-3.1-lite": {"720p": 0.05, "1080p": 0.08, "default": 0.05},
+    "veo-3.1":      {"720p": 0.40, "1080p": 0.40, "default": 0.40},
+}
+_FALLBACK_RATE = 0.10  # the deployed default model's 720p rate
+
+
+def _rate_per_sec(model: str, res: str) -> float:
+    """Estimated USD per generated second for the spend ledger."""
+    for prefix, tiers in _RATE_PER_SEC.items():
+        if model.startswith(prefix):
+            return float(tiers.get(res) or tiers["default"])
+    try:
+        return float(os.environ.get("ADA_RENDER_VIDEO_RATE_USD")
+                     or _FALLBACK_RATE)
+    except ValueError:
+        return _FALLBACK_RATE
+
+
 def _api_key() -> str:
-    return os.environ.get("GEMINI_API_KEY") or os.environ.get(
-        "GOOGLE_API_KEY") or ""
+    return (os.environ.get("ADA_RENDER_VIDEO_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GOOGLE_API_KEY") or "")
 
 
 def _api_base() -> str:
@@ -389,7 +430,17 @@ async def _poll_done(client: httpx.AsyncClient, api_key: str, op_name: str
 
 async def _download(client: httpx.AsyncClient, api_key: str, uri: str
                     ) -> tuple[bytes | None, str | None]:
-    """-> (mp4 bytes, None) or (None, error)."""
+    """-> (mp4 bytes, None) or (None, error).
+
+    Veo returns an absolute generativelanguage download URI — fine on
+    the direct path, but through a LiteLLM /gemini passthrough the clip
+    must also ride the proxy (a virtual key 401s against Google), so
+    the Google host is rewritten onto the api base the same way the
+    LiteLLM docs prescribe."""
+    google_root = f"{_DEFAULT_API_BASE}/v1beta/"
+    base = _api_base()
+    if base != _DEFAULT_API_BASE and uri.startswith(google_root):
+        uri = f"{base}/v1beta/" + uri[len(google_root):]
     try:
         resp = await client.get(
             uri, headers={"x-goog-api-key": api_key},
@@ -439,8 +490,42 @@ def _save(data: bytes) -> Path:
     return path
 
 
+def _session_id(runner: Any) -> str | None:
+    """Calling session via the runner.context facade — None for REST/
+    test callers and MagicMock runners."""
+    sid = getattr(getattr(runner, "context", None), "session_id", None)
+    return sid if isinstance(sid, str) and sid else None
+
+
+def _meter_submit(runner: Any, op_name: str, secs: int, ratio: str,
+                  res: str) -> float:
+    """Append the estimated spend to the local usage ledger at submit
+    time — the render is billed once the API accepts it, and the direct
+    call never crosses the LiteLLM spend ledger. Returns the estimate
+    for the result payload. Never raises: metering must not break a
+    paid render."""
+    est = round(secs * _rate_per_sec(_model(), res), 4)
+    try:
+        from backend.usage_tracker import usage_ledger
+        usage_ledger.record(
+            source="render_video",
+            session_id=_session_id(runner),
+            est_cost_usd=est,
+            detail={
+                "kind": "veo_render",
+                "model": _model(), "secs": secs,
+                "aspect": ratio, "res": res,
+                "operation": op_name,
+                "api_base": _api_base(),
+            })
+    except Exception as exc:
+        logger.warning("render spend metering failed: %s", exc)
+    return est
+
+
 async def _finish(runner: Any, client: httpx.AsyncClient, api_key: str,
-                  op_name: str, prompt: str, ratio: str, secs: int
+                  op_name: str, prompt: str, ratio: str, secs: int,
+                  est_cost: float | None = None
                   ) -> dict[str, Any]:
     """Poll a submitted/resumed operation to a published clip URL."""
     payload, err, pending = await _poll_done(client, api_key, op_name)
@@ -449,6 +534,8 @@ async def _finish(runner: Any, client: httpx.AsyncClient, api_key: str,
         if pending:
             out["operation"] = op_name
             out["pending"] = True
+            if est_cost is not None:
+                out["est_cost_usd"] = est_cost
         return out
     assert payload is not None
     uri, err, filtered = _parse_operation(payload)
@@ -493,6 +580,8 @@ async def _finish(runner: Any, client: httpx.AsyncClient, api_key: str,
                 "display with cast_to_screen(action='play', url=video_url) "
                 "or share the link; 'file' is the local artifact.",
     }
+    if est_cost is not None:
+        out["est_cost_usd"] = est_cost
     if filtered:
         out["filtered"] = filtered
         out["note"] += (" Note: " + "; ".join(filtered)
@@ -563,6 +652,7 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
         if err:
             return {"ok": False, "error": err}
         assert op_name is not None
-        logger.info("veo render submitted: %s", op_name)
+        est = _meter_submit(runner, op_name, secs, ratio, res)
+        logger.info("veo render submitted: %s (~$%.4f est)", op_name, est)
         return await _finish(runner, client, api_key, op_name,
-                             prompt, ratio, secs)
+                             prompt, ratio, secs, est_cost=est)
