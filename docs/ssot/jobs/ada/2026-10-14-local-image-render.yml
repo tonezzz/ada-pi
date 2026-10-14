@@ -1,0 +1,135 @@
+# SSOT Job: ada_render_image provider='local' — sd-server on tony-omen
+# Card: local-image-lane-sd-server-on-omen-litel-b45572 (kanban).
+# Dispatch 20261014-220156-goal-ada-can-request-a-local-i on tony-omen.
+
+title: ada_render_image provider=local — prompt -> sd-server
+  (tony-omen, CPU) -> PNG -> relay photo / CMS / LINE
+subtitle: sdcpp async job API + bounded foreground wait + background
+  chat_send delivery; systemd user svc; LiteLLM local_image stanza
+
+planning:
+  goal: |
+    Ada can request a local image render: ada_render_image
+    provider='local' submits to sd-server on tony-omen, the ~10min CPU
+    render returns pending immediately, and a background task pushes
+    the finished PNG to the originating chat via chat_send.
+  decisions: |
+    - Wire (ada tool): POST {ADA_SD_SERVER_URL}/sdcpp/v1/img_gen ->
+      {id, queue_position}; poll GET /sdcpp/v1/jobs/{id} up to
+      ADA_RENDER_LOCAL_WAIT_S (45s). Completed -> decode
+      result.images[].b64_json -> save + traffic_camera.publish_relay
+      (same hop as the gemini path). Still running -> pending + job +
+      _arm_local_delivery: background poll (deadline 1800s) -> publish
+      -> runner.chat_send(channel=originating relay, image_url).
+      job= re-attaches after a restart — mirrors ada_render_video's
+      operation= resume; _LOCAL_DELIVERING dedupes armed tasks.
+    - API choice: sd-server's OpenAI /v1/images/generations is
+      SYNCHRONOUS — a 10min render would hold the tool call (90s
+      manifest timeout) and LiteLLM's request budget. The native sdcpp
+      API is async with queue_position + job states, so the tool talks
+      to sd-server directly, not through LiteLLM.
+    - LiteLLM local_image still gets added (below) for synchronous
+      consumers — an openai/* image model entry fronts
+      {api_base}/images/generations. NOT what the ada tool uses.
+    - Bind: tailnet IP 100.75.102.88:8399, NOT the card's 127.0.0.1 —
+      LiteLLM on idc03 (and ada lanes) must reach it. Tailnet-only
+      means never on LAN; on-omen callers hairpin the same address.
+    - Sampler params for SDXL-Lightning on sd.cpp: steps=4, txt_cfg=1.0,
+      sample_method=euler_a, seed=-1 — validated live (512px job
+      completed, sane PNG, 130s). SDXL-native dims per aspect
+      (1:1=1024, 16:9=1344x768, 9:16=768x1344, 4:3=1152x864,
+      3:4=864x1152). Local tops at 1K — 2K/4K asks render 1K + note.
+    - ref_url edits refused honestly — Lightning is text-to-image.
+    - SLO: ~10min/img at 1024px (599s measured on the card), single
+      slot; server queues to 64. Tool tells the caller 'rendering —
+      arrives via chat when done' rather than holding the turn.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-14"
+  steps:
+    - id: 1
+      label: "sd-server probe on omen"
+      status: done
+      notes: "sd-server master-964-1d0a58a loads
+        ~/models/sd/sdxl-lightning-4step.q4_0.gguf standalone via -m
+        (CLIP+UNet+VAE embedded). /v1/models, /sdcpp/v1/capabilities,
+        POST img_gen all live; 512px/4-step job completed in 130s,
+        result.images[].b64_json shape confirmed."
+    - id: 2
+      label: "tool provider=local"
+      status: done
+      notes: "backend/tools.d/ada_render_image.py — provider param
+        (gemini default | local) + job resume param; submit/poll/
+        pending/deliver functions; tool_guide.yml entry; .env.example
+        ADA_SD_SERVER_URL + WAIT/POLL/DEADLINE knobs."
+    - id: 3
+      label: "systemd unit"
+      status: done
+      notes: "scripts/sd-server.service — user unit, tailnet bind
+        100.75.102.88:8399, model autoload via -m, --threads 8,
+        Nice=10, Restart=on-failure. Installed + enabled on omen."
+    - id: 4
+      label: "tests + scenario"
+      status: done
+      notes: "tests/test_render_image.py TestAdaRenderImageLocal —
+        11 tests (submit/pending/resume/fail/down/result-shapes/
+        delivery push). scenarios-live/img_render_local.yaml, tier
+        manual (10min CPU render)."
+    - id: 5
+      label: "litellm stanza"
+      status: pending
+      notes: "config.yaml lives in chaba repo stacks/idc03/litellm —
+        outside this worktree; snippet below, deploy via that repo's
+        flow."
+
+litellm:
+  where: "~/CascadeProjects/chaba/stacks/idc03/litellm/config.yaml
+    (idc03 gateway) — model_list entry:"
+  snippet: |
+    # ── local image render — sd.cpp sd-server on tony-omen ─────────
+    # Synchronous /images/generations passthrough ONLY (OpenAI shape);
+    # a 1024px render takes ~10min — callers must tolerate it (the ada
+    # tool uses the async sdcpp API directly instead).
+    - model_name: local_image
+      litellm_params:
+        model: openai/sd-cpp-local
+        api_base: http://100.75.102.88:8399/v1
+        timeout: 900
+  notes: |
+    LiteLLM openai provider posts to {api_base}/images/generations; the
+    timeout must exceed the ~600s render. metered via the gateway like
+    other classes. Optional; the ada tool works without it.
+
+invoke:
+  commands:
+    - "python3 -m pytest tests/test_render_image.py -x -q"
+    - "python3 scripts/tool-lint.py"
+    - "install -m 0644 scripts/sd-server.service ~/.config/systemd/user/sd-server.service && systemctl --user daemon-reload && systemctl --user enable --now sd-server.service"
+    - "curl -s http://100.75.102.88:8399/sdcpp/v1/capabilities | head"
+    - "python3 scripts/scenario-live.py tests/scenarios-live/img_render_local.yaml --url ws://<host>:8003/ws --api-key $ADA_API_KEY -v"
+
+verification:
+  - "tests/test_render_image.py: 22/22 pass — local submit/pending/
+    resume/fail/down paths, delivery pushes image_url via chat_send"
+  - "tool-lint.py: clean — 53 declared (37 builtin + 16 tools.d), cap 112"
+  - "sd-server live on omen: 512px/4-step validation job completed in
+    130s (result.images[].b64_json); 1024px extrapolates to ~599s per
+    the card's measured run"
+  - "systemd: sd-server.service enabled+active on tony-omen,
+    http://100.75.102.88:8399/v1/models answers sd-cpp-local"
+  - "litellm local_image: stanza staged here; needs applying in
+    chaba stacks/idc03 + gateway reload — tracked on the card"
+
+followups:
+  - "apply the litellm local_image stanza on idc03 (chaba repo) +
+    reload the gateway; smoke /images/generations model=local_image"
+  - "GTX1650 partial offload benchmark when Nest is idle (card's
+    optional item) — --backend diffusion=cuda0 or rpc offload could
+    cut the ~10min render substantially"
+  - "sd-server restarts drop the in-memory job queue — a pending job=
+    then 404s and the caller resubmits; persistent queueing would need
+    an sd.cpp change or a wrapper"
+  - "if pending renders should survive ada backend restarts, persist
+    armed job ids under ADA_RENDER_DIR and re-arm on boot"

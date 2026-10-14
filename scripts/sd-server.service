@@ -1,0 +1,24 @@
+# systemd USER unit — tony-omen (~/.config/systemd/user/).
+# stable-diffusion.cpp sd-server: SDXL-Lightning 4-step Q4, CPU-only.
+# Binds the tailnet IP (100.75.102.88:8399) so the idc03 LiteLLM gateway
+# and ada lanes can reach it; nothing is exposed on LAN. Local callers
+# on omen hit the same address (hairpin over tailscale0).
+# Install: cp to ~/.config/systemd/user/, systemctl --user daemon-reload,
+#          systemctl --user enable --now sd-server.service
+# Needs lingering for boot persistence: loginctl enable-linger tony
+[Unit]
+Description=sd.cpp image server (SDXL-Lightning 4-step Q4, CPU)
+Documentation=https://github.com/tonezzz/ada-pi docs/ssot/jobs/ada/2026-10-14-local-image-render.yml
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/stable-diffusion.cpp/build/bin/sd-server --listen-ip 100.75.102.88 --listen-port 8399 -m %h/models/sd/sdxl-lightning-4step.q4_0.gguf --threads 8
+Restart=on-failure
+RestartSec=5
+# CPU-only by design — no CUDA/ROCm env; omen's GTX1650 is left to Nest.
+Nice=10
+OOMScoreAdjust=200
+
+[Install]
+WantedBy=default.target

@@ -189,5 +189,193 @@ class TestAdaRenderImage(unittest.TestCase):
         self.assertEqual(ent["policy"], "read")
 
 
+def _sd_job_payload(status="completed", job="job_test_1"):
+    """sd-server /sdcpp/v1/jobs/<id> payload."""
+    out = {"id": job, "kind": "img_gen", "status": status,
+           "queue_position": 0, "result": None, "error": None}
+    if status == "completed":
+        out["result"] = {
+            "images": [{"b64_json": base64.b64encode(PNG_BYTES).decode(),
+                        "index": 0}],
+            "output_format": "png"}
+    if status == "failed":
+        out["error"] = {"message": "out of memory"}
+    return out
+
+
+class TestAdaRenderImageLocal(unittest.TestCase):
+    """provider='local' — sd-server sdcpp async job path."""
+
+    def _run(self, **kw):
+        env = {"ADA_SD_SERVER_URL": "http://sd.test:8399"}
+        with patch.dict(os.environ, env):
+            return asyncio.run(render.run(MagicMock(), **kw))
+
+    def _sd_env(self, td, wait="0.01"):
+        return {"ADA_SD_SERVER_URL": "http://sd.test:8399",
+                "ADA_RENDER_DIR": td,
+                "ADA_RENDER_LOCAL_WAIT_S": wait,
+                "ADA_RENDER_LOCAL_POLL_S": "0.01"}
+
+    def test_unknown_provider_is_honest(self):
+        out = self._run(prompt="a cat", provider="dalle")
+        self.assertFalse(out["ok"])
+        self.assertIn("unknown provider", out["error"])
+
+    def test_provider_aliases(self):
+        self.assertEqual(render._provider("omen"), ("local", None))
+        self.assertEqual(render._provider(""), ("gemini", None))
+
+    def test_local_ref_edit_refused(self):
+        out = self._run(prompt="make it red", provider="local",
+                        ref_url="https://x/in.jpg")
+        self.assertFalse(out["ok"])
+        self.assertIn("text-to-image", out["error"])
+
+    def test_job_param_needs_local(self):
+        out = self._run(prompt="a cat", job="job_abc")
+        self.assertFalse(out["ok"])
+        self.assertIn("provider='local'", out["error"])
+        out = self._run(provider="local", job="not a job")
+        self.assertFalse(out["ok"])
+        self.assertIn("job_...", out["error"])
+
+    def test_local_submit_completed_fast_path(self):
+        import httpx
+        post = httpx.Response(200, json={"id": "job_test_1",
+                                         "status": "queued",
+                                         "queue_position": 0})
+        get = httpx.Response(200, json=_sd_job_payload())
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict(os.environ, self._sd_env(td)), \
+             patch.object(httpx.AsyncClient, "post",
+                          new_callable=AsyncMock, return_value=post) as p, \
+             patch.object(httpx.AsyncClient, "get",
+                          new_callable=AsyncMock, return_value=get), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:loc"):
+            out = self._run(prompt="a paper crane", provider="local",
+                            aspect="landscape")
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["provider"], "local")
+        self.assertEqual(out["job"], "job_test_1")
+        self.assertEqual(out["image_url"],
+                         "https://x/frame?token=render:loc")
+        body = p.call_args[1]["json"]
+        self.assertEqual((body["width"], body["height"]), (1344, 768))
+        self.assertEqual(body["sample_params"]["sample_steps"], 4)
+
+    def test_local_pending_arms_delivery(self):
+        import httpx
+        post = httpx.Response(200, json={"id": "job_pend_1",
+                                         "status": "queued",
+                                         "queue_position": 2})
+        get = httpx.Response(200, json={**_sd_job_payload(
+            status="generating", job="job_pend_1"), "queue_position": 2})
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict(os.environ, self._sd_env(td)), \
+             patch.object(httpx.AsyncClient, "post",
+                          new_callable=AsyncMock, return_value=post), \
+             patch.object(httpx.AsyncClient, "get",
+                          new_callable=AsyncMock, return_value=get), \
+             patch.object(render, "_arm_local_delivery") as arm:
+            out = self._run(prompt="slow render", provider="local")
+        self.assertFalse(out["ok"])
+        self.assertTrue(out["pending"])
+        self.assertEqual(out["job"], "job_pend_1")
+        self.assertEqual(out["queue_position"], 2)
+        self.assertIn("chat_send", out["error"])
+        arm.assert_called_once()
+
+    def test_local_resume_completed(self):
+        import httpx
+        get = httpx.Response(200, json=_sd_job_payload(job="job_re_9"))
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict(os.environ, self._sd_env(td)), \
+             patch.object(httpx.AsyncClient, "get",
+                          new_callable=AsyncMock, return_value=get), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:re"):
+            out = self._run(provider="local", job="job_re_9")
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["job"], "job_re_9")
+
+    def test_local_failed_job_is_honest(self):
+        import httpx
+        post = httpx.Response(200, json={"id": "job_fail_1",
+                                         "status": "queued"})
+        get = httpx.Response(200, json=_sd_job_payload(
+            status="failed", job="job_fail_1"))
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict(os.environ, self._sd_env(td)), \
+             patch.object(httpx.AsyncClient, "post",
+                          new_callable=AsyncMock, return_value=post), \
+             patch.object(httpx.AsyncClient, "get",
+                          new_callable=AsyncMock, return_value=get):
+            out = self._run(prompt="boom", provider="local")
+        self.assertFalse(out["ok"])
+        self.assertIn("failed", out["error"])
+        self.assertIn("out of memory", out["error"])
+
+    def test_local_server_down_is_honest(self):
+        import httpx
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict(os.environ, self._sd_env(td)), \
+             patch.object(httpx.AsyncClient, "post",
+                          new_callable=AsyncMock,
+                          side_effect=httpx.ConnectError("refused")):
+            out = self._run(prompt="a cat", provider="local")
+        self.assertFalse(out["ok"])
+        self.assertIn("didn't answer", out["error"])
+
+    def test_sd_result_bytes_shapes(self):
+        data, err = render._sd_result_bytes(_sd_job_payload())
+        self.assertEqual(data, PNG_BYTES)
+        self.assertIsNone(err)
+        data, err = render._sd_result_bytes({"status": "completed",
+                                             "result": {}})
+        self.assertIsNone(data)
+        self.assertIn("no image", err)
+
+    def test_deliver_local_pushes_photo(self):
+        import httpx
+        runner = MagicMock()
+        runner.chat_send = AsyncMock(return_value={"status": "queued"})
+        runner.session_id = "sess-x"
+        get = httpx.Response(200, json=_sd_job_payload(job="job_dl_1"))
+        env = {"ADA_SD_SERVER_URL": "http://sd.test:8399",
+               "ADA_RENDER_LOCAL_POLL_S": "0.01"}
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict(os.environ, {**env, "ADA_RENDER_DIR": td}), \
+             patch.object(httpx.AsyncClient, "get",
+                          new_callable=AsyncMock, return_value=get), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:dl"):
+            asyncio.run(render._deliver_local(runner, "job_dl_1",
+                                              "a crane"))
+        runner.chat_send.assert_awaited_once()
+        kw = runner.chat_send.await_args[1]
+        self.assertEqual(kw["image_url"],
+                         "https://x/frame?token=render:dl")
+        self.assertIn("done", kw["text"])
+
+    def test_deliver_local_failure_pushes_text(self):
+        import httpx
+        runner = MagicMock()
+        runner.chat_send = AsyncMock(return_value={"status": "queued"})
+        runner.session_id = "sess-x"
+        get = httpx.Response(200, json=_sd_job_payload(
+            status="failed", job="job_dl_2"))
+        env = {"ADA_SD_SERVER_URL": "http://sd.test:8399",
+               "ADA_RENDER_LOCAL_POLL_S": "0.01"}
+        with patch.dict(os.environ, env), \
+             patch.object(httpx.AsyncClient, "get",
+                          new_callable=AsyncMock, return_value=get):
+            asyncio.run(render._deliver_local(runner, "job_dl_2", "x"))
+        kw = runner.chat_send.await_args[1]
+        self.assertEqual(kw["image_url"], "")
+        self.assertIn("failed", kw["text"])
+
+
 if __name__ == "__main__":
     unittest.main()

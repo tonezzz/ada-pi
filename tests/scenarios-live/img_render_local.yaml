@@ -1,0 +1,32 @@
+# Local render gen, live: text prompt -> ada_render_image
+# provider='local' -> sd-server (tony-omen, CPU) async job -> pending +
+# job id; a background task pushes the finished photo via chat_send.
+# Asserts the tool is called and the pending/job contract comes back.
+# tier: manual — a 1024px CPU render holds omen busy ~10 minutes; not
+# for the hourly smoke sweep.
+name: img-render-local
+tier: manual
+needs_tools: [ada_render_image]
+turns:
+  - user: "use the local provider to draw a small watercolor of a Thai
+          longtail boat at sunset"
+    expect:
+      response_nonempty: true
+      calls_any: [ada_render_image]
+      result_contains_any:
+        - "job_"
+        - "input-bridge/frame?"
+      response_contains_any:
+        - "render"
+        - "minute"
+        - "boat"
+        - "ภาพ"
+        - "เรือ"
+      # submit is instant; the pending contract must come back inside
+      # the tool's 90s budget even though the render runs ~10min.
+      timeout_s: 120
+      settle_s: 5
+
+cleanup:
+  mddb_delete:
+    - {collection: ada-ha-bank-general, contains: "longtail boat"}
