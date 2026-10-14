@@ -189,12 +189,15 @@ def _short_name(name: str) -> str:
     return " ".join(toks) or name
 
 
-def _staticmap(coords: str) -> str:
+def _map_embed(coords: str) -> str:
+    # Interactive Google Maps embed — free, no API key, includes the
+    # roadmap/satellite toggle. Replaces the dead staticmap.openstreetmap.de
+    # image service (DNS-dead 2026-10-14).
     if not coords:
         return ""
-    return ("https://staticmap.openstreetmap.de/staticmap.php"
-            f"?center={coords}&zoom=15&size=640x360"
-            f"&markers={coords},red-pushpin")
+    return (f'<iframe src="https://maps.google.com/maps?q={coords}&z=15'
+            '&output=embed" width="640" height="360" style="border:0;'
+            'max-width:100%" loading="lazy"></iframe>')
 
 
 
@@ -260,12 +263,12 @@ def _page(place: dict[str, Any], ask: str, lang: str) -> tuple[str, str]:
         lines += [place["address"], ""]
     if place["coords"]:
         lines += [f"Coordinates: {place['coords']}", ""]
-    sm = _staticmap(place["coords"])
+    embed = _map_embed(place["coords"])
     gmaps = place["resolved_url"] or (
         f"https://www.google.com/maps/search/?api=1&query={place['coords']}"
         if place["coords"] else "")
-    if sm and gmaps:
-        lines += [f"[![map]({sm})]({gmaps})", ""]
+    if embed:
+        lines += [embed, ""]
     links = []
     if gmaps:
         links.append(f"[Google Maps]({gmaps})")
