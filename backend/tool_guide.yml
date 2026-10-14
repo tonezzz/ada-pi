@@ -573,6 +573,12 @@ ada_render_image: >-
   landscape (16:9) or portrait (9:16). The result's image_url posts to
   the chat automatically on LINE/TG relays - confirm what was made in
   one line, do not re-send or re-render unless asked.
+  provider='local' renders on tony-omen's sd-server instead of the cloud
+  model - free and private but ~10 minutes on CPU, single-slot queue:
+  a pending result carries job= and a background task pushes the photo
+  via chat_send when done, so tell the user it's rendering and move on.
+  Call again WITH job= only for a status check - never resubmit the same
+  prompt. Local is text-to-image only; ref_url edits stay on default.
 
 ada_render_video: >-
   prompt= is the full assembled scene description (subject, motion,
