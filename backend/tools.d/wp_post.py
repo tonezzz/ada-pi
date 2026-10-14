@@ -111,7 +111,13 @@ def _media_local_path(media_url: str) -> str | None:
 
 
 def _https(url: str) -> str:
-    return re.sub(r"^http://", "https://", url or "")
+    """Normalise a WP-returned URL for public display: force https and
+    rewrite the internal siteurl host (boards.h3.gizmo-thailand.com) to
+    the public surf domain — WP's siteurl points at the origin."""
+    u = re.sub(r"^http://", "https://", url or "")
+    u = re.sub(r"^https://boards\.h3\.gizmo-thailand\.com",
+               "https://boards.surf-thailand.com", u)
+    return u
 
 
 def run(args: dict) -> dict:
