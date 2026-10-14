@@ -234,9 +234,16 @@ class ChatMixin:
             else:
                 summary_bits.append(f"unknown channel '{svc}'")
                 continue
+            # In-context default: a bare chat_send answers in the chat
+            # the turn came from (session ?chat_id= binding), not the
+            # lane's default room — an explicit to= still wins.
+            to_eff = str(to or "").strip()
+            if not to_eff:
+                to_eff = session_chat_id(
+                    self, "telegram" if svc in ("telegram", "tg") else svc)
             payload = {"text": text, "image_url": url,
-                       "caption": text or cam, "to": to,
-                       "chat_id": to,
+                       "caption": text or cam, "to": to_eff,
+                       "chat_id": to_eff,
                        "instance": os.environ.get(
                            "ADA_INSTANCE_ID", "")}
             if audio_b64 and svc in ("line", "telegram", "tg"):

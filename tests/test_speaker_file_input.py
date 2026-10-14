@@ -242,10 +242,11 @@ class VoiceContextTest(unittest.TestCase):
 class _FakeSession:
     made = []
 
-    def __init__(self, user_id, relay, ws_url=None, caller=None):
+    def __init__(self, user_id, relay, ws_url=None, caller=None, chat_id=None):
         self.user_id = user_id
         self.ws_url = ws_url
         self.caller = caller
+        self.chat_id = chat_id
         self.ws = None
         self.last_active = 0.0
         self.send_turn = AsyncMock(return_value=("pong", []))

@@ -41,6 +41,7 @@ from backend.realtime_provider import create_provider
 from backend import command_lane, memory_ops, voice_fx
 from backend.home_assistant import HomeAssistantClient
 from backend.tool_runner import ToolRunner
+from backend.tool_runner.common import SESSION_CHAT
 from backend.conversation_memory import conversation_health
 from backend.decision_check import DecisionCheckEngine, decode_image
 from backend.document_check import DocumentCheckEngine
@@ -1085,6 +1086,13 @@ async def voice_socket(ws: WebSocket) -> None:
     # Relay channels (?channel=telegram|line) run text-only Gemini Live
     # sessions — no TTS, no avatar tools.
     channel = (ws.query_params.get("channel") or "").strip().lower() or None
+    # Reply-context binding (line-tool-reply-routing): relays pass the
+    # chat the turn came from (?chat_id=) so a chat_send inside the turn
+    # answers in-context by default instead of the lane's default room.
+    chat_id = (ws.query_params.get("chat_id") or "").strip()
+    if channel and chat_id:
+        SESSION_CHAT[session_id] = {"channel": channel,
+                                    "chat_id": chat_id}
     # One ConversationMemory per websocket session, shared across provider
     # reconnects so the transcript survives a Gemini session swap.
     conversation = ConversationMemory(session_id)
@@ -1876,6 +1884,7 @@ async def voice_socket(ws: WebSocket) -> None:
             with suppress(Exception):
                 await _mark_session_end(conversation, session_id)
         _live_sessions.pop(session_id, None)
+        SESSION_CHAT.pop(session_id, None)
         if CHABA_MODE:
             chaba.sessions.pop(session_id, None)
         logger.info("session=%s closed", session_id)

@@ -73,6 +73,12 @@ Env:
 Replies go out via /message/reply using the event's replyToken (free, but
 single-use and short-lived); if that fails the relay falls back to
 /message/push so the user still gets Ada's answer.
+
+Reply-context binding (card line-tool-reply-routing): every backend
+session opens with &chat_id=<originating chat> so a chat_send the
+persona fires mid-turn lands in the chat that asked — not the lane
+default room or the owner's DM. Explicit to= still wins, and the
+LINE_LANE_ALLOW/LOCK gates vet the bound target like any other.
 """
 from __future__ import annotations
 
@@ -508,10 +514,15 @@ class ChatSession:
 
     def __init__(self, user_id: str, relay: "LineRelay",
                  ws_url: str | None = None,
-                 caller: str | None = None) -> None:
+                 caller: str | None = None,
+                 chat_id: str = "") -> None:
         self.user_id = user_id
         self.ws_url = ws_url or ADA_WS_URL
         self.caller = caller  # LINE_USER_CALLERS name; None -> default key
+        # Originating chat (room/groupId or DM userId) — handed to the
+        # backend at connect so a tool send inside a turn replies in the
+        # chat the turn came from (card line-tool-reply-routing).
+        self.chat_id = chat_id
         self.relay = relay
         self.ws = None
         self._rx_task: asyncio.Task | None = None
@@ -524,6 +535,9 @@ class ChatSession:
             return
         url = (f"{self.ws_url}?api_key={_key_by_name(self.caller)}"
                "&channel=line")
+        if self.chat_id:
+            import urllib.parse
+            url += "&chat_id=" + urllib.parse.quote(self.chat_id, safe="")
         # ada-text-mode-sessions: LINE_TEXT_MODE routes text chats to the
         # REST text provider — no Live session, metered per call.
         if os.environ.get("LINE_TEXT_MODE", "").strip().lower() in (
@@ -966,12 +980,14 @@ class LineRelay:
             reply_token=reply_token)
 
     def _session(self, skey: Any, user_id: str, persona_url: str,
-                 caller: str | None) -> ChatSession:
+                 caller: str | None, chat_id: str = "") -> ChatSession:
         sess = self.sessions.get(skey)
         if sess is None or sess.ws_url != persona_url:
             sess = ChatSession(user_id, self, ws_url=persona_url,
-                               caller=caller)
+                               caller=caller, chat_id=chat_id)
             self.sessions[skey] = sess
+        elif chat_id:
+            sess.chat_id = chat_id
         return sess
 
     async def _deliver_turn(self, skey: Any, chat_id: str, user_id: str,
@@ -982,7 +998,8 @@ class LineRelay:
         """One text turn to a persona backend; reply tagged
         [persona->sender] in rooms."""
         self._recent_chat[persona] = (chat_id, time.monotonic())
-        sess = self._session(skey, user_id, persona_url, caller)
+        sess = self._session(skey, user_id, persona_url, caller,
+                             chat_id)
         disp = _display_name(persona, turn_text)
         try:
             reply, images = await sess.send_turn(turn_text)
@@ -1303,7 +1320,8 @@ class LineRelay:
             return
         skey = (chat_id, user_id, persona) if is_group \
             else (user_id, persona)
-        sess = self._session(skey, user_id, persona_url, caller)
+        sess = self._session(skey, user_id, persona_url, caller,
+                             chat_id)
         await self._mark_read(ev)
         if mtype == "image":
             try:
@@ -1635,6 +1653,10 @@ class LineRelay:
                 return JSONResponse({"ok": False,
                                      "error": "nothing to send"},
                                     status_code=400)
+            if inst:
+                # Keep the in-context fallback warm under the key this
+                # endpoint reads (the payload's ADA_INSTANCE_ID).
+                self._recent_chat[inst] = (uid, time.monotonic())
             try:
                 await self._deliver(uid, msgs[:5], None)
                 return JSONResponse({"ok": True, "to": uid})

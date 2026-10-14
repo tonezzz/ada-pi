@@ -228,7 +228,8 @@ class ChatSession:
             return
         key = (_key_by_name(self.caller) if self.caller
                else _key_for_chat(self.chat_id))
-        url = f"{ADA_WS_URL}?api_key={key}&channel=telegram"
+        url = (f"{ADA_WS_URL}?api_key={key}&channel=telegram"
+               f"&chat_id={self.chat_id}")
         # ada-text-mode-sessions: TG_TEXT_MODE routes text chats to the
         # REST text provider — no Live session, metered per call.
         if os.environ.get("TG_TEXT_MODE", "").strip().lower() in (

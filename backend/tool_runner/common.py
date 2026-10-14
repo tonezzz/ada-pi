@@ -301,6 +301,23 @@ _CALLER_VERIFIED_AFFIRM: contextvars.ContextVar = contextvars.ContextVar(
 _CALLER_SESSION: contextvars.ContextVar = contextvars.ContextVar(
     "ada_caller_session", default=None)
 
+# Session -> originating chat binding for relay channels (line/telegram).
+# pwa_server binds ?chat_id= at ws connect and unbinds at teardown;
+# chat_send reads it through the per-call session contextvar so a tool
+# send fired inside a turn lands in the chat that asked — not the lane's
+# default room or the owner's DM (card line-tool-reply-routing).
+SESSION_CHAT: dict[str, dict[str, str]] = {}
+
+
+def session_chat_id(runner: Any, channel: str) -> str:
+    """Originating relay chat for this call's session, or "" when the
+    session isn't bound to a chat on `channel` (voice/pwa, other relay)."""
+    sid = _CALLER_SESSION.get() or getattr(runner, "session_id", None)
+    bound = SESSION_CHAT.get(str(sid or "")) or {}
+    if bound.get("channel") != channel:
+        return ""
+    return str(bound.get("chat_id") or "")
+
 CMS_COLLECTION = os.environ.get("ADA_CMS_COLLECTION", "ada-cms-pages")
 CMS_FORMATS = {"markdown", "html", "yaml", "slides"}
 # Per-page automation registry: one doc per CMS slug holding the switches
