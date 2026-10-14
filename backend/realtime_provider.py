@@ -2618,13 +2618,17 @@ def _builtin_declarations() -> list[dict[str, Any]]:
 # Lazy tool schemas (card ada-lazy-tool-schemas, 2026-10-13 — pattern from
 # tool-attention arxiv 2604.21816 + the vercel/ai lazy-tool PR + Cursor's
 # dynamic context discovery): the ~49-decl surface's param JSON was the
-# large share of the ~27.8k first-turn floor. Cold tools now ship
-# {name, <=300-char blurb, {"type":"object","properties":{}}}; the REAL
-# schema stays server-side where ToolRunner validates every call's args
-# and answers a miss with the tool_guide.yml usage hint — the model
-# self-repairs instead of paying schema tokens up front. The hot set keeps
-# full schemas because a wrong-shape guess on the hot tools costs more
-# than the schema saves. Kill switch ADA_LAZY_SCHEMAS=0;
+# large share of the ~27.8k first-turn floor. Cold tools ship
+# {name, <=300-char blurb, arg-name skeleton} — the property KEYS and the
+# required list survive so the model can shape the call, but every
+# per-property type/description/enum and nested schema bulk is stripped.
+# (V1 shipped fully empty properties — Gemini Live then called cold tools
+# with {} verbatim; arg names are cheap and give it the shape to fill.)
+# The REAL schema stays server-side where ToolRunner validates every
+# call's args and answers a miss with the tool_guide.yml usage hint —
+# the model self-repairs instead of paying schema tokens up front. The
+# hot set keeps full schemas because a wrong-shape guess on the hot tools
+# costs more than the schema saves. Kill switch ADA_LAZY_SCHEMAS=0;
 # ADA_FULL_SCHEMA_TOOLS=csv adds names without a redeploy. The set is
 # mirrored in docs/ssot/ssot.tool-surface.yml lazy_schemas (lint-enforced).
 FULL_SCHEMA_TOOLS = frozenset({
@@ -2632,8 +2636,6 @@ FULL_SCHEMA_TOOLS = frozenset({
     "control_entity", "calendar_read", "cast_to_screen", "cctv_wall",
     "docs", "kanban", "chat_send",
 })
-
-_LAZY_EMPTY_SCHEMA = {"type": "object", "properties": {}}
 
 
 def _lazy_schemas_enabled() -> bool:
@@ -2647,9 +2649,26 @@ def _full_schema_tools() -> frozenset[str]:
     return FULL_SCHEMA_TOOLS | extra
 
 
+def _lazy_param_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Shrink a real param schema to its arg-name skeleton:
+    {"type":"object","properties":{"slug":{},...},"required":[...]} —
+    property keys and required survive, everything else is dropped."""
+    props = schema.get("properties")
+    out: dict[str, Any] = {
+        "type": "object",
+        "properties": ({str(k): {} for k in props}
+                       if isinstance(props, dict) else {}),
+    }
+    req = schema.get("required")
+    if isinstance(req, list) and req:
+        out["required"] = [str(k) for k in req]
+    return out
+
+
 def _apply_lazy_schemas(decls: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Replace a cold tool's param schema with the empty object — the model
-    calls from name+blurb and repairs on the runner's validation miss."""
+    """Shrink a cold tool's param schema to its arg-name skeleton — the
+    model calls from name+blurb+arg names and repairs on the runner's
+    validation miss."""
     if not _lazy_schemas_enabled():
         return decls
     keep = _full_schema_tools()
@@ -2659,7 +2678,7 @@ def _apply_lazy_schemas(decls: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if str(fd.get("name")) not in keep:
             for key in ("parameters_json_schema", "parameters"):
                 if isinstance(fd.get(key), dict):
-                    fd[key] = dict(_LAZY_EMPTY_SCHEMA)
+                    fd[key] = _lazy_param_schema(fd[key])
         out.append(fd)
     return out
 

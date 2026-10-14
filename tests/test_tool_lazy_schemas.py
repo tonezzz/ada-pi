@@ -1,10 +1,14 @@
-"""Lazy tool schemas — card ada-lazy-tool-schemas (2026-10-13).
+"""Lazy tool schemas — card ada-lazy-tool-schemas (2026-10-13,
+arg-name skeleton follow-up ada-lazy-schemas-arg-names 2026-10-14).
 
 Two halves under test:
 
-- realtime_provider ships {name, blurb, {"type":"object","properties":{}}}
-  for cold tools (FULL_SCHEMA_TOOLS keeps full schemas; ADA_LAZY_SCHEMAS=0
-  is the kill switch, ADA_FULL_SCHEMA_TOOLS extends the hot set).
+- realtime_provider ships {name, blurb, arg-name skeleton} for cold
+  tools: {"type":"object","properties":{"slug":{},...},"required":[...]}
+  — property keys and required survive so the model can shape the call;
+  per-property type/description/enum and nested bulk are stripped.
+  (FULL_SCHEMA_TOOLS keeps full schemas; ADA_LAZY_SCHEMAS=0 is the kill
+  switch, ADA_FULL_SCHEMA_TOOLS extends the hot set.)
 - ToolRunner validates args against the REAL declaration schema
   server-side and returns ok:false + the tool_guide usage hint on a miss
   — the self-repair path that makes lazy declarations safe.
@@ -35,15 +39,59 @@ def _types_ctx():
 
 
 class LazyDeclTests(unittest.TestCase):
-    def test_cold_tools_ship_empty_schema(self):
+    def test_cold_tools_ship_arg_skeleton(self):
         with _types_ctx():
-            decls = rp._apply_lazy_schemas(rp._builtin_declarations())
+            full = {d["name"]: d for d in rp._builtin_declarations()}
+            decls = rp._apply_lazy_schemas(list(full.values()))
         cold = [d for d in decls if d["name"] not in rp.FULL_SCHEMA_TOOLS]
         self.assertGreater(len(cold), 20)
         for d in cold:
-            self.assertEqual(d["parameters_json_schema"], EMPTY, d["name"])
+            schema = d["parameters_json_schema"]
+            # exact skeleton shape — no schema bulk leaks onto the wire
+            self.assertTrue(
+                set(schema) <= {"type", "properties", "required"},
+                d["name"])
+            self.assertEqual(schema.get("type"), "object", d["name"])
+            props = schema.get("properties")
+            self.assertIsInstance(props, dict, d["name"])
+            for pname, pdef in props.items():
+                self.assertEqual(pdef, {}, f"{d['name']}.{pname}")
+            real = full[d["name"]]["parameters_json_schema"]
+            self.assertEqual(
+                set(props), set(real.get("properties") or {}), d["name"])
+            self.assertEqual(
+                schema.get("required") or [],
+                real.get("required") or [], d["name"])
             self.assertTrue(d.get("description"), d["name"])
-            self.assertTrue(d.get("name"))
+
+    def test_cold_decl_keeps_arg_names_and_required(self):
+        """The regression fix: a cold decl keeps property KEYS + required
+        (the model can shape its call) but no type/description/enum."""
+        with _types_ctx():
+            decls = rp._apply_lazy_schemas(rp._builtin_declarations())
+        rem = next(d for d in decls if d["name"] == "ada_forget")
+        self.assertEqual(rem["parameters_json_schema"], {
+            "type": "object",
+            "properties": {k: {} for k in (
+                "bank", "key", "reason", "confirmed", "confirm_token")},
+            "required": ["bank", "key"],
+        })
+
+    def test_trip_calendar_wire_skeleton(self):
+        """The reported regression end-to-end on the wire surface:
+        trip_calendar's tools.d decl now ships its arg names — Gemini
+        Live gets {'slug','start','end',...} to fill instead of an empty
+        properties object that invites a {} call."""
+        from backend import tools_loader
+        decls = rp._apply_lazy_schemas(
+            tools_loader.registry().declarations(set()))
+        trip = next(d for d in decls if d["name"] == "trip_calendar")
+        self.assertEqual(trip["parameters"], {
+            "type": "object",
+            "properties": {k: {} for k in (
+                "slug", "start", "end", "title", "keywords", "public",
+                "confirmed")},
+        })
 
     def test_hot_tools_keep_full_schema(self):
         with _types_ctx():
@@ -72,16 +120,33 @@ class LazyDeclTests(unittest.TestCase):
         hs = next(d for d in out if d["name"] == "home_search")
         self.assertIn("kind", hs["parameters_json_schema"]["properties"])
 
-    def test_both_schema_keys_stripped(self):
-        fd_json = {"name": "cold_a",
-                   "parameters_json_schema": {"type": "object",
-                                              "properties": {"x": {}}}}
-        fd_plain = {"name": "cold_b",
-                    "parameters": {"type": "object",
-                                   "properties": {"x": {}}}}
+    def test_both_schema_keys_skeletonized(self):
+        real = {"type": "object",
+                "properties": {"x": {"type": "string",
+                                     "description": "ex",
+                                     "enum": ["a", "b"]},
+                               "y": {"type": "object",
+                                     "properties": {"z": {}}}},
+                "required": ["x"],
+                "additionalProperties": False}
+        skeleton = {"type": "object",
+                    "properties": {"x": {}, "y": {}},
+                    "required": ["x"]}
+        fd_json = {"name": "cold_a", "parameters_json_schema": dict(real)}
+        fd_plain = {"name": "cold_b", "parameters": dict(real)}
         out = rp._apply_lazy_schemas([fd_json, fd_plain])
-        self.assertEqual(out[0]["parameters_json_schema"], EMPTY)
-        self.assertEqual(out[1]["parameters"], EMPTY)
+        self.assertEqual(out[0]["parameters_json_schema"], skeleton)
+        self.assertEqual(out[1]["parameters"], skeleton)
+
+    def test_no_required_omits_key(self):
+        fd = {"name": "cold_c",
+              "parameters_json_schema": {"type": "object",
+                                         "properties": {"x": {}},
+                                         "required": []}}
+        out = rp._apply_lazy_schemas([fd])
+        self.assertEqual(out[0]["parameters_json_schema"],
+                         {"type": "object",
+                          "properties": {"x": {}}})
 
     def test_builtin_declarations_fresh_copies(self):
         with _types_ctx():
@@ -156,6 +221,16 @@ class SchemaValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(out["ok"])
         self.assertEqual(out["error_type"], "SchemaError")
         self.assertIn("'q'", out["error"])
+        self.assertIn("q", out["expected_args"])
+        self.runner.probe_tool.assert_not_called()
+
+    async def test_empty_args_schema_error(self):
+        """The {} call the v1 empty-schema wire surface produced still
+        repairs: missing required -> SchemaError + expected_args before
+        the method runs."""
+        out = await self._call("probe_tool", {})
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error_type"], "SchemaError")
         self.assertIn("q", out["expected_args"])
         self.runner.probe_tool.assert_not_called()
 

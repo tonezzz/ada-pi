@@ -1,0 +1,50 @@
+# SSOT Job: lazy tool schemas v2 — arg-name skeleton for cold decls
+# Card: ada-lazy-schemas-arg-names (kanban). Dispatch 20261014-075520.
+
+title: Lazy schemas v2 — cold decls keep property keys + required
+subtitle: |
+  Post-deploy verify of ada-lazy-tool-schemas found a voice-lane
+  regression: all 39 lazy-stripped decls shipped zero arg names, so
+  Gemini Live called cold tools with {} verbatim (trip_calendar {}, 2/2
+  sessions) — the server-side SchemaError + usage-hint repair path
+  worked, but Gemini Live did NOT retry and told the user 'missing trip
+  name'. No schema-fetch tool exists for the model to elect, so the arg
+  names have to be on the wire. V2 keeps the property KEYS and the
+  required list, stripping only per-property type/description/enum and
+  nested schema bulk:
+  {"type":"object","properties":{"slug":{},"start":{},"end":{}},"required":["slug"]}
+
+planning:
+  goal: |
+    Ship arg-name skeletons (option b from the verify comment) so the
+    model can shape cold-tool calls, keeping the lazy wire size far
+    under the pre-lazy ~64k (target <=~38k for the tony-voice lane;
+    empty-schema floor was ~27.7k).
+  decisions: |
+    - _apply_lazy_schemas now projects each cold decl's real schema
+      through _lazy_param_schema(): {type:object, properties:{k:{}},
+      required:[...]}. required is omitted when the source has none or
+      an empty list; additionalProperties and object-level extras are
+      dropped (not in the contract wire shape). Both schema keys are
+      handled (builtin parameters_json_schema, tools.d parameters).
+    - FULL_SCHEMA_TOOLS hot-10, ADA_LAZY_SCHEMAS=0 kill switch and
+      ADA_FULL_SCHEMA_TOOLS=csv extension are unchanged.
+    - Server-side contract unchanged: ToolRunner still validates every
+      call against the REAL schema; a miss returns ok:false +
+      SchemaError + expected_args + tool_guide.yml usage hint.
+    - Rationale over a schema-fetch tool: Gemini Live showed it will not
+      elect an extra repair hop — putting the arg names on the wire is
+      cheaper (~+4.1k bytes total, ~1k tokens) than a round trip per
+      cold call.
+meta: |
+  Wire measurement (51 decls, this worktree — builtin + camera +
+  tools.d, tony-voice surface):
+    full schemas : 67447 bytes
+    v1 empty     : 29155 bytes
+    v2 arg-names : 33265 bytes  (-50.7% vs full, +4110 vs v1)
+  Under the <=~38k target with headroom; ~1k tokens bought back the
+  arg-name shape Gemini Live needs to fill calls.
+  Verify: scripts/tool-lint.py clean; tests/test_tool_lazy_schemas.py +
+  tests/test_tool_audit.py 54/54 pass (unittest, bare interpreter).
+  Live e2e deferred — Gemini Live spend cap blocks voice sessions
+  (ada-gemini-live-spend-cap).
