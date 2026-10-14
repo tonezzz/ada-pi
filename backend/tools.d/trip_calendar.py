@@ -115,8 +115,9 @@ async def run(runner, **args) -> dict[str, Any]:
     if public and not confirmed:
         return {
             "ok": False,
-            "error": ("public='yes' publishes the pages off-tailnet to "
-                      "surf-thailand.com — re-call with confirmed='yes' "
+            "error": ("public='yes' posts the rollup publicly to "
+                      "boards.surf-thailand.com — re-call with "
+                      "confirmed='yes' "
                       "only after the user explicitly asked for a "
                       "shareable public link"),
         }
@@ -153,8 +154,8 @@ async def run(runner, **args) -> dict[str, Any]:
                 "error": f"generator failed: "
                          f"{(err.decode(errors='replace') or stdout)[-400:]}"}
     result["note"] = (
-        "Answer with the link — public_url for LINE/TG sharing "
-        "(goes live on the next publish sweep), view_url on the "
-        "tailnet. page_snapshot can render either to a PNG for "
-        "image-send.")
+        "Answer with the link — public_url is already live on "
+        "boards.surf-thailand.com for LINE/TG sharing; view_url is "
+        "the tailnet CMS copy. page_snapshot can render either to "
+        "a PNG for image-send.")
     return result

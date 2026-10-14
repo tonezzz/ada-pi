@@ -5,8 +5,8 @@ The kk lane sees members paste maps.app.goo.gl / google.com/maps links in
 LINE and ask "ร้านนี้ยังอยู่มั้ย", "สรุปที่นี่หน่อย", "จุดนี้ล่ะ" — one ask
 expects a page back (KNB-0574). This tool does the whole deterministic
 half in one call: expand the short URL, resolve name/coords, enrich with
-Nominatim (no key), publish a meta.public page via cms_publish_page, and
-return public_url for the chat reply. The model still answers the actual
+Nominatim (no key), publish a public WordPress post on the boards site
+via wp_client, and return public_url for the chat reply. The model still answers the actual
 question in chat — the page is the durable artifact.
 
 Env:
@@ -24,6 +24,8 @@ from typing import Any
 
 import httpx
 
+from backend import wp_client as _wp
+
 NOMINATIM = os.environ.get(
     "ADA_PLACE_REPORT_NOMINATIM",
     "https://nominatim.openstreetmap.org")
@@ -34,8 +36,9 @@ UA = os.environ.get(
 DECLARATION = {
     "name": "place_report",
     "description": (
-        "Turn a Google Maps link or place name into a public CMS report "
-        "page (map image + links); returns public_url to send in chat."),
+        "Turn a Google Maps link or place name into a public WordPress "
+        "report post (map image + links); returns public_url to send "
+        "in chat."),
     "parameters": {
         "type": "object",
         "properties": {
@@ -194,6 +197,46 @@ def _staticmap(coords: str) -> str:
             f"&markers={coords},red-pushpin")
 
 
+
+
+def _person_for(runner: Any) -> str:
+    """Lane instance -> WP person tag (kk-dev -> kk, ha-tony -> tony)."""
+    inst = str(getattr(runner, "_instance_id", "") or "").lower()
+    if "nhong" in inst:
+        return "nhong"
+    if "kk" in inst:
+        return "kk"
+    return "tony"
+
+
+_MD_IMG = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
+_MD_LINK = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_MD_IMGLINK = re.compile(r"\[!\[[^\]]*\]\(([^)]+)\)\]\(([^)]+)\)")
+
+
+def _md_html(md: str) -> str:
+    """Minimal md -> html for WP: image-links, links, headings, paras."""
+    out = []
+    for ln in md.split("\n"):
+        s_ln = ln.strip()
+        if not s_ln:
+            continue
+        if s_ln.startswith("## "):
+            out.append(f"<h2>{_md_inline(s_ln[3:])}</h2>")
+        elif s_ln.startswith("# "):
+            continue  # title already set on the post
+        else:
+            out.append(f"<p>{_md_inline(s_ln)}</p>")
+    return "\n".join(out)
+
+
+def _md_inline(t: str) -> str:
+    t = (t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+    t = _MD_IMGLINK.sub(r'<a href="\2"><img src="\1" style="max-width:100%"/></a>', t)
+    t = _MD_IMG.sub(r'<img src="\1" style="max-width:100%"/>', t)
+    t = _MD_LINK.sub(r'<a href="\2">\1</a>', t)
+    return t
+
 def _slug_for(runner: Any, name: str, coords: str) -> str:
     base = name or coords or "place"
     seed = hashlib.sha1(f"{name}|{coords}".encode()).hexdigest()[:6]
@@ -263,17 +306,31 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
     slug = _slug_for(runner, resolved["name"], resolved["coords"])
     summary = (f"Place report: {resolved['name'] or resolved['coords']} — "
                f"{(resolved['address'] or '')[:80]}")
+    person = _person_for(runner)
+    env = _wp.env()
+    if not _wp.configured(env):
+        return {"ok": False,
+                "error": "wp-boards.env missing on this host — say the "
+                         "page could not be saved, don't claim it was sent"}
     try:
-        pub = await runner.cms_publish_page(
-            slug=slug, title=title, content=content, format="markdown",
-            lang=lang, summary=summary, domain="places", public="true",
-            fresh_for="30d",
-            confidence="medium" if resolved["coords"] else "low")
+        async with httpx.AsyncClient(timeout=30,
+                                     follow_redirects=True) as client:
+            tag_ids = [t for t in (
+                await _wp.ensure_tag(client, env, person),
+                await _wp.ensure_tag(client, env, "place-report"),
+            ) if t]
+            post = await _wp.create_post(
+                client, env, title, _md_html(content),
+                tag_ids=tag_ids, status="publish")
     except Exception as exc:
         return {"ok": False,
-                "error": f"page publish failed ({type(exc).__name__}): "
+                "error": f"wp post failed ({type(exc).__name__}): "
                          f"{exc} — say the page could not be saved, "
                          "don't claim it was sent"}
+    if not post.get("ok"):
+        return {"ok": False,
+                "error": f"wp post failed: {post.get('error')} — say the "
+                         "page could not be saved, don't claim it was sent"}
     out = {
         "ok": True,
         "slug": slug,
@@ -281,17 +338,11 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
         "address": resolved["address"],
         "coords": resolved["coords"],
         "resolved_url": resolved["resolved_url"],
-        "publish": {k: pub.get(k) for k in ("status", "public_url",
-                                            "view_url")},
+        "wp_id": post.get("id"),
+        "public_url": post.get("link"),
     }
-    if pub.get("public_url"):
-        out["note"] = (
-            "send public_url back in the chat — it is the link members "
-            "asked for; it goes live on chaba.h3 within ~15min of the "
-            "publisher timer. If they need it NOW, also send the "
-            "Google Maps link itself.")
-    else:
-        out["note"] = ("page published but no public_url came back — "
-                       "check ADA_CMS_PUBLIC_BASE for this lane; share "
-                       "view_url only on the tailnet.")
+    out["note"] = (
+        "send public_url back in the chat — it is already live on "
+        "boards.surf-thailand.com. If they need the raw location too, "
+        "also send the Google Maps link itself.")
     return out
