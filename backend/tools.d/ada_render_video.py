@@ -35,6 +35,11 @@ Env:
     ADA_RENDER_VIDEO_POLL_S — poll interval, default 6
     ADA_SELF_URL            — self API base for relative ref paths
                               (default http://127.0.0.1:$ADA_PORT or :8000)
+
+Every call that reaches Veo also logs a render_job post to the WP
+boards (card ada-render-job-wp-log) via backend/wp_client.py — kind=
+video meta for visibility + cost tracking. Fire-and-forget: it never
+fails a render, and hosts without wp-boards.env skip it silently.
 """
 
 from __future__ import annotations
@@ -45,6 +50,8 @@ import logging
 import os
 import re
 import secrets
+import socket
+import time
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -439,6 +446,111 @@ def _save(data: bytes) -> Path:
     return path
 
 
+# --- render_job board logging (card ada-render-job-wp-log) --------------
+# Every call that reaches Veo (submit or resume) lands one render_job
+# post on the WP boards so renders are visible and cost-trackable. The
+# write is fire-and-forget: it must never fail a render or hold _finish's
+# return, and hosts without wp-boards.env skip it silently.
+
+_WP_TASKS: set[asyncio.Task] = set()
+
+# Rough USD per generated second at published list prices — an estimate
+# for cost tracking only, NOT a billing figure. veo-3.1-fast runs
+# ~$0.10/s at 720p and ~$0.12/s at 1080p; full veo-3.x ~$0.40/s.
+_VEO_RATE_FAST = {"720p": 0.10, "1080p": 0.12}
+_VEO_RATE_FULL = {"720p": 0.40, "1080p": 0.40}
+
+
+def _est_cost_usd(secs: int, res: str) -> float:
+    rates = _VEO_RATE_FAST if "fast" in _model() else _VEO_RATE_FULL
+    return round((rates.get(res) or rates["720p"]) * secs, 4)
+
+
+def _requested_by(runner: Any) -> str:
+    """lane/user best-effort: ADA_INSTANCE_ID plus the caller's memory
+    identity when the session resolved one."""
+    lane = os.environ.get("ADA_INSTANCE_ID") or ""
+    user = ""
+    try:
+        ident = runner._memory_identity()
+        if isinstance(ident, str):
+            user = ident
+    except Exception:
+        pass
+    return "/".join(p for p in (lane, user) if p) or "unknown"
+
+
+async def _post_render_job(env: dict[str, str], title: str,
+                           body: str, meta: dict[str, Any]) -> None:
+    try:
+        from backend import wp_client as wp
+        async with httpx.AsyncClient(
+                timeout=15, follow_redirects=True) as client:
+            res = await wp.create_post(client, env, title, body,
+                                       post_type="render_job", meta=meta)
+        if res.get("ok"):
+            logger.info("render_job posted: %s", res.get("link"))
+        else:
+            logger.warning("render_job post failed: %s", res.get("error"))
+    except Exception as exc:
+        logger.warning("render_job post failed: %s", exc)
+
+
+def _log_render_job(job: dict[str, Any], out: dict[str, Any]) -> None:
+    """Schedule the render_job post for one finished call. Never raises,
+    never blocks — a WP outage or slow board cannot touch the render."""
+    try:
+        from backend import wp_client as wp
+        env = wp.env()
+        if not wp.configured(env):
+            return  # no wp-boards.env on this host — skip silently
+        status = ("ok" if out.get("ok")
+                  else "pending" if out.get("pending") else "error")
+        err = str(out.get("error") or "")
+        est = _est_cost_usd(job["secs"], job["res"])
+        meta: dict[str, Any] = {
+            "kind": "video",
+            "prompt": job["prompt"],
+            "model": _model(),
+            "secs": job["secs"],
+            "aspect": job["ratio"],
+            "res": job["res"],
+            "ref_url": job["ref_url"],
+            "operation": job["operation"],   # Veo op — resume dedup key
+            "duration_s": round(time.monotonic() - job["t0"], 1),
+            "host": socket.gethostname(),
+            "backend": "veo",
+            "status": status,
+            "output_url": out.get("video_url") or "",
+            "source": "ada_render_video",
+            "requested_by": _requested_by(job["runner"]),
+            "est_cost_usd": est,
+            # reserved for extend chains — this tool renders one op per
+            # job and a resume shares the submit's operation (dedup lands
+            # it on the same post), so every job is a root here.
+            "parent_job": "",
+            "chain_index": 0,
+        }
+        if status == "error":
+            meta["error"] = err[:400]
+        short = job["prompt"][:60].strip() or "video clip"
+        title = f"Render — {short} {datetime.now().strftime('%Y-%m-%d')}"
+        url_out = str(out.get("video_url") or "")
+        body = (f"<p>{job['prompt'] or '(resumed render)'}</p>\n"
+                f"<p>{_model()} · {job['secs']}s · {job['ratio']} · "
+                f"{job['res']} · est ${est:.2f}</p>\n"
+                + (f'<p><a href="{url_out}">video</a></p>\n'
+                   if url_out else "")
+                + (f"<p>error: {err[:200]}</p>\n"
+                   if status == "error" else ""))
+        task = asyncio.create_task(
+            _post_render_job(env, title, body, meta))
+        _WP_TASKS.add(task)
+        task.add_done_callback(_WP_TASKS.discard)
+    except Exception as exc:
+        logger.info("render_job log skipped: %s", exc)
+
+
 async def _finish(runner: Any, client: httpx.AsyncClient, api_key: str,
                   op_name: str, prompt: str, ratio: str, secs: int
                   ) -> dict[str, Any]:
@@ -500,6 +612,28 @@ async def _finish(runner: Any, client: httpx.AsyncClient, api_key: str,
     return out
 
 
+async def _attempt(runner: Any, client: httpx.AsyncClient, api_key: str,
+                   job: dict[str, Any]) -> dict[str, Any]:
+    """Submit-or-resume flow; fills job['operation'] once Veo accepts."""
+    if job["operation"]:
+        return await _finish(runner, client, api_key, job["operation"],
+                             job["prompt"], job["ratio"], job["secs"])
+    ref = None
+    if job["ref_url"]:
+        ref, err = await _resolve_ref(client, job["ref_url"])
+        if err:
+            return {"ok": False, "error": err}
+    op_name, err = await _submit(client, api_key, job["prompt"], ref,
+                                 job["ratio"], job["secs"], job["res"])
+    if err:
+        return {"ok": False, "error": err}
+    assert op_name is not None
+    job["operation"] = op_name
+    logger.info("veo render submitted: %s", op_name)
+    return await _finish(runner, client, api_key, op_name,
+                         job["prompt"], job["ratio"], job["secs"])
+
+
 async def run(runner: Any, **args: Any) -> dict[str, Any]:
     closed = _gate_closed()
     if closed:
@@ -549,20 +683,10 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
                 "error": "ref_url must be a 'doc/...' intake key, a "
                          "/api/documents/... path, or an http(s) image URL"}
 
+    job = {"t0": time.monotonic(), "prompt": prompt, "ratio": ratio,
+           "secs": secs, "res": res, "ref_url": ref_url,
+           "operation": operation, "runner": runner}
     async with httpx.AsyncClient(timeout=90.0) as client:
-        if operation:
-            return await _finish(runner, client, api_key, operation,
-                                 prompt, ratio, secs)
-        ref = None
-        if ref_url:
-            ref, err = await _resolve_ref(client, ref_url)
-            if err:
-                return {"ok": False, "error": err}
-        op_name, err = await _submit(
-            client, api_key, prompt, ref, ratio, secs, res)
-        if err:
-            return {"ok": False, "error": err}
-        assert op_name is not None
-        logger.info("veo render submitted: %s", op_name)
-        return await _finish(runner, client, api_key, op_name,
-                             prompt, ratio, secs)
+        out = await _attempt(runner, client, api_key, job)
+    _log_render_job(job, out)
+    return out

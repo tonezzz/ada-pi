@@ -1,0 +1,102 @@
+# SSOT Job: ada_render_video -> WP render_job board logging
+# Card: ada-render-job-wp-log (kanban). Dispatch
+# 20261014-215906-each-ada-render-video-call-sho. Plugin v0.3.1
+# (boards WP) registers render_job CPT + kind=video meta.
+
+title: ada_render_video -> one render_job post per call on WP boards
+subtitle: fire-and-forget wp_client.create_post(post_type='render_job',
+  meta=...) for render visibility + cost tracking
+
+planning:
+  goal: |
+    Every ada_render_video call that reaches Veo (submit or resume)
+    lands one render_job post on the WP boards: status ok|error
+    (+pending for poll-timeout resumes), the Veo operation name as
+    the resume dedup key, and a published-price est_cost_usd so
+    renders are visible and cost-trackable.
+  decisions: |
+    - Transport: backend/wp_client.py create_post gained a meta={}
+      kwarg -> payload["meta"]; the render_job CPT's plugin-registered
+      show_in_rest post meta accepts the field set. Same auth as
+      wp_post (wp-boards.env on the backend host); no env -> skip
+      silently.
+    - Coverage: logging starts once input validation passes and the
+      call enters the Veo attempt stage (ref resolve -> submit ->
+      _finish). Gate-closed / lane-not-open / bad-arg refusals are
+      not render jobs and don't post.
+    - Status map: ok -> 'ok', pending timeout (ok:false+pending) ->
+      'pending', everything else -> 'error' with meta.error[:400].
+      'pending' is deliberately outside the card's ok|error pair —
+      the submit already billed a render and the post must exist;
+      the resume call shares the same operation dedup key and the
+      plugin reconciles it onto the same job.
+    - parent_job/chain_index: reserved for future extend chains.
+      ada_render_video renders exactly one op per job and a resume
+      shares the submit's operation, so both are always ""/0 —
+      setting a self-referencing parent would corrupt dedup.
+    - est_cost_usd is an ESTIMATE (documented in code + this doc):
+      model contains 'fast' -> {720p: 0.10, 1080p: 0.12} USD/s,
+      else full-veo fallback {720p: 0.40, 1080p: 0.40}; x secs.
+    - Never-fail/never-block: asyncio.create_task fire-and-forget
+      (tracked in module _WP_TASKS for tests/GC), own 15s httpx
+      client, try/except + logger only. A WP outage cannot touch
+      the render result or hold _finish's return.
+    - requested_by = "<ADA_INSTANCE_ID>/<_memory_identity()>" when
+      known, else 'unknown'; host = socket.gethostname().
+    - Title per title_standard: 'Render — {prompt[:60]} {YYYY-MM-DD}'.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-14"
+  steps:
+    - id: 1
+      label: "wp_client.create_post meta kwarg"
+      status: done
+      notes: "backwards-compatible meta param -> payload['meta'];
+        existing wp_post/place_report callers unchanged."
+    - id: 2
+      label: "render_job logging in ada_render_video"
+      status: done
+      notes: "_attempt() extracted (submit-or-resume, fills
+        job['operation']); _log_render_job() schedules
+        _post_render_job() after the attempt returns; cost table,
+        title_standard, meta field set per card."
+    - id: 3
+      label: "unit tests"
+      status: done
+      notes: "tests/test_render_video.py +RenderJobWpLogTest (6):
+        success meta shape, error meta, pending status, resume
+        dedup key, silent skip without env, WP failure never
+        breaks the render. RenderVideoTest.setUp stubs
+        wp_client.env->{} so no suite can hit a real board."
+
+invoke:
+  commands:
+    - ".venv/bin/python -m pytest tests/test_render_video.py -x -q"
+    - "python3 scripts/tool-lint.py"
+    - ".venv/bin/python -m pytest tests/ -x -q"
+
+verification:
+  - "tests/test_render_video.py: 31/31 — 25 pre-existing + 6 new
+    RenderJobWpLogTest asserting the render_job payload shape
+    (kind=video, prompt/model/secs/aspect/res/ref_url/operation/
+    duration_s/host/backend/status/output_url/source/requested_by/
+    est_cost_usd/parent_job/chain_index, error on failure)."
+  - "tool-lint.py: clean (53 declared, cap 112, 61 warnings)."
+  - "full suite: 1420 passed, 7 skipped, 31 subtests (uv-managed
+    .venv: httpx/numpy/pillow/websockets/uvicorn/fastapi/pytest —
+    worktree only, not deployed)."
+  - "live WP write NOT exercised (no wp-boards.env on this host —
+    correct silent-skip behavior); first real render_job post
+    lands on the next billed idc03 render."
+
+followups:
+  - "watch the first live render_job post on boards after deploy —
+    confirms the plugin accepts meta.kinds and 'pending' status;
+    if the plugin enum-restricts status, remap pending -> error
+    with meta.error='render still in flight'."
+  - "extend chains (video continuation) would populate
+    parent_job/chain_index — no producer yet."
+  - "ada_render_image could reuse the same hop as kind=image if
+    the plugin registers it — out of this card's scope."

@@ -8,12 +8,13 @@ path, pending timeout honesty, and manifest wiring.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
@@ -140,6 +141,13 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # Keep the render_job board log inert: an empty env means
+        # "not configured" so no test can post to a real board even on
+        # a host that has wp-boards.env. RenderJobWpLogTest patches it
+        # back per-test.
+        self._wp_env = patch("backend.wp_client.env", return_value={})
+        self._wp_env.start()
+        self.addCleanup(self._wp_env.stop)
         self.env = {"GEMINI_API_KEY": "test-key",
                     "ADA_RENDER_DIR": self.tmp.name,
                     "ADA_RENDER_VIDEO_OPEN": "1",
@@ -453,6 +461,161 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
             out = await render.run(_runner(), prompt="x",
                                    ref_url="file:///etc/passwd")
         self.assertFalse(out["ok"])
+
+
+WP_ENV = {"WP_SITE_URL": "https://b.example/wp", "WP_APP_USER": "u",
+          "WP_APP_PASSWORD": "p"}
+
+
+async def _drain_wp():
+    """Let fire-and-forget render_job posts run to completion."""
+    tasks = list(render._WP_TASKS)
+    if tasks:
+        await asyncio.gather(*tasks)
+
+
+def _wp_patches(create):
+    """Stub wp_client so render_job logging sees a configured board."""
+    return (patch("backend.wp_client.env", return_value=dict(WP_ENV)),
+            patch("backend.wp_client.configured", return_value=True),
+            patch("backend.wp_client.create_post", create))
+
+
+class RenderJobWpLogTest(unittest.IsolatedAsyncioTestCase):
+    """render_job board logging — best-effort, never blocks the render."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.env = {"GEMINI_API_KEY": "test-key",
+                    "ADA_RENDER_DIR": self.tmp.name,
+                    "ADA_RENDER_VIDEO_OPEN": "1",
+                    "LINE_MEDIA_ARCHIVE_DIR": self.tmp.name + "/arch",
+                    "ADA_RELAY_PUBLIC_BASE": "https://x/relay-img",
+                    "ADA_RENDER_VIDEO_POLL_S": "0"}
+
+    async def test_success_posts_render_job_meta(self):
+        factory, _ = _client(
+            post_resp=_submit_resp(),
+            get_queue=[_op_done(),
+                       FakeResp(200, content=MP4_BYTES,
+                                content_type="video/mp4")])
+        create = AsyncMock(return_value={"ok": True, "id": 7,
+                                         "link": "https://b/7"})
+        p_env, p_cfg, p_create = _wp_patches(create)
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", self.env), \
+                p_env, p_cfg, p_create:
+            out = await render.run(_runner(), prompt="a paper boat")
+            await _drain_wp()
+        self.assertTrue(out["ok"])
+        create.assert_awaited_once()
+        args, kw = create.await_args
+        self.assertEqual(kw["post_type"], "render_job")
+        title = args[2]
+        self.assertRegex(
+            title, r"^Render — a paper boat \d{4}-\d{2}-\d{2}$")
+        meta = kw["meta"]
+        self.assertEqual(meta["kind"], "video")
+        self.assertEqual(meta["prompt"], "a paper boat")
+        self.assertEqual(meta["model"], "veo-3.1-fast-generate-preview")
+        self.assertEqual(meta["secs"], 8)
+        self.assertEqual(meta["aspect"], "16:9")
+        self.assertEqual(meta["res"], "720p")
+        self.assertEqual(meta["ref_url"], "")
+        self.assertEqual(meta["operation"], OP_NAME)
+        self.assertGreaterEqual(meta["duration_s"], 0)
+        self.assertTrue(meta["host"])
+        self.assertEqual(meta["backend"], "veo")
+        self.assertEqual(meta["status"], "ok")
+        self.assertEqual(meta["output_url"], out["video_url"])
+        self.assertEqual(meta["source"], "ada_render_video")
+        self.assertTrue(meta["requested_by"])
+        self.assertAlmostEqual(meta["est_cost_usd"], 0.80)
+        self.assertEqual(meta["parent_job"], "")
+        self.assertEqual(meta["chain_index"], 0)
+        self.assertNotIn("error", meta)
+
+    async def test_failure_posts_error_meta(self):
+        factory, _ = _client(post_resp=_submit_resp(
+            status=429, payload={"error": {"message": "quota exceeded"}}))
+        create = AsyncMock(return_value={"ok": True})
+        p_env, p_cfg, p_create = _wp_patches(create)
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", self.env), \
+                p_env, p_cfg, p_create:
+            out = await render.run(_runner(), prompt="a boat")
+            await _drain_wp()
+        self.assertFalse(out["ok"])
+        create.assert_awaited_once()
+        meta = create.await_args.kwargs["meta"]
+        self.assertEqual(meta["status"], "error")
+        self.assertIn("HTTP 429", meta["error"])
+        self.assertEqual(meta["output_url"], "")
+        self.assertEqual(meta["operation"], "")
+
+    async def test_pending_posts_pending_status(self):
+        env = dict(self.env)
+        env["ADA_RENDER_VIDEO_WAIT_S"] = "0.001"
+        factory, _ = _client(post_resp=_submit_resp(),
+                             get_resp=_op_pending())
+        create = AsyncMock(return_value={"ok": True})
+        p_env, p_cfg, p_create = _wp_patches(create)
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", env), \
+                p_env, p_cfg, p_create:
+            out = await render.run(_runner(), prompt="a boat")
+            await _drain_wp()
+        self.assertTrue(out["pending"])
+        meta = create.await_args.kwargs["meta"]
+        self.assertEqual(meta["status"], "pending")
+        self.assertEqual(meta["operation"], OP_NAME)
+
+    async def test_resume_posts_same_operation(self):
+        factory, _ = _client(
+            get_queue=[_op_done(),
+                       FakeResp(200, content=MP4_BYTES)])
+        create = AsyncMock(return_value={"ok": True})
+        p_env, p_cfg, p_create = _wp_patches(create)
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", self.env), \
+                p_env, p_cfg, p_create:
+            out = await render.run(_runner(), operation=OP_NAME)
+            await _drain_wp()
+        self.assertTrue(out["ok"])
+        meta = create.await_args.kwargs["meta"]
+        self.assertEqual(meta["operation"], OP_NAME)
+        self.assertEqual(meta["status"], "ok")
+
+    async def test_missing_wp_env_skips_silently(self):
+        factory, _ = _client(
+            post_resp=_submit_resp(),
+            get_queue=[_op_done(),
+                       FakeResp(200, content=MP4_BYTES)])
+        create = AsyncMock(return_value={"ok": True})
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", self.env), \
+                patch("backend.wp_client.env", return_value={}), \
+                patch("backend.wp_client.create_post", create):
+            out = await render.run(_runner(), prompt="a boat")
+            await _drain_wp()
+        self.assertTrue(out["ok"])
+        create.assert_not_awaited()
+
+    async def test_wp_failure_never_breaks_render(self):
+        factory, _ = _client(
+            post_resp=_submit_resp(),
+            get_queue=[_op_done(),
+                       FakeResp(200, content=MP4_BYTES)])
+        create = AsyncMock(side_effect=RuntimeError("wp down"))
+        p_env, p_cfg, p_create = _wp_patches(create)
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", self.env), \
+                p_env, p_cfg, p_create:
+            out = await render.run(_runner(), prompt="a boat")
+            await _drain_wp()
+        self.assertTrue(out["ok"])
+        self.assertIn("video_url", out)
 
 
 class DeclarationTest(unittest.TestCase):
