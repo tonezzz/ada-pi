@@ -10,7 +10,9 @@ from ~/.config/secrets/wp-boards.env — never the master login password.
 
 REST calls go through ?rest_route= instead of /wp-json/ — the Plesk
 vhost does not rewrite /wp-json/ (404s) while index.php?rest_route=
-works unconditionally.
+works unconditionally. Params are appended to the URL by hand: httpx's
+params merge re-encodes the literal '/' in rest_route and WP falls back
+to the front page.
 
 Env (wp-boards.env on the backend host):
     WP_SITE_URL     — e.g. https://boards.surf-thailand.com/wp
@@ -84,7 +86,8 @@ def _env() -> dict:
     return env
 
 
-def _api(env: dict, method: str, route: str, **kw: Any):
+async def _api(client: httpx.AsyncClient, env: dict, method: str,
+               route: str, **kw: Any):
     base = env["WP_SITE_URL"].rstrip("/")
     url = (f"{base}/index.php?rest_route="
            + urllib.parse.quote("/wp/v2/" + route.lstrip("/"), safe="/"))
@@ -95,8 +98,7 @@ def _api(env: dict, method: str, route: str, **kw: Any):
         f"{env['WP_APP_USER']}:{env['WP_APP_PASSWORD']}".encode()).decode()
     headers = kw.pop("headers", {})
     headers["Authorization"] = f"Basic {auth}"
-    return httpx.request(method, url, headers=headers, timeout=30,
-                         follow_redirects=True, **kw)
+    return await client.request(method, url, headers=headers, **kw)
 
 
 def _media_local_path(media_url: str) -> str | None:
@@ -120,7 +122,7 @@ def _https(url: str) -> str:
     return u
 
 
-def run(args: dict) -> dict:
+async def run(runner: Any, **args: Any) -> dict:
     person = str(args.get("person") or "").strip().lower()
     title = str(args.get("title") or "").strip()
     content = str(args.get("content") or "").strip()
@@ -139,71 +141,76 @@ def run(args: dict) -> dict:
                          "WP_APP_USER/WP_APP_PASSWORD on this host"}
 
     try:
-        # member tag — find or create
-        r = _api(env, "GET", "tags", params={"slug": person})
-        tags = r.json() if r.status_code == 200 else []
-        tag_id = tags[0]["id"] if tags else None
-        if not tag_id:
-            r = _api(env, "POST", "tags", json={"name": person})
+        async with httpx.AsyncClient(timeout=30,
+                                     follow_redirects=True) as client:
+            # member tag — find or create
+            r = await _api(client, env, "GET", "tags",
+                           params={"slug": person})
+            tags = r.json() if r.status_code == 200 else []
+            tag_id = tags[0]["id"] if tags else None
+            if not tag_id:
+                r = await _api(client, env, "POST", "tags",
+                               json={"name": person})
+                if r.status_code not in (200, 201):
+                    return {"ok": False,
+                            "error": f"tag create failed {r.status_code}"}
+                tag_id = r.json().get("id")
+
+            # optional media from the LINE archive
+            media_id, media_src = None, ""
+            media_note = ""
+            if media_url:
+                local = _media_local_path(media_url)
+                if not local:
+                    media_note = " (photo skipped — not found in archive)"
+                else:
+                    mime = (mimetypes.guess_type(local)[0] or
+                            "application/octet-stream")
+                    fname = os.path.basename(local)
+                    with open(local, "rb") as fh:
+                        data = fh.read()
+                    r = await _api(client, env, "POST", "media",
+                                   content=data, headers={
+                                       "Content-Type": mime,
+                                       "Content-Disposition":
+                                           f'attachment; filename="{fname}"',
+                                   })
+                    if r.status_code in (200, 201):
+                        media_id = r.json().get("id")
+                        media_src = _https(r.json().get("source_url") or "")
+                    else:
+                        media_note = (f" (photo upload failed "
+                                      f"{r.status_code})")
+
+            body = ""
+            if media_src:
+                body += f'<p><img src="{media_src}" alt=""/></p>\n'
+            body += "".join(
+                f"<p>{ln}</p>\n"
+                for ln in content.split("\n") if ln.strip())
+
+            payload: dict[str, Any] = {
+                "title": title,
+                "content": body,
+                "status": "publish" if publish else "draft",
+                "tags": [tag_id] if tag_id else [],
+            }
+            if media_id:
+                payload["featured_media"] = media_id
+            r = await _api(client, env, "POST", "posts", json=payload)
             if r.status_code not in (200, 201):
                 return {"ok": False,
-                        "error": f"tag create failed {r.status_code}"}
-            tag_id = r.json().get("id")
-
-        # optional media from the LINE archive
-        media_id, media_src = None, ""
-        media_note = ""
-        if media_url:
-            local = _media_local_path(media_url)
-            if not local:
-                media_note = " (photo skipped — not found in archive)"
-            else:
-                mime = (mimetypes.guess_type(local)[0] or
-                        "application/octet-stream")
-                fname = os.path.basename(local)
-                with open(local, "rb") as fh:
-                    data = fh.read()
-                r = _api(env, "POST", "media", content=data, headers={
-                    "Content-Type": mime,
-                    "Content-Disposition":
-                        f'attachment; filename="{fname}"',
-                })
-                if r.status_code in (200, 201):
-                    media_id = r.json().get("id")
-                    media_src = _https(
-                        (r.json().get("source_url") or ""))
-                else:
-                    media_note = (f" (photo upload failed "
-                                  f"{r.status_code})")
-
-        body = ""
-        if media_src:
-            body += f'<p><img src="{media_src}" alt=""/></p>\n'
-        body += "".join(
-            f"<p>{ln}</p>\n" for ln in content.split("\n") if ln.strip())
-
-        payload: dict[str, Any] = {
-            "title": title,
-            "content": body,
-            "status": "publish" if publish else "draft",
-            "tags": [tag_id] if tag_id else [],
-        }
-        if media_id:
-            payload["featured_media"] = media_id
-        r = _api(env, "POST", "posts", json=payload)
-        if r.status_code not in (200, 201):
-            return {"ok": False,
-                    "error": f"post create failed {r.status_code}: "
-                             f"{r.text[:160]}"}
-        link = _https(r.json().get("link") or "")
-        return {
-            "ok": True,
-            "id": r.json().get("id"),
-            "url": link,
-            "status": "publish" if publish else "draft",
-            "media_url": media_src or None,
-            "note": media_note or None,
-            "tag_archive": f"{_PUBLIC_BASE}/?tag={person}",
-        }
+                        "error": f"post create failed {r.status_code}: "
+                                 f"{r.text[:160]}"}
+            link = _https(r.json().get("link") or "")
+            return {
+                "ok": True,
+                "id": r.json().get("id"),
+                "url": link,
+                "status": "publish" if publish else "draft",
+                "media_url": media_src or None,
+                "note": media_note or None,
+                "tag_archive": f"{_PUBLIC_BASE}/?tag={person}",
+            }
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
