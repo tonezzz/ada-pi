@@ -189,6 +189,9 @@ def main() -> int:
     ap.add_argument("--api-key", default=os.environ.get("ADA_API_KEY") or "")
     ap.add_argument("--scenarios-dir", default=os.path.join(REPO, "tests", "scenarios-live"))
     ap.add_argument("--only", default="", help="run only scenarios whose name contains this string")
+    ap.add_argument("--transport", choices=["live", "text"], default=None,
+                    help="force transport for scenarios that don't declare "
+                         "transport: in yaml — per-scenario field wins")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -269,6 +272,11 @@ def main() -> int:
                    "--events-json", ev_path]
             if api_key:
                 cmd += ["--api-key", api_key]
+            # BEN-0573: per-scenario `transport: text` → REST text provider
+            # (mode=text) instead of a billed Live session; yaml wins over
+            # the suite-level --transport override.
+            if (spec.get("transport") or args.transport) == "text":
+                cmd += ["--text"]
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=900,
             )
