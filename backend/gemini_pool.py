@@ -343,6 +343,7 @@ def rest_client(api_key: str | None = None,
 _RAW_TO_CLASS = {
     "gemini-3.5-flash-lite": "summary",
     "gemini-3.5-flash": "chat",
+    "gemini-3.1-flash-image": "image",
 }
 
 

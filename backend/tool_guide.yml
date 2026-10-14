@@ -559,6 +559,18 @@ ada_track_device: >-
   <city>' when stale, never narrate a live fix. A 'no device
   matching' miss is honest — offer action='list'.
 
+ada_render_image: >-
+  prompt= is the assembled image description (subject, style, mood) -
+  ask at most one clarifying question, then render; never speak param
+  names. ref_url= edits a source photo instead of generating fresh:
+  pass the 'doc/...' intake key from a [document uploaded] note, a
+  /api/documents/... path, or any fetchable image URL - including the
+  /relay-img/arch/... link from a photo the user just sent ('edit this
+  photo', 'make the car red'). aspect= is square (1:1, default),
+  landscape (16:9) or portrait (9:16). The result's image_url posts to
+  the chat automatically on LINE/TG relays - confirm what was made in
+  one line, do not re-send or re-render unless asked.
+
 ada_render_video: >-
   prompt= is the full assembled scene description (subject, motion,
   style, audio cues) — ask at most one clarifying question, then render;

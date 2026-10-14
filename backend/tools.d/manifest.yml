@@ -29,6 +29,11 @@ tools:
     policy: read
     secondary_allowed: true
     timeout_s: 20
+  ada_render_image:
+    module: ada_render_image
+    policy: read
+    secondary_allowed: false
+    timeout_s: 90
   ada_render_video:
     module: ada_render_video
     policy: read
