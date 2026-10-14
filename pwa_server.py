@@ -163,6 +163,28 @@ app = FastAPI(title="Ada iPad PWA backend")
 ha_client = HomeAssistantClient()
 tool_runner = ToolRunner(ha_client)
 
+# Webchat CORS (card webchat-lane-boards): the ada-webchat-card embedded
+# on the boards WP site is a different origin — its one cross-origin REST
+# call is the invite redeem. WS needs no CORS. Env-gated: empty (default)
+# means no cross-origin fetch is permitted at all; list the boards origin
+# (e.g. ADA_WEBCHAT_ORIGINS=https://boards.surf-thailand.com) per lane.
+# Credentials stay off — the widget carries the member key explicitly.
+_WEBCHAT_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get(
+    "ADA_WEBCHAT_ORIGINS", "").split(",") if o.strip()]
+if _WEBCHAT_ORIGINS:
+    try:
+        from fastapi.middleware.cors import CORSMiddleware
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=_WEBCHAT_ORIGINS,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["content-type", "x-api-key", "x-device-id"],
+        )
+        logger.info("webchat CORS origins: %s", _WEBCHAT_ORIGINS)
+    except ImportError:
+        logger.warning("ADA_WEBCHAT_ORIGINS set but CORSMiddleware unavailable")
+
 def _require_api_key(request: Request) -> None:
     """Require a configured API key or valid session cookie when auth is on."""
     if not auth.configured():
@@ -1093,6 +1115,16 @@ async def voice_socket(ws: WebSocket) -> None:
     if channel and chat_id:
         SESSION_CHAT[session_id] = {"channel": channel,
                                     "chat_id": chat_id}
+    # Web channel (boards webchat): requires the 'chat' key capability —
+    # view-only keys (cms-iframe 'view' app) must not open member chat
+    # lanes. Env keys and default file keys all carry 'chat'.
+    if (channel == "web" and auth.configured()
+            and not auth.key_can(caller_name or "", "chat")):
+        logger.info("session=%s web channel denied: caller=%s lacks "
+                    "the 'chat' capability", session_id, caller_name)
+        await ws.close(code=4403)
+        SESSION_CHAT.pop(session_id, None)
+        return
     # One ConversationMemory per websocket session, shared across provider
     # reconnects so the transcript survives a Gemini session swap.
     conversation = ConversationMemory(session_id)
@@ -1385,6 +1417,12 @@ async def voice_socket(ws: WebSocket) -> None:
         await ws.send_text(json.dumps({"type": "ready", "session": session_id}))
     except Exception:
         return
+    # Webchat: flush pushes parked while the member's page was closed —
+    # web pushes are quota-free, offline is their only failure mode
+    # (OPS-0651 parked pattern, in-memory like the live session registry).
+    if channel == "web" and chat_id:
+        with suppress(Exception):
+            await _webchat_flush_parked(chat_id, ws)
     asyncio.create_task(
         _prime_session_task(provider_ref[0], ws, conversation))
 
@@ -2561,6 +2599,120 @@ async def call_tool(request: Request) -> dict:
     except Exception as exc:
         logger.warning("tool %s failed: %s", name, exc)
         return {"tool": name, "status": "error", "error": str(exc)}
+
+
+# -- Webchat channel (boards WP widget, card webchat-lane-boards) -----------
+# channel=web sessions come from <ada-webchat-card> on the boards site.
+# Outbound push is quota-free: chat_send channel=web lands in
+# webchat_deliver (in-process) or POST /api/webchat/send (loopback /
+# operator / cross-lane). A live bound session gets a chat_push frame;
+# an offline member's pushes park in _WEBCHAT_PARKED (bounded) and flush
+# on the next connect — the OPS-0651 pattern without the 429.
+
+_WEBCHAT_PARKED: dict[str, collections.deque] = {}
+_WEBCHAT_PARKED_MAX = 20
+
+
+def _webchat_sessions(chat_id: str) -> list[tuple[str, dict]]:
+    """Live ws sessions bound to `chat_id` on the web channel."""
+    return [
+        (sid, sess) for sid, sess in _live_sessions.items()
+        if (SESSION_CHAT.get(sid) or {}).get("channel") == "web"
+        and SESSION_CHAT[sid].get("chat_id") == chat_id
+    ]
+
+
+def _webchat_frame(text: str = "", image_url: str = "",
+                   video_url: str = "") -> str:
+    return json.dumps({
+        "type": "chat_push", "text": str(text or ""),
+        "image_url": str(image_url or ""),
+        "video_url": str(video_url or "")})
+
+
+async def webchat_deliver(chat_id: str, text: str = "",
+                          image_url: str = "", video_url: str = ""
+                          ) -> dict:
+    """Push to a member's boards webchat; parked when the page is closed.
+
+    chat_id is the ws ?chat_id= the widget binds (web-<member>). Live
+    delivery goes to every matching session (a member may have the page
+    open on two devices); offline parks for the next connect."""
+    chat_id = str(chat_id or "").strip()
+    if not chat_id:
+        return {"ok": False, "error": "chat_id required"}
+    frame = _webchat_frame(text, image_url, video_url)
+    delivered = 0
+    for _sid, sess in _webchat_sessions(chat_id):
+        ws = sess.get("ws")
+        if ws is None:
+            continue
+        try:
+            await ws.send_text(frame)
+            delivered += 1
+        except Exception:
+            pass
+    if delivered:
+        return {"ok": True, "delivered": delivered, "chat_id": chat_id}
+    dq = _WEBCHAT_PARKED.setdefault(
+        chat_id, collections.deque(maxlen=_WEBCHAT_PARKED_MAX))
+    dq.append({"text": str(text or ""), "image_url": str(image_url or ""),
+               "video_url": str(video_url or ""), "at": time.time()})
+    return {"ok": True, "delivered": 0, "parked": True,
+            "chat_id": chat_id, "parked_count": len(dq)}
+
+
+async def _webchat_flush_parked(chat_id: str, ws: WebSocket) -> int:
+    """Send a chat_id's parked pushes to a freshly-connected webchat ws."""
+    dq = _WEBCHAT_PARKED.get(chat_id)
+    if not dq:
+        return 0
+    sent = 0
+    while dq:
+        msg = dq.popleft()
+        try:
+            await ws.send_text(_webchat_frame(
+                msg.get("text"), msg.get("image_url"),
+                msg.get("video_url")))
+            sent += 1
+        except Exception:
+            dq.appendleft(msg)
+            break
+    if not dq:
+        _WEBCHAT_PARKED.pop(chat_id, None)
+    if sent:
+        logger.info("webchat %s: flushed %d parked pushes", chat_id, sent)
+    return sent
+
+
+@app.post("/api/webchat/send")
+async def api_webchat_send(request: Request) -> dict:
+    """Outbound push to a member's boards webchat — the web channel's
+    relay-style /send (loopback/operator; chat_send prefers the
+    in-process webchat_deliver). Key-gated like /api/notify."""
+    _require_api_key(request)
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=422,
+                            detail=f"Invalid JSON: {exc}") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON object required")
+    chat_id = str(body.get("chat_id") or body.get("to") or "").strip()
+    text = str(body.get("text") or "")[:4000]
+    image_url = str(body.get("image_url") or "")[:2000]
+    video_url = str(body.get("video_url") or "")[:2000]
+    if not chat_id:
+        raise HTTPException(status_code=422, detail="chat_id (or to) required")
+    if not (text or image_url or video_url):
+        raise HTTPException(
+            status_code=422, detail="text, image_url or video_url required")
+    res = await webchat_deliver(
+        chat_id, text=text, image_url=image_url, video_url=video_url)
+    if not res.get("ok"):
+        raise HTTPException(status_code=422,
+                            detail=res.get("error") or "deliver failed")
+    return res
 
 
 @app.post("/api/notify")

@@ -163,6 +163,42 @@ class ChatMixin:
                 image_url="", video_url="", camera="", to=to)
         return out
 
+    async def _chat_send_web(self, chat_id: str, *, text: str,
+                             image_url: str, video_url: str) -> dict:
+        """Web-channel push — in-process delivery to the member's live
+        webchat ws when this service hosts it (the lane IS the webchat
+        backend), else the relay-style loopback POST. Offline members
+        park server-side; web pushes never hit a send quota."""
+        if not chat_id:
+            return {"ok": False,
+                    "error": "no web chat_id — pass to= or run inside "
+                             "a chat_id-bound web session"}
+        try:
+            import pwa_server
+            return await pwa_server.webchat_deliver(
+                chat_id, text=text, image_url=image_url,
+                video_url=video_url)
+        except ImportError:
+            pass  # tools running outside the server (tests, scripts)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        import urllib.request
+        ep = os.environ.get("ADA_WEBCHAT_SEND_URL",
+                            "http://127.0.0.1:8002/api/webchat/send")
+        payload = {"text": text, "image_url": image_url,
+                   "video_url": video_url, "to": chat_id,
+                   "chat_id": chat_id,
+                   "instance": os.environ.get("ADA_INSTANCE_ID", "")}
+        try:
+            req = urllib.request.Request(
+                ep, data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json",
+                         "x-api-key": os.environ.get("ADA_API_KEY", "")})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.load(r)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
     async def _chat_send_run(self, job_id: str, channel: str, text: str,
                              image_url: str, video_url: str, camera: str,
                              to: str, say: str = "") -> None:
@@ -227,6 +263,26 @@ class ChatMixin:
             summary_bits.append("voice: line/telegram only — skipped")
         for svc in relays:
             svc = svc.strip()
+            if svc == "web":
+                # Webchat push (card webchat-lane-boards): quota-free —
+                # live delivery to the member's boards page, parked
+                # server-side when it's closed. to= is the widget's
+                # chat_id (web-<member>); a bare send answers the chat
+                # the turn came from like the relay channels.
+                res = await self._chat_send_web(
+                    str(to or "").strip()
+                    or session_chat_id(self, "web"),
+                    text=text, image_url=url,
+                    video_url=(video_url or "").strip())
+                if res.get("ok"):
+                    ok_any = True
+                    summary_bits.append(
+                        "web: delivered" if res.get("delivered")
+                        else "web: parked (member offline)")
+                else:
+                    summary_bits.append(
+                        f"web: failed ({res.get('error', '?')})")
+                continue
             if svc == "line":
                 ep = os.environ.get("ADA_LINE_SEND_URL",
                                     "http://127.0.0.1:8912/send")

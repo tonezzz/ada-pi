@@ -1,0 +1,17 @@
+# wp_chat_page — boards webchat member page (card webchat-lane-boards).
+# ensure_page is idempotent: a re-run updates the same private page under
+# /chat/ rather than duplicating it, so the scenario is re-runnable.
+name: wp_chat_page
+tier: full
+turns:
+  - user: >-
+      Make a webchat page for kk on the boards site — her Ada lane is
+      https://ada-ha.surf-thailand.com. Keep it private under /chat/.
+    expect:
+      calls_any: [wp_chat_page]
+      timeout_s: 60
+      settle_s: 10
+  - user: What URL do I open to chat with her Ada on the web?
+    expect:
+      no_calls: true
+      timeout_s: 30

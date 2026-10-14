@@ -2,7 +2,7 @@ title: Ada Channel / Multi-Connection Standard
 subtitle: How voice, chat, and relay sessions coexist — identity, history, reconnect
 icon: 🔌
 status: operational
-updated: '2026-10-11'
+updated: '2026-10-14'
 
 # Multi-connection standard — verified against pwa_server.py / line_relay /
 # tg_relay / realtime_provider 2026-10-11 (dispatch + session 5b0d97f477 work).
@@ -36,6 +36,19 @@ channels:
   line:
     surface: line_relay -> /ws?channel=line
     mode: text-only; LINE webhook signature verified, per-user key
+  web:
+    surface: <ada-webchat-card> on boards WP (/chat/<member>, private) ->
+      /ws?channel=web&chat_id=web-<member>&mode=text
+    mode: REST text provider (OpenRouterTextProvider tools=True) — no
+      Live session at all; the member's key redeems via the invite flow
+      pasted into the widget (ADA_WEBCHAT_ORIGINS CORS-gates that one
+      cross-origin fetch; ws itself needs none)
+    identity: invite+redeem member key / pinned owner; 'chat' key
+      capability required (view-only keys get 4403)
+    notes: outbound push is quota-free — chat_send channel=web to
+      web-<member> delivers in-process (webchat_deliver) or parks in
+      _WEBCHAT_PARKED (max 20/chat) until the page reconnects;
+      POST /api/webchat/send is the relay-style loopback form
 
 shared_history:
   rule: turns merge and mirror only between sessions with the same

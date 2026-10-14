@@ -1225,7 +1225,7 @@ def _builtin_declarations() -> list[dict[str, Any]]:
         }, {
             "name": "chat_send",
             "description": (
-                "Send a LINE/Telegram message in the background — 'queued' returns "
+                "Send a LINE/Telegram/webchat message in the background — 'queued' returns "
                 "first, the outcome lands later as a system note. camera=/image_url= "
                 "attach an image; photo=/doc= run the picker/upload flows; say= sends "
                 "a voice message (LINE and Telegram)."
@@ -1235,7 +1235,7 @@ def _builtin_declarations() -> list[dict[str, Any]]:
                 "properties": {
                     "channel": {
                         "type": "string",
-                        "description": "'line', 'telegram', or 'line,telegram'/'both'. Default 'line'.",
+                        "description": "'line', 'telegram', 'web' (member's boards webchat page — quota-free push, parked while their page is closed), or a comma combo / 'both' (= line+telegram). Default 'line'.",
                     },
                     "text": {
                         "type": "string",
@@ -1261,7 +1261,7 @@ def _builtin_declarations() -> list[dict[str, Any]]:
                     },
                     "to": {
                         "type": "string",
-                        "description": "Optional explicit LINE userId or Telegram chat_id; default = owner.",
+                        "description": "Optional explicit LINE userId, Telegram chat_id, or webchat chat_id (web-<member>); default = the chat this turn came from, else owner.",
                     },
                     "say": {
                         "type": "string",

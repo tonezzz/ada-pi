@@ -79,3 +79,8 @@ tools:
     policy: read
     secondary_allowed: true
     timeout_s: 60
+  wp_chat_page:
+    module: wp_chat_page
+    policy: read
+    secondary_allowed: true
+    timeout_s: 60
