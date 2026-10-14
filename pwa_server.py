@@ -211,6 +211,7 @@ async def api_health() -> dict:
             "mode": "chaba-guest",
             "conversation_memory": mem,
             "chaba": cstat,
+            "active_sessions": len(_live_sessions),
             "degraded": bool(mem["errors"] or not cstat["context_present"]),
         }
     banks = get_registry().health()
@@ -222,6 +223,8 @@ async def api_health() -> dict:
             "bank_count": banks["bank_count"],
             "errors": banks["errors"],
         },
+        # Live /ws session count — deploy-ada.sh polls this for drain grace.
+        "active_sessions": len(_live_sessions),
         "degraded": bool(mem["errors"] or banks["errors"]),
     }
 
@@ -1121,6 +1124,9 @@ async def voice_socket(ws: WebSocket) -> None:
     # real memory (banks are unaffected — explicit ada_remember still writes).
     no_persist = (ws.query_params.get("no_persist") or "").lower() in ("1", "true")
     conversation.no_persist = no_persist
+    # Incremental transcript append — a restart mid-session then loses no
+    # completed turn even when clean-close persist() never runs.
+    conversation.durable_transcript = not no_persist
     _live_sessions[session_id] = {
         "conversation": conversation,
         "connected_at": time.time(),

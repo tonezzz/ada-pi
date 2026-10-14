@@ -16,11 +16,14 @@
 #         ada_track_device incident).
 #      b. python3 scripts/tool-lint.py          — tool contract check
 #      c. .venv/bin/python -m pytest tests/ -x -q — unit tests
-#   4. restart the ada services and verify each is active
+#   4. drain grace — wait for live /ws sessions to close (ADA_DRAIN_S)
+#   5. restart the ada services and verify each is active
 #
 # Env:
 #   ADA_REPO       checkout to deploy (default ~/CascadeProjects/ada-pi)
 #   ADA_SERVICES   systemd --user units to restart (default: idc03 set)
+#   ADA_DRAIN_S    seconds to wait for live ws sessions to end before
+#                  restarting anyway (default 45; 0 skips the drain)
 #   DEPLOY_FORCE=1 bypass the mass-delete pause only — lint/test failures
 #                  are hard stops, fix the tree.
 
@@ -171,7 +174,62 @@ log "gate: pytest tests/ -x -q"
     || die ".venv interpreter broken (imports fail) — deploy aborted"
 .venv/bin/python -m pytest tests/ -x -q || die "pytest failed — deploy aborted before restart"
 
-# --- 4. restart + verify --------------------------------------------------
+# --- 4. drain grace -------------------------------------------------------
+# A fleet restart mid-conversation kills live turns (2026-10-14: session
+# 4585f3b060 died mid-conversation). Each backend reports its live /ws
+# count on the unauthenticated /api/health endpoint; wait for sessions to
+# drain before restarting. Transcript append is incremental per turn, so
+# an expiry restart loses nothing already spoken — the wait only spares a
+# reply being cut mid-flight.
+DRAIN_S="${ADA_DRAIN_S:-45}"
+
+service_port() {
+    # ADA_PORT in the unit environment first, then --port in ExecStart.
+    # Empty when unresolvable — that service is skipped (e.g. relays with
+    # no HTTP listener).
+    local p
+    p=$(systemctl --user show "$1" -p Environment --value 2>/dev/null \
+        | tr ' ' '\n' | sed -n 's/^ADA_PORT=\([0-9][0-9]*\)$/\1/p' | head -1)
+    if [[ -z "$p" ]]; then
+        p=$(systemctl --user cat "$1" 2>/dev/null \
+            | sed -n 's/.*--port[= ]\{1,\}\([0-9]\{1,5\}\).*/\1/p' | head -1)
+    fi
+    printf '%s' "$p"
+}
+
+live_sessions() {
+    curl -fsS -m 3 "http://127.0.0.1:$1/api/health" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(int(json.load(sys.stdin).get("active_sessions") or 0))
+except Exception:
+    print(0)'
+}
+
+if [[ "$DRAIN_S" != "0" ]]; then
+    deadline=$((SECONDS + DRAIN_S))
+    busy=""
+    while :; do
+        busy=""
+        for s in $SERVICES; do
+            port=$(service_port "$s")
+            [[ -n "$port" ]] || continue
+            n=$(live_sessions "$port")
+            (( n > 0 )) && busy="$busy ${s}:${n}"
+        done
+        [[ -z "$busy" ]] && break
+        (( SECONDS < deadline )) || break
+        log "drain: live ws sessions$busy — waiting"
+        sleep 3
+    done
+    if [[ -n "$busy" ]]; then
+        log "drain grace expired — restarting anyway:$busy"
+    else
+        log "drain: no live ws sessions"
+    fi
+fi
+
+# --- 5. restart + verify --------------------------------------------------
 log "restarting: $SERVICES"
 # shellcheck disable=SC2086
 systemctl --user restart $SERVICES

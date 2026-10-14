@@ -1,0 +1,51 @@
+# SSOT Job: transcript durability — incremental append + deploy drain grace
+# Card: ada-transcript-durability (kanban). Dispatch 20261014-220023.
+
+title: Transcript durability — per-turn append, health session count, drain grace
+subtitle: |
+  Fleet restart at 21:24:11 killed session 4585f3b060 mid-conversation and
+  the transcript was lost: the archive file only ever wrote inside
+  persist() on clean close, and provider.close() schedules persist() as a
+  task the dying loop may never run. Turns now append to the archive file
+  as they complete (SIGKILL-safe), and deploy-ada.sh waits a drain window
+  for live /ws sessions before restarting.
+
+planning:
+  goal: |
+    1. Completed turns reach disk at add time — a SIGKILL mid-session
+       loses nothing already spoken.
+    2. deploy-ada.sh waits (bounded) for live ws sessions before the
+       fleet restart.
+  decisions: |
+    - Opt-in flag `durable_transcript` on ConversationMemory, set by the
+      /ws handler for real sessions (not no_persist). Off by default so
+      tests and scenario_engine — which build ConversationMemory directly
+      — never write into the real archive dir (~/.local/share/ada/
+      transcripts).
+    - Append format mirrors the clean-close file exactly: ref comment +
+      '# Ada voice session' header on first append, then
+      '## Role [HH:MM:SS]\n<text>\n\n' per turn. _save_transcript_file
+      still rewrites the canonical file at clean close (identical modulo
+      a trailing blank line), so incremental appends are pure insurance.
+    - Archive path is memoized at first write — a session crossing
+      midnight lands in one file instead of splitting across days.
+    - The SIGTERM-handler alternative (flush on signal) was skipped:
+      systemd restart already runs the ws-handler finally block that
+      calls persist(), and incremental append covers SIGKILL which no
+      handler can.
+    - Drain surface: /api/health (unauthenticated, health-only) now
+      carries `active_sessions` — a count, no content. deploy-ada.sh
+      resolves each unit's port from ADA_PORT in the unit environment,
+      falling back to --port in ExecStart; units without a resolvable
+      port or listener (relays, down services) are skipped as drained.
+    - ADA_DRAIN_S bounds the wait (default 45s, 0 skips). Expiry restarts
+      anyway — drain grace protects mid-flight replies, transcripts are
+      already durable.
+
+verify:
+  - "tests: test_context_awareness.py TranscriptFileTests — 3 new cases
+    (append at add-time, default-off, no_persist)"
+  - "smoke: add_user/add_assistant/add_channel_mirror with
+    durable_transcript writes <day>-<sid>.md without persist()"
+  - "curl -s http://127.0.0.1:8002/api/health | jq .active_sessions"
+  - "ADA_DRAIN_S=5 deploy-ada.sh — logs 'drain:' lines then restarts"
