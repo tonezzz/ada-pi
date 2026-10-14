@@ -149,9 +149,32 @@ def _format_away(away_seconds: float) -> str:
     return f"about {round(away_seconds / 86400)} days"
 
 
-def reconnect_directive(away_seconds: float | None, last_tail: str = "") -> str | None:
+def reconnect_directive(away_seconds: float | None, last_tail: str = "",
+                        context_reset: bool = False) -> str | None:
     """Session note telling the model how to greet a returning user, or
-    None for a first-ever session (no prior disconnect on record)."""
+    None for a first-ever session (no prior disconnect on record).
+
+    context_reset=True is the mid-conversation provider reconnect that
+    could NOT resume (no resumption handle): the model-side context was
+    wiped and only last_tail survives. The directive makes her say the
+    reset aloud instead of quietly continuing on partial context (the
+    23:19 ICT 2026-10-13 kk incident — stream ended 1000, resumed=False,
+    she contradicted the coffee-plug answer without ever flagging the
+    reset)."""
+    if context_reset:
+        note = (
+            "Session note: your model connection just reset and could NOT "
+            "be resumed — the previous context is gone and only the "
+            "transcript tail below survived; the last exchange may be "
+            "incomplete. Acknowledge it aloud in one clause (the "
+            "connection hiccupped, the last moment may be missing), then "
+            "pick the conversation back up from the tail — do not "
+            "contradict what it shows."
+        )
+        if last_tail.strip():
+            note += ("\nConversation just before the reset:\n"
+                     + last_tail.strip())
+        return note
     tier = away_tier(away_seconds)
     if tier is None:
         return None
@@ -1378,6 +1401,7 @@ async def session_prime_text(
     last_tail: str = "",
     person_entity: str | None = None,
     channel_context: str = "",
+    context_reset: bool = False,
 ) -> str | None:
     """Build the session-start context injection: the rolling recent-sessions
     summary plus a few facts from the personal/general banks, so Ada starts
@@ -1388,7 +1412,8 @@ async def session_prime_text(
         return None
     parts: list[str] = []
     anon_note: str | None = None
-    directive = reconnect_directive(away_seconds, last_tail)
+    directive = reconnect_directive(
+        away_seconds, last_tail, context_reset=context_reset)
     if directive:
         parts.append(directive)
     # Short reconnect (<1h): skip the recent-sessions summary too — like

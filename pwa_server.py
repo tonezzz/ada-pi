@@ -980,11 +980,14 @@ async def _prime_session_task(
 async def _prime_session(
     provider: Any, reconnect: tuple[float | None, str] | None = None,
     conversation: ConversationMemory | None = None,
+    context_reset: bool = False,
 ) -> None:
     """Inject session-start context (recent-sessions summary + top personal/
     general memories) so Ada starts aware of general info instead of blank.
     On websocket connect, reconnect=(away_seconds, tail) adds a directive so
-    the greeting matches how long the user was gone."""
+    the greeting matches how long the user was gone. context_reset marks the
+    provider-reconnect-without-resume path: the directive then tells the
+    model the context was wiped mid-conversation and to say so aloud."""
     if CHABA_MODE:
         try:
             ctx = chaba.system_context(provider.session_id)
@@ -1006,6 +1009,7 @@ async def _prime_session(
             last_tail=tail,
             person_entity=tool_runner.policy_identity(),
             channel_context=channel_ctx,
+            context_reset=context_reset,
         )
         if text:
             t0 = time.monotonic()
@@ -1788,7 +1792,8 @@ async def voice_socket(ws: WebSocket) -> None:
                             await _prime_session(
                                 new_provider,
                                 reconnect=(0.0, tail),
-                                conversation=conversation)
+                                conversation=conversation,
+                                context_reset=True)
                         await ws.send_text(json.dumps({"type": "ready", "session": session_id}))
                         logger.info("session=%s provider reconnected (resumed=%s)", session_id, bool(handle))
                         break

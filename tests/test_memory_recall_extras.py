@@ -121,6 +121,36 @@ class PrimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Lisa clip", text)
         self.assertNotIn("old session summary", text)
 
+    async def test_context_reset_directive_says_reset_aloud(self):
+        # Provider reconnect with resumed=False (card
+        # ada-error-truthfulness-narration; kk 23:19 ICT 2026-10-13 —
+        # context wiped silently, Ada contradicted the coffee-plug
+        # answer). The directive must order an ALOUD acknowledgement and
+        # still carry the surviving tail.
+        text = memory_ops.reconnect_directive(
+            0.0, "User: is the coffee plug on\nAda: it is on",
+            context_reset=True)
+        self.assertIn("could NOT be resumed", text)
+        self.assertIn("aloud", text)
+        self.assertIn("coffee plug", text)
+        # Full prime path: reset directive lands, stale summary stays out.
+        fake = FakeMddb()
+        reg = build_registry("tony")
+        prime = await memory_ops.session_prime_text(
+            fake, reg,
+            summary="Some old session summary",
+            away_seconds=0.0,
+            last_tail="User: is the coffee plug on\nAda: it is on",
+            context_reset=True,
+        )
+        self.assertIn("could NOT be resumed", prime)
+        self.assertNotIn("old session summary", prime)
+
+    def test_context_reset_without_tail_still_directs(self):
+        text = memory_ops.reconnect_directive(0.0, "", context_reset=True)
+        self.assertIn("could NOT be resumed", text)
+        self.assertNotIn("Conversation just before", text)
+
 
 class HeadlineTests(unittest.IsolatedAsyncioTestCase):
     """L0 hot-tier fetch: fresh CMS pages with a speakable summary,
