@@ -166,3 +166,50 @@ async def create_post(client: httpx.AsyncClient, env: dict[str, str],
 def paragraphs(text: str) -> str:
     return "".join(f"<p>{ln}</p>\n"
                    for ln in text.split("\n") if ln.strip())
+
+
+# -- Pages (the /chat/ tree — webchat widget hosting) ------------------------
+
+
+async def find_page(client: httpx.AsyncClient, env: dict[str, str],
+                    slug: str, parent: int | None = None
+                    ) -> dict[str, Any] | None:
+    """First page matching slug (+ optional parent) at any status."""
+    params: dict[str, Any] = {"slug": slug, "status": "any",
+                              "per_page": 5}
+    if parent:
+        params["parent"] = parent
+    r = await api(client, env, "GET", "pages", params=params)
+    pages = r.json() if r.status_code == 200 else []
+    if not isinstance(pages, list) or not pages:
+        return None
+    return pages[0]
+
+
+async def ensure_page(client: httpx.AsyncClient, env: dict[str, str],
+                      slug: str, title: str, content_html: str, *,
+                      parent: int = 0, status: str = "private"
+                      ) -> dict[str, Any]:
+    """Create a WP page or update the existing one with the same slug.
+
+    Pages (not posts) carry the /chat/ hierarchy — the webchat widget
+    embeds live on private pages per member (card webchat-lane-boards).
+    """
+    existing = await find_page(client, env, slug, parent or None)
+    payload: dict[str, Any] = {
+        "title": title, "content": content_html,
+        "status": status, "slug": slug}
+    if parent:
+        payload["parent"] = parent
+    if existing:
+        r = await api(client, env, "POST",
+                      f"pages/{existing['id']}", json=payload)
+    else:
+        r = await api(client, env, "POST", "pages", json=payload)
+    if r.status_code not in (200, 201):
+        return {"ok": False,
+                "error": f"page {'update' if existing else 'create'} "
+                         f"failed {r.status_code}: {r.text[:160]}"}
+    return {"ok": True, "id": r.json().get("id"),
+            "link": https(r.json().get("link") or ""),
+            "created": not existing}

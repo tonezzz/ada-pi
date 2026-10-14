@@ -1,0 +1,75 @@
+# SSOT Job: webchat lane on boards WP — LINE-style chat screen on the
+# real Ada lanes. Card: webchat-lane-boards (ADA-0655).
+# Dispatch 20261014-220023-tony-2026-10-14-a-chat-screen-.
+
+title: >
+  Members chat with their Ada lane from a private boards WP page —
+  bespoke web component, invite+redeem auth, quota-free push
+
+subtitle: >
+  Tony ask ("a chat screen like TG/LINE on the boards website"): WP
+  chat plugins all call a raw OpenAI-compatible endpoint — no persona,
+  memory, tools, or journal. The bespoke widget wins because the whole
+  backend already exists: /ws takes channel+chat_id+mode=text, the
+  invite flow issues member keys, and SESSION_CHAT already binds
+  reply-context.
+
+planning:
+  goal: |
+    A ~LINE-style chat panel embedded in a private WP page under /chat/
+    per member; turns run on the member's real lane (tools, memory,
+    persona) and journal channel=web into the unified history; outbound
+    proactive pushes are quota-free (solves OPS-0651's LINE 429s for
+    this surface).
+  decisions: |
+    - Widget: pwa/cards/ada-webchat-card.js — ada-*-card standard
+      (no build, Shadow DOM), served from the lane's PWA static root
+      (/cards/...) and embedded cross-origin in WP. LINE-style: right
+      green bubbles (mine), left white+avatar (Ada), centered system
+      lines, dimmed [via] channel_activity lines, typing indicator,
+      reconnect backoff, inline img/video for tool media and pushes.
+    - Transport: wss://lane/ws?api_key=<member key>&channel=web
+      &chat_id=web-<member>&mode=text&device_id=<id>. mode=text pins
+      the OpenRouterTextProvider (REST, metered per call — no realtime
+      minutes), which emits the same event contract the relays use.
+    - Member auth: the existing invite+redeem flow — the member pastes
+      their /i/<token> link into the widget, which POSTs
+      /api/invite/<tok>/redeem and stores the key+device id in
+      localStorage on the boards origin (raw-key paste and ?key= also
+      work). ADA_WEBCHAT_ORIGINS envs a scoped CORSMiddleware for that
+      one cross-origin fetch; the ws itself needs no CORS.
+    - Gate: channel=web requires the 'chat' key capability
+      (auth.key_can) — view-only keys (cms iframes) get ws close 4403.
+      Env keys and default file keys carry 'chat'.
+    - Outbound: chat_send channel=web to=web-<member> (bare sends
+      default to the bound session chat like relays) →
+      pwa_server.webchat_deliver in-process; POST /api/webchat/send is
+      the relay-style loopback for off-process/cross-lane senders.
+      Offline members park in _WEBCHAT_PARKED (deque, 20/chat) flushed
+      at ws connect — OPS-0651 pattern, in-memory (restart drops the
+      queue — accepted v1).
+    - Hosting: wp_client.ensure_page + tools.d wp_chat_page tool —
+      creates/updates a private page slug web-<member> under parent
+      'chat' embedding <script src=lane/cards/ada-webchat-card.js> +
+      <ada-webchat-card lane member>. Ada can mint the page herself.
+
+verification:
+  - tests/test_webchat.py — 13 tests: live deliver, offline park,
+    channel/chat_id isolation, flush (clean + dead-ws remainder),
+    endpoint validation, chat_send routing + in-context default +
+    explicit to=, in-process deliver, loopback fallback. All pass.
+  - python3 scripts/tool-lint.py — clean (wp_chat_page declared in
+    manifest + covered by tests/scenarios-live/wp_chat_page.yaml).
+  - pytest tests/ -x -q — full suite.
+
+followups:
+  - Deploy wiring (not done in worktree): set ADA_WEBCHAT_ORIGINS=
+    https://boards.surf-thailand.com on the member lane(s); run
+    wp_chat_page (or the tool via Ada) to mint /chat/web-<member>;
+    send each member their invite link.
+  - One invite binds ONE device (TOFU) — a member using both the PWA
+    and boards chat needs a second key (e.g. user-<m>-web) or a re-pair;
+    documented in the widget setup error path.
+  - _WEBCHAT_PARKED is in-memory — a lane restart drops parked pushes
+    (LINE parks to disk; promote if it bites).
+  - Widget JS verified by inspection only — no browser/node on runner.
