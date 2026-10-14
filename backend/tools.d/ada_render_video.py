@@ -86,6 +86,11 @@ DECLARATION = {
                 "description": "landscape (16:9, default) | portrait "
                                "(9:16) | an explicit ratio.",
             },
+            "res": {
+                "type": "string",
+                "description": "720p (default) | 1080p (sharpest — "
+                               "landscape/16:9 only).",
+            },
             "operation": {
                 "type": "string",
                 "description": "Resume waiting on an in-flight render: "
@@ -201,6 +206,23 @@ def _gate_closed() -> str | None:
     return None
 
 
+_RES_ALIASES = {"720": "720p", "hd": "720p", "1080": "1080p",
+                 "fullhd": "1080p", "fhd": "1080p"}
+
+
+def _res(raw: Any) -> tuple[str | None, str | None]:
+    """-> (resolution, error). Blank defaults to 720p."""
+    val = str(raw or "").strip().lower()
+    if not val:
+        return "720p", None
+    if val in ("720p", "1080p"):
+        return val, None
+    if val in _RES_ALIASES:
+        return _RES_ALIASES[val], None
+    return None, (f"unknown resolution {raw!r} — video renders at "
+                  "720p (default) or 1080p (landscape only)")
+
+
 def _ref_from_engine(key: str) -> tuple[bytes, str] | None:
     """Resolve a held intake key in-process — the document_check engine
     is a process-wide singleton shared with the /api/documents/*
@@ -280,7 +302,8 @@ def _api_error(payload: Any, status: int) -> str:
 
 
 async def _submit(client: httpx.AsyncClient, api_key: str, prompt: str,
-                  ref: tuple[bytes, str] | None, ratio: str, secs: int
+                  ref: tuple[bytes, str] | None, ratio: str, secs: int,
+                  res: str = "720p"
                   ) -> tuple[str | None, str | None]:
     """POST predictLongRunning -> (operation name, None) or (None, err)."""
     instance: dict[str, Any] = {"prompt": prompt}
@@ -290,7 +313,8 @@ async def _submit(client: httpx.AsyncClient, api_key: str, prompt: str,
             "mimeType": mime, "data": base64.b64encode(data).decode()}}
     body = {
         "instances": [instance],
-        "parameters": {"aspectRatio": ratio, "durationSeconds": secs},
+        "parameters": {"aspectRatio": ratio, "durationSeconds": secs,
+                       "resolution": res},
     }
     url = f"{_api_base()}/v1beta/models/{_model()}:predictLongRunning"
     try:
@@ -477,6 +501,14 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
     if err:
         return {"ok": False, "error": err}
     assert secs is not None
+    res, err = _res(args.get("res"))
+    if err:
+        return {"ok": False, "error": err}
+    assert res is not None
+    if res == "1080p" and ratio != "16:9":
+        return {"ok": False, "error": (
+            "1080p only renders landscape (16:9) — portrait tops "
+            "out at 720p")}
     api_key = _api_key()
     if not api_key:
         return {"ok": False,
@@ -501,7 +533,7 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
             if err:
                 return {"ok": False, "error": err}
         op_name, err = await _submit(
-            client, api_key, prompt, ref, ratio, secs)
+            client, api_key, prompt, ref, ratio, secs, res)
         if err:
             return {"ok": False, "error": err}
         assert op_name is not None

@@ -145,6 +145,30 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
                     "ADA_RENDER_VIDEO_OPEN": "1",
                     "ADA_RENDER_VIDEO_POLL_S": "0"}
 
+    async def test_res_reaches_submit_params(self):
+        factory, client = _client(
+            post_resp=_submit_resp(),
+            get_queue=[_op_done(),
+                       FakeResp(200, content=MP4_BYTES,
+                                content_type="video/mp4")])
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", self.env), \
+                patch("backend.traffic_camera.publish_relay",
+                      return_value="https://x/frame?screen=0&token=r"):
+            out = await render.run(_runner(), prompt="p", res="1080p")
+        self.assertTrue(out["ok"], out)
+        params = client.posts[0][1]["json"]["parameters"]
+        self.assertEqual(params["resolution"], "1080p")
+
+    async def test_res_1080p_portrait_is_honest_error(self):
+        with patch.dict("os.environ", {"ADA_RENDER_VIDEO_OPEN": "1"}), \
+                patch.object(render.httpx, "AsyncClient",
+                          side_effect=AssertionError("no http expected")):
+            out = await render.run(_runner(), prompt="p", res="1080p",
+                                   aspect="9:16")
+        self.assertFalse(out["ok"])
+        self.assertIn("landscape", out["error"])
+
     async def test_closed_lane_refuses(self):
         with patch.dict("os.environ",
                         {"ADA_RENDER_VIDEO_OPEN": "0"}):
