@@ -210,7 +210,7 @@ async def run(runner: Any, **args: Any) -> dict:
                 "status": "publish" if publish else "draft",
                 "media_url": media_src or None,
                 "note": media_note or None,
-                "tag_archive": f"{_PUBLIC_BASE}/?tag={person}",
+                "tag_archive": f"{_PUBLIC_BASE}/index.php/tag/{person}/",
             }
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
