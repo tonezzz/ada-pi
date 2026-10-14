@@ -302,6 +302,11 @@ function handleControl(event) {
       window.idleFace?.setConnecting(true);
       setStatus("Reconnecting…");
       break;
+    case "live_budget_hold":
+      window.idleFace?.setConnecting(false);
+      setStatus("Voice suspended — monthly budget");
+      logLine(`Voice suspended: ${event.message || "monthly budget hold"}`, "system");
+      break;
     case "error":
       logLine(event.stage === "provider_connect"
         ? `Upstream provider refused: ${event.message}`

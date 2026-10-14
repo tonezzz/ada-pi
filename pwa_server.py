@@ -50,6 +50,7 @@ from backend.memory_banks import get_registry
 from backend import auth
 from backend import board_client
 from backend import chaba_memory
+from backend import lane_budget
 from backend.speaker_id import SpeakerIdentifier, SpeakerSession
 
 # Voiceprint drift tracker — rolling per-speaker identification scores.
@@ -1369,6 +1370,10 @@ async def voice_socket(ws: WebSocket) -> None:
             "type": "error",
             "stage": "provider_connect",
             "provider": type(provider_ref[0]).__name__,
+            # 'lane_budget'/'provider_cap' when per-lane spend
+            # enforcement held the connect (backend/lane_budget.py) —
+            # clients can render a suspended-not-broken banner.
+            "code": getattr(exc, "code", None),
             "message": _provider_error_message(exc),
         }
         # Text channels degrade to OpenRouter instead of dying (card
@@ -1843,8 +1848,22 @@ async def voice_socket(ws: WebSocket) -> None:
                         break
                     except Exception as exc:
                         logger.warning("session=%s provider reconnect failed: %s", session_id, exc)
-                        await asyncio.sleep(delay)
-                        delay = min(15.0, delay * 2)
+                        # Lane-budget/provider-cap hold: park for the
+                        # hold interval and tell the client the lane is
+                        # suspended, not flapping (card
+                        # ada-gemini-live-spend-cap).
+                        hold = lane_budget.hold_seconds(exc)
+                        if hold is not None:
+                            with suppress(Exception):
+                                await ws.send_text(json.dumps({
+                                    "type": "live_budget_hold",
+                                    "message": str(exc),
+                                    "retry_in_s": hold}))
+                            await asyncio.sleep(hold)
+                            delay = 1.0
+                        else:
+                            await asyncio.sleep(delay)
+                            delay = min(15.0, delay * 2)
         except Exception:
             logger.exception("session=%s provider_to_browser", session_id)
         finally:

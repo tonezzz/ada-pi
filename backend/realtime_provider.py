@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 
-from backend import chaba_memory, tools_loader, voice_config, vms_camera, vision_describe
+from backend import chaba_memory, lane_budget, tools_loader, voice_config, vms_camera, vision_describe
 from backend import command_lane, write_outbox
 from backend.instance import ada_instance_id
 from backend.conversation_memory import ConversationMemory
@@ -4941,6 +4941,12 @@ class GeminiLiveProvider(RealtimeProvider):
         if not self.api_key:
             raise RuntimeError("GEMINI_API_KEY is not set")
 
+        # Per-lane spend enforcement (card ada-gemini-live-spend-cap) —
+        # before any session setup: a latched provider billing cap or an
+        # exhausted lane budget fails fast and free here instead of
+        # paying Google for a doomed connect on every retry.
+        lane_budget.check(api_key=self.api_key, emit=self._emit_ops_event)
+
         self._client = genai.Client(api_key=self.api_key)
         self._client = genai.Client(api_key=self.api_key)
         config = await self._session_config(resumption_handle)
@@ -4948,7 +4954,15 @@ class GeminiLiveProvider(RealtimeProvider):
             model=self.model,
             config=config,
         )
-        self._session = await self._session_context.__aenter__()
+        try:
+            self._session = await self._session_context.__aenter__()
+        except Exception as exc:
+            # A billing-class provider error (monthly spend cap, prepaid
+            # depleted) latches the key fingerprint for the rest of the
+            # billing month — the next connect fails locally.
+            lane_budget.note_connect_failure(
+                exc, api_key=self.api_key, emit=self._emit_ops_event)
+            raise
         logger.info(
             "session=%s Gemini Live session connected (model=%s, voice=%s, video=%s)",
             self.session_id, self.model,
