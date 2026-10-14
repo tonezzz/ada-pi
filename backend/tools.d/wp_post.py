@@ -87,7 +87,7 @@ def _env() -> dict:
 def _api(env: dict, method: str, route: str, **kw: Any):
     base = env["WP_SITE_URL"].rstrip("/")
     url = (f"{base}/index.php?rest_route="
-           + urllib.parse.quote("/wp/v2/" + route.lstrip("/")))
+           + urllib.parse.quote("/wp/v2/" + route.lstrip("/"), safe="/"))
     auth = base64.b64encode(
         f"{env['WP_APP_USER']}:{env['WP_APP_PASSWORD']}".encode()).decode()
     headers = kw.pop("headers", {})
