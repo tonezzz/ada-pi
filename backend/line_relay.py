@@ -46,6 +46,9 @@ Env:
                                  (local only — like tg_relay's voice rule)
     LINE_VOICE_TRANSCRIBE      — "1" transcribes clips (faster-whisper) and
                                  routes the transcript like a text turn
+    LINE_WHISPER_URL           — remote whisper endpoint (ada-whisper on
+                                 omen GPU); local LINE_WHISPER_MODEL is
+                                 the fallback
     LINE_WHISPER_MODEL         — default base
     LINE_VOICE_ENROLL          — default 1: an unknown speaker on a
                                  caller-mapped lane arms a pending
@@ -544,11 +547,57 @@ def _voice_context(match: dict, pending: dict | None = None,
     return ctx + "]"
 
 
+def _decode_audio(path):
+    """16 kHz mono f32 numpy via ffmpeg — system binary or the
+    imageio-ffmpeg bundled one; faster-whisper's PyAV decoder is the
+    last resort (av pinned at 15.1 in this venv)."""
+    import shutil
+    import subprocess
+
+    import numpy as np
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        try:
+            import imageio_ffmpeg
+            exe = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            exe = ""
+    if exe:
+        out = subprocess.run(
+            [exe, "-nostdin", "-v", "error", "-i", str(path),
+             "-f", "f32le", "-acodec", "pcm_f32le", "-ac", "1",
+             "-ar", "16000", "-"],
+            capture_output=True, timeout=60)
+        if out.returncode == 0:
+            return np.frombuffer(out.stdout, dtype=np.float32)
+        logger.warning("ffmpeg decode failed: %s",
+                       out.stderr.decode(errors="replace")[:200])
+    from faster_whisper.audio import decode_audio
+    return decode_audio(str(path))
+
+
+def _transcribe_remote(url: str, path) -> str:
+    with open(path, "rb") as fh:
+        resp = httpx.post(url, files={"file": (Path(path).name, fh)},
+                          timeout=120)
+    resp.raise_for_status()
+    return (resp.json().get("text") or "").strip()
+
+
 def _transcribe(path) -> str:
-    """Free-first voice transcription — faster-whisper locally, model via
-    LINE_WHISPER_MODEL (default base). Gated by LINE_VOICE_TRANSCRIBE=1."""
+    """Voice transcription — remote endpoint first when LINE_WHISPER_URL
+    is set (ada-whisper on omen GPU, large-v3), local faster-whisper
+    (LINE_WHISPER_MODEL, default base) as fallback. Gated by
+    LINE_VOICE_TRANSCRIBE=1."""
     if os.environ.get("LINE_VOICE_TRANSCRIBE") != "1":
         return ""
+    url = os.environ.get("LINE_WHISPER_URL", "").strip()
+    if url:
+        try:
+            return _transcribe_remote(url, path)
+        except Exception as exc:
+            logger.warning("remote whisper %s failed: %s — local fallback",
+                           url, exc)
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
@@ -556,7 +605,7 @@ def _transcribe(path) -> str:
         _whisper_model = WhisperModel(
             size, device="cpu", compute_type="int8")
         logger.info("whisper model %s loaded", size)
-    segments, _ = _whisper_model.transcribe(str(path), beam_size=1)
+    segments, _ = _whisper_model.transcribe(_decode_audio(path), beam_size=1)
     return " ".join(seg.text.strip() for seg in segments).strip()
 
 
