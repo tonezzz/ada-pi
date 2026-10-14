@@ -142,7 +142,15 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.tmp.cleanup)
         self.env = {"GEMINI_API_KEY": "test-key",
                     "ADA_RENDER_DIR": self.tmp.name,
+                    "ADA_RENDER_VIDEO_OPEN": "1",
                     "ADA_RENDER_VIDEO_POLL_S": "0"}
+
+    async def test_closed_lane_refuses(self):
+        with patch.dict("os.environ",
+                        {"ADA_RENDER_VIDEO_OPEN": "0"}):
+            out = await render.run(_runner(), prompt="a boat")
+        self.assertFalse(out["ok"])
+        self.assertIn("owner-only", out["error"])
 
     async def test_happy_path_returns_playable_url(self):
         factory, client = _client(
@@ -204,28 +212,33 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(params["aspectRatio"], "9:16")
 
     async def test_secs_invalid_is_honest_error(self):
-        with patch.object(render.httpx, "AsyncClient",
+        with patch.dict("os.environ", {"ADA_RENDER_VIDEO_OPEN": "1"}), \
+                patch.object(render.httpx, "AsyncClient",
                           side_effect=AssertionError("no http expected")):
             out = await render.run(_runner(), prompt="p", secs=5)
         self.assertFalse(out["ok"])
         self.assertIn("4, 6, or 8", out["error"])
 
     async def test_aspect_square_is_honest_error(self):
-        with patch.object(render.httpx, "AsyncClient",
+        with patch.dict("os.environ", {"ADA_RENDER_VIDEO_OPEN": "1"}), \
+                patch.object(render.httpx, "AsyncClient",
                           side_effect=AssertionError("no http expected")):
             out = await render.run(_runner(), prompt="p", aspect="1:1")
         self.assertFalse(out["ok"])
         self.assertIn("no square", out["error"])
 
     async def test_prompt_required(self):
-        with patch.object(render.httpx, "AsyncClient",
+        with patch.dict("os.environ", {"ADA_RENDER_VIDEO_OPEN": "1"}), \
+                patch.object(render.httpx, "AsyncClient",
                           side_effect=AssertionError("no http expected")):
             out = await render.run(_runner())
         self.assertFalse(out["ok"])
         self.assertIn("prompt", out["error"])
 
     async def test_missing_api_key_is_honest(self):
-        with patch.dict("os.environ", {"ADA_RENDER_DIR": self.tmp.name},
+        with patch.dict("os.environ",
+                        {"ADA_RENDER_DIR": self.tmp.name,
+                         "ADA_RENDER_VIDEO_OPEN": "1"},
                         clear=False), \
                 patch.dict("os.environ") as env:
             env.pop("GEMINI_API_KEY", None)
@@ -279,7 +292,8 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("video_url", out)
 
     async def test_operation_bad_shape_rejected(self):
-        with patch.object(render.httpx, "AsyncClient",
+        with patch.dict("os.environ", {"ADA_RENDER_VIDEO_OPEN": "1"}), \
+                patch.object(render.httpx, "AsyncClient",
                           side_effect=AssertionError("no http expected")):
             out = await render.run(_runner(), operation="not-an-op")
         self.assertFalse(out["ok"])
