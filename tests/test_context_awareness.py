@@ -88,6 +88,49 @@ class TranscriptFileTests(unittest.IsolatedAsyncioTestCase):
                 conv._save_transcript_file()
             self.assertEqual(list(Path(td).glob("*.md")), [])
 
+    def test_incremental_append_writes_turns_immediately(self):
+        """durable_transcript sessions flush each completed turn at add
+        time — a kill mid-session still leaves the archive on disk."""
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(cm, "TRANSCRIPT_DIR", td):
+                conv = ConversationMemory("sess-durable")
+                conv.durable_transcript = True
+                conv.add_user("first turn")
+                files = list(Path(td).glob("*.md"))
+                self.assertEqual(len(files), 1)
+                self.assertIn("first turn", files[0].read_text())
+                conv.add_assistant("first reply")
+                conv.add_channel_mirror("user", "typed in chat", "chat")
+                body = files[0].read_text()
+            self.assertIn("ref: transcript:", body)
+            self.assertIn("## User", body)
+            self.assertIn("## Ada", body)
+            self.assertIn("first reply", body)
+            self.assertIn("[via chat] typed in chat", body)
+            # clean-close rewrite still lands the canonical file
+            with patch.object(cm, "TRANSCRIPT_DIR", td):
+                conv._save_transcript_file()
+            self.assertIn("first reply", files[0].read_text())
+
+    def test_incremental_append_off_by_default(self):
+        """Directly-built conversations (tests, scenario engine) never
+        write into the archive dir."""
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(cm, "TRANSCRIPT_DIR", td):
+                conv = ConversationMemory("sess-plain")
+                conv.add_user("hi")
+                conv.add_assistant("hello")
+            self.assertEqual(list(Path(td).glob("*.md")), [])
+
+    def test_incremental_append_respects_no_persist(self):
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(cm, "TRANSCRIPT_DIR", td):
+                conv = ConversationMemory("sess-nopersist")
+                conv.durable_transcript = True
+                conv.no_persist = True
+                conv.add_user("hi")
+            self.assertEqual(list(Path(td).glob("*.md")), [])
+
     async def test_persist_writes_file_without_notebooklm(self):
         """Transcript + summary pipeline run even when NotebookLM is off."""
         with tempfile.TemporaryDirectory() as td:

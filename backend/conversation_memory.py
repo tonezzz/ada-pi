@@ -685,6 +685,15 @@ class ConversationMemory:
         # — turns only ever merge/mirror between sessions of the same owner.
         self.channel: str = "voice"
         self.owner_identity: str | None = None
+        # Crash durability (card ada-transcript-durability): when on, each
+        # completed turn is appended to the archive file as it lands, so a
+        # restart/SIGKILL mid-session loses nothing already spoken. Off by
+        # default — tests and scenario runs build ConversationMemory
+        # directly and must not write into the real archive dir; the /ws
+        # handler flips it on for real sessions.
+        self.durable_transcript: bool = False
+        self._transcript_file: Path | None = None
+        self._transcript_turns_written = 0
         self.warm_summary()
 
     def log_event(self, kind: str, **fields: Any) -> None:
@@ -710,14 +719,17 @@ class ConversationMemory:
     def add_user(self, text: str) -> None:
         if text.strip():
             text = text.strip()
-            self._turns.append({"role": "user", "text": text, "ts": time.time()})
+            turn = {"role": "user", "text": text, "ts": time.time()}
+            self._turns.append(turn)
+            self._append_transcript_turn(turn)
             self._channel_append("user", text)
 
     def add_assistant(self, text: str) -> None:
         if text.strip():
             text = text.strip()
-            self._turns.append(
-                {"role": "assistant", "text": text, "ts": time.time()})
+            turn = {"role": "assistant", "text": text, "ts": time.time()}
+            self._turns.append(turn)
+            self._append_transcript_turn(turn)
             self._channel_append("assistant", text)
 
     def add_channel_mirror(self, role: str, text: str, via: str) -> None:
@@ -726,12 +738,14 @@ class ConversationMemory:
         channel log (the origin session already logged it there)."""
         text = str(text or "").strip()
         if text:
-            self._turns.append({
+            turn = {
                 "role": role if role in ("user", "assistant") else "user",
                 "text": f"[via {via}] {text}",
                 "ts": time.time(),
                 "mirrored": True,
-            })
+            }
+            self._turns.append(turn)
+            self._append_transcript_turn(turn)
 
     def turns(self) -> list[dict[str, Any]]:
         """Structured transcript turns ({role, text, ts}), oldest first."""
@@ -768,31 +782,68 @@ class ConversationMemory:
         logger.info("query expanded with context: %r -> %d chars", q[:80], len(expanded))
         return expanded
 
+    def _turn_heading(self, turn: dict[str, Any]) -> str:
+        role = "User" if turn["role"] == "user" else "Ada"
+        ts = turn.get("ts")
+        stamp = (
+            f" [{datetime.fromtimestamp(float(ts), timezone.utc).strftime('%H:%M:%S')}]"
+            if ts else ""
+        )
+        return f"## {role}{stamp}"
+
     def transcript(self) -> str:
         lines = [f"# Ada voice session {self.session_id}", ""]
         for turn in self._turns:
-            role = "User" if turn["role"] == "user" else "Ada"
-            ts = turn.get("ts")
-            stamp = (
-                f" [{datetime.fromtimestamp(float(ts), timezone.utc).strftime('%H:%M:%S')}]"
-                if ts else ""
-            )
-            lines.append(f"## {role}{stamp}")
+            lines.append(self._turn_heading(turn))
             lines.append(turn["text"])
             lines.append("")
         return "\n".join(lines)
+
+    def _transcript_path(self) -> Path:
+        """Archive path for this session — fixed at first write so a
+        session crossing midnight still lands in one file."""
+        if self._transcript_file is None:
+            day = datetime.now(timezone.utc).date().isoformat()
+            safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", self.session_id)
+            self._transcript_file = Path(TRANSCRIPT_DIR) / f"{day}-{safe}.md"
+        return self._transcript_file
+
+    def _append_transcript_turn(self, turn: dict[str, Any]) -> None:
+        """Append one completed turn to the archive file as it lands —
+        the crash path. _save_transcript_file still owns the canonical
+        rewrite at clean close."""
+        if (not getattr(self, "durable_transcript", False)
+                or getattr(self, "no_persist", False)):
+            return
+        if os.environ.get("ADA_TRANSCRIPT_SAVE", "1") in ("0", "false", "no"):
+            return
+        try:
+            path = self._transcript_path()
+            header = ""
+            if self._transcript_turns_written == 0:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                header = (
+                    f"<!-- ref: transcript:{path.stem} -->\n"
+                    f"# Ada voice session {self.session_id}\n\n"
+                )
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(
+                    header + self._turn_heading(turn)
+                    + f"\n{turn['text']}\n\n"
+                )
+            self._transcript_turns_written += 1
+        except Exception as exc:
+            _report_failure("transcript_file", exc)
 
     def _save_transcript_file(self) -> None:
         """Archive the raw transcript to the local transcript directory."""
         if os.environ.get("ADA_TRANSCRIPT_SAVE", "1") in ("0", "false", "no"):
             return
         try:
-            d = Path(TRANSCRIPT_DIR)
-            d.mkdir(parents=True, exist_ok=True)
-            day = datetime.now(timezone.utc).date().isoformat()
-            safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", self.session_id)
-            (d / f"{day}-{safe}.md").write_text(
-                f"<!-- ref: transcript:{day}-{safe} -->\n" + self.transcript(),
+            path = self._transcript_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                f"<!-- ref: transcript:{path.stem} -->\n" + self.transcript(),
                 encoding="utf-8",
             )
         except Exception as exc:
