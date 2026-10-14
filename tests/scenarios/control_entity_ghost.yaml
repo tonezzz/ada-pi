@@ -1,0 +1,59 @@
+name: control-entity-ghost
+instance: tony
+# ada-control-entity-phantom-ok (2026-10-14): idc03 journal —
+# control_entity(switch.coffee_plug, off) returned ok:true
+# "Turned off switch.coffee_plug" while NO such entity exists (the
+# coffee plug is switch.plakkaaaef_local, friendly name 'Coffee plug').
+# HA accepts service calls on ghost entity_ids (200 + empty
+# changed-states list) and set_power echoed the REQUESTED state back as
+# if it were ground truth. control_entity now (a) existence-checks
+# entity_id first — a /api/states 404 returns ok:false naming the
+# closest real entities — and (b) verifies on/off calls by polling the
+# post-call state.
+#
+# Under test:
+#   1) ghost entity_id -> ok:false, error names the closest match
+#      (switch.plakkaaaef_local 'Coffee plug'), and set_power never ran.
+#   2) real turn_off whose state lands 'off' -> ok:true with a verify
+#      block (before 'on', after 'off').
+#   3) turn_off the device ignores (state stays 'on') -> ok:false, not
+#      narratable as done.
+ha_entities:
+  - {entity_id: switch.plakkaaaef_local, state: "on", available: true,
+     name: Coffee plug}
+  - {entity_id: switch.desk_fan, state: "on", available: true,
+     name: Desk fan}
+ha_404: [switch.coffee_plug]
+ha_states_seq:
+  # get_state reads consumed in call order; the last entry repeats.
+  # Step 2: before 'on', first poll 'off' -> landed. Step 3: before
+  # 'on' + four polls 'on' -> swallowed call, fails loudly.
+  switch.plakkaaaef_local:
+    - {state: "on"}
+    - {state: "off"}
+  switch.desk_fan:
+    - {state: "on"}
+    - {state: "on"}
+    - {state: "on"}
+    - {state: "on"}
+    - {state: "on"}
+steps:
+  # "off" must be quoted — YAML 1.1 parses the bare word as False, and
+  # the schema gate rejects non-string args before the tool runs.
+  - tool: control_entity
+    args: {entity_id: switch.coffee_plug, action: "off"}
+    expect:
+      error_contains: "does not exist"
+      output_contains: ["switch.plakkaaaef_local", "Coffee plug"]
+  - tool: control_entity
+    # plak* = mains plug -> dangerous default -> needs confirmed=true.
+    args: {entity_id: switch.plakkaaaef_local, action: "off",
+           confirmed: true}
+    expect:
+      no_error: true
+      output_contains: ["Turned off switch.plakkaaaef_local", "verify"]
+  - tool: control_entity
+    args: {entity_id: switch.desk_fan, action: "off"}
+    expect:
+      error_contains: "stayed 'on'"
+      output_contains: ["verify", "do NOT claim"]
