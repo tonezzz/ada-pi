@@ -1,5 +1,7 @@
 name: speech-stall-voiceback
 tier: smoke
+# stays live — audio-semantic scenario; doubles as the Live-path sentinel
+# (BEN-0573: the other 40 smoke scenarios run transport: text)
 # Dead-turn stall voice-back (2026-10-01): client VAD reported speech but
 # no input transcription ever arrived — Ada sat silent until the session
 # was closed (sessions aefa0c266d "cms benchmark" and 58c656e025 where 6

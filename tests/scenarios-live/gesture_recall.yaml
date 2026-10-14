@@ -1,5 +1,6 @@
 name: gesture-recall-live
 tier: smoke
+transport: text
 # Does Ada recall the gesture-UI assessment doc (docs/kb/gesture-ui-options.md
 # -> kb-system collection, synced 2026-09-25) plus the archive report's
 # gesture meanings?

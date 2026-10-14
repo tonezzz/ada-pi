@@ -4,6 +4,7 @@
 # ada_memory_search and answer with status/scenario names.
 name: scenario-report-recall
 tier: smoke
+transport: text
 turns:
   - user: "Which scenario tests ran recently, and did the doc-recall scenario pass?"
     expect:

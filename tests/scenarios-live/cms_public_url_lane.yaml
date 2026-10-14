@@ -10,6 +10,7 @@
 #   3. asked for the link on LINE, she sends the apex URL — never tailnet
 name: cms_public_url_lane
 tier: smoke
+transport: text
 turns:
   - user: >-
       How do I publish a CMS page to the public website? Explain the steps

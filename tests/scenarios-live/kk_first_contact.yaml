@@ -1,4 +1,5 @@
 tier: smoke
+transport: text
 name: kk-first-contact
 # What happens when KK (household member, HA user) connects to Ada with
 # her own issued key: greeting, identity, memory reach, memory writes.

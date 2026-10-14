@@ -1,6 +1,7 @@
 name: vcast-snapshot-probe
 tier: smoke
 
+transport: text
 # needs a REAL display on screen 9 showing the marker page — a headless
 # protocol display can't render frames for vcast_snapshot
 preflight:

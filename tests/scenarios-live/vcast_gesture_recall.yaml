@@ -9,6 +9,7 @@
 name: vcast-gesture-recall
 tier: smoke
 
+transport: text
 turns:
   # --- context prime: the vcast display system ---------------------------
   - user: "Ada, what's the vcast system — the virtual display thing we run on the iPad?"

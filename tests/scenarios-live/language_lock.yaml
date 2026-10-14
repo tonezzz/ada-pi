@@ -19,6 +19,7 @@
 name: language-lock
 tier: smoke
 
+transport: text
 turns:
   # --- Thai in → Thai out, even though the page text is English --------
   - user: >-

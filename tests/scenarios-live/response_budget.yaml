@@ -3,6 +3,7 @@
 # mddb-wedge lag pattern (memory tools blocking the turn).
 name: response_budget
 tier: smoke
+transport: text
 turns:
   - user: "Ada, quick check — what is two plus two?"
     expect:

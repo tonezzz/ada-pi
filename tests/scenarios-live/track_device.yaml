@@ -17,6 +17,7 @@ name: track-device
 # tier: smoke — read-only, no actuation.
 tier: smoke
 
+transport: text
 turns:
   - user: "Where is my Omen?"
     expect:

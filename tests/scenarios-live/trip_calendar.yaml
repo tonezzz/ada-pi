@@ -1,5 +1,6 @@
 name: trip-calendar
 tier: smoke
+transport: text
 turns:
   # Trip-calendar page family generator (chaba card
   # ada-trip-calendar-pages, 2026-10-13). Assert the tool is declared +

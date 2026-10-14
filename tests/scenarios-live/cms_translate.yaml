@@ -1,5 +1,6 @@
 name: cms-translate
 tier: smoke
+transport: text
 # CMS translate — Ada creates a disposable EN page, publishes a TH variant
 # (lang-aware tools added in 510912e), then we probe the German gap.
 #

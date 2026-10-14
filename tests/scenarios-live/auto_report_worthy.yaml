@@ -1,5 +1,6 @@
 name: auto-report-worthy
 tier: smoke
+transport: text
 # Report-worthiness judgment — given the real benchmark data in
 # ada-ha-scenario-reports, does Ada surface items that are actually worth
 # reporting (fails, policy violations, regressions) instead of saying

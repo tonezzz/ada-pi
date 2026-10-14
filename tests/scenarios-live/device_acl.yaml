@@ -17,6 +17,7 @@ name: device-acl
 # tier: smoke — read + reversible grant on a scratch identity.
 tier: smoke
 
+transport: text
 turns:
   - user: "Show me the device access list — who can control what."
     expect:

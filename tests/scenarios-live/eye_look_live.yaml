@@ -8,6 +8,7 @@
 # run it as the phase-4 acceptance gate, not in the routine suite.
 name: eye-look-live
 tier: smoke
+transport: text
 turns:
   - user: "Ada, what do you see through the eye page right now?"
     expect:

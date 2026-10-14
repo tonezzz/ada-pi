@@ -1,5 +1,6 @@
 name: doc-recall-live
 tier: smoke
+transport: text
 # Regression for the A-68 misroute (2026-09-24): "มีข้อมูลเอกสารของ unit
 # A68 ไหม" made Ada hunt through search_home_devices/list_sensors and even
 # fire tv_action — she never touched document memory. The fix adds the

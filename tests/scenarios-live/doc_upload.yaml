@@ -5,6 +5,7 @@
 # nothing may be archived or printed without user confirmation.
 name: doc-upload
 tier: smoke
+transport: text
 turns:
   - upload: fixtures/doc-receipt.png
     expect:

@@ -3,6 +3,7 @@
 # weather question reaches the rk600 station tool rather than a guess.
 name: weather-grounded
 tier: smoke
+transport: text
 turns:
   - user: "What's the current temperature outside right now?"
     expect:

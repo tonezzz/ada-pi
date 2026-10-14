@@ -4,6 +4,7 @@
 # URL — no manual parameter talk to the user.
 name: img-render-ref-edit
 tier: smoke
+transport: text
 needs_tools: [ada_render_image]
 turns:
   - upload: fixtures/doc-receipt.png

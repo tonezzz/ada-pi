@@ -9,6 +9,7 @@ name: michael-infra-interrogation
 # (general/home/infrastructure-ssot) hold the project knowledge; the
 # read-only bank facts are what a real Michael session can reach.
 tier: smoke
+transport: text
 url: ws://127.0.0.1:8003/ws
 env_file: /secrets/michael.env
 

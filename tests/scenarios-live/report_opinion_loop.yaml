@@ -22,6 +22,7 @@
 name: report_opinion_loop
 tier: smoke
 
+transport: text
 turns:
   # --- read-before-opine -------------------------------------------------
   # An opinion without a cms_get_page first is the failure this scenario

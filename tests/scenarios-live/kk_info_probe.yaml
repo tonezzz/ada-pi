@@ -8,6 +8,7 @@ name: kk-info-probe
 #     --url ws://127.0.0.1:8002/ws --api-key "$ADA_API_KEY"
 
 tier: smoke
+transport: text
 turns:
   - user: "Tell me what you know about KK."
     expect:

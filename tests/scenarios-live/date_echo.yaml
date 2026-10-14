@@ -1,5 +1,6 @@
 name: date-echo
 tier: smoke
+transport: text
 # Date-echo rule regression (added 2026-09-29): whenever a relative
 # day-word appears, Ada must resolve it out loud as absolute day+date —
 # Thai colloquial time treats the day boundary as sleep, not midnight,

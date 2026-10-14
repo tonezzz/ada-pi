@@ -4,6 +4,7 @@
 # actually giving, and say it's a substitute.
 name: traffic-cam-substitution
 tier: smoke
+transport: text
 turns:
   - user: "Show me the Bangna expressway traffic camera."
     expect:

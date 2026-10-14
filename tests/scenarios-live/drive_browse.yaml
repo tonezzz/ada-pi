@@ -1,5 +1,6 @@
 name: drive-browse
 tier: smoke
+transport: text
 # Drive tools end-to-end (2026-09-30): search -> get -> show-on-screen via
 # the doc-archive /v1/drive endpoints + minted media tokens.
 #

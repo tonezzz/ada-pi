@@ -3,6 +3,7 @@
 # messages). Asserts the tool is called and the returned URL is served.
 name: img-render-gen
 tier: smoke
+transport: text
 needs_tools: [ada_render_image]
 turns:
   - user: "draw me a small watercolor of a Thai longtail boat at sunset"

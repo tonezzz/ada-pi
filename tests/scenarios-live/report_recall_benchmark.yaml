@@ -1,5 +1,6 @@
 name: report-recall-benchmark
 tier: smoke
+transport: text
 # Report recall accuracy — measures whether Ada retrieves CONCRETE values
 # from the reports bank, not just "there was a test". Benchmark docs carry
 # numeric scores in meta; the cms suite run of 2026-09-27 scored 0.9 with

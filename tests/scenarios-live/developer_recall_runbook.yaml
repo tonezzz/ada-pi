@@ -1,5 +1,6 @@
 name: developer-recall-runbook
 tier: smoke
+transport: text
 # Developer training benchmark — can Ada recall an exact SSOT runbook command?
 #
 # The target fact is in the infrastructure-ssot / chaba-docs bank:

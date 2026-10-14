@@ -1,5 +1,6 @@
 name: media-inbox
 tier: smoke
+transport: text
 needs_tools: [doc_read]
 preflight:
   # Fixture is seeded by chaba scripts/ada/media-inbox-fixture.py install

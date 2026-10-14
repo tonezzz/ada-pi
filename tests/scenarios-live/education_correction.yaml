@@ -1,5 +1,6 @@
 name: education-correction
 tier: smoke
+transport: text
 # Correction-duty policy check (added 2026-09-28): Ada must push back on
 # a false premise and a wrong-direction proposal instead of agreeing.
 #

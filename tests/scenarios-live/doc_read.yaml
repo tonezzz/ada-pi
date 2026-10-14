@@ -1,5 +1,6 @@
 name: doc-read
 tier: smoke
+transport: text
 turns:
   # Document reader for LINE file ingest (chaba card
   # line-file-doc-ingest, 2026-10-13). The live call is a well-formed but

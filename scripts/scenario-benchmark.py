@@ -122,7 +122,8 @@ def _env_value(path: str, name: str) -> str:
     return ""
 
 
-def _run_one(path: str, url: str, api_key: str, keys: dict) -> tuple[str, int, dict | None, str]:
+def _run_one(path: str, url: str, api_key: str, keys: dict,
+             transport: str | None = None) -> tuple[str, int, dict | None, str]:
     """One scenario, retry-once → flaky. Returns (status, runs, events, out).
 
     Honors per-scenario `env_file:` and `key_name:` like scenario-report.py —
@@ -157,6 +158,12 @@ def _run_one(path: str, url: str, api_key: str, keys: dict) -> tuple[str, int, d
                "--events-json", ev_path]
         if api_key:
             cmd += ["--api-key", api_key]
+        # transport: per-scenario `transport: text` runs the turn over the
+        # REST text provider (mode=text) instead of a Live audio session —
+        # BEN-0573: hourly smoke was burning ~45 Live-min/hr. Scenario field
+        # wins over the suite-level --transport override.
+        if (spec.get("transport") or transport) == "text":
+            cmd += ["--text"]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True,
                                   timeout=1800)
@@ -267,6 +274,9 @@ def main() -> int:
                     help="stop starting new scenarios after N seconds and "
                          "write a partial report — keep under the unit's "
                          "TimeoutStartSec so a slow run never dies silent")
+    ap.add_argument("--transport", choices=["live", "text"], default=None,
+                    help="force transport for scenarios that don't declare "
+                         "transport: in yaml — per-scenario field wins")
     args = ap.parse_args()
 
     # One benchmark at a time per host — concurrent runs share the same
@@ -351,7 +361,7 @@ def main() -> int:
             _progress("in progress")
             continue
         status, runs, events, out = _run_one(path, args.url, args.api_key,
-                                           keys)
+                                           keys, args.transport)
         turns = (events or {}).get("turns") or []
         n_tools = sum(len(t.get("tools") or []) for t in turns)
         dur = float((events or {}).get("duration_s") or 0)

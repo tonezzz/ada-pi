@@ -12,6 +12,7 @@
 # the canonical entries here assert the new surface directly.)
 name: tool_merge_display
 tier: smoke
+transport: text
 turns:
   - user: "Ada, what virtual screens are available for casting?"
     expect:

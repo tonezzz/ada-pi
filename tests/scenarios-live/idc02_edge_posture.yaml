@@ -1,5 +1,6 @@
 name: idc02-edge-posture
 tier: smoke
+transport: text
 # Born 2026-10-04 from the idc02 audit-remediation session: the declared
 # posture (ssot.security.idc02.yml, synced into infrastructure-ssot) says
 # caddy-edge owns public :80/:443 and sshd binds wildcard but is fenced to

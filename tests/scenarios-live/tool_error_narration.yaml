@@ -18,6 +18,7 @@
 #     --url ws://127.0.0.1:8003/ws --api-key "$ADA_API_KEY" -v --text
 name: tool_error_narration
 tier: smoke
+transport: text
 turns:
   - user: "Enroll the speaker person.tony as 'speaker' please."
     expect:

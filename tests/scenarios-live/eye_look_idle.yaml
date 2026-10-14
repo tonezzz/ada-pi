@@ -4,6 +4,7 @@
 # reaching for a camera snapshot.
 name: eye-look-idle
 tier: smoke
+transport: text
 turns:
   - user: "Ada, what do you see on the eye page right now?"
     expect:

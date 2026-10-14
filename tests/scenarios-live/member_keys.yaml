@@ -16,6 +16,7 @@ name: member-keys
 # tier: smoke — mint/approve/revoke a scratch member key.
 tier: smoke
 
+transport: text
 turns:
   - user: "Do we have any member keys waiting for approval?"
     expect:
