@@ -1,0 +1,58 @@
+# SSOT Job: control_entity ghost-entity phantom-ok fix
+# Card: ada-control-entity-phantom-ok (kanban). Dispatch 20261014-215603.
+
+title: control_entity — ghost entity_id fails loud, on/off verifies post-call state
+subtitle: |
+  idc03 journal repro: function_call result name=control_entity
+  {ok: true, output: "Turned off switch.coffee_plug: {'entity_id':
+  'switch.coffee_plug', 'state': 'off'}"} while home_search's list had
+  NO switch.coffee_plug — the coffee plug is switch.plakkaaaef_local
+  ('Coffee plug', mains-plug dangerous class).
+
+  Resolver path found (no fuzzy resolve, no stub/mock): control_entity
+  (backend/tool_runner/ha.py) dispatches switch.* to the on/off path ->
+  HomeAssistantClient.set_power (backend/home_assistant.py) POSTs
+  /api/services/switch/turn_off -> HA returns 200 with an empty
+  changed-states list for entity_ids that do not exist -> set_power
+  ignores the body and echoes the REQUESTED state back
+  ({entity_id, state:'off'}) -> normalize_tool_result wraps the
+  formatted string as {ok: true, output: ...}. The ok was fabricated.
+
+planning:
+  goal: |
+    1. Unknown entity_id -> ok:false naming the closest real entities.
+    2. A real turn_off verifies the post-call state actually == 'off'.
+    3. Scenario + unit tests pin the contract.
+  decisions: |
+    - One get_state serves both checks: _control_precheck(entity_id)
+      returns (ghost_result | None, before | None). A 404 from
+      GET /api/states/<id> is the ghost signature -> ok:false +
+      close_matches (search_entities on the object_id words —
+      'coffee_plug' -> 'coffee plug' reaches 'Coffee plug'; same-domain
+      entities as fallback list). A non-404 failure (transport/auth)
+      means 'cannot check', not 'ghost' — the actuate call still fires
+      and reports its own error. Otherwise the same read is the
+      before-state for _control_verified — no extra HA roundtrip vs
+      the pre-fix verified paths.
+    - New verify kind 'state_target' in _control_verify: on/off calls
+      poll get_state (4 x 0.7s) until state == target; a state that
+      never lands fails 'stayed <x>' + do-NOT-claim (same contract as
+      the 2026-10-09 delta/target/leave kinds). verify.ok=None stays
+      inconclusive, never flips a call.
+    - The on/off result keeps the narrated "Turned off <eid>: <echo>"
+      string in `output` — success shape unchanged, verify block added.
+    - press_button/control_cover/control_media_player aliases get the
+      ghost check for free — the precheck runs before domain dispatch.
+    - pwa_server /api/set_power endpoint and main.py still call
+      ha_client.set_power raw — out of scope (not the tool path).
+
+meta: |
+  Verify: tests/test_tool_runner.py 398 OK (unittest, repo venv),
+  tests/test_scenarios.py 19/19 OK incl. new control-entity-ghost
+  (ghost id -> ok:false + names switch.plakkaaaef_local; real turn_off
+  verified via ha_states_seq; swallowed turn_off -> 'stayed on'),
+  tests/test_home_assistant.py OK, scripts/tool-lint.py clean.
+  Scenario engine gained a `ha_404:` fixture (get_state raises
+  httpx 404 for listed ids) and stubs search_entities with the REAL
+  scorer over the ha_entities fixture so close-match output exercises
+  genuine fuzzy ranking.

@@ -45,10 +45,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
 
 from backend import memory_ops
 from backend.conversation_memory import ConversationMemory
+from backend.home_assistant import HomeAssistantClient
 from backend.memory_banks import MemoryBankRegistry
 from backend.tool_runner import ToolRunner
 from backend.usage_tracker import usage_ledger
@@ -380,20 +382,40 @@ async def run_scenario(path: str | Path) -> dict[str, Any]:
     # list the confidence gate (_ensure_confidence) reads on every
     # control call. Needed for scenarios that EXECUTE control_entity.
     if "ha_entities" in data:
+        ha_ents = [dict(e) for e in (data.get("ha_entities") or [])]
         runner.context.ha_client.entities = unittest.mock.AsyncMock(
-            return_value=[dict(e) for e in (data.get("ha_entities") or [])])
+            return_value=ha_ents)
+        # search_entities runs the REAL scorer over the same fixture —
+        # ghost-entity failures name the close matches it finds.
+        real_ha = HomeAssistantClient()
+        real_ha.entities = unittest.mock.AsyncMock(return_value=ha_ents)
+        runner.context.ha_client.search_entities = real_ha.search_entities
+        # set_power keeps the client's echo contract ({entity_id,state})
+        # — the post-call verify reads get_state, not this echo.
+        runner.context.ha_client.set_power = unittest.mock.AsyncMock(
+            side_effect=lambda eid, on: {
+                "entity_id": eid, "state": "on" if on else "off"})
+    # `ha_404:` entity_ids GET /api/states/<id> answers 404 for — the
+    # ghost-entity signature control_entity's existence check trips on.
+    ha_404 = {str(e) for e in (data.get("ha_404") or [])}
     # `ha_states:` / `ha_states_seq:` stub ha_client.get_state —
     # entity_id -> HA state doc ({"state","attributes"}); seq entries are
     # consumed in call order, the last one repeats.
     ha_states = data.get("ha_states") or {}
     ha_seqs = {k: list(v) for k, v in
                (data.get("ha_states_seq") or {}).items()}
-    if ha_states or ha_seqs:
+    if ha_states or ha_seqs or ha_404:
         async def _get_state(entity_id):
-            seq = ha_seqs.get(str(entity_id))
+            eid = str(entity_id)
+            if eid in ha_404:
+                req = httpx.Request("GET", f"/api/states/{eid}")
+                raise httpx.HTTPStatusError(
+                    "not found", request=req,
+                    response=httpx.Response(404, request=req))
+            seq = ha_seqs.get(eid)
             if seq:
                 return dict(seq.pop(0) if len(seq) > 1 else seq[0])
-            st = ha_states.get(str(entity_id))
+            st = ha_states.get(eid)
             if isinstance(st, dict):
                 return dict(st)
             return {"entity_id": entity_id, "state": "unknown"}

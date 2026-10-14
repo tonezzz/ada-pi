@@ -1,3 +1,4 @@
+import httpx
 import json
 import os
 import re
@@ -2964,12 +2965,23 @@ class HaMergeAliasTests(unittest.IsolatedAsyncioTestCase):
         self.ha_client.search_entities.return_value = [
             {"entity_id": "light.kitchen", "name": "Kitchen"},
         ]
-        self.ha_client.get_state.return_value = {
-            "entity_id": "light.office", "state": "on"}
+        # Stateful on/off fixture: get_state reflects what set_power
+        # last wrote, so the post-call verify sees the landing.
+        self._power: dict[str, str] = {}
+
+        def _get_state(entity_id):
+            return {"entity_id": entity_id,
+                    "state": self._power.get(entity_id, "on")}
+        self.ha_client.get_state.side_effect = _get_state
         self.ha_client.control_cover.return_value = {"ok": True}
         self.ha_client.press_button.return_value = {"pressed": True}
         self.ha_client.control_media_player.return_value = {"ok": True}
-        self.ha_client.set_power.return_value = {"state": "off"}
+
+        async def _set_power(entity_id, turn_on):
+            self._power[entity_id] = "on" if turn_on else "off"
+            return {"entity_id": entity_id,
+                    "state": self._power[entity_id]}
+        self.ha_client.set_power.side_effect = _set_power
         self.ha_client.history.return_value = [[{"state": "22"}]]
         self.ha_client.logbook.return_value = [
             {"entity_id": "cover.gate", "message": "closed"}]
@@ -3370,6 +3382,111 @@ class ControlEntityVerifyTests(unittest.IsolatedAsyncioTestCase):
         out = await self._mp_call("volume_down")
         self.assertTrue(out["ok"])
         self.assertNotIn("verify", out)
+
+    # -- ghost entity + on/off ground truth (phantom-ok card, 2026-10-14) --
+
+    @staticmethod
+    def _ha_404(entity_id):
+        req = httpx.Request("GET", f"/api/states/{entity_id}")
+        return httpx.HTTPStatusError(
+            "not found", request=req,
+            response=httpx.Response(404, request=req))
+
+    async def test_ghost_entity_fails_with_close_matches(self):
+        # The idc03 journal case: 'switch.coffee_plug' never existed —
+        # HA 200s service calls on ghost ids and set_power echoed the
+        # requested state, so the phantom read back ok:true "Turned off".
+        def gs(eid):
+            if eid == "switch.coffee_plug":
+                raise self._ha_404(eid)
+            return {"entity_id": eid, "state": "on", "attributes": {}}
+        self.ha_client.get_state.side_effect = gs
+        self.ha_client.search_entities.return_value = [
+            {"entity_id": "switch.plakkaaaef_local",
+             "name": "Coffee plug", "state": "on"}]
+        out = await self.runner.execute(
+            "control_entity",
+            {"entity_id": "switch.coffee_plug", "action": "off"})
+        self.assertFalse(out["ok"])
+        self.assertIn("does not exist", out["error"])
+        self.assertIn("switch.plakkaaaef_local", out["error"])
+        self.assertIn(
+            "switch.plakkaaaef_local",
+            [m["entity_id"] for m in out["close_matches"]])
+        self.ha_client.set_power.assert_not_awaited()
+
+    async def test_ghost_entity_falls_back_to_same_domain(self):
+        # No fuzzy hit -> the close_matches list carries same-domain
+        # devices so the model has a real id to retry with.
+        self.ha_client.get_state.side_effect = (
+            lambda eid: (_ for _ in ()).throw(self._ha_404(eid)))
+        self.ha_client.search_entities.return_value = []
+        out = await self.runner.execute(
+            "control_entity",
+            {"entity_id": "cover.back_door", "action": "open",
+             "confirmed": True})
+        self.assertFalse(out["ok"])
+        self.assertIn("does not exist", out["error"])
+        self.assertEqual(
+            [m["entity_id"] for m in out["close_matches"]],
+            ["cover.gate"])
+        self.ha_client.control_cover.assert_not_awaited()
+
+    async def test_turn_off_verified_by_post_state(self):
+        # on/off carries the same post-call ground truth now: the state
+        # must reach 'off' — set_power's echo alone proves nothing.
+        plug = {"entity_id": "switch.desk_fan", "state": "on",
+                "attributes": {}}
+        self.ha_client.get_state.side_effect = (
+            lambda eid: dict(plug) if eid == "switch.desk_fan"
+            else {"entity_id": eid, "state": "unknown"})
+
+        async def sp(eid, on):
+            plug["state"] = "on" if on else "off"
+            return {"entity_id": eid, "state": plug["state"]}
+        self.ha_client.set_power.side_effect = sp
+        out = await self.runner.execute(
+            "control_entity",
+            {"entity_id": "switch.desk_fan", "action": "off"})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["verify"]["state"], "off")
+        self.assertIn("Turned off switch.desk_fan", out["output"])
+
+    async def test_turn_off_swallowed_fails_loudly(self):
+        # The phantom class inside a real entity: HA 200s, the plug
+        # stays 'on' — ok:false, not narratable as done.
+        plug = {"entity_id": "switch.desk_fan", "state": "on",
+                "attributes": {}}
+        self.ha_client.get_state.side_effect = lambda eid: dict(plug)
+        self.ha_client.set_power.return_value = {"state": "off"}
+        out = await self.runner.execute(
+            "control_entity",
+            {"entity_id": "switch.desk_fan", "action": "off"})
+        self.assertFalse(out["ok"])
+        self.assertIn("stayed 'on'", out["error"])
+        self.assertIn("do NOT claim", out["error"])
+
+    async def test_turn_on_already_on_is_ok(self):
+        # Idempotent on-call: the first post-call read already matches.
+        plug = {"entity_id": "switch.desk_fan", "state": "on",
+                "attributes": {}}
+        self.ha_client.get_state.side_effect = lambda eid: dict(plug)
+        out = await self.runner.execute(
+            "control_entity",
+            {"entity_id": "switch.desk_fan", "on": True})
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["verify"]["state"], "on")
+
+    async def test_get_state_transport_error_still_actuates(self):
+        # A non-404 get_state failure means 'cannot check', not 'ghost'
+        # — the service call still fires and reports its own fate.
+        self.ha_client.get_state.side_effect = RuntimeError("ha down")
+        out = await self.runner.execute(
+            "control_entity",
+            {"entity_id": "switch.desk_fan", "action": "off"})
+        self.assertTrue(out["ok"])
+        self.ha_client.set_power.assert_awaited_once_with(
+            "switch.desk_fan", False)
 
 class DisplayMergeAliasTests(unittest.IsolatedAsyncioTestCase):
     """tools-merge-display (8 -> 2 canonical seats): vcast_say/vcast_list/

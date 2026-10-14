@@ -254,6 +254,10 @@ class HomeAssistantClient:
         service = "turn_on" if turn_on else "turn_off"
         response = await client.post(f"/api/services/{domain}/{service}", json={"entity_id": entity_id})
         response.raise_for_status()
+        # NOTE: this echoes the REQUESTED state, not ground truth — HA
+        # returns 200 even for entity_ids that don't exist (empty
+        # changed-states list) and for devices that ignore the call.
+        # control_entity verifies existence + post-call state upstream.
         return {"entity_id": entity_id, "state": "on" if turn_on else "off"}
 
     async def control_cover(self, entity_id: str, action: str) -> dict[str, Any]:

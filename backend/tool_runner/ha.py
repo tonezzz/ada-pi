@@ -10,6 +10,10 @@ from __future__ import annotations
 
 from .common import *  # noqa: F401,F403
 
+# Sentinel for "caller did not supply a precheck before-read" — None is
+# a real value (the read failed; verification is inconclusive).
+_UNSET = object()
+
 
 class HaMixin:
 
@@ -126,17 +130,21 @@ class HaMixin:
             raise ValueError("entity_id is required")
         domain = entity_id.partition(".")[0]
         action = str(action or "").strip().lower()
+        ghost, before = await self._control_precheck(entity_id)
+        if ghost is not None:
+            return ghost
         if domain == "cover":
             return await self._control_verified(
                 entity_id, domain, action,
-                lambda: self.control_cover(entity_id, action))
+                lambda: self.control_cover(entity_id, action),
+                before=before)
         if domain in ("button", "input_button") or action == "press":
             return await self.press_button(entity_id)
         if domain == "media_player":
             return await self._control_verified(
                 entity_id, domain, action,
                 lambda: self.control_media_player(entity_id, action, source),
-                expected=source)
+                expected=source, before=before)
         if on is None:
             if action in ("on", "turn_on"):
                 on = True
@@ -146,8 +154,25 @@ class HaMixin:
                 raise ValueError(
                     "pass on=true/false or action=on|off for "
                     f"{domain or entity_id} entities")
+        # on/off gets the same ground-truth check as the adjustable
+        # verbs below — set_power posts the service and echoes the
+        # REQUESTED state, so without a post-call read a swallowed call
+        # (unavailable device, dead plug) narrates as done.
+        target = "on" if on else "off"
         outcome = await self.context.ha_client.set_power(entity_id, bool(on))
-        return f"Turned {'on' if on else 'off'} {entity_id}: {outcome}"
+        out: dict[str, Any] = {
+            "entity_id": entity_id,
+            "output": f"Turned {target} {entity_id}: {outcome}",
+        }
+        verify = await self._control_verify(
+            entity_id, {"kind": "state_target", "target": target},
+            before, f"turn_{target}")
+        if verify.get("ok") is not None:
+            out["verify"] = verify
+        if verify.get("ok") is False:
+            out["ok"] = False
+            out["error"] = verify["error"]
+        return out
 
     # -- actuation ground truth --
     # HA accepts a service call the device then ignores — a paused or
@@ -185,17 +210,93 @@ class HaMixin:
     _CONTROL_VERIFY_POLLS = 4
     _CONTROL_VERIFY_INTERVAL_S = 0.7
 
+    async def _control_precheck(
+        self, entity_id: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """One get_state serving both the ghost check and the
+        before-read: returns (ghost_result, before).
+
+        HA accepts service calls for entity_ids that do not exist — the
+        POST returns 200 with an empty changed-states list, so a typo'd
+        'switch.coffee_plug' read back "Turned off" ok:true while the
+        real plug (switch.plakkaaaef_local) stayed on (idc03 journal,
+        2026-10-14). A 404 from GET /api/states/<id> is the ghost
+        signature: the call fails loudly naming the closest real
+        entities. A non-404 get_state failure means 'cannot check', not
+        'ghost' — (None, None) lets the actuate call report its own
+        error. Otherwise (None, before) where before is the normalized
+        pre-actuation state read."""
+        try:
+            st = await self.context.ha_client.get_state(entity_id)
+        except Exception as exc:
+            if getattr(getattr(exc, "response", None),
+                       "status_code", None) != 404:
+                return None, None
+            matches = await self._control_close_matches(entity_id)
+            hint = ""
+            if matches:
+                hint = " Did you mean " + ", ".join(
+                    f"{m['entity_id']} "
+                    f"('{m.get('name') or m['entity_id']}')"
+                    for m in matches if m.get("entity_id")) + "?"
+            return {
+                "ok": False,
+                "entity_id": entity_id,
+                "close_matches": [
+                    {k: m.get(k) for k in ("entity_id", "name", "state")}
+                    for m in matches if isinstance(m, dict)],
+                "error": (
+                    f"'{entity_id}' does not exist in Home Assistant — "
+                    "the service call returns 200 and changes nothing, "
+                    f"so nothing was done.{hint} Retry with a listed "
+                    "entity_id (home_search finds the right one); do "
+                    "NOT claim it happened."),
+            }, None
+        if not isinstance(st, dict):
+            return None, None
+        attrs = st.get("attributes")
+        return None, {
+            "state": str(st.get("state") or "unknown").lower(),
+            "attrs": dict(attrs) if isinstance(attrs, dict) else {},
+        }
+
+    async def _control_close_matches(
+            self, entity_id: str) -> list[dict[str, Any]]:
+        """Closest real entities for a ghost id — the object_id words
+        first ('coffee_plug' -> 'coffee plug' reaches the 'Coffee plug'
+        switch), then same-domain devices as the fallback list."""
+        query = entity_id.split(".", 1)[-1].replace("_", " ").strip()
+        try:
+            matches = await self.context.ha_client.search_entities(
+                query or entity_id, limit=5)
+        except Exception:
+            matches = None
+        if matches:
+            return [m for m in matches if isinstance(m, dict)][:5]
+        try:
+            domain = entity_id.partition(".")[0]
+            same = [
+                e for e in await self.context.ha_client.entities()
+                if isinstance(e, dict)
+                and str(e.get("entity_id") or "").partition(".")[0]
+                == domain]
+        except Exception:
+            return []
+        return same[:5]
+
     async def _control_verified(
         self, entity_id: str, domain: str, action: str, actuate: Any,
-        expected: str | None = None,
+        expected: str | None = None, before: Any = _UNSET,
     ) -> Any:
         """Wrap one actuation with the before/after state-delta check.
         Only the verbs in _CONTROL_VERIFY are checked — everything else
-        passes through untouched."""
+        passes through untouched. `before` reuses the caller's precheck
+        read when given (one get_state per call, not two)."""
         spec = self._CONTROL_VERIFY.get((domain, action))
         if spec is None:
             return await actuate()
-        before = await self._control_state_read(entity_id)
+        if before is _UNSET:
+            before = await self._control_state_read(entity_id)
         out = await actuate()
         out = dict(out) if isinstance(out, dict) else {
             "entity_id": entity_id, "action": action, "result": out}
@@ -245,12 +346,16 @@ class HaMixin:
         landed. delta: the watched attribute must change. attr_target:
         it must reach the requested value (select_source). target: the
         state must reach a goal state or the position attr must move the
-        right way (cover open/close). leave: the state must exit a set
+        right way (cover open/close). state_target: the entity state must
+        equal spec['target'] (on/off — a switch that stays 'on' after
+        turn_off swallowed the call). leave: the state must exit a set
         (cover stop — still-moving after stop is a loud failure)."""
         out: dict[str, Any] = {"ok": None, "action": action}
         attr = spec.get("attr")
         if attr:
             out["attr"] = attr
+        if spec.get("target") is not None:
+            out["target"] = spec["target"]
         if before is None:
             return out
         out["before_state"] = before["state"]
@@ -301,6 +406,10 @@ class HaMixin:
                 if last_state in spec["fail_states"] or dead:
                     return self._control_verify_fail(
                         entity_id, spec, out, expected)
+            elif kind == "state_target":
+                if last_state == spec["target"]:
+                    out["ok"] = True
+                    return out
             elif kind == "leave":
                 if last_state not in spec["states"]:
                     out["ok"] = True
@@ -314,6 +423,10 @@ class HaMixin:
         elif kind == "attr_target":
             if (out.get("after") is not None
                     or last_state in self._CONTROL_DEAD_STATES):
+                return self._control_verify_fail(
+                    entity_id, spec, out, expected)
+        elif kind == "state_target":
+            if last_state is not None:
                 return self._control_verify_fail(
                     entity_id, spec, out, expected)
         elif kind == "leave":
@@ -349,6 +462,12 @@ class HaMixin:
                 f"stayed '{out.get('after')}' instead of '{expected}' "
                 f"(state '{state}') — the device ignored the call; do "
                 "not claim the input switched.")
+        elif kind == "state_target":
+            out["error"] = (
+                f"HA accepted {action} on {entity_id} but the state "
+                f"stayed '{state}' instead of '{spec['target']}' — the "
+                "call was swallowed (dead/unavailable device); do NOT "
+                "claim it changed.")
         elif kind == "leave":
             out["error"] = (
                 f"HA accepted {action} on {entity_id} but it is still "
