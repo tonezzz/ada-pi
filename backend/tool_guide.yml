@@ -681,3 +681,13 @@ place_report: >-
   address or a location the user asked to keep private — answer in chat
   instead. Publish failure is storage, not confirmation — report it
   plainly.
+wp_post: >-
+  Boards-site writer — 'ส่งไปเว็บบอร์ด / post to my site / ลงเว็บให้หน่อย'
+  routes HERE, not cms_publish_page (that is the internal CMS). person=
+  is the member whose page it lands on: tony|kk|nhong — ask once if it
+  is unclear who; do not guess across members. After a photo turn, pass
+  the (media_url: ...) shown in that turn as media_url= to embed it.
+  publish=false makes a draft preview for review-before-publish asks;
+  the default is to publish and answer with the returned url plus
+  tag_archive. Thai titles/bodies are fine. If ok:false mentions missing
+  credentials, say the site key isn't configured — don't retry.

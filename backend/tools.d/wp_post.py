@@ -38,9 +38,9 @@ _PUBLIC_BASE = "https://boards.surf-thailand.com/wp"
 DECLARATION = {
     "name": "wp_post",
     "description": (
-        "Publish a post to a member's WordPress page on the boards site "
-        "(persons: tony, kk, nhong) and return the public URL to send in "
-        "chat. publish=false creates a preview draft first."),
+        "Post to a member's WordPress page on the boards site "
+        "(persons: tony, kk, nhong) — use for เว็บบอร์ด/webboard/'ลงเว็บ' "
+        "asks, NOT cms_publish_page. Returns the public URL for chat."),
     "parameters": {
         "type": "object",
         "properties": {
