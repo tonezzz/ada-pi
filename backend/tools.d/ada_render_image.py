@@ -32,6 +32,28 @@ a beach') accepts the same three shapes as ada_render_video:
   - a /api/documents/<key>/{image,preview} path (relative or absolute);
   - any other fetchable http(s) image URL — including the relay's own
     /relay-img/arch/<chat>/<message>.jpg archives of photos users sent.
+Plus two quality-pass additions (card render-flow-quality-pass):
+  - ref_url='last' resolves the session's previous render through
+    backend/render_state (on-disk artifact first, published URL as
+    fallback) so 'make it warmer' iterates instead of rerolling — and
+    a short prompt carrying an edit cue auto-feeds it even when
+    ref_url is omitted (gemini path only; local stays t2i);
+  - ref_urls[] takes up to 3 sources total for 'combine these photos'
+    asks — the model emits multiple reference images natively.
+
+Post-render quality pass: one cheap vision check
+(ADA_RENDER_CHECK_MODEL, default gemini-3.5-flash-lite — gateway
+'summary' class, ~$0.004/turn) compares output vs ask; an obvious
+miss (wrong subject, garbled requested text) re-renders once with
+the critique appended. ADA_RENDER_IMAGE_SELFCHECK=0 disables.
+Gateway/5xx/timeout failures get one automatic retry
+(ADA_RENDER_RETRY_S backoff); quota-shaped errors go through the
+pool's 429-vs-quota split, not the retry. 2K/4K renders also publish
+the original bytes to the relay media archive and return full_url —
+LINE re-encodes the attached photo, so the link is the full-res file
+(needs OPS-0651's arch route serving). Page-ish asks ('landing page',
+'1920px…') attach a 'notice' — gen is aspect-capped and a render is
+a picture OF a page, not a page.
 
 Env:
     GEMINI_API_KEY / GOOGLE_API_KEY — required (pool bookkeeping; the
@@ -53,6 +75,13 @@ Env:
     ADA_RENDER_LOCAL_POLL_S — poll interval, default 5
     ADA_RENDER_LOCAL_DEADLINE_S — background delivery gives up after
                              this, default 1800
+    ADA_RENDER_CHECK_MODEL     — self-check vision model, default
+                             gemini-3.5-flash-lite
+    ADA_RENDER_IMAGE_SELFCHECK — '0' disables the post-render QA pass
+    ADA_RENDER_RETRY_S         — transient-failure retry backoff,
+                             default 2
+    LINE_MEDIA_ARCHIVE_DIR / ADA_RELAY_PUBLIC_BASE — arch publish hop
+                             for full_url on 2K/4K renders
 """
 
 from __future__ import annotations
@@ -75,9 +104,10 @@ logger = logging.getLogger("tools.ada_render_image")
 DECLARATION = {
     "name": "ada_render_image",
     "description": (
-        "Generate an image from a prompt, or edit the ref_url photo "
-        "with instructions, and return a shareable image_url the chat "
-        "relays can post as a photo."
+        "Generate an image from a prompt, or edit source photos "
+        "(ref_url/ref_urls, 'last' = the previous render) with "
+        "instructions, and return a shareable image_url the chat "
+        "relays post as a photo."
     ),
     "parameters": {
         "type": "object",
@@ -91,9 +121,20 @@ DECLARATION = {
             },
             "ref_url": {
                 "type": "string",
-                "description": "Optional source image to edit: a "
-                               "'doc/...' intake key, a /api/documents/... "
-                               "path, or any fetchable image URL.",
+                "description": "Optional source image to edit: 'last' "
+                               "(the previous render this session — use "
+                               "it for 'make it warmer' style follow-ups), "
+                               "a 'doc/...' intake key, a "
+                               "/api/documents/... path, or any "
+                               "fetchable image URL.",
+            },
+            "ref_urls": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional extra source images, same "
+                               "shapes as ref_url ('last' allowed) — "
+                               "up to 3 total, for 'combine these "
+                               "photos' asks.",
             },
             "aspect": {
                 "type": "string",
@@ -147,6 +188,64 @@ _DOC_KEY_RE = re.compile(r"^doc/[a-z0-9][a-z0-9._-]*$")
 _DOC_PATH_RE = re.compile(
     r"/api/documents/([^?#]+?)/(image|preview|pdf)(?:[?#].*)?$")
 _JOB_RE = re.compile(r"^job_[A-Za-z0-9_-]+$")
+
+# Multi-ref (card render-flow-quality-pass): gemini-3.1-flash-image
+# accepts several reference images per call; cap keeps a prompt from
+# becoming an image dump.
+_REFS_MAX = 3
+
+# Iterate-on-last auto-feed: a short prompt that references the previous
+# artifact ("make it warmer", "change the text") and no explicit
+# fresh-render cue feeds the session's last render as the edit source.
+# Strong cues are pronouns/comparatives/edit verbs; phrase cues like
+# "the text" also fire — but not when the prompt opens with an
+# indefinite article, which reads as a fresh subject ("a poster with
+# the text SALE" is a new render, not an edit of the last one).
+_EDIT_CUE_RE = re.compile(
+    r"\b(it|this|that|them|those|same|again|instead|the image|"
+    r"the picture|the photo|the render|the last one|warmer|cooler|"
+    r"brighter|darker|bigger|smaller|softer|sharper|changes?|swap|"
+    r"remove|keep|fix|adjust|tweak|recolou?r|re-?word|crop|zoom)\b",
+    re.I)
+_EDIT_PHRASE_RE = re.compile(
+    r"\bthe (text|caption|wording|background|colou?rs?|font|subject|"
+    r"logo|title)\b", re.I)
+_FRESH_LEAD_RE = re.compile(
+    r"^\s*(?:a|an|some|two|three|one|several|draw|generate|create|"
+    r"make me a|render)\s", re.I)
+_FRESH_CUE_RE = re.compile(
+    r"\b(new|another|different|fresh|from scratch|re-?roll|"
+    r"something else|brand new)\b", re.I)
+_AUTO_REF_PROMPT_MAX = 400
+
+
+def _edit_cued(prompt: str) -> bool:
+    """True when the assembled prompt reads as an edit of the previous
+    artifact rather than a fresh scene."""
+    if _FRESH_CUE_RE.search(prompt):
+        return False
+    if _EDIT_CUE_RE.search(prompt):
+        return True
+    return bool(_EDIT_PHRASE_RE.search(prompt)
+                and not _FRESH_LEAD_RE.search(prompt))
+
+# Transient retry (same card): one retry on transport/gateway wobble —
+# quota-shaped errors are NOT transient (the pool already rotated keys
+# and a drained pool is a policy answer, not a blip).
+_TRANSIENT_RE = re.compile(
+    r"timed?\s?out|timeout|connect|reset|eof|bad gateway|unavailable|"
+    r"overloaded|deadline|internal|temporar|\b50[0-4]\b", re.I)
+
+# Vision self-check model — the cheap text/vision lane ('summary' class
+# on the gateway), not the image model itself.
+_CHECK_MODEL = "gemini-3.5-flash-lite"
+
+# Aspect-intent notices — page-ish and pixel-exact asks get honest
+# capability notes attached to the result (never a refusal).
+_PAGE_ASK_RE = re.compile(
+    r"landing\s*page|web\s*site|web\s*page|home\s*page|full[\s-]*page|"
+    r"one[\s-]*pager|splash\s*page|site\s+mockup|wireframe", re.I)
+_PIXEL_ASK_RE = re.compile(r"\b\d{3,5}\s*(?:px|pixels?)\b", re.I)
 
 # provider='local' — sd-server on tony-omen (stable-diffusion.cpp,
 # SDXL-Lightning 4-step Q4). SDXL-native geometry per aspect; lightning
@@ -306,13 +405,12 @@ def _gen_config(ratio: str, size: str) -> Any:
                                  "image_size": size}}
 
 
-async def _render(prompt: str, ref: tuple[bytes, str] | None,
+async def _render(prompt: str, refs: list[tuple[bytes, str]],
                   ratio: str, size: str
                   ) -> tuple[bytes | None, str | None, str | None]:
     """-> (image bytes, model text, None) or (None, None, error)."""
     parts: list[dict[str, Any]] = [{"text": prompt}]
-    if ref:
-        data, mime = ref
+    for data, mime in refs:
         parts.append({"inline_data": {
             "mime_type": mime, "data": base64.b64encode(data).decode()}})
     contents = [{"role": "user", "parts": parts}]
@@ -349,6 +447,142 @@ def _save(data: bytes, mime: str) -> Path:
                 f"-{secrets.token_hex(3)}{ext}")
     path.write_bytes(data)
     return path
+
+
+def _transient(exc: BaseException) -> bool:
+    """True when the model call failed on transport/gateway wobble and
+    earns one retry. Quota-shaped errors are excluded — the pool already
+    rotated keys, and a drained pool is a policy answer, not a blip."""
+    try:
+        from backend import gemini_pool
+        if gemini_pool.is_quota_error(exc):
+            return False
+    except Exception:
+        pass
+    for attr in ("code", "status_code"):
+        v = getattr(exc, attr, None)
+        if isinstance(v, int) and v >= 500:
+            return True
+        if str(v or "").upper() in ("UNAVAILABLE", "INTERNAL",
+                                    "DEADLINE_EXCEEDED"):
+            return True
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return True
+    return bool(_TRANSIENT_RE.search(str(exc)))
+
+
+async def _render_retry(prompt: str, refs: list[tuple[bytes, str]],
+                        ratio: str, size: str
+                        ) -> tuple[bytes | None, str | None, str | None]:
+    """_render with one automatic retry on transient failures."""
+    for attempt in range(2):
+        try:
+            return await _render(prompt, refs, ratio, size)
+        except Exception as exc:
+            if attempt == 0 and _transient(exc):
+                logger.info("image render transient (%s) — one retry",
+                            exc)
+                await asyncio.sleep(_env_float("ADA_RENDER_RETRY_S", 2.0))
+                continue
+            return None, None, f"the image model call failed: {exc}"
+    return None, None, "the image model call failed"  # unreachable
+
+
+def _check_model() -> str:
+    return os.environ.get("ADA_RENDER_CHECK_MODEL") or _CHECK_MODEL
+
+
+async def _selfcheck(data: bytes, mime: str, prompt: str
+                     ) -> tuple[str, str]:
+    """One cheap vision QA pass comparing the render against the ask.
+    -> ('miss', detail) only on an obvious miss; every failure mode —
+    the check model itself erroring, an unparseable verdict — fails
+    open to 'pass'/'skip' so QA can never sink a good render."""
+    if os.environ.get("ADA_RENDER_IMAGE_SELFCHECK", "1").lower() in (
+            "0", "false", "no", "off"):
+        return "skip", ""
+    ask = prompt[:600]
+    q = ("One-line QA on an AI image render. The request was:\n"
+         f'"{ask}"\n'
+         "Reply with exactly one line: PASS when the image plausibly "
+         "matches the request, or 'MISS: <under 10 words>' only for an "
+         "obvious miss — wrong subject, requested text garbled or "
+         "illegible, blank or broken image. Judge content, not style.")
+    parts = [{"text": q}, {"inline_data": {
+        "mime_type": mime, "data": base64.b64encode(data).decode()}}]
+    try:
+        from backend import gemini_pool
+        resp = await gemini_pool.generate(
+            _check_model(), [{"role": "user", "parts": parts}],
+            tool="render_check", timeout=25)
+    except Exception as exc:
+        logger.info("render selfcheck failed-open: %s", exc)
+        return "skip", ""
+    text_bits: list[str] = []
+    for cand in getattr(resp, "candidates", None) or []:
+        for part in (getattr(cand, "content", None) and
+                     getattr(cand.content, "parts", None)) or []:
+            t = getattr(part, "text", None)
+            if t:
+                text_bits.append(str(t))
+    head = (" ".join(text_bits).strip().splitlines() or [""])[0]
+    m = re.match(r"(?i)\s*(?:miss|fail|no)\b[:\- ]*(.*)", head)
+    if m:
+        return "miss", (m.group(1).strip()[:120] or "obvious miss")
+    return "pass", ""
+
+
+def _arch_publish(data: bytes, name: str) -> str | None:
+    """Durable original-quality URL via the LINE relay media archive —
+    the same hop ada_render_video uses. The /frame URL + a LINE
+    imageMessage both re-encode, so 2K/4K renders land here and the
+    member grabs the full-res file via full_url."""
+    arch = Path(os.path.expanduser(
+        os.environ.get("LINE_MEDIA_ARCHIVE_DIR")
+        or "~/.local/share/ada/line-media"))
+    try:
+        d = arch / "renders"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / name).write_bytes(data)
+    except OSError as exc:
+        logger.warning("arch publish failed: %s", exc)
+        return None
+    base = (os.environ.get("ADA_RELAY_PUBLIC_BASE")
+            or os.environ.get("LINE_PUBLIC_IMG_BASE")
+            or "https://157.85.102.125.sslip.io/relay-img").rstrip("/")
+    return f"{base}/arch/renders/{name}"
+
+
+def _ask_notices(prompt: str) -> str:
+    """Honest-capability notes attached to the result — the model relays
+    them; they never block a render."""
+    notes = []
+    if _PAGE_ASK_RE.search(prompt):
+        notes.append(
+            "this is a *picture* of a page at one fixed aspect — not a "
+            "working page; if the user wants a usable page, offer to "
+            "render the hero/section art here and assemble the page "
+            "with the page/CMS tools instead")
+    if _PIXEL_ASK_RE.search(prompt):
+        notes.append(
+            "generation is aspect-based (1:1/16:9/9:16/4:3/3:4), not "
+            "pixel-exact — 1K is ~1024px on the short side; say so if "
+            "they needed an exact size")
+    return " ".join(notes)
+
+
+def _remember(runner: Any, url: str, path: Path | None, prompt: str,
+              ratio: str, size: str, provider: str) -> None:
+    """Store this render as the caller's last artifact — feeds the
+    'last' ref alias and the edit-cue auto-feed on later turns."""
+    try:
+        from backend import render_state
+        render_state.remember(runner, {
+            "kind": "image", "url": url, "file": str(path or ""),
+            "prompt": prompt[:200], "aspect": ratio, "size": size,
+            "provider": provider})
+    except Exception as exc:
+        logger.info("render remember skipped: %s", exc)
 
 
 def _provider(raw: Any) -> tuple[str | None, str | None]:
@@ -547,8 +781,9 @@ async def _deliver_local(runner: Any, job_id: str, prompt: str) -> None:
     if status == "completed":
         data, derr = _sd_result_bytes(payload or {})
         if data:
+            path: Path | None = None
             try:
-                _save(data, "image/png")
+                path = _save(data, "image/png")
             except OSError as exc:
                 logger.warning("local render save failed: %s", exc)
             slug = re.sub(r"[^a-z0-9]+", "-",
@@ -560,6 +795,8 @@ async def _deliver_local(runner: Any, job_id: str, prompt: str) -> None:
                 "image/png", "render")
             if url_out:
                 image_url = url_out
+                _remember(runner, url_out, path, prompt, "", "1K",
+                          "local")
                 text += f"done — {(prompt or 'your image')[:80]}"
             else:
                 text += ("finished, but publishing a shareable URL "
@@ -639,6 +876,7 @@ async def _finish_local(runner: Any, client: httpx.AsyncClient,
                 "error": "the image rendered and was saved, but publishing "
                          "a shareable URL failed (input-bridge /frame) — "
                          "the artifact is kept at 'file'"}
+    _remember(runner, url_out, path, prompt, ratio, "1K", "local")
     out: dict[str, Any] = {
         "ok": True,
         "image_url": url_out,
@@ -656,6 +894,9 @@ async def _finish_local(runner: Any, client: httpx.AsyncClient,
     if size != "1K":
         out["note"] += (f" (asked for {size} — the local provider tops "
                         "out at 1K/1024px)")
+    notice = _ask_notices(prompt)
+    if notice:
+        out["notice"] = notice
     return out
 
 
@@ -690,15 +931,41 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
     if err:
         return {"ok": False, "error": err}
     assert size is not None
+    refs_in: list[str] = []
     ref_url = str(args.get("ref_url") or "").strip()
-    if ref_url and not (
-            _DOC_KEY_RE.match(ref_url) or _DOC_PATH_RE.search(ref_url)
-            or ref_url.startswith(("/", "http://", "https://"))):
-        return {"ok": False,
-                "error": "ref_url must be a 'doc/...' intake key, a "
-                         "/api/documents/... path, or an http(s) image URL"}
+    if ref_url:
+        refs_in.append(ref_url)
+    extra = args.get("ref_urls")
+    if isinstance(extra, str):
+        extra = [extra]
+    if isinstance(extra, (list, tuple)):
+        refs_in += [str(r or "").strip() for r in extra]
+    refs_in = [r for r in refs_in if r]
+    if len(refs_in) > _REFS_MAX:
+        return {"ok": False, "error": (
+            f"up to {_REFS_MAX} reference images per render — got "
+            f"{len(refs_in)}")}
+    from backend import render_state
+    auto_ref = False
+    if not refs_in and prov == "gemini" and prompt:
+        ent = render_state.last(runner, kinds={"image"},
+                                max_age_s=render_state.AUTO_TTL_S)
+        if ent and len(prompt) <= _AUTO_REF_PROMPT_MAX \
+                and _edit_cued(prompt):
+            refs_in = ["last"]
+            auto_ref = True
+    for r in refs_in:
+        if r.lower() in render_state.LAST_ALIASES:
+            continue
+        if not (_DOC_KEY_RE.match(r) or _DOC_PATH_RE.search(r)
+                or r.startswith(("/", "http://", "https://"))):
+            return {"ok": False,
+                    "error": "ref_url/ref_urls entries must be 'last', "
+                             "a 'doc/...' intake key, a "
+                             "/api/documents/... path, or an http(s) "
+                             "image URL"}
     if prov == "local":
-        if ref_url:
+        if refs_in:
             return {"ok": False,
                     "error": "the local provider is text-to-image only "
                              "— it can't edit a ref photo. Drop "
@@ -723,21 +990,50 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
     except Exception:
         pass
 
-    ref = None
+    refs: list[tuple[bytes, str]] = []
     async with httpx.AsyncClient(timeout=60.0) as client:
-        if ref_url:
-            ref, err = await _resolve_ref(client, ref_url)
-            if err:
-                return {"ok": False, "error": err}
-    try:
-        data, model_text, err = await _render(prompt, ref, ratio, size)
-    except Exception as exc:
-        return {"ok": False,
-                "error": f"the image model call failed: {exc}"}
-    if err:
-        return {"ok": False, "error": err,
+        for raw in refs_in:
+            if raw.lower() in render_state.LAST_ALIASES:
+                resolved, rerr = render_state.resolve_last(
+                    runner, kinds={"image"})
+                if rerr:
+                    return {"ok": False, "error": rerr}
+                assert resolved is not None
+                if resolved[0] == "bytes":
+                    refs.append(resolved[1])
+                    continue
+                raw = str(resolved[1])
+            ref, rerr = await _resolve_ref(client, raw)
+            if rerr:
+                return {"ok": False, "error": rerr}
+            assert ref is not None
+            refs.append(ref)
+
+    data, model_text, rerr = await _render_retry(prompt, refs,
+                                               ratio, size)
+    if rerr:
+        return {"ok": False, "error": rerr,
                 "model_text": model_text or ""}
     assert data is not None
+
+    selfcheck: dict[str, Any] = {"verdict": "skip"}
+    verdict, detail = await _selfcheck(data, "image/png", prompt)
+    selfcheck["verdict"] = verdict
+    if verdict == "miss":
+        fix = prompt[:_PROMPT_MAX - 160] + (
+            f" — previous attempt missed: {detail}; fix that" if detail
+            else " — previous attempt missed the request; fix it")
+        d2, m2, e2 = await _render_retry(fix, refs, ratio, size)
+        selfcheck["retried"] = True
+        selfcheck["detail"] = detail
+        if d2:
+            data, model_text = d2, m2
+            selfcheck["retry"] = "re-rendered with the critique"
+        else:
+            selfcheck["retry"] = ("retry failed — keeping the first "
+                                  "render; warn the user it may be off")
+            if e2:
+                logger.info("selfcheck retry render failed: %s", e2)
     if len(data) > _IMG_MAX_BYTES:
         return {"ok": False, "error": "the rendered image is too large"}
     mime = "image/png"
@@ -759,6 +1055,7 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
                          "a shareable URL failed (input-bridge /frame) — "
                          "the artifact is kept at 'file'; a retry renders "
                          "a fresh image"}
+    _remember(runner, url_out, path, prompt, ratio, size, "gemini")
     out: dict[str, Any] = {
         "ok": True,
         "image_url": url_out,
@@ -768,9 +1065,24 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
         "size": size,
         "model": _model(),
         "bytes": len(data),
+        "selfcheck": selfcheck,
         "note": "image_url is the shareable render — relays post it as a "
-                "photo automatically; 'file' is the local artifact.",
+                "photo automatically; 'file' is the local artifact. To "
+                "adjust it, call again with ref_url='last' — an edit "
+                "keeps the composition, a fresh call rerolls.",
     }
+    if auto_ref:
+        out["auto_ref"] = "last"
+    if size in ("2K", "4K"):
+        full = _arch_publish(data, path.name)
+        if full:
+            out["full_url"] = full
+            out["note"] += (" full_url serves the original bytes — "
+                            "LINE re-encodes the attached photo, so "
+                            "share the link for the full-res file.")
+    notice = _ask_notices(prompt)
+    if notice:
+        out["notice"] = notice
     if model_text:
         out["model_text"] = model_text[:400]
     return out

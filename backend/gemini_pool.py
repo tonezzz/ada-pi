@@ -54,6 +54,37 @@ _QUOTA_SHAPED_RE = re.compile(
     r"\b429\b|resource_exhausted|rate.?limit|too many requests|quota",
     re.I)
 
+# 429-vs-quota split (card render-flow-quality-pass): a quota-shaped
+# error is not always the daily free-tier cap. Per-minute/rpm limits,
+# LiteLLM gateway rate-limits, and explicit retry hints are transient —
+# parking the (key, model) pair until the midnight-Pacific reset for
+# those turned every brief throttle into a day-long outage for every
+# caller sharing the pool.
+_QUOTA_DAILY_RE = re.compile(r"per.?day|daily|day.?quota", re.I)
+_QUOTA_SHORT_RE = re.compile(
+    r"per.?minute|\brpm\b|rate.?limit|too many requests|max.?parallel|"
+    r"overload", re.I)
+_QUOTA_RETRY_S_RE = re.compile(r"retry[^\d]{0,16}(\d{1,4})\s*s", re.I)
+_QUOTA_SHORT_TTL_S = float(
+    os.environ.get("ADA_GEMINI_QUOTA_SHORT_TTL_S", "120"))
+_QUOTA_RETRY_CAP_S = 900.0
+
+
+def _park_until(exc: BaseException | None) -> float:
+    """Epoch ts a (key, model) stays out after a quota-shaped error.
+    Daily-quota text parks to the free-tier reset; an explicit retry-in
+    hint is honoured (capped); per-minute/rate-limit text parks briefly;
+    anything ambiguous keeps the conservative daily reset."""
+    s = str(exc or "")
+    if _QUOTA_DAILY_RE.search(s):
+        return _reset_at()
+    m = _QUOTA_RETRY_S_RE.search(s)
+    if m:
+        return time.time() + min(float(m.group(1)), _QUOTA_RETRY_CAP_S)
+    if _QUOTA_SHORT_RE.search(s):
+        return time.time() + _QUOTA_SHORT_TTL_S
+    return _reset_at()
+
 
 class QuotaExhaustedError(RuntimeError):
     """Raised when every configured key is out of quota for the model.
@@ -152,14 +183,15 @@ def next_key(model: str = "") -> str | None:
 
 def mark_exhausted(key: str, model: str = "", exc: BaseException | None = None,
                    tool: str = "") -> None:
-    """Mark (key, model) out of quota until the free-tier daily reset and
-    record the error for status(). Idempotent — remarking just refreshes
-    the reset stamp."""
+    """Mark (key, model) out of quota and record the error for status().
+    The park length follows the error: daily-quota text -> the free-tier
+    reset, transient rpm/rate-limit/retry-in text -> seconds-to-minutes
+    (_park_until). Idempotent — remarking just refreshes the stamp."""
     if not key:
         return
     with _lock:
         _prune()
-        _exhausted[(key, model)] = _reset_at()
+        _exhausted[(key, model)] = _park_until(exc)
         if tool:
             _last_quota[tool] = {
                 "model": model,
@@ -409,13 +441,17 @@ async def generate(model: str, contents: Any, config: Any = None,
         emit_ops_event(mddb, tool or "gemini", last_exc,
                        session_id=session_id)
     if last_exc is not None:
+        short = _park_until(last_exc) < _reset_at()
+        when = ("retry in a minute or two — this is a rate-limit, not "
+                "the daily quota" if short else
+                "resets at the daily boundary (midnight US/Pacific); "
+                "tell the user plainly that the quota is spent")
         raise QuotaExhaustedError(
-            f"gemini free-tier quota exhausted for {model or 'model'} on "
-            f"all {len(keys)} configured key(s) — resets at the daily "
-            "boundary (midnight US/Pacific); tell the user plainly that "
-            f"the quota is spent: {type(last_exc).__name__}: {last_exc}"[:300])
+            f"gemini quota/rate-limit exhausted for {model or 'model'} on "
+            f"all {len(keys)} configured key(s) — {when}: "
+            f"{type(last_exc).__name__}: {last_exc}"[:300])
     raise QuotaExhaustedError(
-        f"gemini free-tier quota already exhausted for {model or 'model'} "
-        f"on all {len(keys)} configured key(s) — resets at the daily "
-        "boundary (midnight US/Pacific); tell the user plainly that the "
-        "quota is spent")
+        f"gemini quota/rate-limit already exhausted for {model or 'model'} "
+        f"on all {len(keys)} configured key(s) — keys un-park on their "
+        "own timers (per-minute limits recover in seconds; daily quota "
+        "resets midnight US/Pacific)")

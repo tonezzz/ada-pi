@@ -20,6 +20,8 @@ ada_render_image:
     resolved in-process via the shared document_check engine;
   - a /api/documents/<key>/{image,preview} path (relative or absolute);
   - any other fetchable http(s) image URL.
+ref_url='last' animates the caller's previous image render
+(backend/render_state — card render-flow-quality-pass).
 
 Env:
     GEMINI_API_KEY / GOOGLE_API_KEY — required
@@ -80,9 +82,11 @@ DECLARATION = {
             },
             "ref_url": {
                 "type": "string",
-                "description": "Optional source image to animate: a "
-                               "'doc/...' intake key, a /api/documents/... "
-                               "path, or any fetchable image URL.",
+                "description": "Optional source image to animate: "
+                               "'last' (the previous image render this "
+                               "session), a 'doc/...' intake key, a "
+                               "/api/documents/... path, or any "
+                               "fetchable image URL.",
             },
             "secs": {
                 "type": "integer",
@@ -592,6 +596,14 @@ async def _finish(runner: Any, client: httpx.AsyncClient, api_key: str,
                          "a playable URL failed (input-bridge /frame) — "
                          "the artifact is kept at 'file'; a retry renders "
                          "a fresh clip"}
+    try:
+        from backend import render_state
+        render_state.remember(runner, {
+            "kind": "video", "url": url_out, "file": str(path),
+            "prompt": (prompt or "")[:200], "aspect": ratio,
+            "size": "", "provider": "veo"})
+    except Exception:
+        pass
     out = {
         "ok": True,
         "video_url": url_out,
@@ -620,9 +632,22 @@ async def _attempt(runner: Any, client: httpx.AsyncClient, api_key: str,
                              job["prompt"], job["ratio"], job["secs"])
     ref = None
     if job["ref_url"]:
-        ref, err = await _resolve_ref(client, job["ref_url"])
-        if err:
-            return {"ok": False, "error": err}
+        from backend import render_state
+        raw = job["ref_url"]
+        if raw.lower() in render_state.LAST_ALIASES:
+            resolved, rerr = render_state.resolve_last(
+                runner, kinds={"image"})
+            if rerr:
+                return {"ok": False, "error": rerr}
+            assert resolved is not None
+            if resolved[0] == "bytes":
+                ref = resolved[1]
+            else:
+                raw = str(resolved[1])
+        if ref is None:
+            ref, err = await _resolve_ref(client, raw)
+            if err:
+                return {"ok": False, "error": err}
     op_name, err = await _submit(client, api_key, job["prompt"], ref,
                                  job["ratio"], job["secs"], job["res"])
     if err:
@@ -676,12 +701,15 @@ async def run(runner: Any, **args: Any) -> dict[str, Any]:
                          "GEMINI_API_KEY is missing"}
 
     ref_url = str(args.get("ref_url") or "").strip()
+    from backend import render_state
     if ref_url and not (
-            _DOC_KEY_RE.match(ref_url) or _DOC_PATH_RE.search(ref_url)
+            ref_url.lower() in render_state.LAST_ALIASES
+            or _DOC_KEY_RE.match(ref_url) or _DOC_PATH_RE.search(ref_url)
             or ref_url.startswith(("/", "http://", "https://"))):
         return {"ok": False,
-                "error": "ref_url must be a 'doc/...' intake key, a "
-                         "/api/documents/... path, or an http(s) image URL"}
+                "error": "ref_url must be 'last', a 'doc/...' intake "
+                         "key, a /api/documents/... path, or an http(s) "
+                         "image URL"}
 
     job = {"t0": time.monotonic(), "prompt": prompt, "ratio": ratio,
            "secs": secs, "res": res, "ref_url": ref_url,

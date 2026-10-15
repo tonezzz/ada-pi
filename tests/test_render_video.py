@@ -462,6 +462,46 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
                                    ref_url="file:///etc/passwd")
         self.assertFalse(out["ok"])
 
+    async def test_ref_url_last_animates_remembered_render(self):
+        """ref_url='last' (render-flow-quality-pass): the caller's
+        previous image render becomes the i2v first frame — resolved
+        from the on-disk artifact, no fetch."""
+        from backend import render_state
+        render_state.clear()
+        self.addCleanup(render_state.clear)
+        prev = Path(self.tmp.name) / "prev.png"
+        prev.write_bytes(b"\x89PNG-prev-render")
+        runner = _runner()
+        runner.context = None
+        runner.session_id = "vid-last-1"
+        render_state.remember(runner, {
+            "kind": "image", "url": "https://x/frame?t=1",
+            "file": str(prev), "prompt": "a barn"})
+        factory, client = _client(
+            post_resp=_submit_resp(),
+            get_queue=[_op_done(), FakeResp(200, content=MP4_BYTES)])
+        with patch.object(render.httpx, "AsyncClient", factory), \
+                patch.dict("os.environ", self.env):
+            out = await render.run(runner, prompt="animate it",
+                                   ref_url="last")
+        self.assertTrue(out["ok"], out)
+        inst = client.posts[0][1]["json"]["instances"][0]
+        self.assertEqual(base64.b64decode(
+            inst["image"]["bytesBase64Encoded"]), b"\x89PNG-prev-render")
+
+    async def test_ref_url_last_without_prior_render_is_honest(self):
+        from backend import render_state
+        render_state.clear()
+        self.addCleanup(render_state.clear)
+        runner = _runner()
+        runner.context = None
+        runner.session_id = "vid-last-2"
+        with patch.dict("os.environ", self.env):
+            out = await render.run(runner, prompt="animate it",
+                                   ref_url="last")
+        self.assertFalse(out["ok"])
+        self.assertIn("nothing rendered", out["error"])
+
 
 WP_ENV = {"WP_SITE_URL": "https://b.example/wp", "WP_APP_USER": "u",
           "WP_APP_PASSWORD": "p"}
