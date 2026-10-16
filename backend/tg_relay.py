@@ -118,9 +118,13 @@ def _user_callers() -> dict[int, str]:
 _whisper_model = None
 
 
-def _decode_wav16k(src_path, dst_path) -> bool:
+_SILENT_PEAK = 0.01  # decoded 16k PCM peak below this = dead-mic clip
+_NOISE_RE = re.compile(r"[\s.,!?…\-—_''\"\"()\[\]{}:;]+")
+
+
+def _decode_wav16k(src_path, dst_path) -> float:
     """opus/ogg → 16 kHz mono WAV via av + soundfile (venv deps — no
-    ffmpeg on this host)."""
+    ffmpeg on this host). Returns peak amplitude; -1 on decode failure."""
     try:
         import av
         import numpy as np
@@ -133,60 +137,119 @@ def _decode_wav16k(src_path, dst_path) -> bool:
                 for f in resampler.resample(frame):
                     chunks.append(f.to_ndarray().reshape(-1))
         if not chunks:
-            return False
-        sf.write(str(dst_path), np.concatenate(chunks), 16000,
+            return -1.0
+        pcm = np.concatenate(chunks)
+        sf.write(str(dst_path), pcm, 16000,
                  subtype="PCM_16")
-        return True
+        peak = float(np.abs(pcm).max())
+        if pcm.dtype.kind in "iu":   # s16 → normalize to 0..1
+            peak /= 32768.0
+        return peak
     except Exception:
         logger.exception("voice decode failed for %s", src_path)
-        return False
+        return -1.0
 
 
-def _transcribe_remote(url: str, path) -> str:
+def _clip_peak(path) -> float:
+    """Peak amplitude of a clip without writing a wav — for the local
+    faster-whisper path which decodes internally. 1.0 on error so a
+    decode hiccup never suppresses transcription."""
+    try:
+        import av
+        import numpy as np
+        resampler = av.audio.resampler.AudioResampler(
+            format="fltp", layout="mono", rate=16000)
+        peak = 0.0
+        with av.open(str(path)) as container:
+            for frame in container.decode(audio=0):
+                for f in resampler.resample(frame):
+                    a = f.to_ndarray()
+                    if a.size:
+                        m = float(np.abs(a).max())
+                        if m > peak:
+                            peak = m
+        return peak
+    except Exception:
+        return 1.0
+
+
+def _transcribe_remote(url: str, path) -> tuple[str, str]:
     """POST the clip (decoded to wav) to an OpenAI-style
     /v1/audio/transcriptions endpoint — audio.cpp qwen3-asr local server
-    or the omen whisper service."""
+    or the omen whisper service. Returns (text, kind): ok|silent|empty."""
     wav = Path(str(path) + ".16k.wav")
     try:
-        if not _decode_wav16k(path, wav):
-            return ""
+        peak = _decode_wav16k(path, wav)
+        if peak < 0:
+            raise RuntimeError("ogg→wav decode failed")
+        if peak < _SILENT_PEAK:
+            return "", "silent"
+        data = {"model": os.environ.get(
+            "TG_WHISPER_MODEL", "qwen3-asr")}
+        prompt = os.environ.get("TG_WHISPER_PROMPT")
+        if prompt:
+            data["prompt"] = prompt
         with open(wav, "rb") as fh:
             resp = httpx.post(
                 url,
                 files={"file": (wav.name, fh, "audio/wav")},
-                data={"model": os.environ.get(
-                    "TG_WHISPER_MODEL", "qwen3-asr")},
+                data=data,
                 timeout=120)
         resp.raise_for_status()
-        return (resp.json().get("text") or "").strip()
+        text = (resp.json().get("text") or "").strip()
+        return (text, "ok") if text else ("", "empty")
     finally:
         wav.unlink(missing_ok=True)
 
 
-def _transcribe(path) -> str:
+def _transcribe(path) -> tuple[str, str]:
     """Voice transcription — remote endpoint first when TG_WHISPER_URL is
-    set (audio.cpp Qwen3-ASR on this host, ada-stt.service :8914), local
-    faster-whisper as fallback. Gated by TG_VOICE_TRANSCRIBE=1."""
+    set (audio.cpp Qwen3-ASR, ada-stt.service), local faster-whisper as
+    fallback. Gated by TG_VOICE_TRANSCRIBE=1.
+    Returns (text, kind): ok|silent|empty|off — the handler maps each
+    to a distinct user-facing reply."""
     if os.environ.get("TG_VOICE_TRANSCRIBE") != "1":
-        return ""
+        return "", "off"
     url = os.environ.get("TG_WHISPER_URL")
     if url:
         try:
-            text = _transcribe_remote(url, path)
-            if text:
-                return text
+            text, kind = _transcribe_remote(url, path)
+            if kind == "ok":
+                return text, "ok"
+            if kind == "silent":
+                return "", "silent"
+            logger.warning("remote stt returned empty text for %s "
+                           "— clip saved, no fallback", path)
+            return "", "empty"
         except Exception:
             logger.exception("remote stt failed — falling back to local")
+    if _clip_peak(path) < _SILENT_PEAK:
+        return "", "silent"
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
-        size = os.environ.get("TG_WHISPER_MODEL", "base")
+        size = os.environ.get("TG_LOCAL_WHISPER_MODEL", "base")
         _whisper_model = WhisperModel(
             size, device="cpu", compute_type="int8")
         logger.info("whisper model %s loaded", size)
     segments, _ = _whisper_model.transcribe(str(path), beam_size=1)
-    return " ".join(seg.text.strip() for seg in segments).strip()
+    text = " ".join(seg.text.strip() for seg in segments).strip()
+    return (text, "ok") if text else ("", "empty")
 
+
+def _is_trivial(text: str) -> bool:
+    """Noise-only transcripts (\"…\", \"uh\", \"[BLANK_AUDIO]\") should
+    not burn an Ada turn."""
+    t = _NOISE_RE.sub("", text).lower()
+    return len(t) < 2 or t in {
+        "uh", "um", "hmm", "hm", "mm", "blankaudio", "inaudible"}
+
+
+def _reply_tag() -> str:
+    # TG_REPLY_TAG — lane/persona prefix on Ada replies, e.g.
+    # [mn-ha] Kraut. Empty = no tag (kk template keeps bare replies).
+    tag = os.environ.get("TG_REPLY_TAG", "").strip()
+    return (tag + ": ") if tag else ""
 
 def _key_by_name(name: str | None) -> str:
     """Issued API key for a caller name, else the admin default."""
@@ -236,6 +299,43 @@ def _sender_slug(msg: dict, caller: str | None,
     return slug or str(sender_id or "unknown")
 
 
+def _forward_label(msg: dict) -> tuple[str, str | None]:
+    """Resolve a forwarded message's ORIGINAL sender for provenance:
+    (display_label, mapped_caller_or_None). Reads forward_origin first
+    (sender_user/hidden_user/chat/channel) then the legacy forward_*
+    fields. When the origin maps in TELEGRAM_USER_CALLERS the mapped
+    caller name is returned too — corpus clips then file under the
+    original speaker, not the forwarder."""
+    fo = msg.get("forward_origin") or {}
+    t = str(fo.get("type") or "")
+    if t == "sender_user":
+        u = fo.get("sender_user") or {}
+        uid = u.get("id")
+        mapped = _user_callers().get(uid)
+        return (mapped or u.get("first_name") or u.get("username")
+                or str(uid or "unknown")), mapped
+    if t == "hidden_user":
+        return str(fo.get("sender_user_name") or "hidden user"), None
+    if t == "chat":
+        return str((fo.get("sender_chat") or {}).get("title")
+                   or "a chat"), None
+    if t == "channel":
+        return str((fo.get("chat") or {}).get("title")
+                   or "a channel"), None
+    fu = msg.get("forward_from") or {}
+    if fu:
+        uid = fu.get("id")
+        mapped = _user_callers().get(uid)
+        return (mapped or fu.get("first_name") or fu.get("username")
+                or str(uid or "unknown")), mapped
+    if msg.get("forward_sender_name"):
+        return str(msg["forward_sender_name"]), None
+    fc = msg.get("forward_from_chat") or {}
+    if fc:
+        return str(fc.get("title") or "a chat"), None
+    return "", None
+
+
 def _images_from(results: list[dict]) -> list[tuple[str, str, str]]:
     """(url, caption, kind) triples found in tool_result payloads — a
     camera snapshot's cast_url turns into a photo; a render's
@@ -269,6 +369,27 @@ def _allowed_chats() -> set[int]:
     return out
 
 
+def _persona() -> str:
+    """TG_PERSONA_NAME — the persona name used in user-facing plumbing
+    texts (turn failures, /start). Shared relay code defaults to Ada;
+    lanes like mn-ha set Kraut so a dropped session never names the
+    wrong persona."""
+    return os.environ.get("TG_PERSONA_NAME", "").strip() or "Ada"
+
+
+def _push_deny() -> set[int]:
+    """TG_PUSH_DENY="-123,456" -- chat_ids the out-of-band /send push API
+    refuses (403). Replies inside a real inbound turn are unaffected:
+    the guard only gates listener-originated pushes (chat_send et al),
+    so a persona can answer in a group but cannot broadcast to it."""
+    out = set()
+    for part in os.environ.get("TG_PUSH_DENY", "").split(","):
+        part = part.strip()
+        if part.lstrip("-").isdigit():
+            out.add(int(part))
+    return out
+
+
 class ChatSession:
     """One Telegram peer <-> one Ada WS session. In a group room the peer
     is (chat_id, sender_id) — each member gets their own caller key."""
@@ -290,7 +411,7 @@ class ChatSession:
         key = (_key_by_name(self.caller) if self.caller
                else _key_for_chat(self.chat_id))
         url = (f"{ADA_WS_URL}?api_key={key}&channel=telegram"
-               f"&chat_id={self.chat_id}")
+               f"&chat_id={self.chat_id}&mode=text")
         # ada-text-mode-sessions: TG_TEXT_MODE routes text chats to the
         # REST text provider — no Live session, metered per call.
         if os.environ.get("TG_TEXT_MODE", "").strip().lower() in (
@@ -346,7 +467,7 @@ class ChatSession:
             completed_at = 0.0
             while time.monotonic() < deadline:
                 wait = min(
-                    8.0 if completed_at else deadline - time.monotonic(),
+                    1.5 if completed_at else deadline - time.monotonic(),
                     max(deadline - time.monotonic(), 0.1))
                 try:
                     msg = await asyncio.wait_for(self._current.get(), wait)
@@ -365,7 +486,7 @@ class ChatSession:
                 elif t == "error":
                     logger.warning("chat %s ada error: %s", self.chat_id, msg)
                 # Allow a short settle after completion for a late delta.
-                if completed_at and time.monotonic() - completed_at > 6:
+                if completed_at and time.monotonic() - completed_at > 1.2:
                     break
             return "".join(parts).strip(), _images_from(results)
 
@@ -408,6 +529,33 @@ class TgRelay:
         if not data.get("ok"):
             raise RuntimeError(f"telegram {method} failed: {data}")
         return data.get("result")
+
+    async def _turn_progress(self, chat_id: int, reply_to, stop) -> None:
+        """Keep the typing bubble alive (TG clears it after ~5s) and
+        post one interim note after TG_TURN_NOTICE_S so long research
+        turns never look dead."""
+        notice_s = float(os.environ.get("TG_TURN_NOTICE_S", "20"))
+        t0 = time.monotonic()
+        noted = False
+        while not stop.is_set():
+            await asyncio.sleep(4)
+            if stop.is_set():
+                return
+            try:
+                await self.tg("sendChatAction", chat_id=chat_id,
+                              action="typing")
+            except Exception:
+                pass
+            if not noted and time.monotonic() - t0 > notice_s:
+                noted = True
+                try:
+                    await self.send_text(
+                        chat_id,
+                        _reply_tag() + "still on it — this needs some "
+                        "research, back in a bit.",
+                        reply_to=reply_to)
+                except Exception:
+                    pass
 
     async def send_text(self, chat_id: int, text: str,
                         reply_to: int | None = None) -> None:
@@ -535,11 +683,15 @@ class TgRelay:
     async def _save_voice_clip(
             self, msg: dict, media: dict, kind: str,
             chat_id: int, sender_id: int | None,
-            caller: str | None) -> tuple[Path, int]:
+            caller: str | None,
+            fwd: tuple[str, str | None] = ("", None)) -> tuple[Path, int]:
         """Download a voice/audio/video_note clip into the local voice
-        corpus and append one manifest line. Returns (path, duration_s)."""
+        corpus and append one manifest line. Returns (path, duration_s).
+        Forwarded clips file under the ORIGINAL sender when they map in
+        TELEGRAM_USER_CALLERS; the manifest keeps forwarded_by either way."""
         data, tg_path = await self._download_file(media["file_id"])
-        slug = _sender_slug(msg, caller, sender_id)
+        fwd_label, fwd_caller = fwd
+        slug = _sender_slug(msg, fwd_caller or caller, sender_id)
         stamp = datetime.fromtimestamp(
             msg.get("date") or time.time()).strftime("%Y%m%d-%H%M%S")
         mime = str(media.get("mime_type") or "")
@@ -568,6 +720,9 @@ class TgRelay:
             "mime": mime or None,
             "path": str(dest),
         }
+        if fwd_label:
+            entry["forward_from"] = fwd_label
+            entry["forwarded_by"] = _sender_slug(msg, caller, sender_id)
         with (VOICE_CORPUS_DIR / "manifest.jsonl").open("a") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
         logger.info("chat %s saved %s clip %s (%ds)",
@@ -604,6 +759,8 @@ class TgRelay:
             if caller is None:
                 if from_id is None:
                     return  # no sender (channel post etc.) — ignore
+                logger.warning("group refusal: chat=%s sender=%s (whitelist via TELEGRAM_USER_CALLERS)",
+                               chat_id, from_id)
                 last = self._refused.get((chat_id, from_id))
                 if last is None or time.monotonic() - last > _REFUSAL_GAP_S:
                     self._refused[(chat_id, from_id)] = time.monotonic()
@@ -615,6 +772,7 @@ class TgRelay:
                         reply_to=reply_to)
                 return
             skey = (chat_id, from_id)
+        fwd = _forward_label(msg)
         # Voice/audio/video_note: only reached by enrolled senders (the
         # allowlist checks above return early otherwise). Save to the
         # local voice corpus and ack — nothing goes to Ada.
@@ -624,7 +782,7 @@ class TgRelay:
                     else "video_note" if msg.get("video_note") else "audio")
             try:
                 clip_path, duration = await self._save_voice_clip(
-                    msg, media, kind, chat_id, from_id, caller)
+                    msg, media, kind, chat_id, from_id, caller, fwd)
             except Exception as exc:
                 logger.warning("chat %s %s save failed: %s",
                                chat_id, kind, exc)
@@ -632,12 +790,39 @@ class TgRelay:
                     chat_id, "Couldn't save that clip — try again.",
                     reply_to=reply_to)
                 return
-            transcript = await asyncio.get_event_loop().run_in_executor(
-                None, _transcribe, clip_path)
+            # typing pulse starts BEFORE transcribe — a cold STT model
+            # load can take tens of seconds and should never look dead
+            try:
+                await self.tg("sendChatAction", chat_id=chat_id,
+                              action="typing")
+            except Exception:
+                pass
+            stop = asyncio.Event()
+            pulse = asyncio.ensure_future(
+                self._turn_progress(chat_id, reply_to, stop))
+            transcript, tkind = await asyncio.get_event_loop(
+            ).run_in_executor(None, _transcribe, clip_path)
+            if tkind == "silent":
+                stop.set(); pulse.cancel()
+                await self.send_text(
+                    chat_id,
+                    '\U0001f399 that came through silent — mic muted or '
+                    'permission missing? (clip saved anyway)',
+                    reply_to=reply_to)
+                return
             if not transcript:
+                stop.set(); pulse.cancel()
                 await self.send_text(
                     chat_id,
                     f"Saved {duration}s {kind} clip to the voice corpus.",
+                    reply_to=reply_to)
+                return
+            if _is_trivial(transcript):
+                stop.set(); pulse.cancel()
+                await self.send_text(
+                    chat_id,
+                    f'\U0001f399 "{transcript}" — nothing actionable, '
+                    'skipping.',
                     reply_to=reply_to)
                 return
             await self.send_text(
@@ -646,18 +831,19 @@ class TgRelay:
             sess = self.sessions.setdefault(
                 skey, ChatSession(chat_id, self, caller=caller))
             try:
-                await self.tg("sendChatAction", chat_id=chat_id,
-                              action="typing")
-            except Exception:
-                pass
-            try:
-                reply, images = await sess.send_turn(transcript)
+                meta = f"voice clip saved: {clip_path}"
+                if fwd[0]:
+                    meta += f"; forwarded clip from {fwd[0]}"
+                reply, images = await sess.send_turn(
+                    f"[{meta}] {transcript}")
             except Exception as exc:
                 logger.warning("chat %s voice turn failed: %s", chat_id, exc)
                 reply, images = ("(failed: session dropped)", [])
                 sess = ChatSession(chat_id, self, caller=caller)
                 self.sessions[skey] = sess
-            await self.send_text(chat_id, reply or "(no reply)",
+            finally:
+                stop.set(); pulse.cancel()
+            await self.send_text(chat_id, _reply_tag() + (reply or "(no reply)"),
                                  reply_to=reply_to)
             for url, cap, kind in images[:3]:
                 await self.send_media(chat_id, url, cap, kind)
@@ -670,21 +856,30 @@ class TgRelay:
                               action="upload_photo")
             except Exception:
                 pass
+            stop = asyncio.Event()
+            pulse = asyncio.ensure_future(
+                self._turn_progress(chat_id, reply_to, stop))
             try:
                 img, mime = await self._fetch_photo(photos[-1]["file_id"])
                 cap = (msg.get("caption") or "").strip()
                 reply, images = await sess.send_image_turn(
                     img, mime,
-                    f"[via Telegram chat {chat_id}] The user sent this "
-                    "photo — describe it and respond naturally."
+                    f"[via Telegram chat {chat_id}] "
+                    + (f"(forwarded from {fwd[0]}) " if fwd[0] else "")
+                    + "The user sent this photo — describe it and "
+                    "respond naturally."
                     + (f" Their caption: {cap}" if cap else ""))
             except Exception as exc:
                 logger.warning("chat %s photo turn failed: %s",
                                chat_id, exc)
                 reply, images = (
-                    "Couldn't pass that photo to Ada — try again.", [])
+                    "Couldn't pass that photo to " + _persona()
+                    + " — try again.", [])
+            finally:
+                stop.set(); pulse.cancel()
             try:
-                await self.send_text(chat_id, reply or "(no reply)",
+                await self.send_text(chat_id,
+                                     _reply_tag() + (reply or "(no reply)"),
                                      reply_to=reply_to)
             except Exception as exc:
                 logger.warning("chat %s reply send failed: %s",
@@ -695,7 +890,8 @@ class TgRelay:
         if not text:
             return
         if text == "/start":
-            await self.send_text(chat_id, f"Ada relay online. chat_id={chat_id}")
+            await self.send_text(
+                chat_id, _persona() + f" relay online. chat_id={chat_id}")
             return
         sess = self.sessions.setdefault(
             skey, ChatSession(chat_id, self, caller=caller))
@@ -703,18 +899,25 @@ class TgRelay:
             await self.tg("sendChatAction", chat_id=chat_id, action="typing")
         except Exception:
             pass
+        stop = asyncio.Event()
+        pulse = asyncio.ensure_future(
+            self._turn_progress(chat_id, reply_to, stop))
         try:
-            reply, images = await sess.send_turn(text)
+            reply, images = await sess.send_turn(
+                f"(forwarded from {fwd[0]}): {text}" if fwd[0] else text)
         except Exception as exc:
             logger.warning("chat %s turn failed: %s", chat_id, exc)
-            reply, images = ("Ada didn't answer that turn — her session "
-                             "dropped. Try again."), []
+            reply, images = (_persona() + " didn't answer that turn — "
+                             "session dropped. Try again."), []
             sess = ChatSession(chat_id, self, caller=caller)
             self.sessions[skey] = sess
+        finally:
+            stop.set(); pulse.cancel()
         if not reply:
             reply = "(no reply)"
         try:
-            await self.send_text(chat_id, reply, reply_to=reply_to)
+            await self.send_text(chat_id, _reply_tag() + reply,
+                                 reply_to=reply_to)
         except Exception as exc:
             logger.warning("chat %s reply send failed: %s", chat_id, exc)
         for url, cap, kind in images[:3]:
@@ -789,6 +992,11 @@ class TgRelay:
             if not cid:
                 return JSONResponse({"ok": False,
                                      "error": "no target"}, status_code=400)
+            if cid in _push_deny():
+                logger.warning("/send denied: chat %s in TG_PUSH_DENY", cid)
+                return JSONResponse({"ok": False,
+                                     "error": "chat denied by TG_PUSH_DENY"},
+                                    status_code=403)
             # chat_send posts image_url; keep photo_url as the legacy alias.
             photo = body.get("photo_url") or body.get("image_url")
             video = str(body.get("video_url") or "")
@@ -860,8 +1068,14 @@ class TgRelay:
             if not cid:
                 return JSONResponse({"ok": False,
                                      "error": "no target"}, status_code=400)
+            if cid in _push_deny():
+                logger.warning("/send denied: chat %s in TG_PUSH_DENY", cid)
+                return JSONResponse({"ok": False,
+                                     "error": "chat denied by TG_PUSH_DENY"},
+                                    status_code=403)
             photo = body.get("photo_url") or body.get("image_url")
-            if not (body.get("text") or photo):
+            video = str(body.get("video_url") or "")
+            if not (body.get("text") or photo or video):
                 return JSONResponse({"ok": False,
                                      "error": "nothing to send"},
                                     status_code=400)
