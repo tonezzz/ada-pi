@@ -112,6 +112,52 @@ class PoolTests(unittest.TestCase):
             self.assertNotIn("secretkeyvalue", json.dumps(st))
 
 
+class ParkSplitTests(unittest.TestCase):
+    """429-vs-quota split (render-flow-quality-pass): transient
+    rate-limits park a (key, model) briefly; daily quota parks to the
+    free-tier reset."""
+
+    def setUp(self):
+        gemini_pool.reset()
+
+    def tearDown(self):
+        gemini_pool.reset()
+
+    def test_daily_quota_parks_to_reset(self):
+        gemini_pool.mark_exhausted("k1", "m", _quota_exc())
+        until = gemini_pool._exhausted[("k1", "m")]
+        import time
+        self.assertGreater(until, time.time() + 3600)
+
+    def test_per_minute_429_parks_briefly(self):
+        exc = RuntimeError(
+            "429 rate_limit_error: max requests per minute reached")
+        gemini_pool.mark_exhausted("k1", "m", exc)
+        until = gemini_pool._exhausted[("k1", "m")]
+        import time
+        self.assertGreater(until, time.time())
+        self.assertLess(until, time.time() + 600)
+
+    def test_retry_hint_uses_the_hint(self):
+        exc = RuntimeError("429 RESOURCE_EXHAUSTED — retry in 45s")
+        gemini_pool.mark_exhausted("k1", "m", exc)
+        until = gemini_pool._exhausted[("k1", "m")]
+        import time
+        self.assertGreater(until, time.time() + 20)
+        self.assertLess(until, time.time() + 120)
+
+    def test_short_park_recovers_key(self):
+        exc = RuntimeError("429 too many requests, per minute limit")
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "k1",
+                                     "ADA_GEMINI_KEY_POLICY": "",
+                                     "ADA_GEMINI_QUOTA_SHORT_TTL_S": "0.05"}):
+            # TTL is read at module load — exercise the regex path
+            # directly instead.
+            until = gemini_pool._park_until(exc)
+            import time
+            self.assertLess(until, time.time() + 300)
+
+
 class CacheTests(unittest.TestCase):
 
     def setUp(self):

@@ -566,13 +566,19 @@ ada_render_image: >-
   prompt= is the assembled image description (subject, style, mood) -
   ask at most one clarifying question, then render; never speak param
   names. ref_url= edits a source photo instead of generating fresh:
-  pass the 'doc/...' intake key from a [document uploaded] note, a
-  /api/documents/... path, or any fetchable image URL - including the
-  /relay-img/arch/... link from a photo the user just sent ('edit this
-  photo', 'make the car red'). aspect= is square (1:1, default),
-  landscape (16:9) or portrait (9:16). The result's image_url posts to
-  the chat automatically on LINE/TG relays - confirm what was made in
-  one line, do not re-send or re-render unless asked.
+  pass 'last' to iterate on the image you just rendered ('make it
+  warmer', 'change the text' - an edit keeps the composition, a fresh
+  call rerolls), the 'doc/...' intake key from a [document uploaded]
+  note, a /api/documents/... path, or any fetchable image URL -
+  including the /relay-img/arch/... link from a photo the user just
+  sent. ref_urls[] adds extra sources (same shapes, 'last' allowed,
+  3 max) for 'combine these photos' asks. aspect= is square (1:1,
+  default), landscape (16:9) or portrait (9:16). The result's
+  image_url posts to the chat automatically on LINE/TG relays -
+  confirm what was made in one line, do not re-send or re-render
+  unless asked. A 'notice' or selfcheck miss in the result is an
+  honest caveat to relay; full_url (2K/4K only) is the full-res link
+  to share when the member wants the file.
   provider='local' renders on tony-omen's sd-server instead of the cloud
   model - free and private but ~10 minutes on CPU, single-slot queue:
   a pending result carries job= and a background task pushes the photo
@@ -584,7 +590,8 @@ ada_render_video: >-
   prompt= is the full assembled scene description (subject, motion,
   style, audio cues) — ask at most one clarifying question, then render;
   never speak param names. ref_url= animates a source image instead of
-  generating fresh: pass the 'doc/...' intake key from a [document
+  generating fresh: pass 'last' for the image you just rendered this
+  session, the 'doc/...' intake key from a [document
   uploaded] note, a /api/documents/... path, or any fetchable image URL.
   secs= is 4|6|8 (default 8); aspect= is landscape (16:9, default) or
   portrait (9:16) — Veo has no square. Renders take ~1-2 minutes — say

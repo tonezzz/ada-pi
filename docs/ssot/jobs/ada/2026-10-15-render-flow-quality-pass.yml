@@ -1,0 +1,134 @@
+# SSOT Job: render flow quality pass — iterate-on-last, vision QA,
+# multi-ref, aspect notices, delivery fidelity, transient retry
+# Card: render-flow-quality-pass (kanban). Dispatch
+# 20261015-155419-from-tony-2026-10-14-what-else. Tony's 2026-10-14
+# six-item list, all implemented in ada_render_image (+ 'last' alias
+# in ada_render_video, 429-vs-quota split in gemini_pool).
+
+title: render flow quality pass — six card items on ada_render_image
+subtitle: last-render memory via backend/render_state, cheap vision
+  self-check w/ one retry, ref_urls[] multi-ref, page/px notices,
+  arch full_url on 2K/4K, transient retry + pool 429-vs-quota split
+
+planning:
+  goal: |
+    Close Tony's six render-quality gaps: edits iterate on the
+    session's last render instead of rerolling, a cheap vision pass
+    catches obvious misses once, multi-photo composes take ref_urls[],
+    page/pixel asks carry honest-capability notices, big renders attach
+    a full-res arch link, and transient gateway failures retry once.
+  decisions: |
+    - Shared store: backend/render_state.py (new) — tools.d modules
+      load by file path so module state isn't shareable; the store
+      lives in backend/. Keyed by bound relay chat first (survives ws
+      reconnects) then per-call session id; group chats share the chat
+      key, the session key disambiguates. resolve_last() prefers the
+      on-disk artifact (<=15MB) over refetching the published URL.
+    - 'last' is an explicit alias in BOTH tools (video animates the
+      last image; video renders are remembered as kind=video so they
+      never feed image-kind lookups). Auto-feed (no ref_url passed)
+      fires only on the gemini image path: prompt <=400 chars, an
+      edit cue (pronoun/comparative/edit-verb, or phrase cue 'the
+      text|caption|background|...' unless the prompt opens with an
+      indefinite article/'draw|generate|create' — 'a poster with the
+      text SALE' is a fresh gen), no fresh cue (new|another|
+      different|from scratch|reroll), and a remembered render fresher
+      than ADA_RENDER_AUTO_REF_TTL_S (900s; explicit 'last' uses the
+      full 7200s TTL).
+    - Self-check: one gemini_pool.generate call on
+      ADA_RENDER_CHECK_MODEL (gemini-3.5-flash-lite, gateway 'summary'
+      class, ~$0.004/turn), single-line PASS|MISS verdict, fail-open
+      on any error or unparseable verdict. MISS re-renders once with
+      the critique appended; a failed retry keeps the first render and
+      says so. Gemini path only (local renders cost ~10min). Result
+      carries selfcheck={verdict,retried?,detail?,retry?};
+      ADA_RENDER_IMAGE_SELFCHECK=0 disables.
+    - Multi-ref: ref_urls[] merges with ref_url, 'last' allowed per
+      entry, hard cap 3. Local provider still refuses any refs.
+    - Aspect intent: _PAGE_ASK_RE/_PIXEL_ASK_RE attach result.notice —
+      never a refusal. Page asks get 'picture OF a page' + offer of
+      the real-page path (render hero/section art, assemble with the
+      page/CMS tools); px asks get the aspect-vs-pixel mismatch note.
+    - Delivery fidelity: size 2K/4K also writes the original bytes to
+      LINE_MEDIA_ARCHIVE_DIR/renders and returns full_url — the same
+      arch hop ada_render_video uses; LINE re-encodes photo messages.
+      Needs OPS-0651's arch route serving to matter.
+    - Transient retry: _render_retry wraps _render once on transport/
+      gateway/5xx/timeout errors (ADA_RENDER_RETRY_S=2 backoff).
+      Quota-shaped errors are excluded — the pool handles those.
+    - 429-vs-quota in gemini_pool: _park_until() classifies the error —
+      per-day/daily text -> the free-tier reset; 'retry in Ns' ->
+      N capped at 900s; rpm/rate-limit/parallel text ->
+      ADA_GEMINI_QUOTA_SHORT_TTL_S (120s); ambiguous -> daily reset
+      (conservative). A LiteLLM rpm 429 no longer poisons a lane for
+      a day. Drained-pool error text now distinguishes the two cases.
+    - timeout_s bumped 90->120 (selfcheck + possible re-render add
+      seconds on the gemini path).
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-15"
+  steps:
+    - id: 1
+      label: "backend/render_state.py"
+      status: done
+      notes: "caller_keys (chat binding + session), remember/last/
+        resolve_last/clear; LAST_ALIASES shared by both tools."
+    - id: 2
+      label: "gemini_pool park split"
+      status: done
+      notes: "_park_until + _QUOTA_{DAILY,SHORT,RETRY_S}_RE; message
+        distinguishes rate-limit vs daily exhaustion."
+    - id: 3
+      label: "ada_render_image"
+      status: done
+      notes: "ref_urls[] + 'last' + auto-feed, _render_retry,
+        _selfcheck, _ask_notices, _arch_publish, _remember on all
+        success paths incl. local background delivery."
+    - id: 4
+      label: "ada_render_video"
+      status: done
+      notes: "ref_url='last' resolves the remembered image render;
+        finished clips remembered as kind=video."
+    - id: 5
+      label: "surface + docs"
+      status: done
+      notes: "DECLARATION ref_urls/'last', tool_guide blurbs,
+        manifest timeout 120, .env.example block."
+    - id: 6
+      label: "tests"
+      status: done
+      notes: "test_render_image.py +12 (TestRenderFlowQuality),
+        test_render_video.py +2, test_gemini_pool.py +4
+        (ParkSplitTests); two pre-existing tests updated to pin
+        selfcheck off where they assert call_args."
+
+invoke:
+  commands:
+    - ".venv/bin/python -m pytest tests/test_render_image.py tests/test_render_video.py tests/test_gemini_pool.py -x -q"
+    - "python3 scripts/tool-lint.py"
+    - ".venv/bin/python -m pytest tests/ -x -q"
+
+verification:
+  - "tests: 1508 passed, 7 skipped, 31 subtests (uv venv in-worktree:
+    pytest/pyyaml/httpx/pillow/numpy/websockets/uvicorn/fastapi)."
+  - "tool-lint.py: clean (54 declared, cap 112, 61 warnings)."
+  - "Live gemini calls NOT exercised — all model calls faked; first
+    real iterate/selfcheck lands on the next idc03 render after
+    merge+deploy."
+
+followups:
+  - "watch the first live 'make it warmer' turn — confirm auto_ref
+    fires and the edit preserves composition; if the model already
+    passes ref_url='last' explicitly that's fine too."
+  - "selfcheck verdicts land in tool results (selfcheck= field);
+    journal grep 'render selfcheck|retried' to sanity-check the MISS
+    rate — a picky checker would show constant retries."
+  - "OPS-0651: full_url only matters once /arch/renders serves
+    publicly — verify one 2K render's link end-to-end."
+  - "multi-ref cap is 3; raise _REFS_MAX if the gateway accepts more
+    for gemini-3.1-flash-image."
+  - "video could gain the same transient-retry wrapper later; this
+    pass kept Veo untouched (a retry re-bills only on submit
+    transport failure, which _submit already reports honestly)."

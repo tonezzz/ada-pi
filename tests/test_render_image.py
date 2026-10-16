@@ -104,7 +104,8 @@ class TestAdaRenderImage(unittest.TestCase):
         fake = httpx.Response(200, content=JPEG_BYTES,
                               headers={"content-type": "image/jpeg"})
         with tempfile.TemporaryDirectory() as td, \
-             patch.dict("os.environ", {"ADA_RENDER_DIR": td}), \
+             patch.dict("os.environ", {"ADA_RENDER_DIR": td,
+                                      "ADA_RENDER_IMAGE_SELFCHECK": "0"}), \
              patch.object(httpx.AsyncClient, "get",
                           new_callable=AsyncMock, return_value=fake), \
              patch("backend.traffic_camera.publish_relay",
@@ -117,8 +118,9 @@ class TestAdaRenderImage(unittest.TestCase):
                 out = self._run(prompt="make it red",
                                 ref_url="https://x/in.jpg")
         self.assertTrue(out["ok"], out)
-        # the ref went into the request as inline_data
-        contents = gen.call_args[0][1]
+        # the ref went into the request as inline_data — call_args_list[0]
+        # is the render call (selfcheck disabled via env)
+        contents = gen.call_args_list[0][0][1]
         parts = contents[0]["parts"]
         self.assertEqual(len(parts), 2)
         self.assertEqual(parts[1]["inline_data"]["mime_type"],
@@ -137,8 +139,12 @@ class TestAdaRenderImage(unittest.TestCase):
         self.assertIn("no image", out["error"])
 
     def test_size_param_reaches_image_config(self):
-        with patch("backend.traffic_camera.publish_relay",
-                   return_value="https://x/frame?token=render:ghi"):
+        with tempfile.TemporaryDirectory() as td, \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:ghi"), \
+             patch.dict("os.environ", {"ADA_RENDER_IMAGE_SELFCHECK": "0",
+                                      "LINE_MEDIA_ARCHIVE_DIR": td,
+                                      "ADA_RENDER_DIR": td}):
             import backend.gemini_pool as gp
             with patch.object(gp, "generate", new_callable=AsyncMock,
                               return_value=_resp_with_image()) as gen,                  patch.object(gp, "configured_keys",
@@ -146,7 +152,10 @@ class TestAdaRenderImage(unittest.TestCase):
                 out = self._run(prompt="big", size="4K")
         self.assertTrue(out["ok"], out)
         self.assertEqual(out["size"], "4K")
-        cfg = gen.call_args[1].get("config") or gen.call_args[0][2]
+        # call_args_list[0] is the render call — selfcheck adds a second
+        # generate() call when enabled
+        cfg = gen.call_args_list[0][1].get("config") \
+            or gen.call_args_list[0][0][2]
         icfg = getattr(cfg, "image_config", None) or cfg["image_config"]
         val = getattr(icfg, "image_size", None) or icfg["image_size"]
         self.assertEqual(str(val).upper(), "4K")
@@ -375,6 +384,271 @@ class TestAdaRenderImageLocal(unittest.TestCase):
         kw = runner.chat_send.await_args[1]
         self.assertEqual(kw["image_url"], "")
         self.assertIn("failed", kw["text"])
+
+
+def _resp_with_text(text: str):
+    """Fake generate_content response: one candidate, text only."""
+    part = MagicMock()
+    part.inline_data = None
+    part.text = text
+    cand = MagicMock()
+    cand.content.parts = [part]
+    resp = MagicMock()
+    resp.candidates = [cand]
+    return resp
+
+
+def _runner(sid: str = "sess-t1"):
+    """A runner whose context/session resolve a real session id."""
+    r = MagicMock()
+    r.context = None
+    r.session_id = sid
+    return r
+
+
+class TestRenderFlowQuality(unittest.TestCase):
+    """render-flow-quality-pass: iterate-on-last, multi-ref, vision
+    self-check, transient retry, aspect notices, arch full_url."""
+
+    def setUp(self):
+        from backend import render_state
+        render_state.clear()
+
+    def tearDown(self):
+        from backend import render_state
+        render_state.clear()
+
+    def _gemini_env(self, td):
+        return {"ADA_RENDER_DIR": td, "LINE_MEDIA_ARCHIVE_DIR": td,
+                "ADA_RENDER_IMAGE_SELFCHECK": "0"}
+
+    def _patch_stack(self, td, gen):
+        import backend.gemini_pool as gp
+        return patch.dict("os.environ", self._gemini_env(td)), \
+            patch.object(gp, "generate", gen), \
+            patch.object(gp, "configured_keys", return_value=["k1"]), \
+            patch("backend.traffic_camera.publish_relay",
+                  return_value="https://x/frame?token=render:q")
+
+    def test_last_ref_feeds_previous_render(self):
+        import backend.gemini_pool as gp
+        runner = _runner()
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", self._gemini_env(td)), \
+             patch.object(gp, "generate", new_callable=AsyncMock,
+                          return_value=_resp_with_image()) as gen, \
+             patch.object(gp, "configured_keys", return_value=["k1"]), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:a"):
+            out1 = asyncio.run(render.run(runner, prompt="a red barn"))
+            self.assertTrue(out1["ok"], out1)
+            out2 = asyncio.run(render.run(
+                runner, prompt="warmer golden light", ref_url="last"))
+        self.assertTrue(out2["ok"], out2)
+        # the second call carried the remembered artifact as inline_data
+        parts = gen.call_args_list[-1][0][1][0]["parts"]
+        self.assertEqual(len(parts), 2)
+        self.assertEqual(parts[1]["inline_data"]["mime_type"], "image/png")
+
+    def test_last_ref_without_prior_render_is_honest(self):
+        out = asyncio.run(render.run(
+            _runner(), prompt="make it warmer", ref_url="last"))
+        self.assertFalse(out["ok"])
+        self.assertIn("nothing rendered", out["error"])
+
+    def test_auto_ref_on_edit_cue(self):
+        import backend.gemini_pool as gp
+        runner = _runner("sess-auto")
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", self._gemini_env(td)), \
+             patch.object(gp, "generate", new_callable=AsyncMock,
+                          return_value=_resp_with_image()) as gen, \
+             patch.object(gp, "configured_keys", return_value=["k1"]), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:b"):
+            asyncio.run(render.run(runner, prompt="a red barn"))
+            out = asyncio.run(render.run(runner, prompt="make it warmer"))
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out.get("auto_ref"), "last")
+        parts = gen.call_args_list[-1][0][1][0]["parts"]
+        self.assertEqual(len(parts), 2)
+
+    def test_fresh_cue_suppresses_auto_ref(self):
+        import backend.gemini_pool as gp
+        runner = _runner("sess-fresh")
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", self._gemini_env(td)), \
+             patch.object(gp, "generate", new_callable=AsyncMock,
+                          return_value=_resp_with_image()) as gen, \
+             patch.object(gp, "configured_keys", return_value=["k1"]), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:c"):
+            asyncio.run(render.run(runner, prompt="a red barn"))
+            out = asyncio.run(render.run(
+                runner, prompt="a new mountain scene instead"))
+        self.assertTrue(out["ok"], out)
+        self.assertNotIn("auto_ref", out)
+        parts = gen.call_args_list[-1][0][1][0]["parts"]
+        self.assertEqual(len(parts), 1)
+
+    def test_phrase_cue_change_the_text(self):
+        """Card's canonical ask: 'change the text' auto-feeds the last
+        render — but 'a poster with the text SALE' stays a fresh gen."""
+        import backend.gemini_pool as gp
+        runner = _runner("sess-text")
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", self._gemini_env(td)), \
+             patch.object(gp, "generate", new_callable=AsyncMock,
+                          return_value=_resp_with_image()) as gen, \
+             patch.object(gp, "configured_keys", return_value=["k1"]), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:t"):
+            asyncio.run(render.run(runner, prompt="a barn poster"))
+            out = asyncio.run(render.run(
+                runner, prompt="change the text to say HELLO"))
+            parts = gen.call_args_list[-1][0][1][0]["parts"]
+            self.assertEqual(out.get("auto_ref"), "last")
+            self.assertEqual(len(parts), 2)
+            out2 = asyncio.run(render.run(
+                runner, prompt="a poster with the text SALE"))
+            parts2 = gen.call_args_list[-1][0][1][0]["parts"]
+            self.assertNotIn("auto_ref", out2)
+            self.assertEqual(len(parts2), 1)
+
+    def test_ref_urls_multi_ref(self):
+        import httpx
+        import backend.gemini_pool as gp
+        fake = httpx.Response(200, content=JPEG_BYTES,
+                              headers={"content-type": "image/jpeg"})
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", self._gemini_env(td)), \
+             patch.object(httpx.AsyncClient, "get",
+                          new_callable=AsyncMock, return_value=fake), \
+             patch.object(gp, "generate", new_callable=AsyncMock,
+                          return_value=_resp_with_image()) as gen, \
+             patch.object(gp, "configured_keys", return_value=["k1"]), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:d"):
+            out = asyncio.run(render.run(
+                _runner(), prompt="combine these two photos",
+                ref_urls=["https://x/a.jpg", "https://x/b.jpg"]))
+        self.assertTrue(out["ok"], out)
+        parts = gen.call_args_list[-1][0][1][0]["parts"]
+        self.assertEqual(len(parts), 3)
+
+    def test_ref_urls_over_cap_is_honest(self):
+        out = asyncio.run(render.run(
+            _runner(), prompt="combine", ref_url="https://x/a.jpg",
+            ref_urls=["https://x/b.jpg", "https://x/c.jpg",
+                      "https://x/d.jpg"]))
+        self.assertFalse(out["ok"])
+        self.assertIn("3", out["error"])
+
+    def test_selfcheck_miss_retries_once(self):
+        import backend.gemini_pool as gp
+        calls = []
+
+        async def _gen(model, contents, **kw):
+            calls.append(kw.get("tool"))
+            if kw.get("tool") == "render_check":
+                return _resp_with_text("MISS: wrong subject")
+            return _resp_with_image()
+
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", self._gemini_env(td) |
+                        {"ADA_RENDER_IMAGE_SELFCHECK": "1"}), \
+             patch.object(gp, "generate", side_effect=_gen), \
+             patch.object(gp, "configured_keys", return_value=["k1"]), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:e"):
+            out = asyncio.run(render.run(_runner(), prompt="a cat"))
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(calls, ["render_image", "render_check",
+                                 "render_image"])
+        self.assertTrue(out["selfcheck"]["retried"])
+        self.assertIn("wrong subject", out["selfcheck"]["detail"])
+
+    def test_selfcheck_pass_no_retry(self):
+        import backend.gemini_pool as gp
+        calls = []
+
+        async def _gen(model, contents, **kw):
+            calls.append(kw.get("tool"))
+            return (_resp_with_text("PASS") if kw.get("tool") == "render_check"
+                    else _resp_with_image())
+
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", self._gemini_env(td) |
+                        {"ADA_RENDER_IMAGE_SELFCHECK": "1"}), \
+             patch.object(gp, "generate", side_effect=_gen), \
+             patch.object(gp, "configured_keys", return_value=["k1"]), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:f"):
+            out = asyncio.run(render.run(_runner(), prompt="a cat"))
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(calls, ["render_image", "render_check"])
+        self.assertEqual(out["selfcheck"]["verdict"], "pass")
+
+    def test_transient_error_retries_once(self):
+        import backend.gemini_pool as gp
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", self._gemini_env(td) |
+                        {"ADA_RENDER_RETRY_S": "0"}), \
+             patch.object(gp, "generate", new_callable=AsyncMock,
+                          side_effect=[ConnectionError("conn reset"),
+                                       _resp_with_image()]), \
+             patch.object(gp, "configured_keys", return_value=["k1"]), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:g"):
+            out = asyncio.run(render.run(_runner(), prompt="a cat"))
+        self.assertTrue(out["ok"], out)
+
+    def test_quota_error_does_not_retry(self):
+        import backend.gemini_pool as gp
+        exc = gp.QuotaExhaustedError("429 quota exhausted")
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", self._gemini_env(td) |
+                        {"ADA_RENDER_RETRY_S": "0"}), \
+             patch.object(gp, "generate", new_callable=AsyncMock,
+                          side_effect=exc) as gen, \
+             patch.object(gp, "configured_keys", return_value=["k1"]):
+            out = asyncio.run(render.run(_runner(), prompt="a cat"))
+        self.assertFalse(out["ok"])
+        self.assertIn("failed", out["error"])
+        self.assertEqual(gen.await_count, 1)
+
+    def test_big_render_attaches_full_url(self):
+        import backend.gemini_pool as gp
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", self._gemini_env(td) |
+                        {"ADA_RELAY_PUBLIC_BASE": "https://r.test/img"}), \
+             patch.object(gp, "generate", new_callable=AsyncMock,
+                          return_value=_resp_with_image()), \
+             patch.object(gp, "configured_keys", return_value=["k1"]), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:h"):
+            out = asyncio.run(render.run(_runner(), prompt="big",
+                                         size="2K"))
+            arch = Path(td) / "renders" / Path(out["file"]).name
+            self.assertTrue(arch.is_file())
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(str(out["full_url"]).startswith(
+            "https://r.test/img/arch/renders/"))
+
+    def test_landing_page_notice(self):
+        import backend.gemini_pool as gp
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict("os.environ", self._gemini_env(td)), \
+             patch.object(gp, "generate", new_callable=AsyncMock,
+                          return_value=_resp_with_image()), \
+             patch.object(gp, "configured_keys", return_value=["k1"]), \
+             patch("backend.traffic_camera.publish_relay",
+                   return_value="https://x/frame?token=render:i"):
+            out = asyncio.run(render.run(
+                _runner(), prompt="a 1920px landing page for a cafe"))
+        self.assertTrue(out["ok"], out)
+        self.assertIn("picture", out["notice"])
+        self.assertIn("pixel", out["notice"])
 
 
 if __name__ == "__main__":

@@ -558,6 +558,7 @@ class RenderVideoTest(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(
             rec.call_args.kwargs["est_cost_usd"], 2.0)
 
+ 
 
 WP_ENV = {"WP_SITE_URL": "https://b.example/wp", "WP_APP_USER": "u",
           "WP_APP_PASSWORD": "p"}
