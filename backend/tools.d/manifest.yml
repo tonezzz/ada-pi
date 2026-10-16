@@ -84,3 +84,8 @@ tools:
     policy: read
     secondary_allowed: true
     timeout_s: 60
+  cpt_post:
+    module: cpt_post
+    policy: read
+    secondary_allowed: true
+    timeout_s: 60

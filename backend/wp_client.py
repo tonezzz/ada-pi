@@ -149,10 +149,16 @@ async def create_post(client: httpx.AsyncClient, env: dict[str, str],
                       status: str = "publish",
                       featured_media: int | None = None,
                       post_type: str = "posts",
-                      meta: dict[str, Any] | None = None) -> dict[str, Any]:
+                      meta: dict[str, Any] | None = None,
+                      slug: str = "") -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "title": title, "content": content_html, "status": status,
-        "tags": tag_ids or []}
+        "title": title, "content": content_html, "status": status}
+    # tags only when asked — CPTs without the post_tag taxonomy
+    # (chaba-boards kinds) reject the field outright.
+    if tag_ids:
+        payload["tags"] = tag_ids
+    if slug:
+        payload["slug"] = slug
     if featured_media:
         payload["featured_media"] = featured_media
     if meta:

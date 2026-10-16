@@ -24,9 +24,10 @@ from backend import wp_client as wp
 DECLARATION = {
     "name": "wp_post",
     "description": (
-        "Post to a member's WordPress page on the boards site "
-        "(persons: tony, kk, nhong) — use for เว็บบอร์ด/webboard/'ลงเว็บ' "
-        "asks, NOT cms_publish_page. Returns the public URL for chat."),
+        "Post a free-form entry to a member's WordPress page on the "
+        "boards site (persons: tony, kk, nhong) — webboard/'ลงเว็บ' asks. "
+        "Structured saves (expense/contact/reminder/asset) go to "
+        "cpt_post. Returns the public URL."),
     "parameters": {
         "type": "object",
         "properties": {
