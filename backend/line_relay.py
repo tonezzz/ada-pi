@@ -1183,8 +1183,8 @@ class LineRelay:
                                    reply_token: str | None) -> None:
         """Rate-limited 'not authorized' for an unmapped room member —
         echoes the userId once an hour so the owner can whitelist it."""
-        last = self._refused.get((chat_id, user_id), 0.0)
-        if time.monotonic() - last < _REFUSAL_GAP_S:
+        last = self._refused.get((chat_id, user_id))
+        if last is not None and time.monotonic() - last < _REFUSAL_GAP_S:
             return
         self._refused[(chat_id, user_id)] = time.monotonic()
         await self.send_text(

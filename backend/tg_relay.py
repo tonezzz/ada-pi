@@ -550,8 +550,8 @@ class TgRelay:
             if caller is None:
                 if from_id is None:
                     return  # no sender (channel post etc.) — ignore
-                last = self._refused.get((chat_id, from_id), 0.0)
-                if time.monotonic() - last > _REFUSAL_GAP_S:
+                last = self._refused.get((chat_id, from_id))
+                if last is None or time.monotonic() - last > _REFUSAL_GAP_S:
                     self._refused[(chat_id, from_id)] = time.monotonic()
                     await self.send_text(
                         chat_id,
