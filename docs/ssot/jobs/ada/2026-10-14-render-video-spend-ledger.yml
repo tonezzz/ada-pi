@@ -1,0 +1,118 @@
+# SSOT Job: ada_render_video — Veo spend metering into the local usage
+# ledger + LiteLLM passthrough readiness
+# Card: ada-render-video-bypasses-litellm-no-per-ede157 (kanban).
+# Dispatch 20261014-220118-ada-render-video-calls-generat.
+
+title: ada_render_video — meter Veo spend locally (secs*rate at submit)
+subtitle: option (b) from the card — flat-cost rows in usage.jsonl;
+  option (a) verified upstream and made a 2-env flip away
+
+planning:
+  goal: |
+    ada_render_video calls generativelanguage.googleapis.com directly
+    (predictLongRunning + operation polling on the lane's AI Studio
+    key), so Veo spend never reaches the LiteLLM spend ledger — unlike
+    ada_render_image, which rides the 'image' class through the gateway
+    (ADA_GEMINI_REST_BASE_URL). Video is owner-only today
+    (ADA_RENDER_VIDEO_OPEN on ada-ha-tony) but the ledger hole is real.
+  options_reviewed: |
+    (a) Route through a LiteLLM 'video' path — VERIFIED UPSTREAM, not
+        deployable from this worktree: LiteLLM's /gemini passthrough
+        officially supports Veo predictLongRunning + GET
+        /v1beta/{operation} polling + file download (docs.litellm.ai/
+        proxy/veo_video_generation, PR BerriAI/litellm#14228), and the
+        native /v1/videos API meters duration-based cost with virtual
+        keys. Gaps: the proxy config lives outside this repo (idc03),
+        passthrough cost attribution for LRO calls needs a live check
+        on the deployed proxy version, and Veo's clip download URI
+        comes back Google-hosted — the caller must rewrite it onto the
+        proxy (now implemented).
+    (b) Meter in-tool — IMPLEMENTED: the card's 'local
+        spend-ledger.jsonl' is realized as flat-cost rows in the one
+        existing local ledger (usage_ledger -> ADA_USAGE_LOG,
+        data/usage.jsonl), extended to carry est_cost_usd + detail.
+        That puts video spend inside est_cost_usd on ada_usage_summary
+        / ada_ops action=usage — the surface Tony already asks — with
+        zero new files to consume.
+    (c) Document-only — rejected; (b) was cheap and the rate table is
+        one small dict.
+  decisions: |
+    - usage_tracker.record() gains est_cost_usd (flat USD, stored as
+      'cost' in the jsonl) + detail (audit-only dict — snapshot() never
+      aggregates it). Buckets sum cost_usd; reports add flat_cost_usd
+      and fold it into est_cost_usd. Backwards compatible: rows
+      without 'cost' read as 0; token_usage scenario asserts unchanged.
+    - _meter_submit() runs once per accepted predictLongRunning — the
+      render is billed on accept; the resume path (operation=) meters
+      nothing. Never raises: a ledger outage must not break a paid
+      render (logged warning).
+    - Rate table _RATE_PER_SEC keyed by model-id prefix with res tiers
+      (ai.google.dev pricing, Oct 2026): veo-3.1-fast $0.10/s@720p
+      $0.12/s@1080p, veo-3.1-lite $0.05/$0.08, veo-3.1 $0.40. Unknown
+      models use ADA_RENDER_VIDEO_RATE_USD (default 0.10). Card's
+      '~$0.15/s ~$1.20/8s' was stale — current fast rate is
+      ~$0.80/8s@720p.
+    - Gateway readiness (option a, zero-code later): _download rewrites
+      the Google-hosted clip URI onto ADA_GEMINI_API_BASE when it is
+      non-default, and ADA_RENDER_VIDEO_API_KEY overrides the key —
+      so ADA_GEMINI_API_BASE=<proxy>/gemini + a virtual key routes the
+      whole flow through the passthrough. Local metering still logs the
+      same estimate either way (local ledger vs proxy ledger are
+      separate stores; no double-count in one ledger).
+    - est_cost_usd rides the result payload on submit and pending, so
+      Ada can quote the cost; tool_guide notes it.
+  owner: tony
+
+processing:
+  status: done
+  started_at: "2026-10-14"
+  steps:
+    - id: 1
+      label: "usage_tracker flat-cost support"
+      status: done
+      notes: "record(est_cost_usd=, detail=); bucket/apply/merge sum
+        cost_usd; reports add flat_cost_usd + fold into est_cost_usd;
+        detail stays jsonl-only."
+    - id: 2
+      label: "in-tool metering + gateway readiness"
+      status: done
+      notes: "_RATE_PER_SEC + _rate_per_sec(model,res);
+        _meter_submit on accept only; ADA_RENDER_VIDEO_API_KEY
+        override; download-URI rewrite onto non-default api base;
+        est_cost_usd in ok+pending results; docstring/env updates."
+    - id: 3
+      label: "tests + docs"
+      status: done
+      notes: "6 new cases in tests/test_render_video.py (meter-on-
+        submit, no-meter on resume/429, ledger-failure resilience,
+        gateway routing incl. download rewrite, rate env override).
+        .env.example + tool_guide + module docstring."
+
+invoke:
+  commands:
+    - "python3 -m pytest tests/test_render_video.py -x -q"
+    - "python3 scripts/tool-lint.py"
+    - "python3 -m pytest tests/test_scenarios.py tests/test_tool_runner.py -x -q"
+
+verification:
+  - "tests/test_render_video.py: 31/31 — metered est 8s@1080p=0.96,
+    detail carries operation+model+res; resume and 429 submit write no
+    row; ledger exception still renders; gateway base rewrites submit/
+    poll/download URLs"
+  - "usage_tracker round-trip: record(est_cost_usd=0.96) + a token row
+    -> snapshot est_cost_usd=0.963, flat_cost_usd=0.96, survives
+    file reload"
+  - "test_tool_runner+test_gemini_pool+test_tool_context+
+    test_ops_events: 307 passed; test_scenarios+test_tool_usage_report:
+    31 passed; tool-lint clean"
+
+followups:
+  - "chaba-side (out of worktree): to complete option (a), point
+    ADA_GEMINI_API_BASE=<litellm>/gemini and ADA_RENDER_VIDEO_API_KEY
+    at a lane virtual key on idc03 — but first verify the deployed
+    proxy version exposes /gemini passthrough AND attributes duration
+    cost to LRO calls (upstream supports it; deployed version is the
+    open question). A 'video' model class via native /v1/videos is the
+    alternative shape but needs a bigger tool rewrite."
+  - "rate table re-verification on model/pricing changes
+    (ADA_RENDER_VIDEO_RATE_USD covers unlisted models meanwhile)"
