@@ -118,11 +118,65 @@ def _user_callers() -> dict[int, str]:
 _whisper_model = None
 
 
+def _decode_wav16k(src_path, dst_path) -> bool:
+    """opus/ogg → 16 kHz mono WAV via av + soundfile (venv deps — no
+    ffmpeg on this host)."""
+    try:
+        import av
+        import numpy as np
+        import soundfile as sf
+        resampler = av.audio.resampler.AudioResampler(
+            format="s16", layout="mono", rate=16000)
+        chunks = []
+        with av.open(str(src_path)) as container:
+            for frame in container.decode(audio=0):
+                for f in resampler.resample(frame):
+                    chunks.append(f.to_ndarray().reshape(-1))
+        if not chunks:
+            return False
+        sf.write(str(dst_path), np.concatenate(chunks), 16000,
+                 subtype="PCM_16")
+        return True
+    except Exception:
+        logger.exception("voice decode failed for %s", src_path)
+        return False
+
+
+def _transcribe_remote(url: str, path) -> str:
+    """POST the clip (decoded to wav) to an OpenAI-style
+    /v1/audio/transcriptions endpoint — audio.cpp qwen3-asr local server
+    or the omen whisper service."""
+    wav = Path(str(path) + ".16k.wav")
+    try:
+        if not _decode_wav16k(path, wav):
+            return ""
+        with open(wav, "rb") as fh:
+            resp = httpx.post(
+                url,
+                files={"file": (wav.name, fh, "audio/wav")},
+                data={"model": os.environ.get(
+                    "TG_WHISPER_MODEL", "qwen3-asr")},
+                timeout=120)
+        resp.raise_for_status()
+        return (resp.json().get("text") or "").strip()
+    finally:
+        wav.unlink(missing_ok=True)
+
+
 def _transcribe(path) -> str:
-    """Free-first voice transcription — faster-whisper locally, model via
-    TG_WHISPER_MODEL (default base). Gated by TG_VOICE_TRANSCRIBE=1."""
+    """Voice transcription — remote endpoint first when TG_WHISPER_URL is
+    set (audio.cpp Qwen3-ASR on this host, ada-stt.service :8914), local
+    faster-whisper as fallback. Gated by TG_VOICE_TRANSCRIBE=1."""
     if os.environ.get("TG_VOICE_TRANSCRIBE") != "1":
         return ""
+    url = os.environ.get("TG_WHISPER_URL")
+    if url:
+        try:
+            text = _transcribe_remote(url, path)
+            if text:
+                return text
+        except Exception:
+            logger.exception("remote stt failed — falling back to local")
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
