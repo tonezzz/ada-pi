@@ -815,7 +815,10 @@ async def _push(runner: Any, channel: str, text: str) -> dict[str, bool]:
         ep = os.environ.get(env, ep)
         try:
             async with httpx.AsyncClient(timeout=_PUSH_TIMEOUT_S) as c:
-                r = await c.post(ep, json={"text": text})
+                # class=bulk — watch deltas are periodic telemetry, they
+                # park/bundle under the relay's quota policy instead of
+                # spending monthly push messages one beacon at a time.
+                r = await c.post(ep, json={"text": text, "class": "bulk"})
                 sent[ch] = bool(r.status_code == 200
                                 and (r.json() or {}).get("ok"))
         except Exception:
