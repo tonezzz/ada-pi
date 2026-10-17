@@ -1,0 +1,29 @@
+name: cast-dub-screen1
+# Live scenario — Tony ask 2026-10-17: "cast a random voice dub
+# interview to screen 1". Exercises the numbered-vcast-screen path:
+# cms_read(voice-dub-demos) -> verbatim .mp4 URL -> cast_to_screen play
+# -> follow-up verification asks Ada to prove it via state/snapshot,
+# not narration.
+#
+# First run (2026-10-17): PASS — and correctly surfaced a REAL fault:
+# the relay delivered the play msg (delivered:1, displaced an old nav)
+# but screen 1's client (a Chrome tab on tony-macbook) had a live ws
+# with frozen JS — heartbeat stale ~5min, cast never processed,
+# vcast_snapshot timed out, and Ada honestly reported "can't verify,
+# may be stuck" instead of claiming success. verify_warn + snapshot
+# did exactly their job.
+tier: full
+
+turns:
+  - user: "Pick a random voice dub interview and cast it to screen 1."
+    expect:
+      calls_any: [cast_to_screen, vcast_screen_cast, cctv_wall]
+      response_nonempty: true
+      timeout_s: 120
+      settle_s: 8
+
+  - user: "Is it actually playing on the screen? Check the screen state."
+    expect:
+      response_nonempty: true
+      timeout_s: 90
+      settle_s: 5
