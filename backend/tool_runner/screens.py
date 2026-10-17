@@ -464,6 +464,30 @@ class ScreensMixin:
 
     # -- vcast virtual displays (input-bridge relay on tony-dell :3010) --
 
+
+    @staticmethod
+    def _cast_probe_url(url: str) -> str | None:
+        """Absolute http(s) URL to HEAD-probe before casting, else None.
+
+        Site-relative paths (/apps/...) resolve against the public vcast
+        edge — that is the origin display pages fetch them from, so a 404
+        there means a black pane on the display (2026-10-17: Chaba cast
+        '/apps/yt-live/clip-random.mp4' for a 'random clip' ask; the
+        absolute-URL-only probe skipped it and the dead URL displaced
+        live content on screen 1)."""
+        url = str(url or "")
+        if url.startswith(("http://", "https://")):
+            return url
+        if url.startswith("/"):
+            base = os.environ.get(
+                "VCAST_API",
+                "https://tony-dell.taila0626a.ts.net/api/input-bridge")
+            edge = base.removesuffix("/api/input-bridge").rstrip("/")
+            if re.match(r"https?://(127\.|localhost)", edge):
+                edge = "https://tony-dell.taila0626a.ts.net"
+            return edge + url
+        return None
+
     @staticmethod
     def _vcast_api(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         import urllib.request
@@ -1439,10 +1463,11 @@ class ScreensMixin:
                 # black, a page in an image pane never loads.
                 if not url:
                     raise ValueError("url is required for action='cast'")
-                if str(url).startswith(("http://", "https://")):
+                probe_url = self._cast_probe_url(url)
+                if probe_url:
                     try:
                         probe = await asyncio.to_thread(
-                            self._frame_check, str(url))
+                            self._frame_check, probe_url)
                     except Exception:
                         probe = {}
                 ctype = str(probe.get("content_type") or "").lower()
@@ -1472,13 +1497,14 @@ class ScreensMixin:
             # (2026-10-01: Ada cast a JPEG snapshot with action='play' and
             # an invented URL that didn't even resolve; screen 1 just
             # stayed on the previous camera with no visible error).
-            if (action in {"nav", "play"} and not probe
-                    and str(url).startswith(("http://", "https://"))):
-                try:
-                    probe = await asyncio.to_thread(
-                        self._frame_check, str(url))
-                except Exception:
-                    probe = {}
+            if action in {"nav", "play", "image", "audio"} and not probe:
+                probe_url = self._cast_probe_url(url)
+                if probe_url:
+                    try:
+                        probe = await asyncio.to_thread(
+                            self._frame_check, probe_url)
+                    except Exception:
+                        probe = {}
             if probe.get("dead"):
                 return {
                     "ok": False, "delivered": 0,
@@ -1716,6 +1742,13 @@ class ScreensMixin:
         try:
             resp = urllib.request.urlopen(req, timeout=6)
         except urllib.error.HTTPError as exc:
+            if exc.code in (404, 410):
+                # An HTTP status means the origin was reached — a 404/410
+                # is vantage-independent: the display hits the same dead
+                # path (2026-10-17: 'clip-random.mp4' 404 replayed onto
+                # screen 1 — header-only verdict never flagged it).
+                out["dead"] = f"HTTP {exc.code} — path does not exist"
+                return out
             resp = exc  # still carries headers
         except urllib.error.URLError as exc:
             # DNS failure / connrefused mean the display will fetch the
@@ -1742,7 +1775,13 @@ class ScreensMixin:
             return out  # other transport errors: let the display try
         except Exception:
             return out
-        return ScreensMixin._frame_hdr_verdict(url, resp.headers.get)
+        verdict = ScreensMixin._frame_hdr_verdict(url, resp.headers.get)
+        status = getattr(resp, "status", None) or getattr(
+            resp, "code", None) or 200
+        if status >= 400 and "warn" not in verdict:
+            verdict["warn"] = (f"probe returned HTTP {status} — the "
+                               "display may fail to load it")
+        return verdict
 
     @staticmethod
     def _frame_vantage_blind(url: str) -> bool:
@@ -1808,13 +1847,24 @@ class ScreensMixin:
                 return {"dead": (f"lan-probe curl rc={proc.returncode}"
                                  + (f": {err}" if err else ""))}
             return None
+        status = 0
         hdrs = {}
         for ln in proc.stdout.splitlines():
-            if ":" in ln:
+            if ln.startswith("HTTP/"):
+                parts = ln.split(None, 2)
+                if len(parts) > 1 and parts[1].isdigit():
+                    status = int(parts[1])
+            elif ":" in ln:
                 k, v = ln.split(":", 1)
                 hdrs[k.strip().lower()] = v.strip()
-        return ScreensMixin._frame_hdr_verdict(
+        if status in (404, 410):
+            return {"dead": f"lan-probe HTTP {status}"}
+        verdict = ScreensMixin._frame_hdr_verdict(
             url, lambda k: hdrs.get(k.lower()))
+        if status >= 400 and "warn" not in verdict:
+            verdict["warn"] = (f"lan-probe returned HTTP {status} — the "
+                               "display may fail to load it")
+        return verdict
 
     @staticmethod
     def _frame_hdr_verdict(url: str, get_hdr) -> dict[str, Any]:
