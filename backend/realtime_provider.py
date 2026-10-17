@@ -450,6 +450,116 @@ def _media_grounding_problems(
     return problems
 
 
+# Write-fidelity guard (card ada-cms-write-fidelity, MEM-0498 finding 2):
+# the text Ada narrates and the content she persists are separate
+# generations that can diverge — the kk-cms-only bench caught her storing
+# 'Tuesdays' while saying 'Mondays' (2026-10-12), and the write landed.
+# Fact tokens (weekdays/clock times/dates) are extracted from BOTH the
+# narration and the persisted content arg of each publish call that
+# returned status=published this turn; only a CONTRADICTION flags —
+# both sets non-empty and disjoint — so a vague narration ("saved the
+# page") or a matching one stays silent.
+_FIDELITY_WRITE_TOOLS = frozenset({"cms_publish_page"})
+
+_FIDELITY_DAY_RES = (
+    (re.compile(r"(?i)\bmondays?\b"), "mon"),
+    (re.compile(r"(?i)\btuesdays?\b"), "tue"),
+    (re.compile(r"(?i)\bwednesdays?\b"), "wed"),
+    (re.compile(r"(?i)\bthursdays?\b"), "thu"),
+    (re.compile(r"(?i)\bfridays?\b"), "fri"),
+    (re.compile(r"(?i)\bsaturdays?\b"), "sat"),
+    (re.compile(r"(?i)\bsundays?\b"), "sun"),
+)
+# Thai weekday names — พฤหัส matches inside พฤหัสบดี; both map to thu.
+_FIDELITY_DAY_TH = (
+    ("จันทร์", "mon"), ("อังคาร", "tue"), ("พุธ", "wed"),
+    ("พฤหัส", "thu"), ("ศุกร์", "fri"), ("เสาร์", "sat"),
+    ("อาทิตย์", "sun"),
+)
+# Clock times — '6am', '6:30pm', '18:00' normalize to 'HH:MM' 24h; Thai
+# '<n> โมงเช้า/บ่าย/เย็น' and '<n> น.' land in the same space so an en
+# narration and th content still compare.
+_FIDELITY_TIME_EN_RE = re.compile(
+    r"(?i)\b([01]?\d|2[0-3])(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)\b"
+    r"|\b([01]?\d|2[0-3]):([0-5]\d)\b")
+_FIDELITY_TIME_TH_RE = re.compile(
+    r"([01]?\d|2[0-3])\s*(?:โมง)\s*(เช้า|บ่าย|เย็น|ค่ำ|ดึก)?"
+    r"|([01]?\d|2[0-3])\s*น\.")
+_FIDELITY_DATE_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}/\d{4}\b")
+
+
+def _fidelity_tokens(text: str) -> dict[str, set]:
+    """Fact-token sets a persisted text or a narration carries:
+    {day: {mon..sun}, time: {HH:MM}, date: {literal}}."""
+    t = str(text or "")
+    days: set[str] = set()
+    for rx, canon in _FIDELITY_DAY_RES:
+        if rx.search(t):
+            days.add(canon)
+    for th, canon in _FIDELITY_DAY_TH:
+        if th in t:
+            days.add(canon)
+    times: set[str] = set()
+    for m in _FIDELITY_TIME_EN_RE.finditer(t):
+        if m.group(3):  # am/pm form
+            hour = int(m.group(1)) % 12
+            if m.group(3).lower().startswith("p"):
+                hour += 12
+            times.add(f"{hour:02d}:{int(m.group(2) or 0):02d}")
+        else:
+            times.add(f"{int(m.group(4)):02d}:{m.group(5)}")
+    for m in _FIDELITY_TIME_TH_RE.finditer(t):
+        if m.group(1):  # '<n> โมง<period>'
+            hour = int(m.group(1))
+            period = m.group(2)
+            if period in ("บ่าย", "เย็น", "ค่ำ", "ดึก") and hour < 12:
+                hour += 12
+            times.add(f"{hour:02d}:00")
+        else:
+            times.add(f"{int(m.group(3)):02d}:00")
+    dates = set(_FIDELITY_DATE_RE.findall(t))
+    return {"day": days, "time": times, "date": dates}
+
+
+def _write_fidelity_problems(
+        narration: str,
+        user_text: str,
+        calls: list[tuple[str, dict, dict]]) -> list[str]:
+    """Narrated/seeded facts contradicted by persisted publish content.
+
+    calls = [(name, args, result)] for the turn's fidelity-watched writes.
+    Returns advisory strings; empty = consistent or nothing to compare.
+    A contradiction needs BOTH sides to carry the same fact class with no
+    common value — absence on either side is not a flag."""
+    narr = _fidelity_tokens(narration)
+    seed = _fidelity_tokens(user_text)
+    if not any(narr.values()) and not any(seed.values()):
+        return []
+    problems: list[str] = []
+    for name, args, result in calls:
+        if name not in _FIDELITY_WRITE_TOOLS:
+            continue
+        if not isinstance(result, dict) or result.get("ok") is False:
+            continue
+        if str(result.get("status") or "") != "published":
+            continue
+        content = str((args or {}).get("content") or "")
+        if not content.strip():
+            continue
+        stored = _fidelity_tokens(content)
+        slug = str((args or {}).get("slug") or "?")
+        for label, side in (("narration", narr), ("user", seed)):
+            for cat in ("day", "time", "date"):
+                if (side[cat] and stored[cat]
+                        and side[cat].isdisjoint(stored[cat])):
+                    problems.append(
+                        f"{name} slug={slug}: stored {cat} "
+                        f"{sorted(stored[cat])} contradicts {label} "
+                        f"{sorted(side[cat])}")
+    return problems
+
+
 # Dead-turn detector (card ada-dead-turn-guard — session 56d2e4d167,
 # 2026-10-07): the model twice ended a turn having emitted only the
 # literal scaffold "response:" while the memory tool already held the
@@ -5184,6 +5294,10 @@ class GeminiLiveProvider(RealtimeProvider):
         # guard's retry nudge and synthesized fallback read the answer
         # back out of these when the model emits nothing speakable.
         turn_tool_results: list[tuple[str, dict]] = []
+        # (name, args, result) for this turn's fidelity-watched writes —
+        # the write_fidelity check compares the persisted content arg
+        # against the narration/user seed (card ada-cms-write-fidelity).
+        turn_fidelity_calls: list[tuple[str, dict, dict]] = []
         tool_budget = int(os.environ.get("ADA_TOOL_CALL_BUDGET", "20"))
         actuations_this_turn = 0
         actuation_budget = int(os.environ.get("ADA_ACTUATION_BUDGET", "6"))
@@ -5762,6 +5876,14 @@ class GeminiLiveProvider(RealtimeProvider):
                                 str(call.name), dict(call.args or {})):
                             backing_calls_this_turn += 1
                         turn_tool_results.append((str(call.name), result))
+                        if str(call.name) in _FIDELITY_WRITE_TOOLS:
+                            # Args as the model sent them — the narration
+                            # is compared against THIS text at turn end;
+                            # the persisted bytes match it verbatim
+                            # (cms_publish_page read-back verifies that).
+                            turn_fidelity_calls.append((
+                                str(call.name), dict(call.args or {}),
+                                result))
                         # Ground-truth pin (card ada-trace-full-result):
                         # the ws tool_result stays a stump, but id +
                         # result_hash join it to the call-log result_full
@@ -5908,6 +6030,7 @@ class GeminiLiveProvider(RealtimeProvider):
                     budget_hit = False
                     budget_nudged = False
                     turn_tool_results = []
+                    turn_fidelity_calls = []
                     segment_tool_pending = False
                     self._dead_retried = False
                     self._leak_active = False
@@ -6063,6 +6186,29 @@ class GeminiLiveProvider(RealtimeProvider):
                             f"this turn ({'; '.join(_media_flags)}): "
                             f"{assistant_turn_text.strip()[:160]!r}",
                         )
+                    # Write-fidelity guard (card ada-cms-write-fidelity):
+                    # a publish call's persisted content can contradict
+                    # BOTH the narration and the user seed — 'Tuesdays'
+                    # stored while 'Mondays' was said/asked (2026-10-12
+                    # kk-cms-only bench). Fact-token contradiction →
+                    # advisory ops event; the session-audit/QC loop sees
+                    # it, the model sees nothing (no retry channel).
+                    if turn_fidelity_calls and not tools_pending:
+                        # Last 3 user turns — the seed ask + the confirm
+                        # are what the stored page should agree with;
+                        # older turns' facts would only add false hits.
+                        # Mid-task boundaries are skipped — calls persist
+                        # until the final segment so the check sees the
+                        # whole narration and fires at most once.
+                        _seed = " ".join(
+                            str(t.get("text") or "") for t in
+                            [t for t in self.conversation.turns()[-12:]
+                             if t.get("role") == "user"][-3:])
+                        _fidelity_flags = _write_fidelity_problems(
+                            assistant_turn_text, _seed,
+                            turn_fidelity_calls)
+                        for _ff in _fidelity_flags:
+                            self._emit_ops_event("write_fidelity", _ff)
                     tool_calls_this_turn = 0
                     failed_results_this_turn = 0
                     backing_calls_this_turn = 0
@@ -6155,6 +6301,7 @@ class GeminiLiveProvider(RealtimeProvider):
                         # Keep results across a mid-task boundary so a dead
                         # FINAL segment can still speak them as the fallback.
                         turn_tool_results = []
+                        turn_fidelity_calls = []
                     _lang_drift = ""
                     if assistant_turn_text.strip():
                         self.conversation.add_assistant(assistant_turn_text)

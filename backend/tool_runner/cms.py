@@ -544,6 +544,38 @@ class CmsMixin:
                     "action='nav', url=<cast_url>) — only after this result "
                     "shows status=published.",
         }
+        # Post-write read-back (card ada-cms-write-fidelity, MEM-0498):
+        # the model's narrated text and the content arg are separate
+        # generations that can diverge — she once stored 'Tuesdays' while
+        # saying 'Mondays' (kk-cms-only bench 2026-10-12). Re-read the doc
+        # and echo a digest + excerpt so (a) a transport/store-side mangle
+        # flips stored_verified, and (b) the stored text lands in the
+        # transcript where the model — and the write_fidelity ops check —
+        # can catch facts that differ from what was said aloud.
+        try:
+            stored = await self.mddb.get_document(CMS_COLLECTION, slug, lang)
+        except Exception:
+            stored = None
+        stored_md = ((stored or {}).get("contentMd")
+                     or (stored or {}).get("content") or "")
+        if isinstance(stored_md, str) and stored_md == content:
+            out["stored_verified"] = True
+            out["stored_sha256"] = hashlib.sha256(
+                stored_md.encode()).hexdigest()[:16]
+            out["stored_excerpt"] = stored_md.strip()[:240]
+            out["note"] += (" Stored excerpt echoed — if any fact there "
+                            "differs from what you told the user, republish "
+                            "the corrected content now and say so plainly.")
+        elif stored_md:
+            out["stored_verified"] = False
+            out["stored_excerpt"] = str(stored_md).strip()[:240]
+            out["note"] += (" WARNING: the stored text does not match what "
+                            "was submitted — republish to repair it.")
+        else:
+            out["stored_verified"] = "unknown"
+            out["note"] += (" Read-back returned nothing — verify with "
+                            "cms_read(action='verify') before claiming the "
+                            "page is correct.")
         # Public lane — the static publisher (cms-publish-site.py, runs on
         # idc02) renders opted-in pages to surf-thailand.com/<tenant>/.
         # The URL is returned whenever the page is flagged public, even

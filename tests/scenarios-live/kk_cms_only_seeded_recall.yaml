@@ -40,7 +40,19 @@ turns:
   - user: >-
       Yes, please create it.
     expect:
-      calls_any: [cms_publish_page, cms_edit]
+      # Publish only — cms_edit can't create a page (note needs an
+      # existing doc), so a cms_edit answer here means the seed never
+      # landed and the recall turns below have nothing to read.
+      calls_any: [cms_publish_page]
+      # Write-fidelity bar (card ada-cms-write-fidelity): first run
+      # stored 'Tuesdays' while narrating 'Mondays'. The content arg IS
+      # the stored text (the write path is verbatim), so requiring the
+      # seeded facts inside it is the stored-vs-narrated check.
+      call_args_contain:
+        cms_publish_page:
+          - ["monday", "Monday", "จันทร์"]
+          - ["thursday", "Thursday", "พฤหัส"]
+          - ["prime", "primed", "ปั๊ม", "ล่อน้ำ"]
       response_nonempty: true
       timeout_s: 120
       settle_s: 5
@@ -60,8 +72,8 @@ turns:
         - cms_list_pages
         - cms_verify_page
       # Assert the pump detail — proves the answer came from the stored
-      # report. Day-name fidelity is a separate write-fidelity bar (first
-      # run caught her storing Tuesdays for Mondays 2026-10-12 — see card).
+      # report. Day-name fidelity is asserted at the write (turn 2's
+      # call_args_contain — card ada-cms-write-fidelity).
       response_contains_any: [prime, primed, ล่อน้ำ, ปั๊ม]
       timeout_s: 120
       settle_s: 5
