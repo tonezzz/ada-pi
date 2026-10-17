@@ -78,7 +78,7 @@ SHADOW_THRESHOLD = float(os.environ.get("ADA_SPEAKER_SHADOW_THRESHOLD", "0.39"))
 # for her real name.
 RESERVED_NAMES = {"guest", "unknown", "someone", "anon", "anonymous",
                   "test", "tester", "newspeaker", "new speaker",
-                  "new_speaker", "unnamed", "user"}
+                  "new_speaker", "unnamed", "user", "speaker"}
 # UI/template placeholder *patterns* — "(user input required)" slipped
 # through RESERVED_NAMES verbatim on 2026-10-01 because it was a form
 # default, not a listed word. Any parenthesized or template-worded name
