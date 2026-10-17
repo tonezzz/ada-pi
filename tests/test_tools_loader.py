@@ -122,6 +122,8 @@ def _runner() -> ToolRunner:
     runner._confirm_audit = collections.deque(maxlen=10)
     runner._banks = None
     runner._instance_id = "test"
+    # no live captures in unit tests — the capture_reminder probe stays off
+    runner._vcast_api = lambda *a, **k: {"captures": {}}
     return runner
 
 

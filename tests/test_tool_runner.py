@@ -3846,6 +3846,9 @@ class ResultContractTests(unittest.IsolatedAsyncioTestCase):
         self.ha_client.sensors.return_value = []
         self.runner = ToolRunner(self.ha_client, instance_id="test")
         self.runner._banks = _hermetic_registry()
+        # no live captures in unit tests — keep the capture_reminder
+        # advisory off result dicts (and don't probe the real relay)
+        self.runner._vcast_api = lambda *a, **k: {"captures": {}}
 
     def _stub_gev(self, value=None, exc=None):
         """Swap gev_command for a stub that returns/raises `value` — the
