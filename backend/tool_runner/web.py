@@ -208,6 +208,15 @@ class WebMixin:
                     })
         except Exception:
             pass
+        # Fail fast on ungrounded answers (2026-10-16): the gateway can
+        # 200 a request whose google_search tool never ran — the model
+        # then answers from its own cutoff and passes it off as news.
+        # No sources = no search happened; raise so auto falls back to
+        # real DDG results instead of serving recall-as-search.
+        if not sources:
+            raise RuntimeError(
+                "gemini grounding returned no sources — answer was "
+                "model recall, not live search")
         return {"answer": text, "sources": sources,
                 "provider": "gemini", "model": model}
 
