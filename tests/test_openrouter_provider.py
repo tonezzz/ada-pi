@@ -191,3 +191,119 @@ async def test_text_mode_image_turn(monkeypatch):
     assert last["role"] == "user"
     assert last["parts"][0]["inline_data"]["mime_type"] == "image/jpeg"
     assert last["parts"][1]["text"] == "a map"
+
+
+# ---- notify_or_defer / queue_context_note (text-mode-chat-send-broken) --
+
+@pytest.mark.asyncio
+async def test_notify_nonurgent_lands_as_context(provider):
+    """urgent=False appends a silent context turn — no API call, no kick."""
+    assert await provider.notify_or_defer("job chat-1 done") == "context"
+    last = provider._turns[-1]
+    assert last["role"] == "system"
+    assert "job chat-1 done" in last["parts"][0]["text"]
+    assert provider._pending is None
+
+
+@pytest.mark.asyncio
+async def test_notify_urgent_relay_push(provider, monkeypatch):
+    """urgent on a relay channel pushes out-of-band through the relay
+    /send endpoint (the relay's own guards apply there), and the session
+    records what was announced."""
+    sent = []
+
+    class FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"ok": true}'
+
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, timeout=0: (sent.append(
+                            (req.full_url, req.data)), FakeResp())[1])
+    from backend.tool_runner.common import SESSION_CHAT
+    SESSION_CHAT[provider.session_id] = {"channel": "telegram",
+                                         "chat_id": "-100123"}
+    try:
+        assert await provider.notify_or_defer(
+            "flood alert", urgent=True) == "interrupted"
+    finally:
+        SESSION_CHAT.pop(provider.session_id, None)
+    assert sent and sent[0][0].endswith(":8911/send")
+    import json as _json
+    body = _json.loads(sent[0][1])
+    assert body["chat_id"] == "-100123" and "flood alert" in body["text"]
+    last = provider._turns[-1]
+    assert last["role"] == "system" and "out-of-band" in \
+        last["parts"][0]["text"]
+    assert provider._pending is None
+
+
+@pytest.mark.asyncio
+async def test_notify_urgent_relay_push_denied_falls_back(provider,
+                                                          monkeypatch):
+    """A denied/failed out-of-band push degrades to a context note —
+    the notification is queued for the next reply, never lost."""
+    import urllib.request
+
+    def boom(req, timeout=0):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    assert await provider.notify_or_defer(
+        "flood alert", urgent=True) == "queued"
+    last = provider._turns[-1]
+    assert last["role"] == "system"
+    assert "flood alert" in last["parts"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_notify_urgent_inline_kicks_reply(monkeypatch):
+    """Live-read channels (web/pwa): urgent kicks a completion — the
+    announcement renders inline like Live's interrupt."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"choices": [{"message": {"content": "URGENT: hi"}}]}
+
+    class FakeClient:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **kw): return FakeResp()
+
+    import backend.openrouter_provider as m
+    monkeypatch.setattr(m.httpx, "AsyncClient", FakeClient)
+    provider = OpenRouterTextProvider(session_id="t20", channel="web")
+    assert await provider.notify_or_defer(
+        "dub done", urgent=True) == "interrupted"
+    events = []
+    async for ev in provider.events():
+        events.append(ev.type)
+        if ev.type == "response_completed":
+            break
+    assert "response_started" in events
+    assert events[-1] == "response_completed"
+    # URGENT turn entered history as a user turn.
+    assert any(t["role"] == "user" and "URGENT" in t["parts"][0]["text"]
+               for t in provider._turns)
+
+
+@pytest.mark.asyncio
+async def test_notify_closed_raises(provider):
+    """Closed provider reports 'not connected' — /api/notify's retry
+    loop keys on that exact phrase."""
+    await provider.close()
+    import pytest as _p
+    with _p.raises(RuntimeError, match="not connected"):
+        await provider.notify_or_defer("late note")
+
+
+def test_queue_context_note(provider):
+    provider.queue_context_note("(system) mirror: sibling turn")
+    assert provider._turns[-1] == {
+        "role": "system",
+        "parts": [{"text": "(system) mirror: sibling turn"}]}
+    assert provider._pending is None

@@ -231,6 +231,106 @@ class OpenRouterTextProvider(RealtimeProvider):
         self._turns.append({"role": "user", "parts": [{"text": text}]})
         await self._kick()
 
+    # ---- notify / context notes (parity with GeminiLiveProvider) ------
+
+    def queue_context_note(self, text: str) -> None:
+        """Silent context note — same callers as Live (channel mirror,
+        command lane). _turns IS the history here, so appending delivers
+        the note to the next turn's context verbatim; no reply fires."""
+        if self._closed:
+            return
+        self._turns.append({"role": "system", "parts": [{"text": text}]})
+
+    async def notify_or_defer(self, text: str, urgent: bool = False) -> str:
+        """Notification handling — text-mode port of the Live split
+        (card text-mode-chat-send-broken: /api/notify died with
+        AttributeError on text sessions, so chat_send's completion note
+        and every other proactive push never landed).
+
+        urgent=True   — announce now. Relay channels (line/telegram) drop
+                        spontaneous replies between turns (the relay
+                        reader drains them before the next user turn), so
+                        the note goes out-of-band through the relay /send
+                        endpoint — the same path chat_send takes, so the
+                        relay's per-chat push guards apply unchanged.
+                        Clients that read provider events continuously
+                        (web/pwa, scenarios) get a kicked completion —
+                        the inline announce analog of Live's interrupt.
+                        Falls back to context when the announce can't
+                        reach the user (relay down, push denied) rather
+                        than losing the note.
+        urgent=False  — silent context note: appended to history, seen on
+                        the next turn; no reply triggered (Live's
+                        turn_complete=False equivalent).
+
+        Returns 'interrupted' | 'context' | 'queued'."""
+        if self._closed:
+            raise RuntimeError("provider is not connected")
+        if urgent:
+            chan = (self.channel or "").strip().lower()
+            if chan in ("line", "telegram", "tg"):
+                if await self._relay_push(chan, text):
+                    self._turns.append({"role": "system", "parts": [{"text":
+                        "(system) An URGENT notification was pushed to the "
+                        f"user's {chan} chat out-of-band: {text}\nIt is "
+                        "already delivered — do not repeat it "
+                        "unprompted."}]})
+                    return "interrupted"
+                self._turns.append({"role": "system", "parts": [{"text":
+                    "(system) URGENT notification — the out-of-band push "
+                    "failed or was denied; tell the user at the next "
+                    f"reply: {text}"}]})
+                return "queued"
+            self._turns.append({"role": "user", "parts": [{"text":
+                "(system) URGENT notification — announce this to the "
+                f"user now: {text}"}]})
+            await self._kick()
+            return "interrupted"
+        self._turns.append({"role": "system", "parts": [{"text":
+            "(system) Note for later — a notification arrived and the "
+            "user was already informed by a short machine-voice "
+            f"announcement: {text}\nDo not speak about this now. Finish "
+            "your current task; bring it up only when the current work "
+            "is done or the user asks."}]})
+        return "context"
+
+    async def _relay_push(self, chan: str, text: str) -> bool:
+        """Loopback POST to the relay /send endpoint — chat_send's path,
+        so the relay's own per-chat guards (LINE_LANE_ALLOW/LOCK,
+        TG_PUSH_DENY) apply. Targets the chat this session is bound to
+        (SESSION_CHAT); unbound falls back to the lane's default room."""
+        tg = chan in ("telegram", "tg")
+        ep = os.environ.get(
+            "ADA_TG_SEND_URL" if tg else "ADA_LINE_SEND_URL",
+            "http://127.0.0.1:8911/send" if tg
+            else "http://127.0.0.1:8912/send")
+        chat_id = ""
+        try:
+            from .tool_runner.common import SESSION_CHAT
+            bound = SESSION_CHAT.get(self.session_id) or {}
+            bound_ch = str(bound.get("channel") or "")
+            if bound_ch == chan or (tg and bound_ch in ("telegram", "tg")):
+                chat_id = str(bound.get("chat_id") or "")
+        except Exception:
+            pass
+        payload = {"text": text[:3900], "to": chat_id, "chat_id": chat_id,
+                   "instance": os.environ.get("ADA_INSTANCE_ID", "")}
+
+        def _post() -> bool:
+            import urllib.request
+            try:
+                req = urllib.request.Request(
+                    ep, data=json.dumps(payload).encode(),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    return bool(json.load(r).get("ok"))
+            except Exception as exc:
+                logger.warning("session=%s urgent %s push failed: %s",
+                               self.session_id, chan, exc)
+                return False
+
+        return await asyncio.to_thread(_post)
+
     # ------------------------------------------------------------------ turns
 
     async def _kick(self) -> None:

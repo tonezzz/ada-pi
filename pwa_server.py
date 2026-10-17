@@ -2782,8 +2782,12 @@ async def api_notify(request: Request) -> dict:
         ws = sess.get("ws")
         if ws is not None:
             with suppress(Exception):
-                await ws.send_text(json.dumps(
-                    {"type": "notify_voice", "text": text[:160]}))
+                # Bounded: a half-dead relay ws can stall send_text past
+                # the caller's own timeout (observed 2026-10-16 —
+                # chat_send's notify POST timed out waiting on this).
+                await asyncio.wait_for(ws.send_text(json.dumps(
+                    {"type": "notify_voice", "text": text[:160]})),
+                    timeout=4)
     # The ws registers the session before Gemini finishes connecting;
     # give it a short window before giving up.
     last_exc: Exception | None = None
