@@ -202,6 +202,52 @@ def _transcribe_remote(url: str, path) -> tuple[str, str]:
         wav.unlink(missing_ok=True)
 
 
+def _transcribe_gemini(path) -> tuple[str, str]:
+    """Multimodal STT via the LiteLLM gateway (Gemini REST generateContent
+    with inline 16k WAV). TG_STT_BACKEND=gemini selects it — the
+    multilingual leg: audio.cpp qwen3-asr is fast and free but
+    mono-lingual; code-switched speech (DE/TH/NO mixes) comes back as
+    phonetic gibberish. Gemini follows the language switch.
+    Auth/transport: ADA_GEMINI_REST_BASE_URL + _API_KEY (same env the
+    backend uses). Model: TG_STT_GEMINI_MODEL (default the flash-lite
+    real name — the gateway resolves its fallback chain)."""
+    wav = Path(str(path) + ".16k.wav")
+    try:
+        peak = _decode_wav16k(path, wav)
+        if peak < 0:
+            raise RuntimeError("ogg→wav decode failed")
+        if peak < _SILENT_PEAK:
+            return "", "silent"
+        import base64
+        base = os.environ.get("ADA_GEMINI_REST_BASE_URL", "").rstrip("/")
+        key = os.environ.get("ADA_GEMINI_REST_API_KEY", "")
+        if not (base and key):
+            raise RuntimeError("ADA_GEMINI_REST_* not set")
+        if not base.endswith("/v1beta"):
+            base += "/v1beta"  # env holds the bare gateway root
+        model = os.environ.get("TG_STT_GEMINI_MODEL",
+                               "gemini-3.5-flash-lite")
+        body = {"contents": [{"parts": [
+            {"inline_data": {"mime_type": "audio/wav",
+                             "data": base64.b64encode(
+                                 wav.read_bytes()).decode()}},
+            {"text": ("Transcribe this voice message verbatim in the "
+                      "original language(s) — preserve any language "
+                      "switches (Thai, English, German, etc.). Output "
+                      "only the transcript, no commentary.")}]}]}
+        resp = httpx.post(
+            f"{base}/models/{model}:generateContent",
+            headers={"x-goog-api-key": key},
+            json=body, timeout=60)
+        resp.raise_for_status()
+        parts = (resp.json().get("candidates") or [{}])[0].get(
+            "content", {}).get("parts") or []
+        text = " ".join(p.get("text", "") for p in parts).strip()
+        return (text, "ok") if text else ("", "empty")
+    finally:
+        wav.unlink(missing_ok=True)
+
+
 def _transcribe(path) -> tuple[str, str]:
     """Voice transcription — remote endpoint first when TG_WHISPER_URL is
     set (audio.cpp Qwen3-ASR, ada-stt.service), local faster-whisper as
@@ -210,6 +256,12 @@ def _transcribe(path) -> tuple[str, str]:
     to a distinct user-facing reply."""
     if os.environ.get("TG_VOICE_TRANSCRIBE") != "1":
         return "", "off"
+    backend = os.environ.get("TG_STT_BACKEND", "qwen").strip().lower()
+    if backend == "gemini":
+        try:
+            return _transcribe_gemini(path)
+        except Exception:
+            logger.exception("gemini stt failed — falling back to remote")
     url = os.environ.get("TG_WHISPER_URL")
     if url:
         try:
@@ -220,6 +272,11 @@ def _transcribe(path) -> tuple[str, str]:
                 return "", "silent"
             logger.warning("remote stt returned empty text for %s "
                            "— clip saved, no fallback", path)
+            if backend == "auto":
+                try:
+                    return _transcribe_gemini(path)
+                except Exception:
+                    logger.exception("auto: gemini retry failed")
             return "", "empty"
         except Exception:
             logger.exception("remote stt failed — falling back to local")
