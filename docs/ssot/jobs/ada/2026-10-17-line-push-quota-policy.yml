@@ -1,0 +1,120 @@
+# SSOT Job: LINE monthly push quota — census, urgent|bulk classes,
+# quota visibility. Card: linepush-quota-audit (chaba kanban).
+# Dispatch 20261017-162335-line-messaging-api-monthly-pus.
+
+title: LINE push-quota policy — urgent|bulk classes, bundled flush, quota probe
+
+plan_facts:
+  bot: ชบา (basicId @339sbrov, userId Ue3e0a70576d072c14869cc70d94b6ad7)
+  quota_api: |
+    GET https://api.line.me/v2/bot/message/quota            ->
+      {"type":"limited","value":300}      (measured 2026-10-17)
+    GET https://api.line.me/v2/bot/message/quota/consumption ->
+      {"totalUsage":300}                  (fully spent 2026-10-17)
+    Both are free reads — they do not consume the message budget.
+  cap: 300 messages/month (LINE meters message bubbles on push/
+    multicast, not API calls — one push call can spend up to 5)
+  reset: per calendar month — consumption zeroes on the 1st (LINE quota
+    period), so this bot is starved until 2026-11-01 ICT
+  exhausted_at: first 429 'monthly limit' 2026-10-14 12:24 ICT
+
+census_30d: |
+  journalctl --user -u ada-line-relay retains ~12 days (Oct 5 21:14 →
+  Oct 17 15:58), not the full 30 — rotation caps it. Counts below are
+  API calls in that window; quota spend is >= calls (multi-bubble push).
+    push calls: 314 OK / 21 HTTP-400 (bad targets) / 81 HTTP-429
+    reply calls: 505 OK (free — never count against quota)
+  Push-200 by recipient (Oct 6–14, quota died mid-Oct-14):
+    tony  DM U7efe5dde785e89fc998de234dfbe3d90  161
+    nhong DM Uc0b894d3f0e715e8077fca887ce4534c   80
+    kk  group C822026077530a29620b5041bd1a955c5   39
+    kk    DM U749908a2e83d9c2242d11fd2a9920478   34
+  Push-400 junk targets (wasted calls, no quota cost): person.tony,
+    กุ้ง, Tonezzz, person.kung, KK, 'owner', 'line', 'both',
+    U12345… placeholder ids — ~21 calls of /send name-resolution misses.
+  Source attribution (timer cadence + parked-queue forensics):
+    chaba-nag.timer *:0/30 (resend gap 120min, quiet 00–07) — the
+      standing mechanical spender; '⏰ CHABA — N thing(s)' copies found
+      parked for tony AND nhong AND kk.
+    ada_track_device armed watch (iphone-15) — '[delta …]' pushes on the
+      5-min beacon; nhong got ~20 pushes 11:20–15:06 on Oct 16; 15
+      deltas sat parked in her queue.
+    gemini-wallet-watch.timer hourly :47 — lane credit alerts.
+    chat_send tool — persona-initiated (member replies, async notes,
+      page links, voice lines); irregular, user-requested.
+    line-digest.py — weekly per-member digest (the KNB-0691 gate).
+  Burn rate when healthy: ~35 push calls/day vs a 300/month cap —
+    sustainable only at ~10 msgs/day fleet-wide. Cap was always going
+    to lose; the Oct 12 spike (112 calls, ~50 to nhong) spent a third
+    of the month in one day.
+
+changes:
+  - file: backend/line_relay.py
+    what: |
+      Push classes on /send: class=|priority= 'bulk' vs default
+      'urgent' (_push_class; LINE_BULK_LANES forces a lane bulk).
+      Bulk payloads park durably first, then a per-chat debounce task
+      (_bulk_arm/_bulk_flush_later, LINE_BULK_COALESCE_S=300 default)
+      flushes them as ONE bundled push — adjacent texts merge via
+      _merge_msgs so N caller msgs can cost 1 quota message. Any
+      inbound replyToken in the window delivers them free (existing
+      OPS-0651 parked-ride machinery). While _quota_blocked is set
+      bulk never reaches the LINE API at all.
+      Quota-depleted state: a 429 containing 'monthly limit' sets
+      _quota_blocked = now+LINE_QUOTA_RETRY_S (6h default) and fires
+      _quota_alert once — a free quota-probe + 'quota_depleted' ops
+      event (non-push alert path: ops timeline/board, never LINE).
+      Urgent pushes always still attempt; a 200 clears the block and
+      emits 'quota_recovered'. Rate-limit 429s do not set the block.
+      Boot probe in run() logs used/limit/remaining and seeds the
+      block when consumption already >= cap. X-Line-Request-Id logged
+      on push failures for LINE support tickets.
+      New loopback route GET /quota -> {quota:{limit,used,remaining},
+      quota_blocked, quota_blocked_until, parked:{chat:n}}.
+      /send source-attribution log: 'send: inst=.. to=.. class=..
+      msgs=..' so the next census doesn't need timing forensics.
+  - file: backend/tools.d/ada_track_device.py
+    what: |
+      _push payload gains class='bulk' — armed-watch deltas are
+      periodic telemetry; they bundle/park instead of spending one
+      quota message per 5-min beacon.
+  - file: .env.example
+    what: LINE_BULK_LANES / LINE_BULK_COALESCE_S / LINE_QUOTA_RETRY_S
+      + /send class field documented in the LINE block.
+  - file: tests/test_line_relay_quota.py
+    what: |
+      13 tests: _push_class resolution (default/alias/LINE_BULK_LANES),
+      _is_monthly_limit vs rate-limit, monthly-429 sets block + parks,
+      bulk parks with zero API calls under block, urgent still attempts
+      and 200 clears, bundled flush merges texts into one push, blocked
+      flush skips, _bulk_arm debounce, /send bulk+urgent HTTP paths,
+      /quota route shape.
+
+caller_adoption:
+  todo: |
+    Out-of-repo pushers (chaba-nag.py, gemini-wallet-watch.py,
+    line-digest.py — chaba-tony-dell / chaba checkouts) should add
+    "class":"bulk" to their /send payloads, or idc03 can set
+    LINE_BULK_LANES for lane-scoped demotion. chat_send stays urgent
+    (user-requested). Until adopted, behavior is unchanged — class
+    defaults urgent.
+
+verify:
+  - .venv pytest tests/test_line_relay_quota.py +
+    test_line_relay_parked.py + test_line_relay_group.py +
+    test_line_reply_context.py — 56 passed
+  - .venv pytest tests/ -x -q — 1576 passed, 7 skipped
+  - python3 scripts/tool-lint.py — clean
+
+notes: |
+  - No regression to reply path: replyToken deliveries unchanged; the
+    parked-ride flush is the same OPS-0651 code, bulk just feeds the
+    same queue earlier.
+  - Parking is durable (jsonl on disk) — relay restart mid-depletion
+    loses nothing; boot probe re-arms the block from LINE's own
+    consumption counter.
+  - Decision input for Tony: at ~35 push calls/day the free 300/mo cap
+    is structurally too small. Cheapest fix is marking nag/watch/digest
+    senders bulk (they ride free replies). Upgrading the plan is a
+    billing call, out of scope here.
+  - relay-img transient-miss spam: by-design transient keys, noted only.

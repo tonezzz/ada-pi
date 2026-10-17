@@ -41,6 +41,20 @@ Env:
                                  (429) park here and ride the next free
                                  replyToken on that chats next inbound
                                  (OPS-0651)
+    LINE_BULK_LANES            — comma list of /send `instance` values
+                                 forced to class=bulk regardless of the
+                                 body's class field
+    LINE_BULK_COALESCE_S       — default 300: class=bulk /send payloads
+                                 park durably, then flush as ONE bundled
+                                 push after this debounce — adjacent text
+                                 merges so N caller msgs can cost 1 quota
+                                 message; an inbound replyToken in the
+                                 window delivers them free instead
+    LINE_QUOTA_RETRY_S         — default 21600 (6h): after a confirmed 429
+                                 'monthly limit', bulk flushes skip the
+                                 LINE call for this long (msgs stay
+                                 parked); urgent pushes still attempt and
+                                 a 200 clears the block early
     LINE_VOICE_CORPUS_DIR      — default ~/.local/share/ada-voice-corpus/line;
                                  audio clips from enrolled senders land here
                                  (local only — like tg_relay's voice rule)
@@ -173,6 +187,39 @@ VOICE_CORPUS_DIR = Path(os.environ.get(
 PARKED_DIR = Path(os.environ.get(
     "LINE_PARKED_DIR",
     str(Path.home() / ".local" / "share" / "ada" / "line-parked")))
+
+# Push classes (card linepush-quota-audit): LINE meters *messages* on
+# push — replies are free. class=urgent payloads always attempt the push
+# API; class=bulk payloads park first and flush bundled after
+# LINE_BULK_COALESCE_S (or free, on the chat's next replyToken). A
+# confirmed 429 monthly-limit sets _quota_blocked for LINE_QUOTA_RETRY_S
+# so a spent month stops generating doomed bulk calls.
+LINE_BULK_COALESCE_S = float(os.environ.get("LINE_BULK_COALESCE_S", "300"))
+LINE_QUOTA_RETRY_S = float(os.environ.get("LINE_QUOTA_RETRY_S", "21600"))
+
+
+def _bulk_lanes() -> set[str]:
+    return {x.strip() for x in
+            os.environ.get("LINE_BULK_LANES", "").split(",") if x.strip()}
+
+
+def _is_monthly_limit(resp: httpx.Response) -> bool:
+    """429 'monthly limit' (plan cap) vs a transient rate-limit 429."""
+    return resp.status_code == 429 and \
+        "monthly" in (resp.text or "").lower()
+
+
+def _push_class(body: dict) -> str:
+    """Resolve a /send payload's push class: body class=|priority=
+    'bulk' marks quota-optional traffic (digests, rollups, watch
+    deltas); LINE_BULK_LANES forces an instance's sends bulk. Anything
+    else is urgent — it always attempts the push API."""
+    cls = str(body.get("class") or body.get("priority")
+              or "urgent").strip().lower()
+    inst = str(body.get("instance") or "").strip()
+    if cls != "bulk" and inst in _bulk_lanes():
+        cls = "bulk"
+    return "bulk" if cls == "bulk" else "urgent"
 
 
 def _merge_msgs(msgs: list[dict], cap: int = 5
@@ -749,6 +796,12 @@ class LineRelay:
         # caller-mapped lane; each later clip adds one print until
         # VOICE_ENROLL_CLIPS land or the TTL lapses.
         self._enroll_pending: dict[str, dict] = {}
+        # Quota-depleted epoch: a 429 'monthly limit' sets this to
+        # now+LINE_QUOTA_RETRY_S; bulk sends park silently under it and a
+        # successful push clears it (recovery probe = urgent traffic).
+        self._quota_blocked = 0.0
+        # Per-chat debounce tasks flushing parked class=bulk payloads.
+        self._bulk_flush: dict[str, asyncio.Task] = {}
 
     def _verify(self, body: bytes, signature: str) -> bool:
         mac = hmac.new(CHANNEL_SECRET.encode(), body, hashlib.sha256)
@@ -855,7 +908,11 @@ class LineRelay:
         await self._deliver(user_id, msgs, reply_token)
 
     async def _deliver(self, user_id: str, msgs: list[dict],
-                       reply_token: str | None = None) -> None:
+                       reply_token: str | None = None,
+                       cls: str = "urgent") -> str:
+        """Deliver msgs to a chat. Returns 'delivered' | 'parked' |
+        'failed'. cls='bulk' never burns a quota call while the monthly
+        block is known-set — it parks for the next free replyToken."""
         logger.info("deliver to %s: [%s]",
                     user_id, ",".join(m.get("type", "?") for m in msgs[:5]))
         parked: list[dict] = []
@@ -878,7 +935,7 @@ class LineRelay:
                                     user_id, len(parked))
                         _ops_event("parked_flushed", "info", chat_id=user_id,
                                    n=len(parked))
-                    return
+                    return "delivered"
                 logger.info("replyToken failed (%s) — falling back to push",
                             r.status_code)
                 _ops_event("reply_failed", "warn", chat_id=user_id,
@@ -889,20 +946,115 @@ class LineRelay:
             # Nothing was sent — the parked batch goes back untouched; only
             # the current payload proceeds to the push path.
             _parked_add(user_id, parked, front=True)
+        if cls == "bulk" and self._quota_blocked > time.time():
+            # Spent month: don't burn a doomed API call — the next inbound
+            # replyToken (or quota reset) flushes the queue for free.
+            _parked_add(user_id, msgs)
+            logger.info("bulk push to %s parked — quota depleted "
+                        "(%d msgs)", user_id, len(msgs))
+            return "parked"
         r = await self.line("push", {"to": user_id, "messages": msgs[:5]})
-        if r.status_code != 200:
-            if r.status_code == 429:
-                _parked_add(user_id, msgs)
-                logger.warning("push to %s quota-blocked — parked %d msgs "
-                               "for the next inbound (%s)",
-                               user_id, len(msgs), r.text[:120])
-                _ops_event("push_parked", "warn", chat_id=user_id,
-                           http=r.status_code, detail=r.text[:200])
+        req_id = (getattr(r, "headers", None) or {}).get(
+            "x-line-request-id", "")
+        if r.status_code == 200:
+            if self._quota_blocked:
+                self._quota_blocked = 0.0
+                logger.info("push to %s landed — monthly quota block "
+                            "cleared (req %s)", user_id, req_id)
+                _ops_event("quota_recovered", "info", chat_id=user_id,
+                           req_id=req_id)
+            return "delivered"
+        if r.status_code == 429:
+            _parked_add(user_id, msgs)
+            if _is_monthly_limit(r):
+                if not self._quota_blocked:
+                    asyncio.create_task(self._quota_alert(user_id))
+                self._quota_blocked = time.time() + LINE_QUOTA_RETRY_S
+            logger.warning("push to %s quota-blocked — parked %d msgs "
+                           "for the next inbound (%s, req %s)",
+                           user_id, len(msgs), r.text[:120], req_id)
+            _ops_event("push_parked", "warn", chat_id=user_id,
+                       http=r.status_code, detail=r.text[:200],
+                       req_id=req_id, cls=cls)
+            return "parked"
+        logger.warning("push to %s failed: %s %s (req %s)",
+                       user_id, r.status_code, r.text[:200], req_id)
+        _ops_event("push_failed", "error", chat_id=user_id,
+                   http=r.status_code, detail=r.text[:200], req_id=req_id)
+        return "failed"
+
+    async def _quota_probe(self) -> dict:
+        """GET /v2/bot/message/quota + /quota/consumption — free reads,
+        no quota cost. {limit, used, remaining} (limit None = unlimited
+        plan)."""
+        out: dict[str, Any] = {}
+        if self.http is None:
+            return {"error": "http not up"}
+        try:
+            h = {"Authorization": f"Bearer {CHANNEL_TOKEN}"}
+            r = await self.http.get(f"{LINE_API}/v2/bot/message/quota",
+                                    headers=h)
+            if r.status_code == 200:
+                q = r.json() or {}
+                out["limit"] = q.get("value") \
+                    if q.get("type") == "limited" else None
+            else:
+                out["quota_http"] = r.status_code
+            r = await self.http.get(
+                f"{LINE_API}/v2/bot/message/quota/consumption",
+                headers=h)
+            if r.status_code == 200:
+                out["used"] = (r.json() or {}).get("totalUsage")
+            else:
+                out["consumption_http"] = r.status_code
+        except Exception as exc:
+            out["error"] = str(exc)[:120]
+        if "limit" in out and "used" in out:
+            try:
+                out["remaining"] = (out["limit"] or 0) - (out["used"] or 0)
+            except TypeError:
+                pass
+        return out
+
+    async def _quota_alert(self, chat_id: str) -> None:
+        """The 'quota depleted' alarm — deliberately NOT a LINE push (that
+        would burn the very resource it reports). The ops event lands on
+        the WP ops timeline / board comms instead."""
+        q = await self._quota_probe()
+        logger.error(
+            "LINE monthly push quota depleted (used=%s/%s) — bulk "
+            "pushes park until reset or a successful send",
+            q.get("used"), q.get("limit"))
+        _ops_event("quota_depleted", "error", chat_id=chat_id, **q)
+
+    def _bulk_arm(self, chat_id: str) -> None:
+        """Schedule the debounced bundled flush of this chat's parked
+        bulk msgs. One task per chat — a second send inside the window
+        just joins the bundle already queued on disk."""
+        t = self._bulk_flush.get(chat_id)
+        if t is not None and not t.done():
+            return
+        self._bulk_flush[chat_id] = asyncio.create_task(
+            self._bulk_flush_later(chat_id))
+
+    async def _bulk_flush_later(self, chat_id: str) -> None:
+        try:
+            await asyncio.sleep(LINE_BULK_COALESCE_S)
+            if self._quota_blocked > time.time():
+                return  # stays parked — inbound replyTokens flush free
+            msgs = _parked_take(chat_id)
+            if not msgs:
                 return
-            logger.warning("push to %s failed: %s %s",
-                           user_id, r.status_code, r.text[:200])
-            _ops_event("push_failed", "error", chat_id=user_id,
-                       http=r.status_code, detail=r.text[:200])
+            # Bundle: adjacent texts merge into one bubble, so N parked
+            # caller msgs can leave as a single quota message.
+            send, overflow = _merge_msgs(msgs)
+            await self._deliver(chat_id, send, None, cls="bulk")
+            if overflow:
+                _parked_add(chat_id, overflow)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("bulk flush %s failed", chat_id)
 
     def _preview_jpeg(self, png: bytes) -> bytes:
         """LINE previews want a small JPEG — downscale to <=240px."""
@@ -1776,9 +1928,12 @@ class LineRelay:
 
         async def send(request):
             """Outbound push API for Ada's chat_send tool — loopback only
-            (127.0.0.1 listen). {to?, text?, image_url?, caption?} — the
-            image is fetched + publicly hosted via _image_msgs so LINE's
-            CDN can pull it."""
+            (127.0.0.1 listen). {to?, text?, image_url?, caption?,
+            class?='urgent'|'bulk', priority? (alias)} — the image is
+            fetched + publicly hosted via _image_msgs so LINE's CDN can
+            pull it. class='bulk' payloads (digests, rollups, watch
+            deltas) park and flush bundled — they don't burn quota
+            head-on, and none while the monthly block is set."""
             try:
                 body = await request.json()
             except Exception:
@@ -1884,9 +2039,29 @@ class LineRelay:
                 # Keep the in-context fallback warm under the key this
                 # endpoint reads (the payload's ADA_INSTANCE_ID).
                 self._recent_chat[inst] = (uid, time.monotonic())
+            # Push class (linepush-quota-audit): bulk payloads park
+            # durably, flush bundled after LINE_BULK_COALESCE_S, or ride
+            # the next inbound replyToken free. Everything else stays
+            # urgent and attempts LINE now.
+            cls = _push_class(body)
+            logger.info("send: inst=%s to=%s class=%s msgs=%d",
+                        inst or "-", uid, cls, len(msgs))
+            if cls == "bulk":
+                _parked_add(uid, msgs[:5])
+                if self._quota_blocked > time.time():
+                    return JSONResponse({"ok": True, "to": uid,
+                                         "parked": True,
+                                         "reason": "quota-depleted"})
+                self._bulk_arm(uid)
+                return JSONResponse({"ok": True, "to": uid,
+                                     "parked": True,
+                                     "flush_in_s": LINE_BULK_COALESCE_S})
             try:
-                await self._deliver(uid, msgs[:5], None)
-                return JSONResponse({"ok": True, "to": uid})
+                st = await self._deliver(uid, msgs[:5], None)
+                out = {"ok": True, "to": uid}
+                if st == "parked":
+                    out["parked"] = True
+                return JSONResponse(out)
             except Exception as exc:
                 return JSONResponse({"ok": False, "error": str(exc)},
                                     status_code=502)
@@ -1922,10 +2097,30 @@ class LineRelay:
             mime = mimetypes.guess_type(f.name)[0] or "image/jpeg"
             return Response(f.read_bytes(), media_type=mime)
 
+        async def quota(request):
+            """Loopback quota/parked view — LINE's free quota endpoints
+            plus the local park ledger, so ops can see headroom without
+            spending a message."""
+            parked: dict[str, int] = {}
+            try:
+                if PARKED_DIR.is_dir():
+                    for f in PARKED_DIR.glob("*.jsonl"):
+                        parked[f.stem] = sum(
+                            1 for l in f.read_text().splitlines()
+                            if l.strip())
+            except Exception:
+                pass
+            return JSONResponse({
+                "ok": True, "quota": await self._quota_probe(),
+                "quota_blocked": self._quota_blocked > time.time(),
+                "quota_blocked_until": self._quota_blocked or None,
+                "parked": parked})
+
         app = Starlette(routes=[
             Route(LINE_PATH, webhook, methods=["POST"]),
             Route("/webhook/line-health", health, methods=["GET"]),
             Route("/send", send, methods=["POST"]),
+            Route("/quota", quota, methods=["GET"]),
             Route("/relay-img/{nonce}", img, methods=["GET"]),
             Route("/relay-img/arch/{rest:path}", arch_img,
                   methods=["GET"]),
@@ -1941,6 +2136,18 @@ class LineRelay:
     async def run(self) -> None:
         self.http = httpx.AsyncClient(timeout=40)
         asyncio.create_task(self.sweeper())
+        # Free quota probe at boot — headroom lands in the journal, and
+        # an already-spent month skips the doomed-push discovery pass.
+        q = await self._quota_probe()
+        logger.info("LINE push quota: used=%s/%s remaining=%s",
+                    q.get("used"), q.get("limit"), q.get("remaining"))
+        try:
+            if q.get("limit") is not None and \
+                    (q.get("used") or 0) >= (q.get("limit") or 0):
+                self._quota_blocked = time.time() + LINE_QUOTA_RETRY_S
+                _ops_event("quota_depleted", "error", boot=True, **q)
+        except Exception:
+            pass
         await self._webhook_server()
 
 
