@@ -4820,9 +4820,20 @@ class GeminiLiveProvider(RealtimeProvider):
         # behaves identically for both modes.
         included = {s.strip() for s in os.environ.get("ADA_INCLUDED_TOOLS", "").split(",") if s.strip()}
         if included:
-            excluded |= {fd.get("name") for fd in
-                         config["tools"][0]["function_declarations"]
-                         } - included
+            # Cover the late merges below as well (camera decl, tools.d,
+            # chaba): they are appended AFTER this strip point, so a keep-
+            # list that only filters the builtin decls leaks them onto
+            # restricted lanes.
+            late = {d.get("name") for d in CHABA_DECLARATIONS}
+            late.add(CAMERA_DECLARATION["name"])
+            try:
+                late |= {d.get("name") for d in
+                         tools_loader.registry().declarations(set())}
+            except Exception:
+                pass
+            excluded |= ({fd.get("name") for fd in
+                          config["tools"][0]["function_declarations"]}
+                         | late) - included
         self._excluded_tools = set(excluded)
         if excluded:
             config["tools"][0]["function_declarations"] = [
@@ -4897,6 +4908,14 @@ class GeminiLiveProvider(RealtimeProvider):
             config["tools"][0]["function_declarations"] = _fill_bank_placeholders(
                 config["tools"][0]["function_declarations"], all_banks, writable_banks
             )
+        # Final keep-list pass: everything appended after the first strip
+        # point (camera, tools.d, chaba guest decls) is still subject to
+        # ADA_INCLUDED_TOOLS — the declaration surface is the contract.
+        if included:
+            config["tools"][0]["function_declarations"] = [
+                fd for fd in config["tools"][0]["function_declarations"]
+                if fd.get("name") in included
+            ]
         # Lazy schemas last — after exclusions, chaba allowlist, and bank
         # placeholders — so every wire decl (builtin, camera, tools.d,
         # chaba) is covered by the same rule.
