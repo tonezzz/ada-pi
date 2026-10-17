@@ -874,6 +874,24 @@ class HomeAssistantClient:
                 "name": attributes.get("friendly_name") or eid,
                 "unit": attributes.get("unit_of_measurement", ""),
             }
+        states_ok = [
+            e for e, s in out["sensors"].items()
+            if s["state"] not in ("unavailable", "unknown")
+        ]
+        if not out["sensors"]:
+            out["ok"] = False
+            out["error"] = (
+                "RK600 station offline/unreachable — no sensor.rk600* entities "
+                "in Home Assistant. Do not retry; tell the user the station "
+                "appears offline instead."
+            )
+        elif not states_ok:
+            out["ok"] = False
+            out["error"] = (
+                "RK600 station offline/unreachable — sensor.rk600* entities "
+                "exist but all report unavailable/unknown. Do not retry; "
+                "tell the user the station appears offline instead."
+            )
         return out
 
     async def lovelace_config(self, url_path: str | None = None) -> dict[str, Any]:

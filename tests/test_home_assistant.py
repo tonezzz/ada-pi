@@ -113,6 +113,55 @@ class HomeAssistantClientTests(unittest.IsolatedAsyncioTestCase):
             ["light.gate_spot", "light.gate_flap"],
         )
 
+    async def test_rk600_weather_returns_ok_false_when_no_sensors(self):
+        # OPS-0222: empty sensor map must fail loudly — an ok-looking empty
+        # result made the model retry-storm the tool (10 repeat calls in one
+        # audited transcript). RK600 entities were absent from tony-ha on
+        # 2026-10-16 (316 states, zero sensor.rk600*).
+        client = AsyncMock()
+        client.get.return_value = FakeResponse([
+            {"entity_id": "light.office", "state": "on", "attributes": {}},
+        ])
+        home = HomeAssistantClient(client=client)
+        out = await home.rk600_weather()
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["sensors"], {})
+        self.assertIn("offline", out["error"])
+
+    async def test_rk600_weather_returns_sensors_when_present(self):
+        client = AsyncMock()
+        client.get.return_value = FakeResponse([
+            {"entity_id": "sensor.rk600_temperature", "state": "28.4",
+             "attributes": {"friendly_name": "RK600 Temperature",
+                            "unit_of_measurement": "°C"}},
+            {"entity_id": "sensor.rk600_humidity", "state": "61",
+             "attributes": {"friendly_name": "RK600 Humidity",
+                            "unit_of_measurement": "%"}},
+            {"entity_id": "light.office", "state": "on", "attributes": {}},
+        ])
+        home = HomeAssistantClient(client=client)
+        out = await home.rk600_weather()
+        self.assertNotIn("ok", out)
+        self.assertEqual(len(out["sensors"]), 2)
+        self.assertEqual(out["sensors"]["sensor.rk600_temperature"]["state"], "28.4")
+        self.assertEqual(out["sensors"]["sensor.rk600_temperature"]["unit"], "°C")
+
+    async def test_rk600_weather_fails_when_all_sensors_unavailable(self):
+        # 2026-10-16 michael-ha: 4 sensor.rk600* entities exist but every
+        # one is 'unavailable' — station offline; must not look like data.
+        client = AsyncMock()
+        client.get.return_value = FakeResponse([
+            {"entity_id": "sensor.rk600_temperature", "state": "unavailable",
+             "attributes": {"friendly_name": "RK600 Temperature"}},
+            {"entity_id": "sensor.rk600_humidity", "state": "unknown",
+             "attributes": {"friendly_name": "RK600 Humidity"}},
+        ])
+        home = HomeAssistantClient(client=client)
+        out = await home.rk600_weather()
+        self.assertFalse(out["ok"])
+        self.assertIn("offline", out["error"])
+        self.assertEqual(len(out["sensors"]), 2)
+
     async def test_snapshot_discovers_plug_family_beyond_configured_list(self):
         # 2026-10-13 ada-kk repro: get_home_state's all_plugs dropped
         # switch.plakkaaaef_local because snapshot() only summarized the
