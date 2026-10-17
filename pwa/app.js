@@ -33,6 +33,23 @@ let reconnectStableTimer = null;
 const RECONNECT_DELAYS = [1000, 2000, 5000, 10000];  // backoff, capped at 10s
 const micToggleButton = document.querySelector("#mic-toggle");
 
+// Screen wake lock while a session is live — iOS suspends Safari (and its
+// ws) on auto-lock, which kills voice sessions mid-conversation.
+let wakeLock = null;
+async function acquireWakeLock() {
+  if (wakeLock || !("wakeLock" in navigator)) return;
+  try { wakeLock = await navigator.wakeLock.request("screen"); }
+  catch { wakeLock = null; }
+}
+function releaseWakeLock() {
+  const wl = wakeLock;
+  wakeLock = null;
+  if (wl) wl.release().catch(() => {});
+}
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && socket && !wakeLock) acquireWakeLock();
+});
+
 function setMicButton(muted) {
   if (micToggleButton) micToggleButton.textContent = muted ? "Mic: Off" : "Mic: On";
 }
@@ -224,6 +241,7 @@ function handleControl(event) {
       setConnected(true);
       setStatus("Connected — listening");
       machineVoice("Ada online. Listening.");
+      acquireWakeLock();
       break;
     case "speech_started":
       setStatus("Speech detected");
@@ -432,6 +450,7 @@ async function disconnect(closeSocket = true) {
   if (reconnectStableTimer) { clearTimeout(reconnectStableTimer); reconnectStableTimer = null; }
   if (closeSocket && socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "user disconnect");
   socket = null;
+  releaseWakeLock();
   if (captureNode) captureNode.disconnect();
   if (playbackMeterFrame) cancelAnimationFrame(playbackMeterFrame);
   playbackMeterFrame = null;
