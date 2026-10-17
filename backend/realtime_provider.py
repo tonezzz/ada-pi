@@ -57,6 +57,10 @@ logger = logging.getLogger("voice.provider")
 
 LIST_HOME_DEVICES_MAX = int(os.environ.get("ADA_LIST_HOME_DEVICES_MAX", "60"))
 
+# Display name for user/model-facing result text (OPS-0734): non-Ada
+# lanes set ADA_PWA_NAME so tool results say e.g. Kraut, not Ada.
+_ADA_DISPLAY_NAME = os.environ.get("ADA_PWA_NAME") or "Ada"
+
 EXPRESSION_NAMES = (
     "neutral",
     "sassy",
@@ -5323,7 +5327,7 @@ class GeminiLiveProvider(RealtimeProvider):
                                 "lane — answer with the tools you have.")}
                         elif call.name == "set_facial_expression" and requested in EXPRESSION_NAMES:
                             yield ProviderEvent("expression", {"name": requested})
-                            result = {"output": f"Ada is now {requested}"}
+                            result = {"output": f"{_ADA_DISPLAY_NAME} is now {requested}"}
                         elif (call.name == "get_home_state"
                               # entity_id=/domain= reads route to the
                               # runner (tools-merge-ha) — the fast path

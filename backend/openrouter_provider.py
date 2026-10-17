@@ -411,7 +411,7 @@ class OpenRouterTextProvider(RealtimeProvider):
                         await self._queue.put(ProviderEvent("expression", {
                             "name": args["expression"]}))
                         result = {"output":
-                                  f"Ada is now {args[expression]}"}
+                                  f"{os.environ.get('ADA_PWA_NAME') or 'Ada'} is now {args[expression]}"}
                     else:
                         result = {"error": "Unsupported or unavailable function"}
                 else:
